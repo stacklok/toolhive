@@ -5,6 +5,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -73,6 +74,7 @@ type dockerAPI interface {
 	) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 }
 
 // deployOps defines the internal operations used by DeployWorkload.
@@ -1764,4 +1766,52 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 	}
 
 	return c.api.ContainerInspect(ctx, containerID)
+}
+
+// GetWorkloadStats retrieves CPU and memory usage statistics for a workload.
+func (c *Client) GetWorkloadStats(ctx context.Context, workloadName string) (runtime.WorkloadStats, error) {
+	stats := runtime.WorkloadStats{}
+
+	containerID, err := c.findContainerByExactName(ctx, workloadName)
+
+	if err != nil {
+		return stats, err
+	}
+
+	if containerID == "" {
+		return stats, runtime.ErrWorkloadNotFound
+	}
+
+	containerStats, err := c.api.ContainerStats(ctx, containerID, false)
+	if err != nil {
+		return runtime.WorkloadStats{}, NewContainerError(err, containerID, fmt.Sprintf("failed to get container stats: %v", err))
+	}
+	defer containerStats.Body.Close()
+
+	var containerStatsData container.StatsResponse
+	decoder := json.NewDecoder(containerStats.Body)
+	if err := decoder.Decode(&containerStatsData); err != nil {
+		return runtime.WorkloadStats{}, NewContainerError(err, containerID, fmt.Sprintf("failed to decode container stats: %v", err))
+	}
+
+	// Calculate CPU percentage
+	stats.CPUPercent = calculateCPUPercent(containerStatsData)
+	stats.MemoryUsage = containerStatsData.MemoryStats.Usage
+	stats.MemoryLimit = containerStatsData.MemoryStats.Limit
+	return stats, nil
+}
+
+// calculateCPUPercent calculates the CPU usage percentage from container stats.
+func calculateCPUPercent(stats container.StatsResponse) float64 {
+	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
+
+	if systemDelta > 0 && cpuDelta > 0 {
+		numCPUs := float64(stats.CPUStats.OnlineCPUs)
+		if numCPUs == 0 {
+			numCPUs = float64(len(stats.CPUStats.CPUUsage.PercpuUsage))
+		}
+		return (cpuDelta / systemDelta) * numCPUs * 100.0
+	}
+	return 0.0
 }

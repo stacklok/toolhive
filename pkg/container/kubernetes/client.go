@@ -1199,3 +1199,8 @@ func (c *Client) getCurrentNamespace() string {
 
 	return k8s.GetCurrentNamespace()
 }
+
+// GetWorkloadStats returns stats for a workload (not implemented for Kubernetes yet)
+func (*Client) GetWorkloadStats(_ context.Context, _ string) (runtime.WorkloadStats, error) {
+	return runtime.WorkloadStats{}, fmt.Errorf("GetWorkloadStats not implemented for Kubernetes")
+}

@@ -170,6 +170,10 @@ type Runtime interface {
 	// IsRunning checks the health of the container runtime.
 	// This is used to verify that the runtime is operational and can manage workloads.
 	IsRunning(ctx context.Context) error
+
+	// GetWorkloadStats retrieves resource usage statistics for the workload.
+	// This includes CPU, memory, and other relevant metrics.
+	GetWorkloadStats(ctx context.Context, workloadName string) (WorkloadStats, error)
 }
 
 // Monitor defines the interface for container monitoring
@@ -314,3 +318,10 @@ var (
 	// ErrWorkloadNotFound indicates that the specified workload was not found.
 	ErrWorkloadNotFound = fmt.Errorf("workload not found")
 )
+
+// WorkloadStats contains CPU and memory statistics for a workload.
+type WorkloadStats struct {
+	MemoryUsage uint64  `json:"memory_usage"` // bytes
+	MemoryLimit uint64  `json:"memory_limit"` // bytes
+	CPUPercent  float64 `json:"cpu_percent"`  // 0.5 means 0.5%
+}

@@ -188,6 +188,21 @@ func (mr *MockRuntimeMockRecorder) GetWorkloadLogs(ctx, workloadName, follow any
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadLogs", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadLogs), ctx, workloadName, follow)
 }
 
+// GetWorkloadStats mocks base method.
+func (m *MockRuntime) GetWorkloadStats(ctx context.Context, workloadName string) (runtime.WorkloadStats, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetWorkloadStats", ctx, workloadName)
+	ret0, _ := ret[0].(runtime.WorkloadStats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetWorkloadStats indicates an expected call of GetWorkloadStats.
+func (mr *MockRuntimeMockRecorder) GetWorkloadStats(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadStats", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadStats), ctx, workloadName)
+}
+
 // IsRunning mocks base method.
 func (m *MockRuntime) IsRunning(ctx context.Context) error {
 	m.ctrl.T.Helper()

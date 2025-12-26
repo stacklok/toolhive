@@ -31,7 +31,7 @@ var (
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 	listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
 

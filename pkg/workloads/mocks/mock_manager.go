@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	core "github.com/stacklok/toolhive/pkg/core"
 	runner "github.com/stacklok/toolhive/pkg/runner"
 	gomock "go.uber.org/mock/gomock"
@@ -116,6 +117,21 @@ func (m *MockManager) GetWorkload(ctx context.Context, workloadName string) (cor
 func (mr *MockManagerMockRecorder) GetWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkload", reflect.TypeOf((*MockManager)(nil).GetWorkload), ctx, workloadName)
+}
+
+// GetWorkloadStats mocks base method.
+func (m *MockManager) GetWorkloadStats(ctx context.Context, workloadName string) (runtime.WorkloadStats, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetWorkloadStats", ctx, workloadName)
+	ret0, _ := ret[0].(runtime.WorkloadStats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetWorkloadStats indicates an expected call of GetWorkloadStats.
+func (mr *MockManagerMockRecorder) GetWorkloadStats(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadStats", reflect.TypeOf((*MockManager)(nil).GetWorkloadStats), ctx, workloadName)
 }
 
 // ListWorkloads mocks base method.

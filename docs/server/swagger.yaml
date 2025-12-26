@@ -213,6 +213,10 @@ components:
           description: Package specifies the Workload Package used to create this
             Workload.
           type: string
+        pid:
+          description: ProcessID is the ID of the main process inside the workload
+            container.
+          type: integer
         port:
           description: |-
             Port is the port on which the workload is exposed.
@@ -228,6 +232,10 @@ components:
           description: Remote indicates whether this is a remote workload (true) or
             a container workload (false).
           type: boolean
+        started_at:
+          description: StartedAt is when the container was last started (changes on
+            restart)
+          type: string
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:

@@ -86,6 +86,29 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 			},
 		},
 		{
+			name: "with default resources",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-resources-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					// No Resources specified, should get defaults
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				// Verify defaults are applied (50m/200m CPU, 64Mi/256Mi Memory)
+				assert.Equal(t, "200m", container.Resources.Limits.Cpu().String())
+				assert.Equal(t, "256Mi", container.Resources.Limits.Memory().String())
+				assert.Equal(t, "50m", container.Resources.Requests.Cpu().String())
+				assert.Equal(t, "64Mi", container.Resources.Requests.Memory().String())
+			},
+		},
+		{
 			name: "with resource limits",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{

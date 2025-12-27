@@ -199,7 +199,7 @@ type AggregationConfig struct {
 	// Tools contains per-workload tool configuration.
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
 
-	ExcludeAllTools bool `json:"excludeAllTools,omitempty"`
+	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
 }
 
 // ConflictResolutionConfig contains conflict resolution settings.
@@ -223,7 +223,7 @@ type WorkloadToolConfig struct {
 	// Overrides maps tool names to override configurations.
 	Overrides map[string]*ToolOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
 
-	ExcludeAll bool `json:"excludeAll,omitempty"`
+	ExcludeAll bool `json:"excludeAll,omitempty" yaml:"excludeAll,omitempty"`
 }
 
 // ToolOverride defines tool name/description overrides.
@@ -285,10 +285,10 @@ type CircuitBreakerConfig struct {
 // This matches the YAML structure from the proposal (lines 173-255).
 type CompositeToolConfig struct {
 	// Name is the workflow name (unique identifier).
-	Name string `json:"name"`
+	Name string `json:"name" yaml:"name"`
 
 	// Description describes what the workflow does.
-	Description string `json:"description,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 
 	// Parameters defines input parameter schema in JSON Schema format.
 	// Should be a JSON Schema object with "type": "object" and "properties".
@@ -307,13 +307,13 @@ type CompositeToolConfig struct {
 	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using map[string]any
 	// allows full JSON Schema compatibility without needing to define every possible
 	// field, and matches how the MCP SDK handles inputSchema.
-	Parameters map[string]any `json:"parameters,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
-	Timeout Duration `json:"timeout,omitempty"`
+	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Steps are the workflow steps to execute.
-	Steps []*WorkflowStepConfig `json:"steps"`
+	Steps []*WorkflowStepConfig `json:"steps" yaml:"steps"`
 
 	// Output defines the structured output schema for this workflow.
 	// If not specified, the workflow returns the last step's output (backward compatible).
@@ -325,34 +325,34 @@ type CompositeToolConfig struct {
 // This matches the proposal's step configuration (lines 180-255).
 type WorkflowStepConfig struct {
 	// ID uniquely identifies this step.
-	ID string `json:"id"`
+	ID string `json:"id" yaml:"id"`
 
 	// Type is the step type: "tool", "elicitation"
-	Type string `json:"type"`
+	Type string `json:"type" yaml:"type"`
 
 	// Tool is the tool name to call (for tool steps).
-	Tool string `json:"tool,omitempty"`
+	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
 
 	// Arguments are the tool arguments (supports template expansion).
-	Arguments map[string]any `json:"arguments,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 
 	// Condition is an optional execution condition (template syntax).
-	Condition string `json:"condition,omitempty"`
+	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
 
 	// DependsOn lists step IDs that must complete first (for DAG execution).
-	DependsOn []string `json:"depends_on,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 
 	// OnError defines error handling for this step.
-	OnError *StepErrorHandling `json:"on_error,omitempty"`
+	OnError *StepErrorHandling `json:"on_error,omitempty" yaml:"on_error,omitempty"`
 
 	// Elicitation config (for elicitation steps).
-	Message string         `json:"message,omitempty"` // Elicitation message
-	Schema  map[string]any `json:"schema,omitempty"`  // JSON Schema for requested data
-	Timeout Duration       `json:"timeout,omitempty"` // Elicitation timeout
+	Message string         `json:"message,omitempty" yaml:"message,omitempty"`
+	Schema  map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Timeout Duration       `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Elicitation response handlers.
-	OnDecline *ElicitationResponseConfig `json:"on_decline,omitempty"`
-	OnCancel  *ElicitationResponseConfig `json:"on_cancel,omitempty"`
+	OnDecline *ElicitationResponseConfig `json:"on_decline,omitempty" yaml:"on_decline,omitempty"`
+	OnCancel  *ElicitationResponseConfig `json:"on_cancel,omitempty" yaml:"on_cancel,omitempty"`
 
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
@@ -363,19 +363,19 @@ type WorkflowStepConfig struct {
 // StepErrorHandling defines error handling for a workflow step.
 type StepErrorHandling struct {
 	// Action: "abort", "continue", "retry"
-	Action string `json:"action"`
+	Action string `json:"action" yaml:"action"`
 
 	// RetryCount is the number of retry attempts (for retry action).
-	RetryCount int `json:"retry_count,omitempty"`
+	RetryCount int `json:"retry_count,omitempty" yaml:"retry_count,omitempty"`
 
 	// RetryDelay is the initial delay between retries.
-	RetryDelay Duration `json:"retry_delay,omitempty"`
+	RetryDelay Duration `json:"retry_delay,omitempty" yaml:"retry_delay,omitempty"`
 }
 
 // ElicitationResponseConfig defines how to handle elicitation responses.
 type ElicitationResponseConfig struct {
 	// Action: "skip_remaining", "abort", "continue"
-	Action string `json:"action"`
+	Action string `json:"action" yaml:"action"`
 }
 
 // OutputConfig defines the structured output schema for a composite tool workflow.

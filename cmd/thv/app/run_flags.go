@@ -122,23 +122,26 @@ type RunFlags struct {
 
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
-	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	cmd.Flags().StringVar(&config.Transport, "transport", "",
+		"Transport mode (sse, streamable-http or stdio) (default: streamable-http)")
 	cmd.Flags().StringVar(&config.ProxyMode,
 		"proxy-mode",
 		"streamable-http",
-		"Proxy mode for stdio (streamable-http or sse (deprecated, will be removed))")
+		"Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default: streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	cmd.Flags().StringVar(&config.Group, "group", "default",
 		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
-	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
-	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
+	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4,
+		"Host for the HTTP proxy to listen on (IP or hostname) (default: 127.0.0.1)")
+	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0,
+		"Port for the HTTP proxy to listen on (host port) (default: auto-assigned)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
-		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
+		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport) (default: auto-assigned)")
 	cmd.Flags().StringVar(
 		&config.TargetHost,
 		"target-host",
 		transport.LocalhostIPv4,
-		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
+		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default: 127.0.0.1)")
 	cmd.Flags().StringVar(
 		&config.PermissionProfile,
 		"permission-profile",
@@ -167,7 +170,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	)
 	cmd.Flags().StringVar(&config.AuthzConfig, "authz-config", "", "Path to the authorization configuration file")
 	cmd.Flags().StringVar(&config.AuditConfig, "audit-config", "", "Path to the audit configuration file")
-	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false, "Enable audit logging with default configuration")
+	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false,
+		"Enable audit logging with default configuration (default: false)")
 	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "",
 		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
 	cmd.Flags().StringVar(&config.CACertPath, "ca-cert", "", "Path to a custom CA certificate file to use for container builds")
@@ -179,9 +183,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.JWKSAuthTokenFile, "jwks-auth-token-file", "",
 		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
 	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
-		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default: false)")
 	cmd.Flags().BoolVar(&config.InsecureAllowHTTP, "oidc-insecure-allow-http", false,
-		"Allow HTTP (non-HTTPS) OIDC issuers for local development/testing (WARNING: Insecure!)")
+		"Allow HTTP (non-HTTPS) OIDC issuers for local development/testing (WARNING: Insecure!) (default: false)")
 
 	// Remote authentication flags
 	AddRemoteAuthFlags(cmd, &config.RemoteAuthFlags)
@@ -196,16 +200,17 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
 		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
 	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", true,
-		"Enable distributed tracing (when OTLP endpoint is configured)")
+		"Enable distributed tracing (when OTLP endpoint is configured) (default: true)")
 	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", true,
-		"Enable OTLP metrics export (when OTLP endpoint is configured)")
-	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
+		"Enable OTLP metrics export (when OTLP endpoint is configured) (default: true)")
+	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1,
+		"OpenTelemetry trace sampling rate (0.0-1.0) (default: 0.1)")
 	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil,
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
-		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
+		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default: false)")
 	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
-		"Enable Prometheus-style /metrics endpoint on the main transport port")
+		"Enable Prometheus-style /metrics endpoint on the main transport port (default: false)")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
 	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",
@@ -214,11 +219,13 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
-		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
+		"Trust X-Forwarded-* headers from reverse proxies "+
+			"(X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default: false)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
 		"Connect the container to a network (e.g., 'host' for host networking)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
-	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
+	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false,
+		"Run in foreground mode (block until container exits) (default: false)")
 	cmd.Flags().StringArrayVar(
 		&config.ToolsFilter,
 		"tools",
@@ -239,9 +246,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
-		"Load global ignore patterns from ~/.config/toolhive/thvignore")
+		"Load global ignore patterns from ~/.config/toolhive/thvignore (default: true)")
 	cmd.Flags().BoolVar(&config.PrintOverlays, "print-resolved-overlays", false,
-		"Debug: show resolved container paths for tmpfs overlays")
+		"Debug: show resolved container paths for tmpfs overlays (default: false)")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration

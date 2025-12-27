@@ -112,6 +112,22 @@ func NewBackendToolWithStructuredResponse(
 	}
 }
 
+// NewBackendToolWithSchema creates a BackendTool with a custom InputSchema.
+// Use this when the backend tool needs to validate specific parameter types,
+// which is essential for testing type coercion in composite tools.
+func NewBackendToolWithSchema(
+	name, description string,
+	inputSchema mcp.ToolInputSchema,
+	handler func(ctx context.Context, args map[string]any) string,
+) BackendTool {
+	return BackendTool{
+		Name:        name,
+		Description: description,
+		InputSchema: inputSchema,
+		Handler:     handler,
+	}
+}
+
 // contextKey is a private type for context keys to avoid collisions.
 type contextKey string
 

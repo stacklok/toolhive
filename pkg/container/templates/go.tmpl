@@ -72,7 +72,7 @@ RUN package="{{.MCPPackage}}"; \
 {{end}}
 
 # Final stage - minimal runtime image
-FROM alpine:3.22
+FROM alpine:3.23
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime

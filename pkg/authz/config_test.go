@@ -12,8 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
+
+// mustNewConfig creates a new Config from a cedar.Config or fails the test.
+func mustNewConfig(t *testing.T, fullConfig interface{}) *Config {
+	t.Helper()
+	config, err := NewConfig(fullConfig)
+	require.NoError(t, err, "Failed to create config")
+	return config
+}
 
 func TestLoadConfig(t *testing.T) {
 	t.Parallel()
@@ -22,17 +31,16 @@ func TestLoadConfig(t *testing.T) {
 	require.NoError(t, err, "Failed to create temporary file")
 	defer os.Remove(tempFile.Name())
 
-	// Create a valid configuration
-	config := Config{
+	// Create a valid configuration using the v1.0 schema
+	cedarConfig := cedar.Config{
 		Version: "1.0",
-		Type:    ConfigTypeCedarV1,
-		Cedar: &CedarConfig{
-			Policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-			},
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
 			EntitiesJSON: "[]",
 		},
 	}
+	config := mustNewConfig(t, cedarConfig)
 
 	// Marshal the configuration to JSON
 	configJSON, err := json.MarshalIndent(config, "", "  ")
@@ -50,8 +58,56 @@ func TestLoadConfig(t *testing.T) {
 	// Check if the loaded configuration matches the original configuration
 	assert.Equal(t, config.Version, loadedConfig.Version, "Version does not match")
 	assert.Equal(t, config.Type, loadedConfig.Type, "Type does not match")
-	assert.Equal(t, config.Cedar.Policies, loadedConfig.Cedar.Policies, "Policies do not match")
-	assert.Equal(t, config.Cedar.EntitiesJSON, loadedConfig.Cedar.EntitiesJSON, "EntitiesJSON does not match")
+
+	// Verify the raw config can be parsed back to the cedar config structure
+	var loadedCedarConfig cedar.Config
+	err = json.Unmarshal(loadedConfig.RawConfig(), &loadedCedarConfig)
+	require.NoError(t, err, "Failed to unmarshal loaded config")
+	require.NotNil(t, loadedCedarConfig.Options, "Cedar config should not be nil")
+	assert.Equal(t, cedarConfig.Options.Policies, loadedCedarConfig.Options.Policies, "Policies do not match")
+	assert.Equal(t, cedarConfig.Options.EntitiesJSON, loadedCedarConfig.Options.EntitiesJSON, "EntitiesJSON does not match")
+}
+
+func TestLoadConfigLegacyFormat(t *testing.T) {
+	t.Parallel()
+	// Create a temporary file with a legacy configuration format (v1.0 schema)
+	tempFile, err := os.CreateTemp("", "authz-config-legacy-*.json")
+	require.NoError(t, err, "Failed to create temporary file")
+	defer os.Remove(tempFile.Name())
+
+	// Create a v1.0 configuration with "cedar" field - this IS the supported format
+	legacyConfig := map[string]interface{}{
+		"version": "1.0",
+		"type":    "cedarv1",
+		"cedar": map[string]interface{}{
+			"policies":      []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
+			"entities_json": "[]",
+		},
+	}
+
+	// Marshal the configuration to JSON
+	configJSON, err := json.MarshalIndent(legacyConfig, "", "  ")
+	require.NoError(t, err, "Failed to marshal configuration to JSON")
+
+	// Write the configuration to the temporary file
+	_, err = tempFile.Write(configJSON)
+	require.NoError(t, err, "Failed to write configuration to temporary file")
+	tempFile.Close()
+
+	// Load the configuration from the temporary file
+	loadedConfig, err := LoadConfig(tempFile.Name())
+	require.NoError(t, err, "Failed to load configuration from file")
+
+	// Check if the loaded configuration has the expected values
+	assert.Equal(t, "1.0", loadedConfig.Version, "Version does not match")
+	assert.Equal(t, ConfigType("cedarv1"), loadedConfig.Type, "Type does not match")
+
+	// Verify the raw config can be parsed with Cedar's config
+	var loadedCedarConfig cedar.Config
+	err = json.Unmarshal(loadedConfig.RawConfig(), &loadedCedarConfig)
+	require.NoError(t, err, "Failed to unmarshal loaded config")
+	require.NotNil(t, loadedCedarConfig.Options, "Cedar config should not be nil")
+	assert.Equal(t, []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`}, loadedCedarConfig.Options.Policies)
 }
 
 func TestLoadConfigPathTraversal(t *testing.T) {
@@ -115,76 +171,65 @@ func TestValidateConfig(t *testing.T) {
 	}{
 		{
 			name: "Valid configuration",
-			config: &Config{
+			config: mustNewConfig(t, cedar.Config{
 				Version: "1.0",
-				Type:    ConfigTypeCedarV1,
-				Cedar: &CedarConfig{
-					Policies: []string{
-						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-					},
+				Type:    cedar.ConfigType,
+				Options: &cedar.ConfigOptions{
+					Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
 					EntitiesJSON: "[]",
 				},
-			},
+			}),
 			expectError: false,
 		},
 		{
 			name: "Missing version",
-			config: &Config{
-				Type: ConfigTypeCedarV1,
-				Cedar: &CedarConfig{
-					Policies: []string{
-						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-					},
+			config: mustNewConfig(t, cedar.Config{
+				Type: cedar.ConfigType,
+				Options: &cedar.ConfigOptions{
+					Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
 					EntitiesJSON: "[]",
 				},
-			},
+			}),
 			expectError: true,
 		},
 		{
 			name: "Missing type",
-			config: &Config{
+			config: mustNewConfig(t, cedar.Config{
 				Version: "1.0",
-				Cedar: &CedarConfig{
-					Policies: []string{
-						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-					},
+				Options: &cedar.ConfigOptions{
+					Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
 					EntitiesJSON: "[]",
 				},
-			},
+			}),
 			expectError: true,
 		},
 		{
 			name: "Unsupported type",
-			config: &Config{
-				Version: "1.0",
-				Type:    "unsupported",
-				Cedar: &CedarConfig{
-					Policies: []string{
-						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-					},
-					EntitiesJSON: "[]",
-				},
-			},
+			config: mustNewConfig(t, map[string]interface{}{
+				"version": "1.0",
+				"type":    "unsupported",
+			}),
 			expectError: true,
 		},
 		{
 			name: "Missing Cedar configuration",
-			config: &Config{
-				Version: "1.0",
-				Type:    ConfigTypeCedarV1,
-			},
+			config: mustNewConfig(t, map[string]interface{}{
+				"version": "1.0",
+				"type":    cedar.ConfigType,
+				// No "cedar" field
+			}),
 			expectError: true,
 		},
 		{
 			name: "Empty policies",
-			config: &Config{
+			config: mustNewConfig(t, cedar.Config{
 				Version: "1.0",
-				Type:    ConfigTypeCedarV1,
-				Cedar: &CedarConfig{
+				Type:    cedar.ConfigType,
+				Options: &cedar.ConfigOptions{
 					Policies:     []string{},
 					EntitiesJSON: "[]",
 				},
-			},
+			}),
 			expectError: true,
 		},
 	}
@@ -204,20 +249,18 @@ func TestValidateConfig(t *testing.T) {
 
 func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
-	// Create a valid configuration
-	config := &Config{
+	// Create a valid configuration using the v1.0 schema
+	config := mustNewConfig(t, cedar.Config{
 		Version: "1.0",
-		Type:    ConfigTypeCedarV1,
-		Cedar: &CedarConfig{
-			Policies: []string{
-				`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-			},
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
 			EntitiesJSON: "[]",
 		},
-	}
+	})
 
 	// Create the middleware
-	middleware, err := config.CreateMiddleware()
+	middleware, err := CreateMiddlewareFromConfig(config, "testmodule")
 	require.NoError(t, err, "Failed to create middleware")
 	require.NotNil(t, middleware, "Middleware is nil")
 
@@ -261,4 +304,134 @@ func TestCreateMiddleware(t *testing.T) {
 
 	// Check the response
 	assert.Equal(t, http.StatusOK, rr.Code, "Response status code does not match expected")
+}
+
+func TestNewConfig(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		fullConfig   interface{}
+		expectError  bool
+		expectedType ConfigType
+	}{
+		{
+			name: "Valid Cedar config",
+			fullConfig: cedar.Config{
+				Version: "1.0",
+				Type:    cedar.ConfigType,
+				Options: &cedar.ConfigOptions{
+					Policies:     []string{`permit(principal, action, resource);`},
+					EntitiesJSON: "[]",
+				},
+			},
+			expectError:  false,
+			expectedType: ConfigType(cedar.ConfigType),
+		},
+		{
+			name: "Config as map",
+			fullConfig: map[string]interface{}{
+				"version": "1.0",
+				"type":    cedar.ConfigType,
+				"cedar": map[string]interface{}{
+					"policies":      []string{`permit(principal, action, resource);`},
+					"entities_json": "[]",
+				},
+			},
+			expectError:  false,
+			expectedType: ConfigType(cedar.ConfigType),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			config, err := NewConfig(tc.fullConfig)
+			if tc.expectError {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedType, config.Type)
+			assert.NotEmpty(t, config.RawConfig())
+		})
+	}
+}
+
+func TestGetMiddlewareFromFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Valid config file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file with a valid configuration
+		tempFile, err := os.CreateTemp("", "authz-middleware-*.json")
+		require.NoError(t, err)
+		defer os.Remove(tempFile.Name())
+
+		// Create a valid configuration using the v1.0 schema
+		cedarConfig := cedar.Config{
+			Version: "1.0",
+			Type:    cedar.ConfigType,
+			Options: &cedar.ConfigOptions{
+				Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
+				EntitiesJSON: "[]",
+			},
+		}
+		config := mustNewConfig(t, cedarConfig)
+
+		// Marshal and write the configuration
+		configJSON, err := json.Marshal(config)
+		require.NoError(t, err)
+		_, err = tempFile.Write(configJSON)
+		require.NoError(t, err)
+		tempFile.Close()
+
+		// Get middleware from file
+		middleware, err := GetMiddlewareFromFile("testserver", tempFile.Name())
+		require.NoError(t, err)
+		require.NotNil(t, middleware)
+	})
+
+	t.Run("Non-existent file", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := GetMiddlewareFromFile("testserver", "/nonexistent/path/config.json")
+		assert.Error(t, err)
+	})
+
+	t.Run("Invalid config file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file with invalid configuration
+		tempFile, err := os.CreateTemp("", "authz-middleware-invalid-*.json")
+		require.NoError(t, err)
+		defer os.Remove(tempFile.Name())
+
+		// Write invalid JSON
+		_, err = tempFile.WriteString(`{"invalid": "config"}`)
+		require.NoError(t, err)
+		tempFile.Close()
+
+		// Get middleware from file should fail
+		_, err = GetMiddlewareFromFile("testserver", tempFile.Name())
+		assert.Error(t, err)
+	})
+}
+
+func TestCreateMiddlewareFromConfigErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Unsupported config type", func(t *testing.T) {
+		t.Parallel()
+
+		config := &Config{
+			Version: "1.0",
+			Type:    "unsupported-type",
+		}
+
+		_, err := CreateMiddlewareFromConfig(config, "testserver")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported configuration type")
+	})
 }

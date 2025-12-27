@@ -16,6 +16,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -481,12 +482,14 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			// Verify authorization configuration
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
 			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
-			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigTypeCedarV1))
-			Expect(runConfig.AuthzConfig.Cedar).NotTo(BeNil())
-			Expect(runConfig.AuthzConfig.Cedar.Policies).To(HaveLen(2))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("call_tool"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[1]).To(ContainSubstring("get_prompt"))
-			Expect(runConfig.AuthzConfig.Cedar.EntitiesJSON).To(ContainSubstring("user1"))
+			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
+
+			cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cedarCfg.Options.Policies).To(HaveLen(2))
+			Expect(cedarCfg.Options.Policies[0]).To(ContainSubstring("call_tool"))
+			Expect(cedarCfg.Options.Policies[1]).To(ContainSubstring("get_prompt"))
+			Expect(cedarCfg.Options.EntitiesJSON).To(ContainSubstring("user1"))
 		})
 
 		It("Should handle deterministic ConfigMap generation", func() {
@@ -795,26 +798,27 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			// Verify authorization configuration was embedded from external ConfigMap
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
 			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
-			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigTypeCedarV1))
+			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
 
 			// Verify Cedar configuration
-			Expect(runConfig.AuthzConfig.Cedar).NotTo(BeNil())
+			cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Check policies are present
-			Expect(runConfig.AuthzConfig.Cedar.Policies).To(HaveLen(3))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("call_tool"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("weather"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[1]).To(ContainSubstring("get_prompt"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[1]).To(ContainSubstring("greeting"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[2]).To(ContainSubstring("forbid"))
-			Expect(runConfig.AuthzConfig.Cedar.Policies[2]).To(ContainSubstring("sensitive_data"))
+			Expect(cedarCfg.Options.Policies).To(HaveLen(3))
+			Expect(cedarCfg.Options.Policies[0]).To(ContainSubstring("call_tool"))
+			Expect(cedarCfg.Options.Policies[0]).To(ContainSubstring("weather"))
+			Expect(cedarCfg.Options.Policies[1]).To(ContainSubstring("get_prompt"))
+			Expect(cedarCfg.Options.Policies[1]).To(ContainSubstring("greeting"))
+			Expect(cedarCfg.Options.Policies[2]).To(ContainSubstring("forbid"))
+			Expect(cedarCfg.Options.Policies[2]).To(ContainSubstring("sensitive_data"))
 
 			// Verify entities are embedded
-			Expect(runConfig.AuthzConfig.Cedar.EntitiesJSON).NotTo(BeEmpty())
+			Expect(cedarCfg.Options.EntitiesJSON).NotTo(BeEmpty())
 
 			// Parse entities to verify they're correctly embedded
 			var entities []interface{}
-			err = json.Unmarshal([]byte(runConfig.AuthzConfig.Cedar.EntitiesJSON), &entities)
+			err = json.Unmarshal([]byte(cedarCfg.Options.EntitiesJSON), &entities)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entities).To(HaveLen(2))
 

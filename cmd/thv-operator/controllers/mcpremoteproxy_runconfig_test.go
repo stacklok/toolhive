@@ -30,6 +30,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -158,10 +159,12 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "authz-proxy", config.Name)
 				assert.NotNil(t, config.AuthzConfig)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				assert.NotNil(t, config.AuthzConfig.Cedar)
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "tools/list")
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
+
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies[0], "tools/list")
 			},
 		},
 		{

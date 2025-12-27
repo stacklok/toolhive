@@ -61,12 +61,16 @@ func validateStopArgs(cmd *cobra.Command, args []string) error {
 	if all || group != "" {
 		// If --all or --group is set, no arguments should be provided
 		if len(args) > 0 {
-			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
+			return fmt.Errorf(
+				"no arguments should be provided when --all or --group flag is set. " +
+					"Hint: remove the workload names or remove the flag")
 		}
 	} else {
 		// If neither --all nor --group is set, at least one argument should be provided
 		if len(args) < 1 {
-			return fmt.Errorf("at least one workload name must be provided")
+			return fmt.Errorf(
+				"at least one workload name must be provided. " +
+					"Hint: use 'thv list' to see available workloads, or use --all to stop all")
 		}
 	}
 
@@ -164,7 +168,7 @@ func stopWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager
 		return fmt.Errorf("failed to check if group '%s' exists: %w", groupName, err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Get list of running workloads and filter by group

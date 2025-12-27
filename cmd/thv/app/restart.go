@@ -45,11 +45,15 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	// Validate arguments - check mutual exclusivity with positional arguments
 	// Cobra already handles mutual exclusivity between --all and --group
 	if (restartAll || restartGroup != "") && len(args) > 0 {
-		return fmt.Errorf("cannot specify both flags and workload name")
+		return fmt.Errorf(
+			"cannot specify both flags and workload name. " +
+				"Hint: remove the workload name or remove the --all/--group flag")
 	}
 
 	if !restartAll && restartGroup == "" && len(args) == 0 {
-		return fmt.Errorf("must specify either --all flag, --group flag, or workload name")
+		return fmt.Errorf(
+			"must specify either --all flag, --group flag, or workload name. " +
+				"Hint: use 'thv list' to see available workloads")
 	}
 
 	// Create workload managers.
@@ -116,7 +120,7 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 		return fmt.Errorf("failed to check if group '%s' exists: %w", groupName, err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Get all workload names in the group

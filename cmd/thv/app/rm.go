@@ -56,12 +56,16 @@ func validateRmArgs(cmd *cobra.Command, args []string) error {
 	if all || group != "" {
 		// If --all or --group is set, no arguments should be provided
 		if len(args) > 0 {
-			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
+			return fmt.Errorf(
+				"no arguments should be provided when --all or --group flag is set. " +
+					"Hint: remove the workload names or remove the flag")
 		}
 	} else {
 		// If neither --all nor --group is set, at least one argument should be provided
 		if len(args) < 1 {
-			return fmt.Errorf("at least one workload name must be provided")
+			return fmt.Errorf(
+				"at least one workload name must be provided. " +
+					"Hint: use 'thv list' to see available workloads, or use --all to remove all")
 		}
 	}
 
@@ -159,7 +163,7 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Create workload manager

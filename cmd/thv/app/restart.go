@@ -18,10 +18,12 @@ var (
 )
 
 var restartCmd = &cobra.Command{
-	Use:   "restart [workload-name]",
-	Short: "Restart a tooling server",
-	Long: `Restart a running tooling server managed by ToolHive.
+	Use:     "start [workload-name]",
+	Aliases: []string{"restart"},
+	Short:   "Start (resume) a tooling server",
+	Long: `Start (or resume) a tooling server managed by ToolHive.
 If the server is not running, it will be started.
+The alias "thv restart" is kept for backward compatibility.
 Supports both container-based and remote MCP servers.`,
 	Args:              cobra.RangeArgs(0, 1),
 	RunE:              restartCmdFunc,

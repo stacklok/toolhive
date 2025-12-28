@@ -1,0 +1,49 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-pod-annotations
+spec:
+  description: |
+    Tests that MCPServer.spec.podTemplateSpec annotations are correctly applied
+    to the MCP server StatefulSet's pod template.
+    
+    This test demonstrates a bug where annotations specified in PodTemplateSpec
+    are NOT being applied to the MCP server pods.
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 30s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-pod-annotations"
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: deploy-mcpserver-with-annotations
+    description: Deploy MCPServer with custom annotations in PodTemplateSpec
+    try:
+    - apply:
+        file: mcpserver.yaml
+    - assert:
+        file: mcpserver.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-proxy-runner-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+
+  - name: verify-pod-annotations
+    description: |
+      Verify that custom annotations from PodTemplateSpec are applied to the StatefulSet.
+      THIS TEST IS EXPECTED TO FAIL due to the bug in applyPodTemplatePatch.
+    try:
+    - assert:
+        file: assert-pod-annotations.yaml
+

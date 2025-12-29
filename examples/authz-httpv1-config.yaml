@@ -1,0 +1,17 @@
+# HTTP PDP Authorization Configuration
+#
+# This example shows how to configure ToolHive to use an HTTP-based
+# Policy Decision Point (PDP) for authorization. This is compatible
+# with any PDP that implements the PORC-based decision endpoint.
+#
+# Start your PDP server (e.g., on port 9000), then start ToolHive with:
+#   thv run --authz-config authz-httpv1-config.yaml ...
+#
+version: "1.0"
+type: httpv1
+pdp:
+  mode: http
+  http:
+    url: "http://localhost:9000"
+    timeout: 30                    # Request timeout in seconds (default: 30)
+    insecure_skip_verify: false    # Skip TLS certificate verification (default: false)

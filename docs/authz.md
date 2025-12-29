@@ -28,14 +28,15 @@ The authorization framework consists of the following components:
 
 ### Available authorizers
 
-Currently, ToolHive provides the following authorizer implementation:
+ToolHive provides the following authorizer implementations:
 
-| Type | Description |
-|------|-------------|
+| Type | Description                                                                                      |
+|------|--------------------------------------------------------------------------------------------------|
 | `cedarv1` | Authorization using [Cedar](https://www.cedarpolicy.com/), a policy language developed by Amazon |
+| `httpv1` | Authorization using an external HTTP-based Policy Decision Point (PDP) with PORC model           |
 
-The framework is designed to support additional authorizers in the future (e.g.,
-OPA, Casbin, or custom implementations).
+The framework is designed to support additional authorizers (e.g., OPA, Casbin,
+or custom implementations).
 
 ## How it works
 
@@ -365,6 +366,157 @@ Cedar policies are evaluated in the following order:
 3. If no policy matches, the request is denied (default deny).
 
 This means that `forbid` policies take precedence over `permit` policies.
+
+---
+
+## HTTP PDP authorizer (`httpv1`)
+
+The HTTP PDP authorizer provides authorization using an external HTTP-based Policy
+Decision Point (PDP). This is a general-purpose authorizer that can work with
+any PDP server that implements the PORC (Principal-Operation-Resource-Context)
+decision endpoint.
+
+### HTTP PDP configuration
+
+The authorizer connects to a remote PDP server via HTTP. This allows you to
+share a single PDP across multiple services or run the PDP as a sidecar service.
+
+#### YAML format
+
+```yaml
+version: "1.0"
+type: httpv1
+pdp:
+  http:
+    url: "http://localhost:9000"
+    timeout: 30  # Optional, timeout in seconds (default: 30)
+    insecure_skip_verify: false  # Optional, skip TLS verification (default: false)
+```
+
+#### JSON format
+
+```json
+{
+  "version": "1.0",
+  "type": "httpv1",
+  "pdp": {
+    "http": {
+      "url": "http://localhost:9000",
+      "timeout": 30,
+      "insecure_skip_verify": false
+    }
+  }
+}
+```
+
+The configuration fields are:
+
+- `pdp.http.url`: The base URL of the PDP server (required)
+- `pdp.http.timeout`: HTTP request timeout in seconds (default: 30)
+- `pdp.http.insecure_skip_verify`: Skip TLS certificate verification (default: false)
+
+### Context configuration
+
+The context configuration controls what MCP-specific information is included in
+the PORC `context` object. By default, no MCP context is included. You can enable
+specific context fields based on your policy requirements.
+
+```yaml
+version: "1.0"
+type: httpv1
+pdp:
+  http:
+    url: "http://localhost:9000"
+  context:
+    include_args: true       # Include tool/prompt arguments in context.mcp.args
+    include_operation: true  # Include feature, operation, and resource_id in context.mcp
+```
+
+The context configuration fields are:
+
+- `pdp.context.include_args`: When `true`, includes tool/prompt arguments in
+  `context.mcp.args`. Default is `false`.
+- `pdp.context.include_operation`: When `true`, includes MCP operation metadata
+  (`feature`, `operation`, `resource_id`) in `context.mcp`. Default is `false`.
+
+**Important**: If your policies reference `input.context.mcp.*` fields (such as
+`input.context.mcp.resource_id` for determining public tools/resources), you must
+enable the corresponding context option. Otherwise, those fields will not be
+present in the PORC and your policies will not work as expected.
+
+### PORC mapping
+
+The HTTP PDP authorizer uses the PORC (Principal-Operation-Resource-Context)
+model for authorization decisions. ToolHive automatically maps MCP requests to
+PORC:
+
+| MCP Concept | PORC Field | Format |
+|-------------|------------|--------|
+| Client identity | `principal.sub` | From JWT `sub` claim |
+| Roles | `principal.mroles` | From JWT `roles` or `mroles` claim |
+| Groups | `principal.mgroups` | From JWT `groups` or `mgroups` claim |
+| Scopes | `principal.scopes` | From JWT `scope` or `scopes` claim |
+| MCP operation | `operation` | `mcp:<feature>:<operation>` (e.g., `mcp:tool:call`) |
+| MCP resource | `resource` | `mrn:mcp:<server>:<feature>:<id>` (e.g., `mrn:mcp:myserver:tool:weather`) |
+| MCP feature | `context.mcp.feature` | The MCP feature type - requires `include_operation: true` |
+| MCP operation type | `context.mcp.operation` | The MCP operation - requires `include_operation: true` |
+| MCP resource ID | `context.mcp.resource_id` | The resource identifier - requires `include_operation: true` |
+| Tool arguments | `context.mcp.args` | Tool/prompt arguments - requires `include_args: true` |
+
+### Example PORC expression
+
+When a client calls the `weather` tool with `location: "New York"`, and both
+`include_operation` and `include_args` are enabled, the resulting PORC expression
+looks like:
+
+```json
+{
+  "principal": {
+    "sub": "user@example.com",
+    "mroles": ["developer"],
+    "mgroups": ["engineering"],
+    "scopes": ["read", "write"]
+  },
+  "operation": "mcp:tool:call",
+  "resource": "mrn:mcp:myserver:tool:weather",
+  "context": {
+    "mcp": {
+      "feature": "tool",
+      "operation": "call",
+      "resource_id": "weather",
+      "args": { "location": "New York" }
+    }
+  }
+}
+```
+
+If no context options are enabled (the default), the `context` object will be empty.
+
+### PDP API contract
+
+The HTTP PDP authorizer expects the PDP server to implement the following endpoint:
+
+**POST /decision**
+
+Request body: A JSON PORC object (see example above)
+
+Response body:
+```json
+{
+  "allow": true
+}
+```
+
+The `allow` field should be `true` to permit the request, or `false` to deny it.
+
+### Compatible PDP servers
+
+The HTTP PDP authorizer is compatible with any PDP server that implements the
+PORC-based decision endpoint, including:
+
+- [Manetu PolicyEngine (MPE)](https://manetu.github.io/policyengine) - A policy
+  engine built on OPA with multi-phase evaluation
+- Custom PDP implementations that follow the API contract above
 
 ---
 

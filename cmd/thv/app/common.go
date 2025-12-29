@@ -12,6 +12,48 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
+// ValidFormats contains the list of valid output formats.
+var ValidFormats = []string{FormatJSON, FormatText}
+
+// AddFormatFlag adds the --format flag to a command with text as the default value.
+// The flag controls the output format (json or text).
+func AddFormatFlag(cmd *cobra.Command, formatVar *string) {
+	cmd.Flags().StringVarP(formatVar, "format", "f", FormatText, "Output format (json or text)")
+}
+
+// ValidateFormat checks if the provided format is valid (json or text).
+// Returns an error if the format is not recognized.
+func ValidateFormat(format string) error {
+	switch format {
+	case FormatJSON, FormatText:
+		return nil
+	default:
+		return fmt.Errorf("invalid format %q: must be one of %v", format, ValidFormats)
+	}
+}
+
+// ValidateFormatFlag returns a cobra PreRunE-compatible function that validates the format flag.
+func ValidateFormatFlag(formatVar *string) func(cmd *cobra.Command, args []string) error {
+	return func(_ *cobra.Command, _ []string) error {
+		return ValidateFormat(*formatVar)
+	}
+}
+
+// ChainPreRunE chains multiple PreRunE functions together.
+// This allows combining multiple validators (e.g., format validation and group validation).
+func ChainPreRunE(funcs ...func(cmd *cobra.Command, args []string) error) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		for _, f := range funcs {
+			if f != nil {
+				if err := f(cmd, args); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+}
+
 // AddOIDCFlags adds OIDC validation flags to the provided command.
 func AddOIDCFlags(cmd *cobra.Command) {
 	cmd.Flags().String("oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")

@@ -29,18 +29,20 @@ const (
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
 type HTTPTransport struct {
-	transportType     types.TransportType
-	host              string
-	proxyPort         int
-	targetPort        int
-	targetHost        string
-	containerName     string
-	targetURI         string
-	deployer          rt.Deployer
-	debug             bool
-	middlewares       []types.NamedMiddleware
-	prometheusHandler http.Handler
-	authInfoHandler   http.Handler
+	transportType          types.TransportType
+	host                   string
+	proxyPort              int
+	targetPort             int
+	targetHost             string
+	containerName          string
+	targetURI              string
+	deployer               rt.Deployer
+	debug                  bool
+	middlewares            []types.NamedMiddleware
+	prometheusHandler      http.Handler
+	authInfoHandler        http.Handler
+	authServerMux          http.Handler
+	authServerWellKnownMux http.Handler
 
 	// Remote MCP server support
 	remoteURL string
@@ -80,6 +82,8 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
+	authServerMux http.Handler,
+	authServerWellKnownMux http.Handler,
 	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
@@ -92,17 +96,19 @@ func NewHTTPTransport(
 	}
 
 	return &HTTPTransport{
-		transportType:     transportType,
-		host:              host,
-		proxyPort:         proxyPort,
-		middlewares:       middlewares,
-		targetPort:        targetPort,
-		targetHost:        targetHost,
-		deployer:          deployer,
-		debug:             debug,
-		prometheusHandler: prometheusHandler,
-		authInfoHandler:   authInfoHandler,
-		shutdownCh:        make(chan struct{}),
+		transportType:          transportType,
+		host:                   host,
+		proxyPort:              proxyPort,
+		middlewares:            middlewares,
+		targetPort:             targetPort,
+		targetHost:             targetHost,
+		deployer:               deployer,
+		debug:                  debug,
+		prometheusHandler:      prometheusHandler,
+		authInfoHandler:        authInfoHandler,
+		authServerMux:          authServerMux,
+		authServerWellKnownMux: authServerWellKnownMux,
+		shutdownCh:             make(chan struct{}),
 	}
 }
 
@@ -213,6 +219,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
+		t.authServerMux,
+		t.authServerWellKnownMux,
 		true,
 		t.remoteURL != "",
 		string(t.transportType),

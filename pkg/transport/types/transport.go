@@ -208,6 +208,15 @@ type Config struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
+
+	// AuthServerMux is an optional HTTP handler for the embedded OAuth authorization server.
+	// If provided, it will be mounted at /oauth/* paths.
+	AuthServerMux http.Handler
+
+	// AuthServerWellKnownMux is an optional HTTP handler for the embedded OAuth authorization server's
+	// well-known endpoints. If provided, it will be mounted at /.well-known/* paths, taking precedence
+	// over the default well-known handler (authInfoHandler).
+	AuthServerWellKnownMux http.Handler
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

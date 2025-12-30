@@ -25,7 +25,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "streamable-http", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, nil, true, false, "streamable-http", nil)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -82,7 +82,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, nil, false, false, "streamable-http", nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -108,7 +108,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, nil, false, false, "streamable-http", nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -148,7 +148,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil)
+	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, nil, nil, false, false, "", nil)
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
@@ -357,7 +357,7 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, nil, nil, false, false, "sse", nil)
 
 	ctx := context.Background()
 
@@ -385,7 +385,7 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy but don't start it
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, nil, nil, false, false, "sse", nil)
 
 	ctx := context.Background()
 

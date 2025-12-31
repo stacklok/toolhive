@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -118,6 +119,16 @@ type RunFlags struct {
 	// Remote authentication
 	RemoteAuthFlags RemoteAuthFlags
 	OAuthParams     map[string]string
+
+	// Auth Server (embedded OAuth authorization server for testing)
+	AuthServer                         bool
+	AuthServerIssuer                   string
+	AuthServerSigningKey               string
+	AuthServerUpstreamIssuer           string
+	AuthServerUpstreamClientID         string
+	AuthServerUpstreamClientSecret     string
+	AuthServerUpstreamClientSecretFile string
+	AuthServerUpstreamScopes           []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -242,6 +253,25 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Load global ignore patterns from ~/.config/toolhive/thvignore")
 	cmd.Flags().BoolVar(&config.PrintOverlays, "print-resolved-overlays", false,
 		"Debug: show resolved container paths for tmpfs overlays")
+
+	// Auth Server flags (embedded OAuth authorization server for testing)
+	cmd.Flags().BoolVar(&config.AuthServer, "auth-server", false,
+		"Enable embedded OAuth authorization server (for testing)")
+	cmd.Flags().StringVar(&config.AuthServerIssuer, "auth-server-issuer", "",
+		"Issuer URL for the auth server (default: http://localhost:{port})")
+	cmd.Flags().StringVar(&config.AuthServerSigningKey, "auth-server-signing-key", "",
+		"Path to RSA private key (PEM) for signing tokens")
+	cmd.Flags().StringVar(&config.AuthServerUpstreamIssuer, "auth-server-upstream-issuer", "",
+		"Upstream IDP issuer URL (e.g., https://accounts.google.com)")
+	cmd.Flags().StringVar(&config.AuthServerUpstreamClientID, "auth-server-upstream-client-id", "",
+		"Upstream IDP client ID")
+	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecret, "auth-server-upstream-client-secret", "",
+		"Upstream IDP client secret")
+	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecretFile, "auth-server-upstream-client-secret-file", "",
+		"Path to file containing the upstream OAuth client secret")
+	cmd.Flags().StringSliceVar(&config.AuthServerUpstreamScopes, "auth-server-upstream-scopes",
+		[]string{"openid", "email"},
+		"Scopes to request from upstream IDP")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
@@ -472,6 +502,15 @@ func buildRunnerConfig(
 			return nil, fmt.Errorf("failed to load tools override: %w", err)
 		}
 		toolsOverride = *loadedToolsOverride
+	}
+
+	// Create auth server config if enabled
+	if runFlags.AuthServer {
+		authServerCfg, err := buildAuthServerConfig(runFlags)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build auth server config: %w", err)
+		}
+		opts = append(opts, runner.WithAuthServerRunConfig(authServerCfg))
 	}
 
 	// Configure middleware and additional options
@@ -904,3 +943,54 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		CustomAttributes:            customAttrs,
 	}
 }
+<<<<<<< HEAD
+=======
+
+// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
+func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
+	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+}
+
+// buildAuthServerConfig creates an authserver.RunConfig from CLI flags.
+// The config is later used by the runner to create the auth server handlers.
+func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
+	// Build upstream config if upstream IDP is configured
+	var upstream *authserver.RunUpstreamConfig
+	if runFlags.AuthServerUpstreamIssuer != "" {
+		upstream = &authserver.RunUpstreamConfig{
+			Issuer:           runFlags.AuthServerUpstreamIssuer,
+			ClientID:         runFlags.AuthServerUpstreamClientID,
+			ClientSecret:     runFlags.AuthServerUpstreamClientSecret,
+			ClientSecretFile: runFlags.AuthServerUpstreamClientSecretFile,
+			Scopes:           runFlags.AuthServerUpstreamScopes,
+		}
+	}
+
+	// Build the config
+	authServerCfg := &authserver.RunConfig{
+		Enabled:        true,
+		Issuer:         runFlags.AuthServerIssuer,
+		SigningKeyPath: runFlags.AuthServerSigningKey,
+		Upstream:       upstream,
+		// Register a default test client
+		Clients: []authserver.RunClientConfig{{
+			ID:           "test",
+			RedirectURIs: []string{"http://localhost:9999/callback"},
+			Public:       true,
+		}},
+	}
+
+	// Validate signing key is provided
+	if authServerCfg.SigningKeyPath == "" {
+		return nil, fmt.Errorf("--auth-server-signing-key is required when --auth-server is enabled")
+	}
+
+	// When issuer is empty and proxy port is 0, we cannot determine the issuer.
+	// We use a placeholder :0 that the factory will resolve when the actual port is known.
+	if authServerCfg.Issuer == "" {
+		authServerCfg.Issuer = "http://localhost:0"
+	}
+
+	return authServerCfg, nil
+}
+>>>>>>> 1c13faaf (Add CLI auth server flags)

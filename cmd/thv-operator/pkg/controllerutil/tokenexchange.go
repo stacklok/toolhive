@@ -116,6 +116,8 @@ func AddExternalAuthConfigOptions(
 		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
 		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeOAuth:
+		return addOAuthConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No config to add for unauthenticated
 		return nil

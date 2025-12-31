@@ -450,6 +450,14 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
+	case mcpv1alpha1.ExternalAuthTypeOAuth:
+		if externalAuthConfig.Spec.OAuth == nil {
+			return nil, nil
+		}
+		// OAuth uses upstream client secret
+		envVarName = ctrlutil.OAuthUpstreamClientSecretEnvVar
+		secretRef = &externalAuthConfig.Spec.OAuth.Upstream.ClientSecretRef
+
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
 		return nil, nil

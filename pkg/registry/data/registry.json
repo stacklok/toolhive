@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-30T00:18:53Z",
+  "last_updated": "2025-12-31T00:19:37Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -365,7 +365,7 @@
         "server",
         "data-center"
       ],
-      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.10",
+      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.12",
       "permissions": {
         "network": {
           "outbound": {
@@ -691,9 +691,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 7490,
+        "stars": 7742,
         "pulls": 8179,
-        "last_updated": "2025-11-29T02:32:19Z"
+        "last_updated": "2025-12-30T02:37:53Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1820,9 +1820,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 73543,
+        "stars": 75209,
         "pulls": 20619,
-        "last_updated": "2025-11-30T02:39:09Z"
+        "last_updated": "2025-12-30T02:37:53Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1861,9 +1861,9 @@
         "firecrawl_search"
       ],
       "metadata": {
-        "stars": 5003,
+        "stars": 5145,
         "pulls": 12644,
-        "last_updated": "2025-11-30T02:39:10Z"
+        "last_updated": "2025-12-30T02:37:53Z"
       },
       "repository_url": "https://github.com/firecrawl/firecrawl-mcp-server",
       "tags": [
@@ -1994,9 +1994,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 73543,
+        "stars": 75209,
         "pulls": 10404,
-        "last_updated": "2025-11-30T02:39:10Z"
+        "last_updated": "2025-12-30T02:37:53Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -4023,9 +4023,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 73543,
+        "stars": 75209,
         "pulls": 15854,
-        "last_updated": "2025-11-30T02:39:10Z"
+        "last_updated": "2025-12-30T02:37:54Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -4746,7 +4746,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.53",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.54",
       "target_port": 8931,
       "permissions": {
         "network": {

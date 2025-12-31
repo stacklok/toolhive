@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-28T00:21:13Z",
+  "last_updated": "2025-12-30T00:18:53Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3677,
+        "stars": 3857,
         "pulls": 12849,
-        "last_updated": "2025-11-29T02:32:19Z"
+        "last_updated": "2025-12-28T02:45:46Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -4084,9 +4084,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 833,
+        "stars": 867,
         "pulls": 5060,
-        "last_updated": "2025-11-28T02:32:22Z"
+        "last_updated": "2025-12-28T02:45:45Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -5247,9 +5247,9 @@
         "whoami"
       ],
       "metadata": {
-        "stars": 448,
+        "stars": 487,
         "pulls": 127,
-        "last_updated": "2025-11-29T02:32:17Z"
+        "last_updated": "2025-12-28T02:45:45Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -5441,7 +5441,7 @@
       "metadata": {
         "stars": 12,
         "pulls": 4212,
-        "last_updated": "2025-11-29T02:32:18Z"
+        "last_updated": "2025-12-28T02:45:45Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [
@@ -5559,9 +5559,9 @@
         "search_docs"
       ],
       "metadata": {
-        "stars": 2292,
+        "stars": 2348,
         "pulls": 102,
-        "last_updated": "2025-11-29T02:32:18Z"
+        "last_updated": "2025-12-28T02:45:46Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [

@@ -138,6 +138,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Deployer:          r.Config.Deployer,
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
+		EndpointPrefix:    r.Config.EndpointPrefix,
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.

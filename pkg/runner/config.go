@@ -168,6 +168,10 @@ type RunConfig struct {
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
 	existingPort int
+
+	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios.
+	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

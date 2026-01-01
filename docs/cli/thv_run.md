@@ -115,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --authz-config string                        Path to the authorization configuration file
       --ca-cert string                             Path to a custom CA certificate file to use for container builds
       --enable-audit                               Enable audit logging with default configuration
+      --endpoint-prefix string                     Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
   -e, --env stringArray                            Environment variables to pass to the MCP server (format: KEY=VALUE)
       --env-file string                            Load environment variables from a single file
       --env-file-dir string                        Load environment variables from all files in a directory

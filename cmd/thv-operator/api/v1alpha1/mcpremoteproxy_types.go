@@ -63,6 +63,12 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios where the ingress
+	// strips a path prefix before forwarding to the backend.
+	// +optional
+	EndpointPrefix string `json:"endpointPrefix,omitempty"`
+
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`

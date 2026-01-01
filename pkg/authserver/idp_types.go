@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package authserver provides a centralized OAuth Authorization Server
-// implementation using ory/fosite for issuing JWTs to clients.
 package authserver
 
 import (

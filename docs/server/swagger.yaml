@@ -789,6 +789,11 @@ components:
         debug:
           description: Debug indicates whether debug mode is enabled
           type: boolean
+        endpoint_prefix:
+          description: |-
+            EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+            This is used to handle path-based ingress routing scenarios.
+          type: string
         env_file_dir:
           description: EnvFileDir is the directory path to load environment files
             from

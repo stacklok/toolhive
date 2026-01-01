@@ -124,6 +124,7 @@ type RunFlags struct {
 	AuthServer                         bool
 	AuthServerIssuer                   string
 	AuthServerSigningKey               string
+	AuthServerHMACSecretPath           string
 	AuthServerUpstreamIssuer           string
 	AuthServerUpstreamClientID         string
 	AuthServerUpstreamClientSecret     string
@@ -261,6 +262,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Issuer URL for the auth server (default: http://localhost:{port})")
 	cmd.Flags().StringVar(&config.AuthServerSigningKey, "auth-server-signing-key", "",
 		"Path to RSA private key (PEM) for signing tokens")
+	cmd.Flags().StringVar(&config.AuthServerHMACSecretPath, "auth-server-hmac-secret", "",
+		"Path to file containing HMAC secret (32+ bytes) for token validation")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamIssuer, "auth-server-upstream-issuer", "",
 		"Upstream IDP issuer URL (e.g., https://accounts.google.com)")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamClientID, "auth-server-upstream-client-id", "",
@@ -971,6 +974,7 @@ func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
 		Enabled:        true,
 		Issuer:         runFlags.AuthServerIssuer,
 		SigningKeyPath: runFlags.AuthServerSigningKey,
+		HMACSecretPath: runFlags.AuthServerHMACSecretPath,
 		Upstream:       upstream,
 		// Register a default test client
 		Clients: []authserver.RunClientConfig{{
@@ -983,6 +987,11 @@ func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
 	// Validate signing key is provided
 	if authServerCfg.SigningKeyPath == "" {
 		return nil, fmt.Errorf("--auth-server-signing-key is required when --auth-server is enabled")
+	}
+
+	// Validate HMAC secret path is provided
+	if authServerCfg.HMACSecretPath == "" {
+		return nil, fmt.Errorf("--auth-server-hmac-secret is required when --auth-server is enabled")
 	}
 
 	// When issuer is empty and proxy port is 0, we cannot determine the issuer.

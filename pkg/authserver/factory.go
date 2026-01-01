@@ -2,7 +2,6 @@ package authserver
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -166,6 +165,29 @@ func LoadSigningKey(keyPath string) (*rsa.PrivateKey, error) {
 	return rsaKey, nil
 }
 
+// LoadHMACSecret loads an HMAC secret from a file.
+// Returns nil if path is empty (triggers random generation in toInternalConfig).
+// The secret must be at least 32 bytes after trimming whitespace.
+func LoadHMACSecret(secretPath string) ([]byte, error) {
+	if secretPath == "" {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(secretPath) // #nosec G304 - secretPath is provided by user via CLI flag or config
+	if err != nil {
+		return nil, fmt.Errorf("failed to read HMAC secret file: %w", err)
+	}
+
+	// Trim whitespace (common in Kubernetes Secret mounts which often add trailing newlines)
+	secret := []byte(strings.TrimSpace(string(data)))
+
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("HMAC secret must be at least 32 bytes, got %d bytes", len(secret))
+	}
+
+	return secret, nil
+}
+
 // toInternalConfig converts RunConfig to the internal Config struct.
 func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Config, error) {
 	accessTokenLifespan := c.AccessTokenLifespan
@@ -178,13 +200,13 @@ func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Co
 		refreshTokenLifespan = 24 * time.Hour
 	}
 
-	// Generate random HMAC secret at startup. This is safe because:
-	// 1. Authorization codes are stored in memory anyway (no persistence across restarts)
-	// 2. The HMAC secret only needs to be consistent within a single instance
-	// 3. Random generation provides better security than a static value
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("failed to generate HMAC secret: %w", err)
+	// Load HMAC secret from file (required)
+	if c.HMACSecretPath == "" {
+		return nil, fmt.Errorf("hmac_secret_path is required when auth server is enabled")
+	}
+	secret, err := LoadHMACSecret(c.HMACSecretPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load HMAC secret: %w", err)
 	}
 
 	config := &Config{

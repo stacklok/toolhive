@@ -30,6 +30,11 @@ type RunConfig struct {
 	// SigningKeyPath is the path to the RSA private key file used for signing JWT tokens.
 	SigningKeyPath string `json:"signing_key_path" yaml:"signing_key_path"`
 
+	// HMACSecretPath is the path to a file containing the HMAC secret (32+ bytes).
+	// Required for multi-replica deployments to ensure consistent token validation.
+	// If not set, a random secret is generated (single-instance only).
+	HMACSecretPath string `json:"hmac_secret_path,omitempty" yaml:"hmac_secret_path,omitempty"`
+
 	// AccessTokenLifespan is the duration that access tokens are valid.
 	// If not set, defaults to 1 hour.
 	AccessTokenLifespan time.Duration `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`

@@ -21,9 +21,25 @@ const (
 	// OAuthSigningKeyVolumeName is the name of the volume for the OAuth signing key
 	OAuthSigningKeyVolumeName = "oauth-signing-key"
 
+	// OAuthHMACSecretMountPath is the path where the HMAC secret is mounted
+	//nolint:gosec // G101: This is a file path constant, not a credential
+	OAuthHMACSecretMountPath = "/etc/authserver/hmac-secret"
+
+	// OAuthHMACSecretVolumeName is the name of the volume for the HMAC secret
+	//nolint:gosec // G101: This is a volume name constant, not a credential
+	OAuthHMACSecretVolumeName = "oauth-hmac-secret"
+
+	// OAuthHMACSecretFilePath is the full path to the HMAC secret file inside the container
+	//nolint:gosec // G101: This is a file path constant, not a credential
+	OAuthHMACSecretFilePath = "/etc/authserver/hmac/hmac-secret"
+
 	// OAuthUpstreamClientSecretEnvVar is the environment variable name for the upstream client secret
 	// nolint:gosec // G101: This is an environment variable name, not a hardcoded credential
 	OAuthUpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
+
+	// OAuthRedisPasswordEnvVar is the environment variable for Redis password
+	// nolint:gosec // G101: This is an environment variable name, not a hardcoded credential
+	OAuthRedisPasswordEnvVar = "TOOLHIVE_AUTHSERVER_REDIS_PASSWORD"
 
 	// DefaultAccessTokenLifespan is the default access token lifespan if not specified
 	DefaultAccessTokenLifespan = 1 * time.Hour
@@ -31,8 +47,8 @@ const (
 
 // OAuthVolumeConfig holds the volume and volume mount configuration for OAuth
 type OAuthVolumeConfig struct {
-	Volume      corev1.Volume
-	VolumeMount corev1.VolumeMount
+	Volumes      []corev1.Volume
+	VolumeMounts []corev1.VolumeMount
 }
 
 // GenerateOAuthEnvVars generates environment variables for OAuth authentication
@@ -80,10 +96,28 @@ func GenerateOAuthEnvVars(
 		},
 	})
 
+	// Add Redis password env var if Redis storage is configured
+	if oauthSpec.AuthServer.Storage != nil &&
+		oauthSpec.AuthServer.Storage.Type == "redis" &&
+		oauthSpec.AuthServer.Storage.Redis != nil &&
+		oauthSpec.AuthServer.Storage.Redis.PasswordRef != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: OAuthRedisPasswordEnvVar,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: oauthSpec.AuthServer.Storage.Redis.PasswordRef.Name,
+					},
+					Key: oauthSpec.AuthServer.Storage.Redis.PasswordRef.Key,
+				},
+			},
+		})
+	}
+
 	return envVars, nil
 }
 
-// GenerateOAuthVolumeConfig generates volume and volume mount configuration for OAuth signing key
+// GenerateOAuthVolumeConfig generates volume and volume mount configuration for OAuth signing key and HMAC secret
 func GenerateOAuthVolumeConfig(
 	oauthSpec *mcpv1alpha1.OAuthConfig,
 ) *OAuthVolumeConfig {
@@ -91,27 +125,60 @@ func GenerateOAuthVolumeConfig(
 		return nil
 	}
 
-	return &OAuthVolumeConfig{
-		Volume: corev1.Volume{
-			Name: OAuthSigningKeyVolumeName,
+	volumes := []corev1.Volume{}
+	volumeMounts := []corev1.VolumeMount{}
+
+	// Add signing key volume
+	volumes = append(volumes, corev1.Volume{
+		Name: OAuthSigningKeyVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: oauthSpec.AuthServer.SigningKeyRef.Name,
+				Items: []corev1.KeyToPath{
+					{
+						Key:  oauthSpec.AuthServer.SigningKeyRef.Key,
+						Path: "signing-key.pem",
+					},
+				},
+				DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
+			},
+		},
+	})
+
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      OAuthSigningKeyVolumeName,
+		MountPath: "/etc/authserver",
+		ReadOnly:  true,
+	})
+
+	// Add HMAC secret volume if configured
+	if oauthSpec.AuthServer.HMACSecretRef != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name: OAuthHMACSecretVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: oauthSpec.AuthServer.SigningKeyRef.Name,
+					SecretName: oauthSpec.AuthServer.HMACSecretRef.Name,
 					Items: []corev1.KeyToPath{
 						{
-							Key:  oauthSpec.AuthServer.SigningKeyRef.Key,
-							Path: "signing-key.pem",
+							Key:  oauthSpec.AuthServer.HMACSecretRef.Key,
+							Path: "hmac-secret",
 						},
 					},
 					DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
 				},
 			},
-		},
-		VolumeMount: corev1.VolumeMount{
-			Name:      OAuthSigningKeyVolumeName,
-			MountPath: "/etc/authserver",
+		})
+
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      OAuthHMACSecretVolumeName,
+			MountPath: "/etc/authserver/hmac",
 			ReadOnly:  true,
-		},
+		})
+	}
+
+	return &OAuthVolumeConfig{
+		Volumes:      volumes,
+		VolumeMounts: volumeMounts,
 	}
 }
 
@@ -128,6 +195,59 @@ func addOAuthConfig(
 		return fmt.Errorf("oauth configuration is nil for type oauth")
 	}
 
+	// Validate all required secrets
+	if err := validateOAuthSecrets(ctx, c, namespace, oauthSpec); err != nil {
+		return err
+	}
+
+	// Parse access token lifespan
+	accessTokenLifespan, err := parseAccessTokenLifespan(oauthSpec.AuthServer.AccessTokenLifespan)
+	if err != nil {
+		return fmt.Errorf("invalid access token lifespan: %w", err)
+	}
+
+	// Build auth server clients configuration
+	clients := buildAuthServerClients(oauthSpec.AuthServer.Clients)
+
+	// Build upstream configuration
+	// Note: ClientSecret is provided via environment variable TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET
+	upstreamConfig := &authserver.RunUpstreamConfig{
+		Issuer:   oauthSpec.Upstream.Issuer,
+		ClientID: oauthSpec.Upstream.ClientID,
+		Scopes:   oauthSpec.Upstream.Scopes,
+	}
+
+	// Build storage configuration
+	storageConfig := buildStorageConfig(oauthSpec.AuthServer.Storage)
+
+	// Set HMAC secret path if configured
+	hmacSecretPath := getHMACSecretPath(oauthSpec.AuthServer.HMACSecretRef)
+
+	// Build the auth server run config
+	authServerConfig := &authserver.RunConfig{
+		Enabled:             true,
+		Issuer:              oauthSpec.AuthServer.Issuer,
+		SigningKeyPath:      OAuthSigningKeyMountPath,
+		HMACSecretPath:      hmacSecretPath,
+		AccessTokenLifespan: accessTokenLifespan,
+		Upstream:            upstreamConfig,
+		Clients:             clients,
+		Storage:             storageConfig,
+	}
+
+	// Add auth server config to runner options
+	*options = append(*options, runner.WithAuthServerRunConfig(authServerConfig))
+
+	return nil
+}
+
+// validateOAuthSecrets validates that all required OAuth secrets exist
+func validateOAuthSecrets(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	oauthSpec *mcpv1alpha1.OAuthConfig,
+) error {
 	// Validate that the signing key secret exists
 	if err := validateSecretExists(ctx, c, namespace, oauthSpec.AuthServer.SigningKeyRef); err != nil {
 		return fmt.Errorf("signing key secret validation failed: %w", err)
@@ -138,15 +258,30 @@ func addOAuthConfig(
 		return fmt.Errorf("upstream client secret validation failed: %w", err)
 	}
 
-	// Parse access token lifespan
-	accessTokenLifespan, err := parseAccessTokenLifespan(oauthSpec.AuthServer.AccessTokenLifespan)
-	if err != nil {
-		return fmt.Errorf("invalid access token lifespan: %w", err)
+	// Validate HMAC secret if configured
+	if oauthSpec.AuthServer.HMACSecretRef != nil {
+		if err := validateSecretExists(ctx, c, namespace, *oauthSpec.AuthServer.HMACSecretRef); err != nil {
+			return fmt.Errorf("HMAC secret validation failed: %w", err)
+		}
 	}
 
-	// Build auth server clients configuration
-	clients := make([]authserver.RunClientConfig, 0, len(oauthSpec.AuthServer.Clients))
-	for _, clientSpec := range oauthSpec.AuthServer.Clients {
+	// Validate Redis password secret if configured
+	if oauthSpec.AuthServer.Storage != nil &&
+		oauthSpec.AuthServer.Storage.Type == "redis" &&
+		oauthSpec.AuthServer.Storage.Redis != nil &&
+		oauthSpec.AuthServer.Storage.Redis.PasswordRef != nil {
+		if err := validateSecretExists(ctx, c, namespace, *oauthSpec.AuthServer.Storage.Redis.PasswordRef); err != nil {
+			return fmt.Errorf("redis password secret validation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// buildAuthServerClients builds the auth server clients configuration from the spec
+func buildAuthServerClients(clientSpecs []mcpv1alpha1.OAuthClientConfig) []authserver.RunClientConfig {
+	clients := make([]authserver.RunClientConfig, 0, len(clientSpecs))
+	for _, clientSpec := range clientSpecs {
 		clients = append(clients, authserver.RunClientConfig{
 			ID:           clientSpec.ID,
 			Secret:       clientSpec.Secret,
@@ -154,29 +289,34 @@ func addOAuthConfig(
 			Public:       clientSpec.Public,
 		})
 	}
+	return clients
+}
 
-	// Build upstream configuration
-	// Note: ClientSecret is provided via environment variable TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET
-	upstreamConfig := &authserver.RunUpstreamConfig{
-		Issuer:   oauthSpec.Upstream.Issuer,
-		ClientID: oauthSpec.Upstream.ClientID,
-		Scopes:   oauthSpec.Upstream.Scopes,
+// buildStorageConfig builds the storage configuration from the spec
+func buildStorageConfig(storageSpec *mcpv1alpha1.OAuthStorageConfig) *authserver.StorageRunConfig {
+	if storageSpec == nil {
+		return nil
 	}
 
-	// Build the auth server run config
-	authServerConfig := &authserver.RunConfig{
-		Enabled:             true,
-		Issuer:              oauthSpec.AuthServer.Issuer,
-		SigningKeyPath:      OAuthSigningKeyMountPath,
-		AccessTokenLifespan: accessTokenLifespan,
-		Upstream:            upstreamConfig,
-		Clients:             clients,
+	storageConfig := &authserver.StorageRunConfig{
+		Type: storageSpec.Type,
 	}
 
-	// Add auth server config to runner options
-	*options = append(*options, runner.WithAuthServerRunConfig(authServerConfig))
+	if storageSpec.Redis != nil {
+		storageConfig.RedisURL = storageSpec.Redis.URL
+		storageConfig.KeyPrefix = storageSpec.Redis.KeyPrefix
+		// Password is provided via environment variable TOOLHIVE_AUTHSERVER_REDIS_PASSWORD
+	}
 
-	return nil
+	return storageConfig
+}
+
+// getHMACSecretPath returns the HMAC secret path if configured, empty string otherwise
+func getHMACSecretPath(hmacSecretRef *mcpv1alpha1.SecretKeyRef) string {
+	if hmacSecretRef != nil {
+		return OAuthHMACSecretFilePath
+	}
+	return ""
 }
 
 // validateSecretExists validates that a referenced secret exists and contains the required key

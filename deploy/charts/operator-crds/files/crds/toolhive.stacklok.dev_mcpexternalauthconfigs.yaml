@@ -130,6 +130,21 @@ spec:
                           - redirectUris
                           type: object
                         type: array
+                      hmacSecretRef:
+                        description: |-
+                          HMACSecretRef references a Secret containing the HMAC secret for token signing.
+                          The secret must be at least 32 bytes. Required for multi-replica deployments.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                       issuer:
                         description: |-
                           Issuer is where clients access the proxy's /.well-known/openid-configuration
@@ -149,6 +164,49 @@ spec:
                         required:
                         - key
                         - name
+                        type: object
+                      storage:
+                        description: |-
+                          Storage configures the storage backend for OAuth session data.
+                          If not specified, defaults to in-memory storage.
+                        properties:
+                          redis:
+                            description: Redis configures Redis storage. Required
+                              when Type is "redis".
+                            properties:
+                              keyPrefix:
+                                default: 'thv:authserver:'
+                                description: KeyPrefix is the prefix for all Redis
+                                  keys.
+                                type: string
+                              passwordRef:
+                                description: PasswordRef references a Secret containing
+                                  the Redis password.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              url:
+                                description: URL is the Redis connection URL (e.g.,
+                                  redis://redis:6379/0).
+                                type: string
+                            required:
+                            - url
+                            type: object
+                          type:
+                            default: memory
+                            description: Type specifies the storage backend type.
+                            enum:
+                            - memory
+                            - redis
+                            type: string
                         type: object
                     required:
                     - issuer

@@ -378,6 +378,7 @@ _Appears in:_
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
+| `oauth` | ExternalAuthTypeOAuth is the type for OAuth with an upstream Identity Provider.<br />The proxy authenticates users via the upstream IDP (e.g., Google, Okta) and passes<br />the obtained token directly to the backend MCP server.<br /> |
 
 
 #### FailureHandlingConfig
@@ -599,9 +600,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated] <br />Required: \{\} <br /> |
+| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated oauth] <br />Required: \{\} <br /> |
 | `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
+| `oauth` _[OAuthConfig](#oauthconfig)_ | OAuth configures OAuth flow with an upstream Identity Provider<br />Only used when Type is "oauth" |  |  |
 
 
 #### MCPExternalAuthConfigStatus
@@ -1310,6 +1312,103 @@ _Appears in:_
 | `outbound` _[OutboundNetworkPermissions](#outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  |  |
 
 
+#### OAuthAuthServerConfig
+
+
+
+OAuthAuthServerConfig configures the embedded OAuth authorization server.
+This is the auth server running IN the proxy that clients interact with.
+
+
+
+_Appears in:_
+- [OAuthConfig](#oauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuer` _string_ | Issuer is where clients access the proxy's /.well-known/openid-configuration<br />This should match the external URL where clients reach the MCP server. |  | Required: \{\} <br /> |
+| `signingKeyRef` _[SecretKeyRef](#secretkeyref)_ | SigningKeyRef references a Secret containing the RSA private key (PEM)<br />for signing JWTs issued by this auth server. |  | Required: \{\} <br /> |
+| `hmacSecretRef` _[SecretKeyRef](#secretkeyref)_ | HMACSecretRef references a Secret containing the HMAC secret for token signing.<br />The secret must be at least 32 bytes. Required for multi-replica deployments. |  |  |
+| `accessTokenLifespan` _string_ | AccessTokenLifespan is the lifetime of access tokens issued by this server.<br />Defaults to "1h" if not specified. | 1h | Pattern: `^[0-9]+(s\|m\|h)$` <br /> |
+| `clients` _[OAuthClientConfig](#oauthclientconfig) array_ | Clients are the OAuth clients allowed to authenticate to this auth server. |  |  |
+| `storage` _[OAuthStorageConfig](#oauthstorageconfig)_ | Storage configures the storage backend for OAuth session data.<br />If not specified, defaults to in-memory storage. |  |  |
+
+
+#### OAuthClientConfig
+
+
+
+OAuthClientConfig defines a pre-registered OAuth client
+
+
+
+_Appears in:_
+- [OAuthAuthServerConfig](#oauthauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `id` _string_ | ID is the client identifier |  | Required: \{\} <br /> |
+| `secret` _string_ | Secret is the client secret. Empty for public clients. |  |  |
+| `redirectUris` _string array_ | RedirectURIs are the allowed redirect URIs for this client |  | Required: \{\} <br /> |
+| `public` _boolean_ | Public indicates this is a public client (no secret required) | false |  |
+
+
+#### OAuthConfig
+
+
+
+OAuthConfig configures OAuth flow with an upstream Identity Provider.
+The proxy runs an embedded OAuth authorization server that authenticates
+users via the upstream IDP and passes the obtained token to the backend MCP server.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `authServer` _[OAuthAuthServerConfig](#oauthauthserverconfig)_ | AuthServer configures the embedded OAuth authorization server<br />that clients authenticate to (the proxy's own auth endpoints). |  | Required: \{\} <br /> |
+| `upstream` _[OAuthUpstreamConfig](#oauthupstreamconfig)_ | Upstream configures the external Identity Provider<br />that users authenticate against (e.g., Google, Okta). |  | Required: \{\} <br /> |
+
+
+#### OAuthStorageConfig
+
+
+
+OAuthStorageConfig configures the OAuth storage backend.
+
+
+
+_Appears in:_
+- [OAuthAuthServerConfig](#oauthauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type specifies the storage backend type. | memory | Enum: [memory redis] <br /> |
+| `redis` _[RedisStorageConfig](#redisstorageconfig)_ | Redis configures Redis storage. Required when Type is "redis". |  |  |
+
+
+#### OAuthUpstreamConfig
+
+
+
+OAuthUpstreamConfig configures the upstream Identity Provider.
+This is the external IDP (Google, Okta, etc.) that authenticates users.
+
+
+
+_Appears in:_
+- [OAuthConfig](#oauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuer` _string_ | Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com)<br />The proxy will use OIDC discovery to find authorization and token endpoints. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth client ID registered with the upstream IDP |  | Required: \{\} <br /> |
+| `clientSecretRef` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef references a Secret containing the upstream client secret |  | Required: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP.<br />Defaults to ["openid", "email"] if not specified. | [openid email] |  |
+
+
 #### OIDCConfigRef
 
 
@@ -1552,6 +1651,24 @@ _Appears in:_
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  |  |
 
 
+#### RedisStorageConfig
+
+
+
+RedisStorageConfig configures Redis storage for OAuth sessions.
+
+
+
+_Appears in:_
+- [OAuthStorageConfig](#oauthstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `url` _string_ | URL is the Redis connection URL (e.g., redis://redis:6379/0). |  | Required: \{\} <br /> |
+| `passwordRef` _[SecretKeyRef](#secretkeyref)_ | PasswordRef references a Secret containing the Redis password. |  |  |
+| `keyPrefix` _string_ | KeyPrefix is the prefix for all Redis keys. | thv:authserver: |  |
+
+
 #### RegistryFilter
 
 
@@ -1671,6 +1788,9 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [HeaderInjectionConfig](#headerinjectionconfig)
 - [InlineOIDCConfig](#inlineoidcconfig)
+- [OAuthAuthServerConfig](#oauthauthserverconfig)
+- [OAuthUpstreamConfig](#oauthupstreamconfig)
+- [RedisStorageConfig](#redisstorageconfig)
 - [TokenExchangeConfig](#tokenexchangeconfig)
 
 | Field | Description | Default | Validation |

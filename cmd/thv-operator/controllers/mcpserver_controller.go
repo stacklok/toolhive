@@ -1083,8 +1083,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			externalAuthConfig.Spec.OAuth != nil {
 			oauthVolumeConfig := ctrlutil.GenerateOAuthVolumeConfig(externalAuthConfig.Spec.OAuth)
 			if oauthVolumeConfig != nil {
-				volumeMounts = append(volumeMounts, oauthVolumeConfig.VolumeMount)
-				volumes = append(volumes, oauthVolumeConfig.Volume)
+				volumeMounts = append(volumeMounts, oauthVolumeConfig.VolumeMounts...)
+				volumes = append(volumes, oauthVolumeConfig.Volumes...)
 			}
 		}
 	}

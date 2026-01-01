@@ -137,6 +137,11 @@ type OAuthAuthServerConfig struct {
 	// +kubebuilder:validation:Required
 	SigningKeyRef SecretKeyRef `json:"signingKeyRef"`
 
+	// HMACSecretRef references a Secret containing the HMAC secret for token signing.
+	// The secret must be at least 32 bytes. Required for multi-replica deployments.
+	// +optional
+	HMACSecretRef *SecretKeyRef `json:"hmacSecretRef,omitempty"`
+
 	// AccessTokenLifespan is the lifetime of access tokens issued by this server.
 	// Defaults to "1h" if not specified.
 	// +kubebuilder:validation:Pattern=`^[0-9]+(s|m|h)$`
@@ -147,6 +152,11 @@ type OAuthAuthServerConfig struct {
 	// Clients are the OAuth clients allowed to authenticate to this auth server.
 	// +optional
 	Clients []OAuthClientConfig `json:"clients,omitempty"`
+
+	// Storage configures the storage backend for OAuth session data.
+	// If not specified, defaults to in-memory storage.
+	// +optional
+	Storage *OAuthStorageConfig `json:"storage,omitempty"`
 }
 
 // OAuthUpstreamConfig configures the upstream Identity Provider.
@@ -190,6 +200,35 @@ type OAuthClientConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	Public bool `json:"public,omitempty"`
+}
+
+// OAuthStorageConfig configures the OAuth storage backend.
+type OAuthStorageConfig struct {
+	// Type specifies the storage backend type.
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:default="memory"
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Redis configures Redis storage. Required when Type is "redis".
+	// +optional
+	Redis *RedisStorageConfig `json:"redis,omitempty"`
+}
+
+// RedisStorageConfig configures Redis storage for OAuth sessions.
+type RedisStorageConfig struct {
+	// URL is the Redis connection URL (e.g., redis://redis:6379/0).
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+
+	// PasswordRef references a Secret containing the Redis password.
+	// +optional
+	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
+
+	// KeyPrefix is the prefix for all Redis keys.
+	// +kubebuilder:default="thv:authserver:"
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

@@ -244,6 +244,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	}
 
 	// Create the transparent proxy
+	// Note: endpointPrefix is empty and trustProxyHeaders is false for now
+	// These can be configured via transport config when needed
 	t.proxy = transparent.NewTransparentProxy(
 		t.host,
 		t.proxyPort,
@@ -255,6 +257,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		string(t.transportType),
 		t.onHealthCheckFailed,
 		t.onUnauthorizedResponse,
+		"",    // endpointPrefix - will be wired up in later commit
+		false, // trustProxyHeaders - will be wired up in later commit
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

@@ -49,8 +49,8 @@ func CreateHandlersWithResult(
 		return nil, nil
 	}
 
-	// Create default storage
-	storage, err := NewStorage(nil)
+	// Create storage from config (defaults to in-memory if not specified)
+	storage, err := NewStorageFromRunConfig(cfg.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
@@ -100,15 +100,11 @@ func CreateHandlersWithStorage(
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
-	// Cast storage to *MemoryStorage for registerClients and createProvider
-	memStorage, ok := storage.(*MemoryStorage)
-	if !ok {
-		return nil, fmt.Errorf("storage must be *MemoryStorage (other implementations not yet supported)")
-	}
+	// Register clients using the Storage interface
+	registerClients(storage, cfg.Clients)
 
-	registerClients(memStorage, cfg.Clients)
-
-	provider := createProvider(oauth2Config, memStorage)
+	// Create fosite provider with the storage
+	provider := createProvider(oauth2Config, storage)
 
 	// Create router with optional upstream
 	routerOpts, err := createRouterOpts(ctx, cfg.Upstream, issuer)
@@ -116,7 +112,7 @@ func CreateHandlersWithStorage(
 		return nil, err
 	}
 
-	router := NewRouter(slog.Default(), provider, oauth2Config, memStorage, routerOpts...)
+	router := NewRouter(slog.Default(), provider, oauth2Config, storage, routerOpts...)
 
 	// Create and populate muxes
 	oauthServeMux := http.NewServeMux()
@@ -280,7 +276,7 @@ func resolveIssuer(issuer string, proxyPort int) string {
 // registerClients adds clients from config to storage.
 // Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
 // compliant loopback redirect URI matching for native OAuth clients.
-func registerClients(storage *MemoryStorage, clients []RunClientConfig) {
+func registerClients(storage Storage, clients []RunClientConfig) {
 	for _, c := range clients {
 		defaultClient := &fosite.DefaultClient{
 			ID:            c.ID,
@@ -307,7 +303,7 @@ func registerClients(storage *MemoryStorage, clients []RunClientConfig) {
 }
 
 // createProvider creates a fosite provider with JWT strategy.
-func createProvider(oauth2Config *OAuth2Config, storage *MemoryStorage) fosite.OAuth2Provider {
+func createProvider(oauth2Config *OAuth2Config, storage Storage) fosite.OAuth2Provider {
 	// Convert v4 JWK to v3 JWK for fosite compatibility.
 	// Fosite v0.49.0 uses go-jose/v3, not v4.
 	// This ensures the kid is included in the JWT header.

@@ -14,6 +14,10 @@ const (
 	// This corresponds to the "client_secret" field in the upstream configuration.
 	//nolint:gosec // G101: This is an environment variable name, not a credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
+
+	// RedisPasswordEnvVar is the environment variable name for the Redis password.
+	//nolint:gosec // G101: This is an environment variable name, not a credential
+	RedisPasswordEnvVar = "TOOLHIVE_AUTHSERVER_REDIS_PASSWORD"
 )
 
 // RunConfig is the serializable configuration for the embedded OAuth authorization server.
@@ -49,6 +53,30 @@ type RunConfig struct {
 
 	// Clients is the list of pre-registered OAuth clients.
 	Clients []RunClientConfig `json:"clients,omitempty" yaml:"clients,omitempty"`
+
+	// Storage contains configuration for the storage backend.
+	// If nil, defaults to in-memory storage.
+	Storage *StorageRunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+}
+
+// StorageRunConfig is the serializable configuration for storage backends.
+type StorageRunConfig struct {
+	// Type specifies the storage backend type (memory or redis).
+	// Defaults to memory if not specified.
+	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+
+	// RedisURL is the Redis connection URL (e.g., redis://localhost:6379/0).
+	// Required when Type is "redis".
+	RedisURL string `json:"redis_url,omitempty" yaml:"redis_url,omitempty"`
+
+	// RedisPassword is the Redis password.
+	RedisPassword string `json:"redis_password,omitempty" yaml:"redis_password,omitempty"`
+
+	// RedisPasswordFile is the path to a file containing the Redis password.
+	RedisPasswordFile string `json:"redis_password_file,omitempty" yaml:"redis_password_file,omitempty"`
+
+	// KeyPrefix is the prefix for all Redis keys (default: "thv:authserver:").
+	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
 // RunUpstreamConfig contains serializable configuration for connecting to an upstream IDP.

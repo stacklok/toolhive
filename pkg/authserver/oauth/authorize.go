@@ -1,4 +1,20 @@
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package oauth provides OAuth 2.0 authorization server components including
+// handlers for authorization, token exchange, and dynamic client registration.
+package oauth
 
 import (
 	"context"
@@ -11,6 +27,9 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // AuthorizeHandler handles GET /oauth/authorize requests.
@@ -114,7 +133,7 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Create and store pending authorization
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      clientID,
 		RedirectURI:   redirectURI,
 		State:         state,
@@ -249,7 +268,7 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get user info from upstream IDP (optional but useful for claims)
-	var userInfo *UserInfo
+	var userInfo *idp.UserInfo
 	userInfo, err = r.upstream.UserInfo(ctx, idpTokens.AccessToken)
 	if err != nil {
 		r.logger.WarnContext(ctx, "failed to get user info from upstream IDP",
@@ -268,15 +287,19 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Set binding fields on IDP tokens for cross-session attack prevention.
-	// These fields are validated when looking up IDP tokens to ensure the
-	// JWT claims match the original authorization context.
-	idpTokens.ClientID = pending.ClientID
+	// Convert IDP tokens to storage tokens with binding fields
+	storageTokens := &storage.IDPTokens{
+		AccessToken:  idpTokens.AccessToken,
+		RefreshToken: idpTokens.RefreshToken,
+		IDToken:      idpTokens.IDToken,
+		ExpiresAt:    idpTokens.ExpiresAt,
+		ClientID:     pending.ClientID,
+	}
 	if userInfo != nil {
-		idpTokens.Subject = userInfo.Subject
+		storageTokens.Subject = userInfo.Subject
 	}
 
-	if err := r.storage.StoreIDPTokens(ctx, sessionID, idpTokens); err != nil {
+	if err := r.storage.StoreIDPTokens(ctx, sessionID, storageTokens); err != nil {
 		r.logger.ErrorContext(ctx, "failed to store IDP tokens",
 			slog.String("error", err.Error()),
 		)
@@ -310,9 +333,9 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 // createAuthorizationCode creates a fosite authorization code for the client.
 func (r *Router) createAuthorizationCode(
 	ctx context.Context,
-	pending *PendingAuthorization,
+	pending *storage.PendingAuthorization,
 	sessionID string,
-	userInfo *UserInfo,
+	userInfo *idp.UserInfo,
 ) (string, error) {
 	// Get the client from storage
 	client, err := r.storage.GetClient(ctx, pending.ClientID)

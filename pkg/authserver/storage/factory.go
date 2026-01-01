@@ -1,4 +1,18 @@
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package storage
 
 import (
 	"fmt"
@@ -6,56 +20,58 @@ import (
 	"strings"
 )
 
-// NewStorage creates a Storage implementation based on config.
+// New creates a Storage implementation based on config.
 // If config is nil, defaults to in-memory storage.
-func NewStorage(config *StorageConfig) (Storage, error) {
+// For Redis storage, a sessionFactory should be provided via options.
+func New(config *Config, opts ...RedisOption) (Storage, error) {
 	if config == nil {
-		config = DefaultStorageConfig()
+		config = DefaultConfig()
 	}
 
 	switch config.Type {
-	case StorageTypeMemory, "":
-		opts := []MemoryStorageOption{}
+	case TypeMemory, "":
+		memOpts := []MemoryStorageOption{}
 		if config.CleanupInterval > 0 {
-			opts = append(opts, WithCleanupInterval(config.CleanupInterval))
+			memOpts = append(memOpts, WithCleanupInterval(config.CleanupInterval))
 		}
-		return NewMemoryStorage(opts...), nil
+		return NewMemoryStorage(memOpts...), nil
 
-	case StorageTypeRedis:
+	case TypeRedis:
 		if config.RedisURL == "" {
 			return nil, fmt.Errorf("redis_url is required for Redis storage")
 		}
 
-		opts := []RedisStorageOption{}
+		redisOpts := opts
 		if config.KeyPrefix != "" {
-			opts = append(opts, WithKeyPrefix(config.KeyPrefix))
+			redisOpts = append(redisOpts, WithRedisKeyPrefix(config.KeyPrefix))
 		}
 
-		return NewRedisStorage(config.RedisURL, config.RedisPassword, opts...)
+		return NewRedisStorage(config.RedisURL, config.RedisPassword, redisOpts...)
 
 	default:
 		return nil, fmt.Errorf("unknown storage type: %s", config.Type)
 	}
 }
 
-// NewStorageFromRunConfig creates a Storage implementation from a RunConfig.
+// NewFromRunConfig creates a Storage implementation from a RunConfig.
 // It handles password resolution from files and applies sensible defaults.
-func NewStorageFromRunConfig(cfg *StorageRunConfig) (Storage, error) {
+// For Redis storage, a sessionFactory should be provided via options.
+func NewFromRunConfig(cfg *RunConfig, opts ...RedisOption) (Storage, error) {
 	if cfg == nil {
 		// Default to in-memory storage
-		return NewStorage(nil)
+		return New(nil)
 	}
 
-	storageType := StorageType(cfg.Type)
+	storageType := Type(cfg.Type)
 	if storageType == "" {
-		storageType = StorageTypeMemory
+		storageType = TypeMemory
 	}
 
 	switch storageType {
-	case StorageTypeMemory:
-		return NewStorage(nil)
+	case TypeMemory:
+		return New(nil)
 
-	case StorageTypeRedis:
+	case TypeRedis:
 		if cfg.RedisURL == "" {
 			return nil, fmt.Errorf("redis_url is required for Redis storage")
 		}
@@ -72,14 +88,14 @@ func NewStorageFromRunConfig(cfg *StorageRunConfig) (Storage, error) {
 			keyPrefix = DefaultRedisKeyPrefix
 		}
 
-		config := &StorageConfig{
-			Type:          StorageTypeRedis,
+		config := &Config{
+			Type:          TypeRedis,
 			RedisURL:      cfg.RedisURL,
 			RedisPassword: password,
 			KeyPrefix:     keyPrefix,
 		}
 
-		return NewStorage(config)
+		return New(config, opts...)
 
 	default:
 		return nil, fmt.Errorf("unknown storage type: %s", cfg.Type)
@@ -88,7 +104,7 @@ func NewStorageFromRunConfig(cfg *StorageRunConfig) (Storage, error) {
 
 // resolveRedisPassword resolves the Redis password from the RunConfig.
 // Priority: direct value > file > environment variable
-func resolveRedisPassword(cfg *StorageRunConfig) (string, error) {
+func resolveRedisPassword(cfg *RunConfig) (string, error) {
 	// Direct value takes precedence
 	if cfg.RedisPassword != "" {
 		return cfg.RedisPassword, nil

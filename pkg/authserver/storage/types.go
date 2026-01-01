@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+// Package storage provides storage interfaces and implementations for the
+// OAuth authorization server.
+package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=storage.go Storage,IDPTokenStorage
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,IDPTokenStorage
 
 import (
 	"context"
@@ -27,6 +29,37 @@ import (
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
+
+// IDPTokens represents the tokens obtained from an upstream Identity Provider,
+// stored with binding fields for security validation.
+type IDPTokens struct {
+	// AccessToken is the access token from the upstream IDP.
+	AccessToken string
+
+	// RefreshToken is the refresh token from the upstream IDP (if provided).
+	RefreshToken string
+
+	// IDToken is the ID token from the upstream IDP (for OIDC).
+	IDToken string
+
+	// ExpiresAt is when the access token expires.
+	ExpiresAt time.Time
+
+	// Subject is the user identifier from the IDP.
+	// This binding field is validated on lookup to prevent cross-session attacks
+	// by ensuring the JWT "sub" claim matches this value.
+	Subject string
+
+	// ClientID is the OAuth client that initiated the authorization.
+	// This binding field is validated on lookup to prevent cross-session attacks
+	// by ensuring the JWT "client_id" or "azp" claim matches this value.
+	ClientID string
+}
+
+// IsExpired returns true if the access token has expired.
+func (t *IDPTokens) IsExpired() bool {
+	return time.Now().After(t.ExpiresAt)
+}
 
 // PendingAuthorization tracks a client's authorization request while they
 // authenticate with the upstream IDP.

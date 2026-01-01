@@ -1,4 +1,18 @@
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package storage
 
 import (
 	"context"
@@ -8,20 +22,6 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/logger"
-)
-
-// Default TTL values for various token types (based on OAuth 2.0 best practices).
-// Note: DefaultAccessTokenTTL, DefaultRefreshTokenTTL, and DefaultCleanupInterval
-// are defined in storage_config.go as they are configuration values.
-const (
-	// DefaultAuthCodeTTL is the default TTL for authorization codes (RFC 6749 recommendation).
-	DefaultAuthCodeTTL = 10 * time.Minute
-
-	// DefaultInvalidatedCodeTTL is how long invalidated codes are kept for replay detection.
-	DefaultInvalidatedCodeTTL = 30 * time.Minute
-
-	// DefaultPKCETTL is the default TTL for PKCE requests (same as auth codes).
-	DefaultPKCETTL = 10 * time.Minute
 )
 
 // timedEntry wraps a value with its creation time for TTL tracking.
@@ -735,8 +735,8 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 // Metrics/Stats (for testing and monitoring)
 // -----------------------
 
-// StorageStats contains statistics about the storage contents.
-type StorageStats struct {
+// Stats contains statistics about the storage contents.
+type Stats struct {
 	Clients               int
 	AuthCodes             int
 	AccessTokens          int
@@ -750,11 +750,11 @@ type StorageStats struct {
 
 // Stats returns current statistics about storage contents.
 // This is useful for testing and monitoring.
-func (s *MemoryStorage) Stats() StorageStats {
+func (s *MemoryStorage) Stats() Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return StorageStats{
+	return Stats{
 		Clients:               len(s.clients),
 		AuthCodes:             len(s.authCodes),
 		AccessTokens:          len(s.accessTokens),

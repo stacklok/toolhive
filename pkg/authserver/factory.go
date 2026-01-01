@@ -28,6 +28,9 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
+	"github.com/stacklok/toolhive/pkg/authserver/oauth"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -43,13 +46,25 @@ func CreateHandlersWithResult(
 		return nil, nil
 	}
 
+	// Convert authserver.StorageRunConfig to storage.RunConfig
+	var storageRunConfig *storage.RunConfig
+	if cfg.Storage != nil {
+		storageRunConfig = &storage.RunConfig{
+			Type:              cfg.Storage.Type,
+			RedisURL:          cfg.Storage.RedisURL,
+			RedisPassword:     cfg.Storage.RedisPassword,
+			RedisPasswordFile: cfg.Storage.RedisPasswordFile,
+			KeyPrefix:         cfg.Storage.KeyPrefix,
+		}
+	}
+
 	// Create storage from config (defaults to in-memory if not specified)
-	storage, err := NewStorageFromRunConfig(cfg.Storage)
+	stor, err := storage.NewFromRunConfig(storageRunConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
-	return CreateHandlersWithStorage(ctx, cfg, proxyPort, storage)
+	return CreateHandlersWithStorage(ctx, cfg, proxyPort, stor)
 }
 
 // CreateHandlersWithStorage creates OAuth and well-known handlers using provided storage.
@@ -59,13 +74,13 @@ func CreateHandlersWithStorage(
 	ctx context.Context,
 	cfg *RunConfig,
 	proxyPort int,
-	storage Storage,
+	stor storage.Storage,
 ) (*HandlerResult, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
 	}
 
-	if storage == nil {
+	if stor == nil {
 		return nil, fmt.Errorf("storage cannot be nil")
 	}
 
@@ -77,7 +92,7 @@ func CreateHandlersWithStorage(
 	issuer := resolveIssuer(cfg.Issuer, proxyPort)
 
 	// Load signing key from file
-	rsaKey, err := LoadSigningKey(cfg.SigningKeyPath)
+	rsaKey, err := oauth.LoadSigningKey(cfg.SigningKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -89,16 +104,16 @@ func CreateHandlersWithStorage(
 	}
 
 	// Use existing package functions to create components
-	oauth2Config, err := NewOAuth2Config(internalConfig)
+	oauth2Config, err := oauth.NewOAuth2Config(internalConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
 	// Register clients using the Storage interface
-	registerClients(storage, cfg.Clients)
+	registerClients(stor, cfg.Clients)
 
 	// Create fosite provider with the storage
-	provider := createProvider(oauth2Config, storage)
+	provider := createProvider(oauth2Config, stor)
 
 	// Create router with optional upstream
 	routerOpts, err := createRouterOpts(ctx, cfg.Upstream, issuer)
@@ -106,7 +121,7 @@ func CreateHandlersWithStorage(
 		return nil, err
 	}
 
-	router := NewRouter(slog.Default(), provider, oauth2Config, storage, routerOpts...)
+	router := oauth.NewRouter(slog.Default(), provider, oauth2Config, stor, routerOpts...)
 
 	// Create and populate muxes
 	oauthServeMux := http.NewServeMux()
@@ -119,12 +134,12 @@ func CreateHandlersWithStorage(
 	return &HandlerResult{
 		OAuthMux:     oauthServeMux,
 		WellKnownMux: wellKnownServeMux,
-		Storage:      storage,
+		Storage:      stor,
 	}, nil
 }
 
-// toInternalConfig converts RunConfig to the internal Config struct.
-func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Config, error) {
+// toInternalConfig converts RunConfig to the internal oauth.Config struct.
+func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*oauth.Config, error) {
 	accessTokenLifespan := c.AccessTokenLifespan
 	if accessTokenLifespan == 0 {
 		accessTokenLifespan = time.Hour
@@ -139,18 +154,18 @@ func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Co
 	if c.HMACSecretPath == "" {
 		return nil, fmt.Errorf("hmac_secret_path is required when auth server is enabled")
 	}
-	secret, err := LoadHMACSecret(c.HMACSecretPath)
+	secret, err := oauth.LoadHMACSecret(c.HMACSecretPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load HMAC secret: %w", err)
 	}
 
-	config := &Config{
+	config := &oauth.Config{
 		Issuer:               issuer,
 		AccessTokenLifespan:  accessTokenLifespan,
 		RefreshTokenLifespan: refreshTokenLifespan,
 		AuthCodeLifespan:     10 * time.Minute,
 		Secret:               secret,
-		PrivateKeys: []PrivateKey{{
+		PrivateKeys: []oauth.PrivateKey{{
 			KeyID:     "key-1",
 			Algorithm: "RS256",
 			Key:       rsaKey,
@@ -164,7 +179,7 @@ func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Co
 			return nil, fmt.Errorf("failed to resolve upstream client secret: %w", err)
 		}
 
-		config.Upstream = UpstreamConfig{
+		config.Upstream = oauth.UpstreamConfig{
 			Issuer:       c.Upstream.Issuer,
 			ClientID:     c.Upstream.ClientID,
 			ClientSecret: clientSecret,
@@ -215,7 +230,7 @@ func resolveIssuer(issuer string, proxyPort int) string {
 // registerClients adds clients from config to storage.
 // Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
 // compliant loopback redirect URI matching for native OAuth clients.
-func registerClients(storage Storage, clients []RunClientConfig) {
+func registerClients(stor storage.Storage, clients []RunClientConfig) {
 	for _, c := range clients {
 		defaultClient := &fosite.DefaultClient{
 			ID:            c.ID,
@@ -233,16 +248,16 @@ func registerClients(storage Storage, clients []RunClientConfig) {
 		// dynamic port matching for native app loopback redirect URIs.
 		var client fosite.Client
 		if c.Public {
-			client = NewLoopbackClient(defaultClient)
+			client = oauth.NewLoopbackClient(defaultClient)
 		} else {
 			client = defaultClient
 		}
-		storage.RegisterClient(client)
+		stor.RegisterClient(client)
 	}
 }
 
 // createProvider creates a fosite provider with JWT strategy.
-func createProvider(oauth2Config *OAuth2Config, storage Storage) fosite.OAuth2Provider {
+func createProvider(oauth2Config *oauth.OAuth2Config, stor storage.Storage) fosite.OAuth2Provider {
 	// Convert v4 JWK to v3 JWK for fosite compatibility.
 	// Fosite v0.49.0 uses go-jose/v3, not v4.
 	// This ensures the kid is included in the JWT header.
@@ -262,7 +277,7 @@ func createProvider(oauth2Config *OAuth2Config, storage Storage) fosite.OAuth2Pr
 
 	return compose.Compose(
 		oauth2Config.Config,
-		storage,
+		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
@@ -271,7 +286,7 @@ func createProvider(oauth2Config *OAuth2Config, storage Storage) fosite.OAuth2Pr
 }
 
 // createRouterOpts creates router options, including upstream provider if configured.
-func createRouterOpts(ctx context.Context, upstream *RunUpstreamConfig, issuer string) ([]RouterOption, error) {
+func createRouterOpts(ctx context.Context, upstream *RunUpstreamConfig, issuer string) ([]oauth.RouterOption, error) {
 	if upstream == nil || upstream.Issuer == "" {
 		return nil, nil
 	}
@@ -281,7 +296,7 @@ func createRouterOpts(ctx context.Context, upstream *RunUpstreamConfig, issuer s
 		return nil, err
 	}
 
-	upstreamCfg := UpstreamConfig{
+	upstreamCfg := idp.Config{
 		Issuer:       upstream.Issuer,
 		ClientID:     upstream.ClientID,
 		ClientSecret: clientSecret,
@@ -289,10 +304,10 @@ func createRouterOpts(ctx context.Context, upstream *RunUpstreamConfig, issuer s
 		RedirectURI:  issuer + "/oauth/callback",
 	}
 
-	upstreamProvider, err := NewOIDCIDPProvider(ctx, upstreamCfg)
+	upstreamProvider, err := idp.NewOIDCProvider(ctx, upstreamCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
 
-	return []RouterOption{WithIDPProvider(upstreamProvider)}, nil
+	return []oauth.RouterOption{oauth.WithIDPProvider(upstreamProvider)}, nil
 }

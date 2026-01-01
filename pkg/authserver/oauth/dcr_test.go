@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+package oauth
 
 import (
 	"bytes"
@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 const (
@@ -385,13 +387,13 @@ func TestRegisterClientHandler(t *testing.T) {
 	t.Parallel()
 
 	// Create a minimal storage for testing
-	storage := NewMemoryStorage()
-	t.Cleanup(func() { storage.Close() })
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { stor.Close() })
 
 	// Create a router with minimal dependencies
 	router := &Router{
 		logger:  slog.Default(),
-		storage: storage,
+		storage: stor,
 	}
 
 	tests := []struct {
@@ -592,13 +594,13 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	t.Parallel()
 
 	// Create storage
-	storage := NewMemoryStorage()
-	t.Cleanup(func() { storage.Close() })
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { stor.Close() })
 
 	// Create router
 	router := &Router{
 		logger:  slog.Default(),
-		storage: storage,
+		storage: stor,
 	}
 
 	// Register a client
@@ -627,7 +629,7 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	}
 
 	// Verify client is stored
-	client, err := storage.GetClient(req.Context(), resp.ClientID)
+	client, err := stor.GetClient(req.Context(), resp.ClientID)
 	if err != nil {
 		t.Fatalf("failed to get client from storage: %v", err)
 	}
@@ -661,13 +663,13 @@ func TestRegisterClientHandler_UniqueClientIDs(t *testing.T) {
 	t.Parallel()
 
 	// Create storage
-	storage := NewMemoryStorage()
-	t.Cleanup(func() { storage.Close() })
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { stor.Close() })
 
 	// Create router
 	router := &Router{
 		logger:  slog.Default(),
-		storage: storage,
+		storage: stor,
 	}
 
 	clientIDs := make(map[string]bool)

@@ -1,4 +1,4 @@
-package authserver
+package idp
 
 import (
 	"context"
@@ -104,13 +104,13 @@ func (m *mockOIDCServer) handleUserInfo(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func TestNewOIDCIDPProvider(t *testing.T) {
+func TestNewOIDCProvider(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -119,7 +119,7 @@ func TestNewOIDCIDPProvider(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	provider, err := NewOIDCIDPProvider(ctx, config)
+	provider, err := NewOIDCProvider(ctx, config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -148,22 +148,22 @@ func TestNewOIDCIDPProvider(t *testing.T) {
 	}
 }
 
-func TestNewOIDCIDPProvider_InvalidConfig(t *testing.T) {
+func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 
 	tests := []struct {
 		name   string
-		config UpstreamConfig
+		config Config
 	}{
 		{
 			name:   "empty config",
-			config: UpstreamConfig{},
+			config: Config{},
 		},
 		{
 			name: "missing client id",
-			config: UpstreamConfig{
+			config: Config{
 				Issuer:       "https://example.com",
 				ClientSecret: "secret",
 				RedirectURI:  "http://localhost:8080/callback",
@@ -171,7 +171,7 @@ func TestNewOIDCIDPProvider_InvalidConfig(t *testing.T) {
 		},
 		{
 			name: "missing client secret",
-			config: UpstreamConfig{
+			config: Config{
 				Issuer:      "https://example.com",
 				ClientID:    "client",
 				RedirectURI: "http://localhost:8080/callback",
@@ -179,7 +179,7 @@ func TestNewOIDCIDPProvider_InvalidConfig(t *testing.T) {
 		},
 		{
 			name: "missing redirect uri",
-			config: UpstreamConfig{
+			config: Config{
 				Issuer:       "https://example.com",
 				ClientID:     "client",
 				ClientSecret: "secret",
@@ -190,7 +190,7 @@ func TestNewOIDCIDPProvider_InvalidConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := NewOIDCIDPProvider(ctx, tt.config)
+			_, err := NewOIDCProvider(ctx, tt.config)
 			if err == nil {
 				t.Error("expected error for invalid config")
 			}
@@ -198,7 +198,7 @@ func TestNewOIDCIDPProvider_InvalidConfig(t *testing.T) {
 	}
 }
 
-func TestNewOIDCIDPProvider_DiscoveryFailure(t *testing.T) {
+func TestNewOIDCProvider_DiscoveryFailure(t *testing.T) {
 	t.Parallel()
 
 	// Server that returns 500
@@ -207,7 +207,7 @@ func TestNewOIDCIDPProvider_DiscoveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       server.URL,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -215,13 +215,13 @@ func TestNewOIDCIDPProvider_DiscoveryFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := NewOIDCIDPProvider(ctx, config)
+	_, err := NewOIDCProvider(ctx, config)
 	if err == nil {
 		t.Error("expected error when discovery fails")
 	}
 }
 
-func TestNewOIDCIDPProvider_IssuerMismatch(t *testing.T) {
+func TestNewOIDCProvider_IssuerMismatch(t *testing.T) {
 	t.Parallel()
 
 	// Server that returns mismatched issuer
@@ -238,7 +238,7 @@ func TestNewOIDCIDPProvider_IssuerMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       server.URL,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -246,7 +246,7 @@ func TestNewOIDCIDPProvider_IssuerMismatch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := NewOIDCIDPProvider(ctx, config)
+	_, err := NewOIDCProvider(ctx, config)
 	if err == nil {
 		t.Error("expected error for issuer mismatch")
 	}
@@ -262,7 +262,7 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -271,7 +271,7 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	provider, err := NewOIDCIDPProvider(ctx, config)
+	provider, err := NewOIDCProvider(ctx, config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestOIDCIDPProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	// Config with NO scopes - should fall back to defaults
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -379,7 +379,7 @@ func TestOIDCIDPProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	provider, err := NewOIDCIDPProvider(ctx, config)
+	provider, err := NewOIDCProvider(ctx, config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -444,14 +444,14 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := UpstreamConfig{
+		localConfig := Config{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, localConfig)
+		provider, err := NewOIDCProvider(ctx, localConfig)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -523,14 +523,14 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := UpstreamConfig{
+		localConfig := Config{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, localConfig)
+		provider, err := NewOIDCProvider(ctx, localConfig)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -547,7 +547,7 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 
 	t.Run("code exchange without code fails", func(t *testing.T) {
 		t.Parallel()
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -576,14 +576,14 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := UpstreamConfig{
+		localConfig := Config{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, localConfig)
+		provider, err := NewOIDCProvider(ctx, localConfig)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -630,14 +630,14 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			}
 		}
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -672,14 +672,14 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -700,14 +700,14 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -748,14 +748,14 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			}
 		}
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -799,14 +799,14 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -828,14 +828,14 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			_, _ = w.Write([]byte("invalid token"))
 		}
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -857,14 +857,14 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock.discoveryDoc.UserInfoEndpoint = "" // Remove userinfo endpoint
 		defer mock.Close()
 
-		config := UpstreamConfig{
+		config := Config{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			RedirectURI:  "http://localhost:8080/callback",
 		}
 
-		provider, err := NewOIDCIDPProvider(ctx, config)
+		provider, err := NewOIDCProvider(ctx, config)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
@@ -886,7 +886,7 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -897,14 +897,14 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 
 	// Test with custom logger
 	customLogger := slog.Default().With("component", "test")
-	_, err := NewOIDCIDPProvider(ctx, config, WithLogger(customLogger))
+	_, err := NewOIDCProvider(ctx, config, WithLogger(customLogger))
 	if err != nil {
 		t.Fatalf("failed to create provider with custom logger: %v", err)
 	}
 
 	// Test with custom HTTP client
 	customClient := &http.Client{Timeout: 5 * time.Second}
-	_, err = NewOIDCIDPProvider(ctx, config, WithHTTPClient(customClient))
+	_, err = NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 	if err != nil {
 		t.Fatalf("failed to create provider with custom HTTP client: %v", err)
 	}
@@ -959,7 +959,7 @@ func TestBuildDiscoveryURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := buildDiscoveryURL(tt.issuer)
+			result, err := BuildDiscoveryURL(tt.issuer)
 			if tt.expectError {
 				if err == nil {
 					t.Error("expected error")
@@ -1041,7 +1041,7 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateDiscoveryDocument(tt.doc, tt.issuer)
+			err := ValidateDiscoveryDocument(tt.doc, tt.issuer)
 			if tt.expectError {
 				if err == nil {
 					t.Error("expected error")
@@ -1057,7 +1057,7 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 	}
 }
 
-func TestIDPTokensIsExpired(t *testing.T) {
+func TestTokensIsExpired(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1085,7 +1085,7 @@ func TestIDPTokensIsExpired(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tokens := &IDPTokens{
+			tokens := &Tokens{
 				AccessToken: "test",
 				ExpiresAt:   tt.expiresAt,
 			}
@@ -1115,7 +1115,7 @@ func TestOIDCIDPProvider_DefaultExpiryWhenNotSpecified(t *testing.T) {
 		}
 	}
 
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -1123,7 +1123,7 @@ func TestOIDCIDPProvider_DefaultExpiryWhenNotSpecified(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	provider, err := NewOIDCIDPProvider(ctx, config)
+	provider, err := NewOIDCProvider(ctx, config)
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
 	}
@@ -1145,7 +1145,7 @@ func TestOIDCIDPProvider_NetworkError(t *testing.T) {
 	t.Parallel()
 
 	// Use an invalid URL to simulate network error
-	config := UpstreamConfig{
+	config := Config{
 		Issuer:       "http://localhost:1", // Invalid port, should fail to connect
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -1155,7 +1155,7 @@ func TestOIDCIDPProvider_NetworkError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := NewOIDCIDPProvider(ctx, config)
+	_, err := NewOIDCProvider(ctx, config)
 	if err == nil {
 		t.Error("expected error for network failure")
 	}

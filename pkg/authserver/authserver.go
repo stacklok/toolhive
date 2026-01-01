@@ -46,9 +46,36 @@
 // When using upstream IDP delegation, tokens from the external IdP are stored
 // and can be retrieved via the IDPTokenStorage interface for use by middleware
 // (e.g., token swap middleware that replaces JWT auth with upstream tokens).
+//
+// # Subpackages
+//
+// The authserver package is organized into subpackages:
+//   - idp: Upstream Identity Provider communication
+//   - storage: Token and authorization storage backends
+//   - oauth: OAuth protocol handlers and configuration
 package authserver
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+)
+
+// Type aliases for backward compatibility and convenience.
+// External consumers can use these without importing subpackages directly.
+type (
+	// Storage is the interface for OAuth authorization storage.
+	Storage = storage.Storage
+
+	// IDPTokenStorage is the interface for IDP token storage operations.
+	IDPTokenStorage = storage.IDPTokenStorage
+
+	// IDPTokens represents tokens obtained from an upstream Identity Provider.
+	IDPTokens = storage.IDPTokens
+
+	// PendingAuthorization tracks a client's authorization request.
+	PendingAuthorization = storage.PendingAuthorization
+)
 
 // HandlerResult contains the handlers and resources created by CreateHandlersWithResult.
 type HandlerResult struct {

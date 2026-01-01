@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+// Package idp provides types and implementations for upstream Identity Provider
+// communication in the OAuth authorization server.
+package idp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -23,8 +26,47 @@ import (
 // PKCEChallengeMethodS256 is the PKCE challenge method for SHA-256.
 const PKCEChallengeMethodS256 = "S256"
 
-// IDPTokens represents the tokens obtained from an upstream Identity Provider.
-type IDPTokens struct {
+// Config contains configuration for connecting to an upstream
+// Identity Provider (e.g., Google, Okta, Auth0).
+type Config struct {
+	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
+	Issuer string
+
+	// ClientID is the OAuth client ID registered with the upstream IDP.
+	ClientID string
+
+	// ClientSecret is the OAuth client secret registered with the upstream IDP.
+	ClientSecret string
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	Scopes []string
+
+	// RedirectURI is the callback URL where the upstream IDP will redirect
+	// after authentication. This should be our authorization server's callback endpoint.
+	RedirectURI string
+}
+
+// Validate checks that the configuration is valid.
+func (c *Config) Validate() error {
+	if c.Issuer == "" {
+		return fmt.Errorf("issuer is required")
+	}
+	if c.ClientID == "" {
+		return fmt.Errorf("client ID is required")
+	}
+	if c.ClientSecret == "" {
+		return fmt.Errorf("client secret is required")
+	}
+	if c.RedirectURI == "" {
+		return fmt.Errorf("redirect URI is required")
+	}
+	return nil
+}
+
+// Tokens represents the tokens obtained from an upstream Identity Provider.
+// This type is used for token exchange with the IDP, but stored separately
+// (see storage.IDPTokens for the storage representation).
+type Tokens struct {
 	// AccessToken is the access token from the upstream IDP.
 	AccessToken string
 
@@ -36,20 +78,10 @@ type IDPTokens struct {
 
 	// ExpiresAt is when the access token expires.
 	ExpiresAt time.Time
-
-	// Subject is the user identifier from the IDP.
-	// This binding field is validated on lookup to prevent cross-session attacks
-	// by ensuring the JWT "sub" claim matches this value.
-	Subject string
-
-	// ClientID is the OAuth client that initiated the authorization.
-	// This binding field is validated on lookup to prevent cross-session attacks
-	// by ensuring the JWT "client_id" or "azp" claim matches this value.
-	ClientID string
 }
 
 // IsExpired returns true if the access token has expired.
-func (t *IDPTokens) IsExpired() bool {
+func (t *Tokens) IsExpired() bool {
 	return time.Now().After(t.ExpiresAt)
 }
 
@@ -89,8 +121,8 @@ type OIDCEndpoints struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// IDPProvider handles communication with an upstream Identity Provider.
-type IDPProvider interface {
+// Provider handles communication with an upstream Identity Provider.
+type Provider interface {
 	// Name returns the provider name (e.g., "google", "oidc").
 	Name() string
 
@@ -101,10 +133,10 @@ type IDPProvider interface {
 	AuthorizationURL(state, codeChallenge string, scopes []string) (string, error)
 
 	// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
-	ExchangeCode(ctx context.Context, code, codeVerifier string) (*IDPTokens, error)
+	ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error)
 
 	// RefreshTokens refreshes the upstream IDP tokens.
-	RefreshTokens(ctx context.Context, refreshToken string) (*IDPTokens, error)
+	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
 
 	// UserInfo fetches user information from the upstream IDP.
 	UserInfo(ctx context.Context, accessToken string) (*UserInfo, error)

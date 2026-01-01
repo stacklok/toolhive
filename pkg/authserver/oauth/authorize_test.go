@@ -1,4 +1,4 @@
-package authserver
+package oauth
 
 import (
 	"context"
@@ -16,6 +16,9 @@ import (
 	"github.com/ory/fosite/compose"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 const (
@@ -25,16 +28,16 @@ const (
 	testInternalState   = "internal-state-123"
 )
 
-// mockIDPProvider implements IDPProvider for testing.
+// mockIDPProvider implements idp.Provider for testing.
 type mockIDPProvider struct {
 	name             string
 	authorizationURL string
 	authURLErr       error
-	exchangeTokens   *IDPTokens
+	exchangeTokens   *idp.Tokens
 	exchangeErr      error
-	userInfo         *UserInfo
+	userInfo         *idp.UserInfo
 	userInfoErr      error
-	refreshTokens    *IDPTokens
+	refreshTokens    *idp.Tokens
 	refreshErr       error
 	capturedState    string
 	capturedCode     string
@@ -54,7 +57,7 @@ func (m *mockIDPProvider) AuthorizationURL(state, _ string, scopes []string) (st
 	return m.authorizationURL + "?state=" + state, nil
 }
 
-func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, _ string) (*IDPTokens, error) {
+func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, _ string) (*idp.Tokens, error) {
 	m.capturedCode = code
 	if m.exchangeErr != nil {
 		return nil, m.exchangeErr
@@ -62,14 +65,14 @@ func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, _ string) (*IDPT
 	return m.exchangeTokens, nil
 }
 
-func (m *mockIDPProvider) RefreshTokens(_ context.Context, _ string) (*IDPTokens, error) {
+func (m *mockIDPProvider) RefreshTokens(_ context.Context, _ string) (*idp.Tokens, error) {
 	if m.refreshErr != nil {
 		return nil, m.refreshErr
 	}
 	return m.refreshTokens, nil
 }
 
-func (m *mockIDPProvider) UserInfo(_ context.Context, _ string) (*UserInfo, error) {
+func (m *mockIDPProvider) UserInfo(_ context.Context, _ string) (*idp.UserInfo, error) {
 	if m.userInfoErr != nil {
 		return nil, m.userInfoErr
 	}
@@ -77,7 +80,7 @@ func (m *mockIDPProvider) UserInfo(_ context.Context, _ string) (*UserInfo, erro
 }
 
 // authorizeTestSetup creates a test setup with all dependencies including an upstream provider.
-func authorizeTestSetup(t *testing.T) (*Router, *MemoryStorage, *mockIDPProvider) {
+func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDPProvider) {
 	t.Helper()
 
 	// Generate RSA key for testing
@@ -106,13 +109,13 @@ func authorizeTestSetup(t *testing.T) (*Router, *MemoryStorage, *mockIDPProvider
 	oauth2Config, err := NewOAuth2Config(cfg)
 	require.NoError(t, err)
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 
 	// Register a test client (public client for PKCE)
-	storage.RegisterClient(&fosite.DefaultClient{
+	stor.RegisterClient(&fosite.DefaultClient{
 		ID:            testAuthClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testAuthRedirectURI},
@@ -133,7 +136,7 @@ func authorizeTestSetup(t *testing.T) (*Router, *MemoryStorage, *mockIDPProvider
 
 	provider := compose.Compose(
 		oauth2Config.Config,
-		storage,
+		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
@@ -143,13 +146,13 @@ func authorizeTestSetup(t *testing.T) (*Router, *MemoryStorage, *mockIDPProvider
 	mockUpstream := &mockIDPProvider{
 		name:             "test-idp",
 		authorizationURL: "https://idp.example.com/authorize",
-		exchangeTokens: &IDPTokens{
+		exchangeTokens: &idp.Tokens{
 			AccessToken:  "upstream-access-token",
 			RefreshToken: "upstream-refresh-token",
 			IDToken:      "upstream-id-token",
 			ExpiresAt:    time.Now().Add(time.Hour),
 		},
-		userInfo: &UserInfo{
+		userInfo: &idp.UserInfo{
 			Subject: "user-123",
 			Email:   "user@example.com",
 			Name:    "Test User",
@@ -157,9 +160,9 @@ func authorizeTestSetup(t *testing.T) (*Router, *MemoryStorage, *mockIDPProvider
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, storage, WithIDPProvider(mockUpstream))
+	router := NewRouter(logger, provider, oauth2Config, stor, WithIDPProvider(mockUpstream))
 
-	return router, storage, mockUpstream
+	return router, stor, mockUpstream
 }
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -310,7 +313,7 @@ func TestAuthorizeHandler_NoIDPProvider(t *testing.T) {
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	t.Parallel()
-	router, storage, mockUpstream := authorizeTestSetup(t)
+	router, stor, mockUpstream := authorizeTestSetup(t)
 
 	params := url.Values{
 		"client_id":             {testAuthClientID},
@@ -335,7 +338,7 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	assert.NotEmpty(t, mockUpstream.capturedState)
 
 	// Should have stored pending authorization
-	pending, err := storage.LoadPendingAuthorization(context.Background(), mockUpstream.capturedState)
+	pending, err := stor.LoadPendingAuthorization(context.Background(), mockUpstream.capturedState)
 	require.NoError(t, err)
 	assert.Equal(t, testAuthClientID, pending.ClientID)
 	assert.Equal(t, testAuthRedirectURI, pending.RedirectURI)
@@ -387,11 +390,11 @@ func TestCallbackHandler_PendingAuthorizationNotFound(t *testing.T) {
 
 func TestCallbackHandler_UpstreamError(t *testing.T) {
 	t.Parallel()
-	router, storage, _ := authorizeTestSetup(t)
+	router, stor, _ := authorizeTestSetup(t)
 
 	// Store a pending authorization
 	internalState := testInternalState
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      testAuthClientID,
 		RedirectURI:   testAuthRedirectURI,
 		State:         "client-state",
@@ -401,7 +404,7 @@ func TestCallbackHandler_UpstreamError(t *testing.T) {
 		InternalState: internalState,
 		CreatedAt:     time.Now(),
 	}
-	err := storage.StorePendingAuthorization(context.Background(), internalState, pending)
+	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&error_description=User+denied&state="+internalState, nil)
@@ -416,13 +419,13 @@ func TestCallbackHandler_UpstreamError(t *testing.T) {
 	assert.Contains(t, location, "state=client-state")
 
 	// Pending authorization should be deleted
-	_, err = storage.LoadPendingAuthorization(context.Background(), internalState)
+	_, err = stor.LoadPendingAuthorization(context.Background(), internalState)
 	assert.Error(t, err)
 }
 
 func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 	t.Parallel()
-	router, storage, mockUpstream := authorizeTestSetup(t)
+	router, stor, mockUpstream := authorizeTestSetup(t)
 
 	// Configure upstream to fail code exchange
 	mockUpstream.exchangeErr = assert.AnError
@@ -430,7 +433,7 @@ func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 
 	// Store a pending authorization
 	internalState := testInternalState
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      testAuthClientID,
 		RedirectURI:   testAuthRedirectURI,
 		State:         "client-state",
@@ -440,7 +443,7 @@ func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 		InternalState: internalState,
 		CreatedAt:     time.Now(),
 	}
-	err := storage.StorePendingAuthorization(context.Background(), internalState, pending)
+	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
@@ -457,11 +460,11 @@ func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 
 func TestCallbackHandler_Success(t *testing.T) {
 	t.Parallel()
-	router, storage, mockUpstream := authorizeTestSetup(t)
+	router, stor, mockUpstream := authorizeTestSetup(t)
 
 	// Store a pending authorization
 	internalState := testInternalState
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      testAuthClientID,
 		RedirectURI:   testAuthRedirectURI,
 		State:         "client-state",
@@ -471,7 +474,7 @@ func TestCallbackHandler_Success(t *testing.T) {
 		InternalState: internalState,
 		CreatedAt:     time.Now(),
 	}
-	err := storage.StorePendingAuthorization(context.Background(), internalState, pending)
+	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
@@ -491,23 +494,23 @@ func TestCallbackHandler_Success(t *testing.T) {
 	assert.Equal(t, "upstream-code", mockUpstream.capturedCode)
 
 	// Pending authorization should be deleted
-	_, err = storage.LoadPendingAuthorization(context.Background(), internalState)
+	_, err = stor.LoadPendingAuthorization(context.Background(), internalState)
 	assert.Error(t, err)
 
 	// IDP tokens should be stored
-	stats := storage.Stats()
+	stats := stor.Stats()
 	assert.GreaterOrEqual(t, stats.IDPTokens, 1)
 }
 
 func TestCallbackHandler_NoIDPProvider(t *testing.T) {
 	t.Parallel()
-	router, storage, _ := authorizeTestSetup(t)
+	router, stor, _ := authorizeTestSetup(t)
 	// Remove upstream provider
 	router.upstream = nil
 
 	// Store a pending authorization
 	internalState := testInternalState
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      testAuthClientID,
 		RedirectURI:   testAuthRedirectURI,
 		State:         "client-state",
@@ -517,7 +520,7 @@ func TestCallbackHandler_NoIDPProvider(t *testing.T) {
 		InternalState: internalState,
 		CreatedAt:     time.Now(),
 	}
-	err := storage.StorePendingAuthorization(context.Background(), internalState, pending)
+	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
@@ -533,7 +536,7 @@ func TestCallbackHandler_NoIDPProvider(t *testing.T) {
 
 func TestCallbackHandler_UserInfoFailure_StillSucceeds(t *testing.T) {
 	t.Parallel()
-	router, storage, mockUpstream := authorizeTestSetup(t)
+	router, stor, mockUpstream := authorizeTestSetup(t)
 
 	// Configure upstream to fail userinfo but succeed on token exchange
 	mockUpstream.userInfoErr = assert.AnError
@@ -541,7 +544,7 @@ func TestCallbackHandler_UserInfoFailure_StillSucceeds(t *testing.T) {
 
 	// Store a pending authorization
 	internalState := testInternalState
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      testAuthClientID,
 		RedirectURI:   testAuthRedirectURI,
 		State:         "client-state",
@@ -551,7 +554,7 @@ func TestCallbackHandler_UserInfoFailure_StillSucceeds(t *testing.T) {
 		InternalState: internalState,
 		CreatedAt:     time.Now(),
 	}
-	err := storage.StorePendingAuthorization(context.Background(), internalState, pending)
+	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
@@ -569,13 +572,13 @@ func TestCallbackHandler_UserInfoFailure_StillSucceeds(t *testing.T) {
 func TestPendingAuthorizationStorage_StoreAndLoad(t *testing.T) {
 	t.Parallel()
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 	ctx := context.Background()
 
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:      "test-client",
 		RedirectURI:   "http://localhost/callback",
 		State:         "client-state",
@@ -586,10 +589,10 @@ func TestPendingAuthorizationStorage_StoreAndLoad(t *testing.T) {
 		CreatedAt:     time.Now(),
 	}
 
-	err := storage.StorePendingAuthorization(ctx, "state-123", pending)
+	err := stor.StorePendingAuthorization(ctx, "state-123", pending)
 	require.NoError(t, err)
 
-	loaded, err := storage.LoadPendingAuthorization(ctx, "state-123")
+	loaded, err := stor.LoadPendingAuthorization(ctx, "state-123")
 	require.NoError(t, err)
 	assert.Equal(t, pending.ClientID, loaded.ClientID)
 	assert.Equal(t, pending.RedirectURI, loaded.RedirectURI)
@@ -602,64 +605,64 @@ func TestPendingAuthorizationStorage_StoreAndLoad(t *testing.T) {
 func TestPendingAuthorizationStorage_Delete(t *testing.T) {
 	t.Parallel()
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 	ctx := context.Background()
 
-	pending := &PendingAuthorization{
+	pending := &storage.PendingAuthorization{
 		ClientID:    "test-client",
 		RedirectURI: "http://localhost/callback",
 		CreatedAt:   time.Now(),
 	}
 
-	err := storage.StorePendingAuthorization(ctx, "state-456", pending)
+	err := stor.StorePendingAuthorization(ctx, "state-456", pending)
 	require.NoError(t, err)
 
-	err = storage.DeletePendingAuthorization(ctx, "state-456")
+	err = stor.DeletePendingAuthorization(ctx, "state-456")
 	require.NoError(t, err)
 
-	_, err = storage.LoadPendingAuthorization(ctx, "state-456")
+	_, err = stor.LoadPendingAuthorization(ctx, "state-456")
 	assert.Error(t, err)
 }
 
 func TestPendingAuthorizationStorage_NotFound(t *testing.T) {
 	t.Parallel()
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 	ctx := context.Background()
 
-	_, err := storage.LoadPendingAuthorization(ctx, "nonexistent")
+	_, err := stor.LoadPendingAuthorization(ctx, "nonexistent")
 	assert.Error(t, err)
 }
 
 func TestPendingAuthorizationStorage_EmptyState(t *testing.T) {
 	t.Parallel()
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 	ctx := context.Background()
 
-	err := storage.StorePendingAuthorization(ctx, "", &PendingAuthorization{})
+	err := stor.StorePendingAuthorization(ctx, "", &storage.PendingAuthorization{})
 	assert.Error(t, err)
 }
 
 func TestPendingAuthorizationStorage_NilPending(t *testing.T) {
 	t.Parallel()
 
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() {
-		storage.Close()
+		stor.Close()
 	})
 	ctx := context.Background()
 
-	err := storage.StorePendingAuthorization(ctx, "state", nil)
+	err := stor.StorePendingAuthorization(ctx, "state", nil)
 	assert.Error(t, err)
 }
 

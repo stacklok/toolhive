@@ -1,4 +1,4 @@
-package authserver
+package oauth
 
 import (
 	"crypto/rand"
@@ -16,6 +16,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // testSetup creates a Router with all dependencies for testing.
@@ -48,11 +50,11 @@ func testSetup(t *testing.T) *Router {
 	oauth2Config, err := NewOAuth2Config(cfg)
 	require.NoError(t, err)
 
-	storage := NewMemoryStorage()
-	provider := fosite.NewOAuth2Provider(storage, oauth2Config.Config)
+	stor := storage.NewMemoryStorage()
+	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, storage)
+	router := NewRouter(logger, provider, oauth2Config, stor)
 
 	return router
 }
@@ -97,10 +99,10 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 		SigningJWKS: nil,
 	}
 
-	storage := NewMemoryStorage()
-	provider := fosite.NewOAuth2Provider(storage, cfg.Config)
+	stor := storage.NewMemoryStorage()
+	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, cfg, storage)
+	router := NewRouter(logger, provider, cfg, stor)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rec := httptest.NewRecorder()
@@ -219,11 +221,11 @@ func TestNewRouter_NilLogger(t *testing.T) {
 	cfg := &OAuth2Config{
 		Config: &fosite.Config{},
 	}
-	storage := NewMemoryStorage()
-	provider := fosite.NewOAuth2Provider(storage, cfg.Config)
+	stor := storage.NewMemoryStorage()
+	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 
 	// Should not panic with nil logger
-	router := NewRouter(nil, provider, cfg, storage)
+	router := NewRouter(nil, provider, cfg, stor)
 	assert.NotNil(t, router)
 	assert.NotNil(t, router.logger)
 }

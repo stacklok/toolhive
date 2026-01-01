@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+package oauth
 
 import (
 	"crypto/rsa"
@@ -71,8 +71,8 @@ func LoadHMACSecret(secretPath string) ([]byte, error) {
 	// Trim whitespace (common in Kubernetes Secret mounts which often add trailing newlines)
 	secret := []byte(strings.TrimSpace(string(data)))
 
-	if len(secret) < 32 {
-		return nil, fmt.Errorf("HMAC secret must be at least 32 bytes, got %d bytes", len(secret))
+	if len(secret) < MinSecretLength {
+		return nil, fmt.Errorf("HMAC secret must be at least %d bytes, got %d bytes", MinSecretLength, len(secret))
 	}
 
 	return secret, nil

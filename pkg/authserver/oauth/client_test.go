@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+package oauth
 
 import (
 	"testing"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestNewLoopbackClient(t *testing.T) {
@@ -451,41 +450,4 @@ func TestMatchesAsLoopback(t *testing.T) {
 			assert.Equal(t, tt.shouldMatch, result)
 		})
 	}
-}
-
-func TestRegisterClients_UsesLoopbackClientForPublicClients(t *testing.T) {
-	t.Parallel()
-
-	storage := NewMemoryStorage()
-	defer storage.Close()
-
-	clients := []RunClientConfig{
-		{
-			ID:           "public-client",
-			RedirectURIs: []string{"http://127.0.0.1/callback"},
-			Public:       true,
-		},
-		{
-			ID:           "confidential-client",
-			RedirectURIs: []string{"https://example.com/callback"},
-			Public:       false,
-			Secret:       "secret",
-		},
-	}
-
-	registerClients(storage, clients)
-
-	ctx := t.Context()
-
-	// Verify public client is a LoopbackClient
-	publicClient, err := storage.GetClient(ctx, "public-client")
-	require.NoError(t, err)
-	_, isLoopbackClient := publicClient.(*LoopbackClient)
-	assert.True(t, isLoopbackClient, "public client should be a LoopbackClient")
-
-	// Verify confidential client is a DefaultClient
-	confidentialClient, err := storage.GetClient(ctx, "confidential-client")
-	require.NoError(t, err)
-	_, isDefaultClient := confidentialClient.(*fosite.DefaultClient)
-	assert.True(t, isDefaultClient, "confidential client should be a DefaultClient")
 }

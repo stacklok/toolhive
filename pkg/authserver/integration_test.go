@@ -24,6 +24,10 @@ import (
 	fositeJWT "github.com/ory/fosite/token/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
+	oauthpkg "github.com/stacklok/toolhive/pkg/authserver/oauth"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 const (
@@ -36,8 +40,8 @@ const (
 // testServer bundles all test server components together.
 type testServer struct {
 	Server       *httptest.Server
-	Storage      *MemoryStorage
-	OAuth2Config *OAuth2Config
+	Storage      *storage.MemoryStorage
+	OAuth2Config *oauthpkg.OAuth2Config
 	PrivateKey   *rsa.PrivateKey
 	Strategy     oauth2.CoreStrategy
 }
@@ -57,13 +61,13 @@ func integrationTestSetup(t *testing.T) *testServer {
 	require.NoError(t, err)
 
 	// 3. Create config
-	config := &Config{
+	config := &oauthpkg.Config{
 		Issuer:               testIssuer,
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Secret:               secret,
-		PrivateKeys: []PrivateKey{{
+		PrivateKeys: []oauthpkg.PrivateKey{{
 			KeyID:     "test-key",
 			Algorithm: "RS256",
 			Key:       privateKey,
@@ -71,14 +75,14 @@ func integrationTestSetup(t *testing.T) *testServer {
 	}
 
 	// 4. Create OAuth2Config
-	oauth2Config, err := NewOAuth2Config(config)
+	oauth2Config, err := oauthpkg.NewOAuth2Config(config)
 	require.NoError(t, err)
 
 	// 5. Create storage
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 
 	// 6. Register test client (public client for PKCE)
-	storage.RegisterClient(&fosite.DefaultClient{
+	stor.RegisterClient(&fosite.DefaultClient{
 		ID:            testClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testRedirectURI},
@@ -99,7 +103,7 @@ func integrationTestSetup(t *testing.T) *testServer {
 
 	provider := compose.Compose(
 		oauth2Config.Config,
-		storage,
+		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
@@ -108,19 +112,19 @@ func integrationTestSetup(t *testing.T) *testServer {
 
 	// 8. Create router and HTTP server
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, storage)
+	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor)
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)
 
 	t.Cleanup(func() {
 		server.Close()
-		storage.Close()
+		stor.Close()
 	})
 
 	return &testServer{
 		Server:       server,
-		Storage:      storage,
+		Storage:      stor,
 		OAuth2Config: oauth2Config,
 		PrivateKey:   privateKey,
 		Strategy:     jwtStrategy,
@@ -161,7 +165,7 @@ func createAuthCodeSession(
 	require.NoError(t, err)
 
 	// Create the session
-	session := NewSession(testSubject, "", testClientID)
+	session := oauthpkg.NewSession(testSubject, "", testClientID)
 	session.SetExpiresAt(fosite.AccessToken, time.Now().Add(time.Hour))
 	session.SetExpiresAt(fosite.RefreshToken, time.Now().Add(24*time.Hour))
 	session.SetExpiresAt(fosite.AuthorizeCode, time.Now().Add(10*time.Minute))
@@ -500,7 +504,7 @@ func TestIntegration_Discovery_ValidDocument(t *testing.T) {
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 
 	// Parse discovery document
-	var discovery OIDCDiscoveryDocument
+	var discovery oauthpkg.OIDCDiscoveryDocument
 	err = json.NewDecoder(resp.Body).Decode(&discovery)
 	require.NoError(t, err)
 
@@ -714,15 +718,15 @@ func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
 }
 
 // Compile-time check that Session implements fosite.Session
-var _ fosite.Session = (*Session)(nil)
+var _ fosite.Session = (*oauthpkg.Session)(nil)
 
 // Compile-time check that Session implements oauth2.JWTSessionContainer
-var _ oauth2.JWTSessionContainer = (*Session)(nil)
+var _ oauth2.JWTSessionContainer = (*oauthpkg.Session)(nil)
 
 // Compile-time check that Session has GetJWTClaims method returning JWTClaimsContainer
 var _ interface {
 	GetJWTClaims() fositeJWT.JWTClaimsContainer
-} = (*Session)(nil)
+} = (*oauthpkg.Session)(nil)
 
 // ============================================================================
 // Full PKCE Flow Integration Tests with Mock Upstream IDP
@@ -737,7 +741,7 @@ type mockUpstreamIDP struct {
 	tokens *IDPTokens
 
 	// userInfo to return on userinfo request
-	userInfo *UserInfo
+	userInfo *idp.UserInfo
 
 	// tokenError when set, the token endpoint returns this error
 	tokenError string
@@ -768,7 +772,7 @@ func startMockUpstreamIDP(t *testing.T, opts ...mockIDPOption) *mockUpstreamIDP 
 			IDToken:      "mock-idp-id-token-" + generateRandomID(t),
 			ExpiresAt:    time.Now().Add(time.Hour),
 		},
-		userInfo: &UserInfo{
+		userInfo: &idp.UserInfo{
 			Subject: "mock-user-sub-123",
 			Email:   "testuser@example.com",
 			Name:    "Test User",
@@ -900,7 +904,7 @@ func (m *mockUpstreamIDP) URL() string {
 type testServerWithUpstream struct {
 	*testServer
 	mockIDP  *mockUpstreamIDP
-	upstream *OIDCIDPProvider
+	upstream *idp.OIDCProvider
 }
 
 // setupTestServerWithUpstream creates a test server with a configured upstream IDP.
@@ -917,18 +921,18 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	require.NoError(t, err)
 
 	// 3. Create config with upstream
-	config := &Config{
+	config := &oauthpkg.Config{
 		Issuer:               testIssuer,
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Secret:               secret,
-		PrivateKeys: []PrivateKey{{
+		PrivateKeys: []oauthpkg.PrivateKey{{
 			KeyID:     "test-key",
 			Algorithm: "RS256",
 			Key:       privateKey,
 		}},
-		Upstream: UpstreamConfig{
+		Upstream: oauthpkg.UpstreamConfig{
 			Issuer:       mockIDP.URL(),
 			ClientID:     "auth-server-client",
 			ClientSecret: "auth-server-secret",
@@ -938,14 +942,14 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	}
 
 	// 4. Create OAuth2Config
-	oauth2Config, err := NewOAuth2Config(config)
+	oauth2Config, err := oauthpkg.NewOAuth2Config(config)
 	require.NoError(t, err)
 
 	// 5. Create storage
-	storage := NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
 
 	// 6. Register test client (public client for PKCE)
-	storage.RegisterClient(&fosite.DefaultClient{
+	stor.RegisterClient(&fosite.DefaultClient{
 		ID:            testClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testRedirectURI},
@@ -966,7 +970,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 
 	provider := compose.Compose(
 		oauth2Config.Config,
-		storage,
+		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
@@ -975,25 +979,32 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 
 	// 8. Create upstream provider
 	ctx := context.Background()
-	upstream, err := NewOIDCIDPProvider(ctx, config.Upstream)
+	idpConfig := idp.Config{
+		Issuer:       config.Upstream.Issuer,
+		ClientID:     config.Upstream.ClientID,
+		ClientSecret: config.Upstream.ClientSecret,
+		Scopes:       config.Upstream.Scopes,
+		RedirectURI:  config.Upstream.RedirectURI,
+	}
+	upstream, err := idp.NewOIDCProvider(ctx, idpConfig)
 	require.NoError(t, err)
 
 	// 9. Create router with upstream and HTTP server
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, storage, WithIDPProvider(upstream))
+	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, oauthpkg.WithIDPProvider(upstream))
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)
 
 	t.Cleanup(func() {
 		server.Close()
-		storage.Close()
+		stor.Close()
 	})
 
 	return &testServerWithUpstream{
 		testServer: &testServer{
 			Server:       server,
-			Storage:      storage,
+			Storage:      stor,
 			OAuth2Config: oauth2Config,
 			PrivateKey:   privateKey,
 			Strategy:     jwtStrategy,
@@ -1528,4 +1539,44 @@ func TestIntegration_FullPKCEFlow_VerifyIDPTokensStored(t *testing.T) {
 	// 6. Verify IDP tokens were stored
 	finalStats := ts.Storage.Stats()
 	assert.Greater(t, finalStats.IDPTokens, initialStats.IDPTokens, "IDP tokens should be stored after successful auth")
+}
+
+// TestRegisterClients_UsesLoopbackClientForPublicClients tests that public clients
+// get wrapped in LoopbackClient for RFC 8252 compliance while confidential clients
+// use the standard DefaultClient.
+func TestRegisterClients_UsesLoopbackClientForPublicClients(t *testing.T) {
+	t.Parallel()
+
+	stor := storage.NewMemoryStorage()
+	defer stor.Close()
+
+	clients := []RunClientConfig{
+		{
+			ID:           "public-client",
+			RedirectURIs: []string{"http://127.0.0.1/callback"},
+			Public:       true,
+		},
+		{
+			ID:           "confidential-client",
+			RedirectURIs: []string{"https://example.com/callback"},
+			Public:       false,
+			Secret:       "secret",
+		},
+	}
+
+	registerClients(stor, clients)
+
+	ctx := t.Context()
+
+	// Verify public client is a LoopbackClient
+	publicClient, err := stor.GetClient(ctx, "public-client")
+	require.NoError(t, err)
+	_, isLoopbackClient := publicClient.(*oauthpkg.LoopbackClient)
+	assert.True(t, isLoopbackClient, "public client should be a LoopbackClient")
+
+	// Verify confidential client is a DefaultClient
+	confidentialClient, err := stor.GetClient(ctx, "confidential-client")
+	require.NoError(t, err)
+	_, isDefaultClient := confidentialClient.(*fosite.DefaultClient)
+	assert.True(t, isDefaultClient, "confidential client should be a DefaultClient")
 }

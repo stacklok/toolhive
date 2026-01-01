@@ -1,4 +1,18 @@
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package storage
 
 import (
 	"context"
@@ -29,23 +43,31 @@ const (
 // This implementation is suitable for production deployments where
 // persistence across restarts and multi-replica deployments is required.
 type RedisStorage struct {
-	client    *redis.Client
-	keyPrefix string
+	client         *redis.Client
+	keyPrefix      string
+	sessionFactory SessionFactory
 }
 
-// RedisStorageOption configures a RedisStorage instance.
-type RedisStorageOption func(*RedisStorage)
+// RedisOption configures a RedisStorage instance.
+type RedisOption func(*RedisStorage)
 
-// WithKeyPrefix sets a custom key prefix for all Redis keys.
-func WithKeyPrefix(prefix string) RedisStorageOption {
+// WithRedisKeyPrefix sets a custom key prefix for all Redis keys.
+func WithRedisKeyPrefix(prefix string) RedisOption {
 	return func(s *RedisStorage) {
 		s.keyPrefix = prefix
 	}
 }
 
+// WithSessionFactory sets the session factory for deserializing sessions.
+func WithSessionFactory(factory SessionFactory) RedisOption {
+	return func(s *RedisStorage) {
+		s.sessionFactory = factory
+	}
+}
+
 // NewRedisStorage creates a new RedisStorage instance.
 // It tests the connection before returning.
-func NewRedisStorage(redisURL, password string, opts ...RedisStorageOption) (*RedisStorage, error) {
+func NewRedisStorage(redisURL, password string, opts ...RedisOption) (*RedisStorage, error) {
 	// Parse Redis URL
 	redisOpts, err := redis.ParseURL(redisURL)
 	if err != nil {
@@ -203,7 +225,7 @@ func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string,
 		return nil, fmt.Errorf("failed to get auth code: %w", err)
 	}
 
-	request, err := unmarshalRequester(data, s.getClientLookup(ctx))
+	request, err := unmarshalRequester(data, s.getClientLookup(ctx), s.sessionFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +314,7 @@ func (s *RedisStorage) GetAccessTokenSession(ctx context.Context, signature stri
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	return unmarshalRequester(data, s.getClientLookup(ctx))
+	return unmarshalRequester(data, s.getClientLookup(ctx), s.sessionFactory)
 }
 
 // DeleteAccessTokenSession removes the access token session.
@@ -360,7 +382,7 @@ func (s *RedisStorage) GetRefreshTokenSession(ctx context.Context, signature str
 		return nil, fmt.Errorf("failed to get refresh token: %w", err)
 	}
 
-	return unmarshalRequester(data, s.getClientLookup(ctx))
+	return unmarshalRequester(data, s.getClientLookup(ctx), s.sessionFactory)
 }
 
 // DeleteRefreshTokenSession removes the refresh token session.
@@ -487,7 +509,7 @@ func (s *RedisStorage) GetPKCERequestSession(ctx context.Context, signature stri
 		return nil, fmt.Errorf("failed to get PKCE request: %w", err)
 	}
 
-	return unmarshalRequester(data, s.getClientLookup(ctx))
+	return unmarshalRequester(data, s.getClientLookup(ctx), s.sessionFactory)
 }
 
 // DeletePKCERequestSession removes the PKCE request session.

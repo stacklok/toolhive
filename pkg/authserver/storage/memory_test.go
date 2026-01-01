@@ -1,4 +1,4 @@
-package authserver
+package storage
 
 import (
 	"context"
@@ -12,6 +12,46 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mockSession implements fosite.Session for testing without importing oauth package.
+type mockSession struct {
+	subject   string
+	expiresAt map[fosite.TokenType]time.Time
+}
+
+func newMockSession() *mockSession {
+	return &mockSession{
+		subject:   "test-subject",
+		expiresAt: make(map[fosite.TokenType]time.Time),
+	}
+}
+
+func (s *mockSession) SetExpiresAt(key fosite.TokenType, exp time.Time) {
+	s.expiresAt[key] = exp
+}
+
+func (s *mockSession) GetExpiresAt(key fosite.TokenType) time.Time {
+	return s.expiresAt[key]
+}
+
+func (*mockSession) GetUsername() string {
+	return ""
+}
+
+func (s *mockSession) GetSubject() string {
+	return s.subject
+}
+
+func (s *mockSession) Clone() fosite.Session {
+	clone := &mockSession{
+		subject:   s.subject,
+		expiresAt: make(map[fosite.TokenType]time.Time),
+	}
+	for k, v := range s.expiresAt {
+		clone.expiresAt[k] = v
+	}
+	return clone
+}
 
 // mockClient implements fosite.Client for testing.
 type mockClient struct {
@@ -56,13 +96,13 @@ func newMockRequester(id string, client fosite.Client) *mockRequester {
 		grantedScopes:     fosite.Arguments{"openid"},
 		grantedAudience:   fosite.Arguments{},
 		form:              make(url.Values),
-		session:           NewSession("test-subject", "test-idp-session", ""),
+		session:           newMockSession(),
 	}
 }
 
 // newMockRequesterWithExpiration creates a mock requester with specific expiration times.
 func newMockRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) *mockRequester {
-	session := NewSession("test-subject", "test-idp-session", "")
+	session := newMockSession()
 	session.SetExpiresAt(tokenType, expiresAt)
 
 	return &mockRequester{
@@ -1066,7 +1106,7 @@ func TestGetExpirationFromRequester(t *testing.T) {
 		t.Parallel()
 
 		// Session without expiration set
-		session := NewSession("test", "idp", "")
+		session := newMockSession()
 		request := &mockRequester{session: session}
 		defaultTTL := time.Hour
 		before := time.Now()
@@ -1081,7 +1121,7 @@ func TestGetExpirationFromRequester(t *testing.T) {
 		t.Parallel()
 
 		expectedExp := time.Now().Add(2 * time.Hour)
-		session := NewSession("test", "idp", "")
+		session := newMockSession()
 		session.SetExpiresAt(fosite.AccessToken, expectedExp)
 		request := &mockRequester{session: session}
 

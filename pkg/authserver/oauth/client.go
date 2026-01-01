@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+package oauth
 
 import (
 	"net"
@@ -20,6 +20,15 @@ import (
 	"strings"
 
 	"github.com/ory/fosite"
+)
+
+// Shared constants for redirect URI scheme validation.
+const (
+	// schemeHTTP is the HTTP scheme for redirect URIs.
+	schemeHTTP = "http"
+
+	// schemeHTTPS is the HTTPS scheme for redirect URIs.
+	schemeHTTPS = "https"
 )
 
 // LoopbackClient is a fosite.Client implementation that supports RFC 8252 Section 7.3

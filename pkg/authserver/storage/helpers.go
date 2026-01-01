@@ -1,14 +1,49 @@
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package storage
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/token/jwt"
 )
+
+// SessionFactory is a function that creates a new session given subject and IDP session ID.
+// This allows storage implementations to create sessions without importing oauth/ package.
+type SessionFactory func(subject, idpSessionID, clientID string) fosite.Session
+
+// SessionWithIDP is an interface for sessions that have an IDP session ID.
+// This is implemented by oauth.Session and used for serialization.
+type SessionWithIDP interface {
+	fosite.Session
+	GetIDPSessionID() string
+}
+
+// SessionWithJWT is an interface for sessions that have JWT claims and headers.
+// This extends SessionWithIDP with JWT-specific methods.
+type SessionWithJWT interface {
+	SessionWithIDP
+	GetJWTClaims() jwt.JWTClaimsContainer
+	GetJWTHeader() *jwt.Headers
+	SetExpiresAt(key fosite.TokenType, exp time.Time)
+}
 
 // serializedClient represents a fosite.Client in serializable form.
 type serializedClient struct {
@@ -22,7 +57,7 @@ type serializedClient struct {
 	Public        bool     `json:"public"`
 }
 
-// serializedSession represents our Session in serializable form.
+// serializedSession represents a session in serializable form.
 type serializedSession struct {
 	Subject      string                     `json:"subject"`
 	Username     string                     `json:"username,omitempty"`
@@ -120,87 +155,70 @@ func serializeSession(session fosite.Session) *serializedSession {
 		}
 	}
 
-	// Handle our custom Session type
-	if customSession, ok := session.(*Session); ok {
-		serialized.IDPSessionID = customSession.IDPSessionID
-		if customSession.JWTSession != nil {
-			serialized.Username = customSession.Username
-			if customSession.JWTClaims != nil {
-				serialized.JWTClaims = &serializedJWTClaims{
-					Subject:  customSession.JWTClaims.Subject,
-					Issuer:   customSession.JWTClaims.Issuer,
-					Audience: customSession.JWTClaims.Audience,
-					JTI:      customSession.JWTClaims.JTI,
-					Scope:    customSession.JWTClaims.Scope,
-					Extra:    customSession.JWTClaims.Extra,
-				}
-				if !customSession.JWTClaims.ExpiresAt.IsZero() {
-					serialized.JWTClaims.ExpiresAt = customSession.JWTClaims.ExpiresAt.Unix()
-				}
-				if !customSession.JWTClaims.IssuedAt.IsZero() {
-					serialized.JWTClaims.IssuedAt = customSession.JWTClaims.IssuedAt.Unix()
-				}
-				if !customSession.JWTClaims.NotBefore.IsZero() {
-					serialized.JWTClaims.NotBefore = customSession.JWTClaims.NotBefore.Unix()
-				}
+	// Handle sessions with IDP session ID
+	if idpSession, ok := session.(SessionWithIDP); ok {
+		serialized.IDPSessionID = idpSession.GetIDPSessionID()
+	}
+
+	// Handle sessions with JWT claims
+	if jwtSession, ok := session.(SessionWithJWT); ok {
+		if claims := jwtSession.GetJWTClaims(); claims != nil {
+			// Use ToMapClaims to extract all claims as a map
+			mapClaims := claims.ToMapClaims()
+			serialized.JWTClaims = &serializedJWTClaims{
+				Extra: mapClaims,
 			}
-			if customSession.JWTHeader != nil && customSession.JWTHeader.Extra != nil {
-				serialized.JWTHeader = customSession.JWTHeader.Extra
+			// Extract standard claims from the map
+			if sub, ok := mapClaims["sub"].(string); ok {
+				serialized.JWTClaims.Subject = sub
 			}
+			if iss, ok := mapClaims["iss"].(string); ok {
+				serialized.JWTClaims.Issuer = iss
+			}
+			if aud, ok := mapClaims["aud"].([]string); ok {
+				serialized.JWTClaims.Audience = aud
+			}
+			if jti, ok := mapClaims["jti"].(string); ok {
+				serialized.JWTClaims.JTI = jti
+			}
+			if scope, ok := mapClaims["scope"].([]string); ok {
+				serialized.JWTClaims.Scope = scope
+			} else if scopeStr, ok := mapClaims["scope"].(string); ok {
+				serialized.JWTClaims.Scope = strings.Fields(scopeStr)
+			}
+			// Extract time claims
+			if exp, ok := mapClaims["exp"].(float64); ok {
+				serialized.JWTClaims.ExpiresAt = int64(exp)
+			}
+			if iat, ok := mapClaims["iat"].(float64); ok {
+				serialized.JWTClaims.IssuedAt = int64(iat)
+			}
+			if nbf, ok := mapClaims["nbf"].(float64); ok {
+				serialized.JWTClaims.NotBefore = int64(nbf)
+			}
+		}
+		if header := jwtSession.GetJWTHeader(); header != nil && header.Extra != nil {
+			serialized.JWTHeader = header.Extra
 		}
 	}
 
 	return serialized
 }
 
-// deserializeSession converts serialized data back to a fosite.Session.
-func deserializeSession(data *serializedSession) fosite.Session {
-	if data == nil {
+// deserializeSession converts serialized data back to a fosite.Session using the provided factory.
+func deserializeSession(data *serializedSession, factory SessionFactory) fosite.Session {
+	if data == nil || factory == nil {
 		return nil
 	}
 
-	// Rebuild JWT claims
-	jwtClaims := &jwt.JWTClaims{
-		Subject: data.Subject,
-		Extra:   make(map[string]interface{}),
-	}
+	// Create the session using the factory
+	session := factory(data.Subject, data.IDPSessionID, "")
 
-	if data.JWTClaims != nil {
-		jwtClaims.Subject = data.JWTClaims.Subject
-		jwtClaims.Issuer = data.JWTClaims.Issuer
-		jwtClaims.Audience = data.JWTClaims.Audience
-		jwtClaims.JTI = data.JWTClaims.JTI
-		jwtClaims.Scope = data.JWTClaims.Scope
-		jwtClaims.Extra = data.JWTClaims.Extra
-
-		if data.JWTClaims.ExpiresAt != 0 {
-			jwtClaims.ExpiresAt = time.Unix(data.JWTClaims.ExpiresAt, 0)
+	// Restore expiration times if supported
+	if jwtSession, ok := session.(SessionWithJWT); ok {
+		for tokenType, exp := range data.ExpiresAt {
+			jwtSession.SetExpiresAt(tokenType, time.Unix(exp, 0))
 		}
-		if data.JWTClaims.IssuedAt != 0 {
-			jwtClaims.IssuedAt = time.Unix(data.JWTClaims.IssuedAt, 0)
-		}
-		if data.JWTClaims.NotBefore != 0 {
-			jwtClaims.NotBefore = time.Unix(data.JWTClaims.NotBefore, 0)
-		}
-	}
-
-	// Rebuild JWT header
-	jwtHeader := &jwt.Headers{
-		Extra: make(map[string]interface{}),
-	}
-	if data.JWTHeader != nil {
-		jwtHeader.Extra = data.JWTHeader
-	}
-
-	// Use our custom Session type
-	session := NewSession(data.Subject, data.IDPSessionID, "")
-	session.Username = data.Username
-	session.JWTClaims = jwtClaims
-	session.JWTHeader = jwtHeader
-
-	// Restore expiration times
-	for tokenType, exp := range data.ExpiresAt {
-		session.SetExpiresAt(tokenType, time.Unix(exp, 0))
 	}
 
 	return session
@@ -243,7 +261,12 @@ func serializeRequester(r fosite.Requester) *serializedRequester {
 
 // deserializeRequester converts serialized data back to a fosite.Requester.
 // clientLookup is used to resolve the client by ID.
-func deserializeRequester(data *serializedRequester, clientLookup func(string) fosite.Client) (fosite.Requester, error) {
+// sessionFactory is used to create sessions during deserialization.
+func deserializeRequester(
+	data *serializedRequester,
+	clientLookup func(string) fosite.Client,
+	sessionFactory SessionFactory,
+) (fosite.Requester, error) {
 	if data == nil {
 		return nil, nil
 	}
@@ -266,7 +289,7 @@ func deserializeRequester(data *serializedRequester, clientLookup func(string) f
 		RequestedAt: time.Unix(data.RequestedAt, 0),
 		Client:      client,
 		Form:        form,
-		Session:     deserializeSession(data.Session),
+		Session:     deserializeSession(data.Session, sessionFactory),
 	}
 
 	// Restore scopes
@@ -295,10 +318,14 @@ func marshalRequester(r fosite.Requester) ([]byte, error) {
 }
 
 // unmarshalRequester deserializes JSON bytes back to a fosite.Requester.
-func unmarshalRequester(data []byte, clientLookup func(string) fosite.Client) (fosite.Requester, error) {
+func unmarshalRequester(
+	data []byte,
+	clientLookup func(string) fosite.Client,
+	sessionFactory SessionFactory,
+) (fosite.Requester, error) {
 	var serialized serializedRequester
 	if err := json.Unmarshal(data, &serialized); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal requester: %w", err)
 	}
-	return deserializeRequester(&serialized, clientLookup)
+	return deserializeRequester(&serialized, clientLookup, sessionFactory)
 }

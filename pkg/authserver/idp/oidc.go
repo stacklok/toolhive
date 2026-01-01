@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package authserver
+package idp
 
 import (
 	"context"
@@ -27,43 +27,43 @@ import (
 	"time"
 )
 
-// OIDCIDPProvider implements IDPProvider for OIDC-compliant identity providers.
-type OIDCIDPProvider struct {
-	config    UpstreamConfig
+// OIDCProvider implements Provider for OIDC-compliant identity providers.
+type OIDCProvider struct {
+	config    Config
 	endpoints *OIDCEndpoints
 	client    HTTPClient
 	logger    *slog.Logger
 }
 
-// OIDCIDPProviderOption configures an OIDCIDPProvider.
-type OIDCIDPProviderOption func(*OIDCIDPProvider)
+// OIDCProviderOption configures an OIDCProvider.
+type OIDCProviderOption func(*OIDCProvider)
 
 // WithHTTPClient sets a custom HTTP client for the provider.
-func WithHTTPClient(client HTTPClient) OIDCIDPProviderOption {
-	return func(p *OIDCIDPProvider) {
+func WithHTTPClient(client HTTPClient) OIDCProviderOption {
+	return func(p *OIDCProvider) {
 		p.client = client
 	}
 }
 
 // WithLogger sets a custom logger for the provider.
-func WithLogger(logger *slog.Logger) OIDCIDPProviderOption {
-	return func(p *OIDCIDPProvider) {
+func WithLogger(logger *slog.Logger) OIDCProviderOption {
+	return func(p *OIDCProvider) {
 		p.logger = logger
 	}
 }
 
-// NewOIDCIDPProvider creates a new OIDC upstream provider.
+// NewOIDCProvider creates a new OIDC provider.
 // It performs OIDC discovery to fetch endpoints.
-func NewOIDCIDPProvider(
+func NewOIDCProvider(
 	ctx context.Context,
-	config UpstreamConfig,
-	opts ...OIDCIDPProviderOption,
-) (*OIDCIDPProvider, error) {
+	config Config,
+	opts ...OIDCProviderOption,
+) (*OIDCProvider, error) {
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid upstream config: %w", err)
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	p := &OIDCIDPProvider{
+	p := &OIDCProvider{
 		config: config,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -87,12 +87,12 @@ func NewOIDCIDPProvider(
 }
 
 // Name returns the provider name.
-func (*OIDCIDPProvider) Name() string {
+func (*OIDCProvider) Name() string {
 	return "oidc"
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
-func (p *OIDCIDPProvider) AuthorizationURL(state, codeChallenge string, _ []string) (string, error) {
+func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, _ []string) (string, error) {
 	if p.endpoints == nil {
 		return "", errors.New("OIDC endpoints not discovered")
 	}
@@ -137,7 +137,7 @@ func (p *OIDCIDPProvider) AuthorizationURL(state, codeChallenge string, _ []stri
 }
 
 // ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
-func (p *OIDCIDPProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*IDPTokens, error) {
+func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
@@ -163,7 +163,7 @@ func (p *OIDCIDPProvider) ExchangeCode(ctx context.Context, code, codeVerifier s
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
-func (p *OIDCIDPProvider) RefreshTokens(ctx context.Context, refreshToken string) (*IDPTokens, error) {
+func (p *OIDCProvider) RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
@@ -183,7 +183,7 @@ func (p *OIDCIDPProvider) RefreshTokens(ctx context.Context, refreshToken string
 }
 
 // UserInfo fetches user information from the upstream IDP.
-func (p *OIDCIDPProvider) UserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
+func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
@@ -247,13 +247,13 @@ func (p *OIDCIDPProvider) UserInfo(ctx context.Context, accessToken string) (*Us
 }
 
 // Endpoints returns the discovered OIDC endpoints.
-func (p *OIDCIDPProvider) Endpoints() *OIDCEndpoints {
+func (p *OIDCProvider) Endpoints() *OIDCEndpoints {
 	return p.endpoints
 }
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
-func (p *OIDCIDPProvider) discoverEndpoints(ctx context.Context) error {
-	discoveryURL, err := buildDiscoveryURL(p.config.Issuer)
+func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
+	discoveryURL, err := BuildDiscoveryURL(p.config.Issuer)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (p *OIDCIDPProvider) discoverEndpoints(ctx context.Context) error {
 		return fmt.Errorf("failed to parse discovery document: %w", err)
 	}
 
-	if err := validateDiscoveryDocument(&endpoints, p.config.Issuer); err != nil {
+	if err := ValidateDiscoveryDocument(&endpoints, p.config.Issuer); err != nil {
 		return fmt.Errorf("invalid discovery document: %w", err)
 	}
 
@@ -312,7 +312,7 @@ func (p *OIDCIDPProvider) discoverEndpoints(ctx context.Context) error {
 }
 
 // tokenRequest performs a token request to the upstream IDP.
-func (p *OIDCIDPProvider) tokenRequest(ctx context.Context, params url.Values) (*IDPTokens, error) {
+func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*Tokens, error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -363,7 +363,7 @@ func (p *OIDCIDPProvider) tokenRequest(ctx context.Context, params url.Values) (
 		expiresAt = time.Now().Add(time.Hour)
 	}
 
-	return &IDPTokens{
+	return &Tokens{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
@@ -372,7 +372,7 @@ func (p *OIDCIDPProvider) tokenRequest(ctx context.Context, params url.Values) (
 }
 
 // supportsPKCE checks if the provider advertises S256 PKCE support.
-func (p *OIDCIDPProvider) supportsPKCE() bool {
+func (p *OIDCProvider) supportsPKCE() bool {
 	if p.endpoints == nil {
 		return false
 	}
@@ -401,8 +401,8 @@ type tokenErrorResponse struct {
 	ErrorURI         string `json:"error_uri,omitempty"`
 }
 
-// buildDiscoveryURL constructs the OIDC discovery URL from the issuer.
-func buildDiscoveryURL(issuer string) (string, error) {
+// BuildDiscoveryURL constructs the OIDC discovery URL from the issuer.
+func BuildDiscoveryURL(issuer string) (string, error) {
 	if issuer == "" {
 		return "", errors.New("issuer is required")
 	}
@@ -414,7 +414,7 @@ func buildDiscoveryURL(issuer string) (string, error) {
 	}
 
 	// Ensure HTTPS (except for localhost for testing)
-	if issuerURL.Scheme != "https" && !isLocalhost(issuerURL.Host) {
+	if issuerURL.Scheme != "https" && !IsLocalhost(issuerURL.Host) {
 		return "", fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
@@ -424,8 +424,8 @@ func buildDiscoveryURL(issuer string) (string, error) {
 	return basePath + "/.well-known/openid-configuration", nil
 }
 
-// validateDiscoveryDocument validates the OIDC discovery document.
-func validateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error {
+// ValidateDiscoveryDocument validates the OIDC discovery document.
+func ValidateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error {
 	if doc.Issuer == "" {
 		return errors.New("missing issuer")
 	}
@@ -446,8 +446,8 @@ func validateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error 
 	return nil
 }
 
-// isLocalhost checks if the host is localhost.
-func isLocalhost(host string) bool {
+// IsLocalhost checks if the host is localhost.
+func IsLocalhost(host string) bool {
 	// Remove port if present
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]

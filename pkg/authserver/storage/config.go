@@ -98,4 +98,6 @@ type RunConfig struct {
 }
 
 // RedisPasswordEnvVar is the environment variable for Redis password.
+//
+//nolint:gosec // G101: This is an environment variable name, not a credential
 const RedisPasswordEnvVar = "TOOLHIVE_AUTHSERVER_REDIS_PASSWORD"

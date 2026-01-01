@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -142,7 +142,7 @@ type RunConfig struct {
 	// AuthServerConfig configures the embedded OAuth authorization server.
 	// When set and Enabled is true, the proxy will mount OAuth endpoints.
 	// This takes precedence over AuthServerMux/AuthServerWellKnownMux if set.
-	AuthServerConfig *authserver.RunConfig `json:"auth_server_config,omitempty" yaml:"auth_server_config,omitempty"`
+	AuthServerConfig *runconfig.RunConfig `json:"auth_server_config,omitempty" yaml:"auth_server_config,omitempty"`
 
 	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
 	buildContext BuildContext

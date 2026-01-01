@@ -24,22 +24,36 @@
 //
 // # Usage
 //
-// The primary entry point is CreateHandlersWithResult, which creates HTTP handlers
-// for OAuth and well-known endpoints:
+// The primary entry point is authserver.New(), which creates an OAuth authorization
+// server with a single handler:
 //
-//	result, err := authserver.CreateHandlersWithResult(ctx, cfg, proxyPort)
+//	server, err := authserver.New(ctx, cfg)
 //	if err != nil {
 //	    return err
 //	}
-//	// Mount handlers on your HTTP server
-//	mux.Handle("/oauth/", result.OAuthMux)
-//	mux.Handle("/.well-known/", result.WellKnownMux)
+//	// Mount handler on your HTTP server (serves all OAuth/OIDC endpoints)
+//	mux.Handle("/", server.Handler())
+//
+// # Configuration
+//
+// For ToolHive deployments, use the runconfig subpackage to convert ToolHive-specific
+// configuration (with file paths, env vars) to generic Config:
+//
+//	genericCfg, err := runconfig.BuildConfig(runCfg, proxyPort)
+//	if err != nil {
+//	    return err
+//	}
+//	server, err := authserver.New(ctx, *genericCfg)
 //
 // # Storage
 //
 // The auth server supports pluggable storage backends:
 //   - In-memory storage (default, suitable for single-instance deployments)
 //   - Redis storage (for distributed deployments)
+//
+// Use WithStorage option to provide a custom storage backend:
+//
+//	server, err := authserver.New(ctx, cfg, authserver.WithStorage(customStorage))
 //
 // # IDP Token Storage
 //
@@ -53,11 +67,10 @@
 //   - idp: Upstream Identity Provider communication
 //   - storage: Token and authorization storage backends
 //   - oauth: OAuth protocol handlers and configuration
+//   - runconfig: ToolHive-specific configuration with file paths and env vars
 package authserver
 
 import (
-	"net/http"
-
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
@@ -76,21 +89,3 @@ type (
 	// PendingAuthorization tracks a client's authorization request.
 	PendingAuthorization = storage.PendingAuthorization
 )
-
-// HandlerResult contains the handlers and resources created by CreateHandlersWithResult.
-type HandlerResult struct {
-	// OAuthMux handles OAuth endpoints (/oauth/authorize, /oauth/token, /oauth/callback)
-	OAuthMux http.Handler
-
-	// WellKnownMux handles well-known endpoints (/.well-known/openid-configuration, /.well-known/jwks.json)
-	WellKnownMux http.Handler
-
-	// Storage is the storage instance (implements IDPTokenStorage)
-	Storage Storage
-}
-
-// IDPTokenStorage returns the IDP token storage interface.
-// This allows callers to access IDP token storage without coupling to the concrete Storage type.
-func (r *HandlerResult) IDPTokenStorage() IDPTokenStorage {
-	return r.Storage
-}

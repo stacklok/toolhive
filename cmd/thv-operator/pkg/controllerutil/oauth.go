@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -211,7 +211,7 @@ func addOAuthConfig(
 
 	// Build upstream configuration
 	// Note: ClientSecret is provided via environment variable TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET
-	upstreamConfig := &authserver.RunUpstreamConfig{
+	upstreamConfig := &runconfig.UpstreamConfig{
 		Issuer:   oauthSpec.Upstream.Issuer,
 		ClientID: oauthSpec.Upstream.ClientID,
 		Scopes:   oauthSpec.Upstream.Scopes,
@@ -224,7 +224,7 @@ func addOAuthConfig(
 	hmacSecretPath := getHMACSecretPath(oauthSpec.AuthServer.HMACSecretRef)
 
 	// Build the auth server run config
-	authServerConfig := &authserver.RunConfig{
+	authServerConfig := &runconfig.RunConfig{
 		Enabled:             true,
 		Issuer:              oauthSpec.AuthServer.Issuer,
 		SigningKeyPath:      OAuthSigningKeyMountPath,
@@ -279,10 +279,10 @@ func validateOAuthSecrets(
 }
 
 // buildAuthServerClients builds the auth server clients configuration from the spec
-func buildAuthServerClients(clientSpecs []mcpv1alpha1.OAuthClientConfig) []authserver.RunClientConfig {
-	clients := make([]authserver.RunClientConfig, 0, len(clientSpecs))
+func buildAuthServerClients(clientSpecs []mcpv1alpha1.OAuthClientConfig) []runconfig.ClientConfig {
+	clients := make([]runconfig.ClientConfig, 0, len(clientSpecs))
 	for _, clientSpec := range clientSpecs {
-		clients = append(clients, authserver.RunClientConfig{
+		clients = append(clients, runconfig.ClientConfig{
 			ID:           clientSpec.ID,
 			Secret:       clientSpec.Secret,
 			RedirectURIs: clientSpec.RedirectURIs,
@@ -293,12 +293,12 @@ func buildAuthServerClients(clientSpecs []mcpv1alpha1.OAuthClientConfig) []auths
 }
 
 // buildStorageConfig builds the storage configuration from the spec
-func buildStorageConfig(storageSpec *mcpv1alpha1.OAuthStorageConfig) *authserver.StorageRunConfig {
+func buildStorageConfig(storageSpec *mcpv1alpha1.OAuthStorageConfig) *runconfig.StorageConfig {
 	if storageSpec == nil {
 		return nil
 	}
 
-	storageConfig := &authserver.StorageRunConfig{
+	storageConfig := &runconfig.StorageConfig{
 		Type: storageSpec.Type,
 	}
 

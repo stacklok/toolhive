@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -87,7 +87,7 @@ func WithAuthServerWellKnownMux(mux http.Handler) RunConfigBuilderOption {
 // WithAuthServerRunConfig sets the embedded auth server configuration.
 // When set and Enabled is true, the runner will create OAuth handlers from this config.
 // This takes precedence over WithAuthServerMux/WithAuthServerWellKnownMux.
-func WithAuthServerRunConfig(cfg *authserver.RunConfig) RunConfigBuilderOption {
+func WithAuthServerRunConfig(cfg *runconfig.RunConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.AuthServerConfig = cfg
 		return nil

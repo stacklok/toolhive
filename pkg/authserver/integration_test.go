@@ -1550,7 +1550,7 @@ func TestRegisterClients_UsesLoopbackClientForPublicClients(t *testing.T) {
 	stor := storage.NewMemoryStorage()
 	defer stor.Close()
 
-	clients := []RunClientConfig{
+	clients := []ClientConfig{
 		{
 			ID:           "public-client",
 			RedirectURIs: []string{"http://127.0.0.1/callback"},

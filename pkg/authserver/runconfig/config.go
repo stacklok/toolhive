@@ -1,6 +1,21 @@
-// Package authserver provides a centralized OAuth Authorization Server
-// implementation using ory/fosite for issuing JWTs to clients.
-package authserver
+// Copyright 2025 Stacklok, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package runconfig provides ToolHive-specific configuration for the auth server.
+// It contains RunConfig types that include file paths, env vars, and other
+// ToolHive deployment concerns that the generic authserver.Config doesn't handle.
+package runconfig
 
 import (
 	"fmt"
@@ -49,18 +64,18 @@ type RunConfig struct {
 
 	// Upstream contains configuration for connecting to an upstream IDP.
 	// If nil, no upstream IDP is configured and the server operates in standalone mode.
-	Upstream *RunUpstreamConfig `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+	Upstream *UpstreamConfig `json:"upstream,omitempty" yaml:"upstream,omitempty"`
 
 	// Clients is the list of pre-registered OAuth clients.
-	Clients []RunClientConfig `json:"clients,omitempty" yaml:"clients,omitempty"`
+	Clients []ClientConfig `json:"clients,omitempty" yaml:"clients,omitempty"`
 
 	// Storage contains configuration for the storage backend.
 	// If nil, defaults to in-memory storage.
-	Storage *StorageRunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+	Storage *StorageConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
 }
 
-// StorageRunConfig is the serializable configuration for storage backends.
-type StorageRunConfig struct {
+// StorageConfig is the serializable configuration for storage backends.
+type StorageConfig struct {
 	// Type specifies the storage backend type (memory or redis).
 	// Defaults to memory if not specified.
 	Type string `json:"type,omitempty" yaml:"type,omitempty"`
@@ -79,8 +94,8 @@ type StorageRunConfig struct {
 	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
 }
 
-// RunUpstreamConfig contains serializable configuration for connecting to an upstream IDP.
-type RunUpstreamConfig struct {
+// UpstreamConfig contains serializable configuration for connecting to an upstream IDP.
+type UpstreamConfig struct {
 	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
 	Issuer string `json:"issuer" yaml:"issuer"`
 
@@ -99,8 +114,8 @@ type RunUpstreamConfig struct {
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }
 
-// RunClientConfig defines a pre-registered OAuth client in serializable form.
-type RunClientConfig struct {
+// ClientConfig defines a pre-registered OAuth client in serializable form.
+type ClientConfig struct {
 	// ID is the unique identifier for this client.
 	ID string `json:"id" yaml:"id"`
 
@@ -146,8 +161,8 @@ func (c *RunConfig) Validate() error {
 	return nil
 }
 
-// Validate checks that the RunUpstreamConfig is valid.
-func (c *RunUpstreamConfig) Validate() error {
+// Validate checks that the UpstreamConfig is valid.
+func (c *UpstreamConfig) Validate() error {
 	if c.Issuer == "" {
 		return fmt.Errorf("upstream issuer is required")
 	}
@@ -174,8 +189,8 @@ func (c *RunUpstreamConfig) Validate() error {
 	return nil
 }
 
-// Validate checks that the RunClientConfig is valid.
-func (c *RunClientConfig) Validate() error {
+// Validate checks that the ClientConfig is valid.
+func (c *ClientConfig) Validate() error {
 	if c.ID == "" {
 		return fmt.Errorf("client id is required")
 	}

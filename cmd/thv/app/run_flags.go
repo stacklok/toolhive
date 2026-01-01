@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -946,21 +946,14 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		CustomAttributes:            customAttrs,
 	}
 }
-<<<<<<< HEAD
-=======
 
-// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
-func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
-}
-
-// buildAuthServerConfig creates an authserver.RunConfig from CLI flags.
+// buildAuthServerConfig creates a runconfig.RunConfig from CLI flags.
 // The config is later used by the runner to create the auth server handlers.
-func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
+func buildAuthServerConfig(runFlags *RunFlags) (*runconfig.RunConfig, error) {
 	// Build upstream config if upstream IDP is configured
-	var upstream *authserver.RunUpstreamConfig
+	var upstream *runconfig.UpstreamConfig
 	if runFlags.AuthServerUpstreamIssuer != "" {
-		upstream = &authserver.RunUpstreamConfig{
+		upstream = &runconfig.UpstreamConfig{
 			Issuer:           runFlags.AuthServerUpstreamIssuer,
 			ClientID:         runFlags.AuthServerUpstreamClientID,
 			ClientSecret:     runFlags.AuthServerUpstreamClientSecret,
@@ -970,14 +963,14 @@ func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
 	}
 
 	// Build the config
-	authServerCfg := &authserver.RunConfig{
+	authServerCfg := &runconfig.RunConfig{
 		Enabled:        true,
 		Issuer:         runFlags.AuthServerIssuer,
 		SigningKeyPath: runFlags.AuthServerSigningKey,
 		HMACSecretPath: runFlags.AuthServerHMACSecretPath,
 		Upstream:       upstream,
 		// Register a default test client
-		Clients: []authserver.RunClientConfig{{
+		Clients: []runconfig.ClientConfig{{
 			ID:           "test",
 			RedirectURIs: []string{"http://localhost:9999/callback"},
 			Public:       true,
@@ -1002,4 +995,3 @@ func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
 
 	return authServerCfg, nil
 }
->>>>>>> 1c13faaf (Add CLI auth server flags)

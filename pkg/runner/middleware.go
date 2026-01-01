@@ -7,7 +7,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/idptokenswap"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -197,7 +197,7 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 // This middleware swaps the proxy-issued JWT for the original IDP access token stored during OAuth flow.
 func addIDPTokenSwapMiddleware(
 	middlewares []types.MiddlewareConfig,
-	authServerConfig *authserver.RunConfig,
+	authServerConfig *runconfig.RunConfig,
 ) ([]types.MiddlewareConfig, error) {
 	// Only enable IDP token swap when:
 	// 1. Auth server config is present and enabled

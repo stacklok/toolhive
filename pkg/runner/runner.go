@@ -16,6 +16,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runconfig"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -156,15 +158,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	// This MUST happen BEFORE middleware creation so that IDP token storage is available
 	// for middlewares that depend on it (e.g., idp-token-swap middleware).
 	if r.Config.AuthServerConfig != nil && r.Config.AuthServerConfig.Enabled {
-		result, err := authserver.CreateHandlersWithResult(ctx, r.Config.AuthServerConfig, r.Config.Port)
+		authServer, err := r.setupAuthServer(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create auth server handlers: %w", err)
+			return fmt.Errorf("failed to create auth server: %w", err)
 		}
-		if result != nil {
-			transportConfig.AuthServerMux = result.OAuthMux
-			transportConfig.AuthServerWellKnownMux = result.WellKnownMux
+		if authServer != nil {
+			transportConfig.AuthServerMux = authServer.OAuthHandler()
+			transportConfig.AuthServerWellKnownMux = authServer.WellKnownHandler()
 			// Store the IDP token storage for middleware access
-			r.idpTokenStorage = result.IDPTokenStorage()
+			r.idpTokenStorage = authServer.IDPTokenStorage()
 		}
 	} else {
 		// Fall back to pre-created handlers for backward compatibility
@@ -558,6 +560,39 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	}
 
 	return tokenSource, nil
+}
+
+// setupAuthServer creates the auth server using the new authserver.Server interface.
+func (r *Runner) setupAuthServer(ctx context.Context) (authserver.Server, error) {
+	cfg := r.Config.AuthServerConfig
+	if cfg == nil || !cfg.Enabled {
+		return nil, nil
+	}
+
+	// Build generic config via adapter
+	genericCfg, err := runconfig.BuildConfig(cfg, r.Config.Port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build auth server config: %w", err)
+	}
+
+	// Build storage options
+	var opts []authserver.Option
+	if cfg.Storage != nil {
+		storCfg := runconfig.BuildStorageConfig(cfg.Storage)
+		stor, err := storage.NewFromRunConfig(storCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create storage: %w", err)
+		}
+		opts = append(opts, authserver.WithStorage(stor))
+	}
+
+	// Create server
+	server, err := authserver.New(ctx, *genericCfg, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auth server: %w", err)
+	}
+
+	return server, nil
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.

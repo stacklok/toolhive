@@ -127,7 +127,7 @@ func applyBackwardCompatibility(config *Config) error {
 		config.Secrets.ProviderType = string(secrets.EncryptedType)
 		err = config.save()
 		if err != nil {
-			return fmt.Errorf("error updating config: %v", err)
+			return fmt.Errorf("error updating config: %w", err)
 		}
 	}
 
@@ -137,7 +137,7 @@ func applyBackwardCompatibility(config *Config) error {
 		config.Secrets.SetupCompleted = true
 		err := config.save()
 		if err != nil {
-			return fmt.Errorf("error updating config for backward compatibility: %v", err)
+			return fmt.Errorf("error updating config for backward compatibility: %w", err)
 		}
 	}
 

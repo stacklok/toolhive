@@ -94,13 +94,13 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(
 			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, true)
 		if err != nil {
-			return fmt.Errorf("failed to generate Dockerfile for %s: %v", protocolScheme, err)
+			return fmt.Errorf("failed to generate Dockerfile for %s: %w", protocolScheme, err)
 		}
 
 		// Write to output file if specified
 		if buildFlags.Output != "" {
 			if err := os.WriteFile(buildFlags.Output, []byte(dockerfileContent), 0600); err != nil {
-				return fmt.Errorf("failed to write Dockerfile to %s: %v", buildFlags.Output, err)
+				return fmt.Errorf("failed to write Dockerfile to %s: %w", buildFlags.Output, err)
 			}
 			logger.Infof("Dockerfile written to: %s", buildFlags.Output)
 			fmt.Printf("Dockerfile written to: %s\n", buildFlags.Output)
@@ -116,7 +116,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	// Build the image using the new protocol handler with custom name
 	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, false)
 	if err != nil {
-		return fmt.Errorf("failed to build container for %s: %v", protocolScheme, err)
+		return fmt.Errorf("failed to build container for %s: %w", protocolScheme, err)
 	}
 
 	logger.Infof("Successfully built container image: %s", imageName)

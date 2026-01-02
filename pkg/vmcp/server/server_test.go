@@ -101,9 +101,18 @@ func TestServer_Address(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "default configuration",
-			config:   &server.Config{},
+			name: "default host with explicit port",
+			config: &server.Config{
+				Port: 4483,
+			},
 			expected: "127.0.0.1:4483",
+		},
+		{
+			name: "port 0 for dynamic allocation",
+			config: &server.Config{
+				Port: 0,
+			},
+			expected: "127.0.0.1:0",
 		},
 		{
 			name: "custom host and port",

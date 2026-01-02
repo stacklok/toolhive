@@ -235,7 +235,7 @@ func AddAuthzConfigOptions(
 		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
 			// Fallback to JSON explicitly for clearer error paths
 			if err2 := json.Unmarshal([]byte(raw), &cfg); err2 != nil {
-				return fmt.Errorf("failed to parse authz config from ConfigMap %s/%s key %q: %v; json fallback error: %v",
+				return fmt.Errorf("failed to parse authz config from ConfigMap %s/%s key %q: %w; json fallback error: %w",
 					namespace, authzRef.ConfigMap.Name, key, err, err2)
 			}
 		}

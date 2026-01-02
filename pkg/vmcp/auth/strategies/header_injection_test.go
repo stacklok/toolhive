@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 func TestHeaderInjectionStrategy_Name(t *testing.T) {
@@ -25,10 +26,27 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 	tests := []struct {
 		name          string
 		strategy      *authtypes.BackendAuthStrategy
+		setupCtx      func() context.Context
 		expectError   bool
 		errorContains string
 		checkHeader   func(t *testing.T, req *http.Request)
 	}{
+		{
+			name: "skips authentication for health checks",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-key-123",
+				},
+			},
+			setupCtx:    func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			expectError: false,
+			checkHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Empty(t, req.Header.Get("X-API-Key"), "X-API-Key header should not be set for health checks")
+			},
+		},
 		{
 			name: "sets X-API-Key header correctly",
 			strategy: &authtypes.BackendAuthStrategy{
@@ -38,6 +56,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 					HeaderValue: "secret-key-123",
 				},
 			},
+			setupCtx:    nil,
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()
@@ -201,6 +220,9 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 
 			strategy := NewHeaderInjectionStrategy()
 			ctx := context.Background()
+			if tt.setupCtx != nil {
+				ctx = tt.setupCtx()
+			}
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
 			// Special setup for the "overwrites existing header value" test

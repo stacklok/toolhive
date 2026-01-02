@@ -111,7 +111,7 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 	// Cache miss - perform aggregation
 	caps, err := m.aggregator.AggregateCapabilities(ctx, backends)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDiscoveryFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrDiscoveryFailed, err)
 	}
 
 	// Cache the result (skips caching if at capacity and key doesn't exist)

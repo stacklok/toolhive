@@ -1938,6 +1938,34 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	}
 
+	// Create handler for StatefulSet events to trigger MCPServer reconciliation
+	statefulSetHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			statefulSet, ok := obj.(*appsv1.StatefulSet)
+			if !ok {
+				return nil
+			}
+
+			// StatefulSets created by thv-proxyrunner have the toolhive-name label
+			mcpServerName, hasMCPServerLabel := statefulSet.Labels["toolhive-name"]
+			if !hasMCPServerLabel {
+				return nil
+			}
+
+			log.FromContext(ctx).Info("StatefulSet event detected, triggering MCPServer reconciliation",
+				"statefulset", statefulSet.Name,
+				"mcpserver", mcpServerName,
+				"namespace", statefulSet.Namespace)
+
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: statefulSet.Namespace,
+				},
+			}}
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
@@ -1948,5 +1976,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findMCPServerForPod),
 			builder.WithPredicates(podEventPredicate),
 		).
+		Watches(&appsv1.StatefulSet{}, statefulSetHandler).
 		Complete(r)
 }

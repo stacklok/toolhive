@@ -8,6 +8,13 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
+// Incoming auth type constants.
+const (
+	IncomingAuthTypeOIDC      = "oidc"
+	IncomingAuthTypeLocal     = "local"
+	IncomingAuthTypeAnonymous = "anonymous"
+)
+
 // DefaultValidator implements comprehensive configuration validation.
 type DefaultValidator struct{}
 
@@ -79,13 +86,13 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 	}
 
 	// Validate auth type
-	validTypes := []string{"oidc", "local", "anonymous"}
+	validTypes := []string{IncomingAuthTypeOIDC, IncomingAuthTypeLocal, IncomingAuthTypeAnonymous}
 	if !contains(validTypes, auth.Type) {
 		return fmt.Errorf("incoming_auth.type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
 	// Validate OIDC configuration
-	if auth.Type == "oidc" {
+	if auth.Type == IncomingAuthTypeOIDC {
 		if auth.OIDC == nil {
 			return fmt.Errorf("incoming_auth.oidc is required when type is 'oidc'")
 		}

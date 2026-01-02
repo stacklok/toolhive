@@ -381,6 +381,10 @@ func (*Converter) convertConflictResolution(
 		agg.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
 			PrefixFormat: "{workload}_",
 		}
+	} else {
+		// For other strategies (manual, priority), provide an empty config
+		// The validator requires a non-nil config for all strategies
+		agg.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{}
 	}
 }
 

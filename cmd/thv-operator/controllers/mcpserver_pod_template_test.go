@@ -99,7 +99,7 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the pod template metadata overrides labels are merged with Spec.Template.Labels
@@ -190,7 +190,7 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 	require.NotNil(t, deployment, "Deployment should not be nil")
 }
 
@@ -234,7 +234,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that secrets are injected via pod template patch
@@ -331,7 +331,7 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 
 	// Generate the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the ProxyRunner's pod and container security context are set
@@ -378,7 +378,7 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 
 	// Create the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the proxy runner container has the UNSTRUCTURED_LOGS environment variable set to false

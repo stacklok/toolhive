@@ -331,12 +331,34 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Get the StatefulSet to track its revision for proxy reconnection
+	// This ensures the proxy Deployment restarts when StatefulSet pods restart
+	statefulSet := &appsv1.StatefulSet{}
+	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulSet)
+	var statefulSetRevision string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			ctxLogger.Info("StatefulSet not found, proxy deployment will not track pod restarts yet")
+			statefulSetRevision = "not-found"
+		} else {
+			ctxLogger.Error(err, "Failed to get StatefulSet")
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Use the StatefulSet's update revision which changes when pods are restarted
+		statefulSetRevision = statefulSet.Status.UpdateRevision
+		if statefulSetRevision == "" {
+			// Fallback to current revision if update revision is not set
+			statefulSetRevision = statefulSet.Status.CurrentRevision
+		}
+	}
+
 	// Check if the deployment already exists, if not create a new one
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new deployment
-		dep := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
+		dep := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum, statefulSetRevision)
 		if dep == nil {
 			ctxLogger.Error(nil, "Failed to create Deployment object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
@@ -410,32 +432,10 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	// Get the StatefulSet to track its revision for proxy reconnection
-	// This ensures the proxy Deployment restarts when StatefulSet pods restart
-	statefulSet := &appsv1.StatefulSet{}
-	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulSet)
-	var statefulSetRevision string
-	if err != nil {
-		if errors.IsNotFound(err) {
-			ctxLogger.Info("StatefulSet not found, proxy deployment will not track pod restarts yet")
-			statefulSetRevision = "not-found"
-		} else {
-			ctxLogger.Error(err, "Failed to get StatefulSet")
-			return ctrl.Result{}, err
-		}
-	} else {
-		// Use the StatefulSet's update revision which changes when pods are restarted
-		statefulSetRevision = statefulSet.Status.UpdateRevision
-		if statefulSetRevision == "" {
-			// Fallback to current revision if update revision is not set
-			statefulSetRevision = statefulSet.Status.CurrentRevision
-		}
-	}
-
 	// Check if the deployment spec changed or if StatefulSet pods have restarted
 	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum, statefulSetRevision) {
 		// Update the deployment
-		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
+		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum, statefulSetRevision)
 		deployment.Spec = newDeployment.Spec
 		err = r.Update(ctx, deployment)
 		if err != nil {
@@ -926,7 +926,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) deploymentForMCPServer(
-	ctx context.Context, m *mcpv1alpha1.MCPServer, runConfigChecksum string,
+	ctx context.Context, m *mcpv1alpha1.MCPServer, runConfigChecksum string, statefulSetRevision string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPServer(m.Name)
 	replicas := int32(1)
@@ -940,7 +940,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
+	podSpecBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
 		// This is defense-in-depth: if somehow reached, log and continue without pod customizations
@@ -953,7 +953,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			defaultSA := mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
-		finalPodTemplateSpec := builder.
+		finalPodTemplateSpec := podSpecBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(m.Spec.Secrets).
 			Build()
@@ -1118,20 +1118,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 
-	// Get StatefulSet revision to track pod restarts
+	// Add StatefulSet revision annotation to track pod restarts
 	// This ensures proxy Deployment restarts when StatefulSet pods restart
-	statefulSet := &appsv1.StatefulSet{}
-	statefulSetErr := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, statefulSet)
-	if statefulSetErr == nil {
-		// Use the StatefulSet's update revision which changes when pods are restarted
-		revision := statefulSet.Status.UpdateRevision
-		if revision == "" {
-			// Fallback to current revision if update revision is not set
-			revision = statefulSet.Status.CurrentRevision
-		}
-		if revision != "" {
-			deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = revision
-		}
+	if statefulSetRevision != "" && statefulSetRevision != "not-found" {
+		deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = statefulSetRevision
 	}
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
@@ -1575,13 +1565,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		podSpecBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true
 		}
 
-		expectedPodTemplateSpec := builder.
+		expectedPodTemplateSpec := podSpecBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
@@ -1827,11 +1817,10 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// SetupWithManager sets up the controller with the Manager.
 // findMCPServerForPod maps pod events to MCPServer reconciliation requests.
 // This enables the controller to detect when StatefulSet pods restart and trigger
 // proxy Deployment updates to reestablish stdio connections.
-func (r *MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj client.Object) []reconcile.Request {
+func (*MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj client.Object) []reconcile.Request {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
 		return nil
@@ -1864,6 +1853,9 @@ func (r *MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj clien
 	}}
 }
 
+// SetupWithManager sets up the controller with the Manager.
+// It configures watches for MCPServer, StatefulSet, Deployment, ConfigMap, Secret, ServiceAccount,
+// MCPExternalAuthConfig, and Pod resources to enable comprehensive reconciliation.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
@@ -1903,7 +1895,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// 1. Pods that have restarted (phase change or container restarts)
 	// 2. Pods that have been deleted (will be recreated)
 	podEventPredicate := predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool {
+		CreateFunc: func(_ event.CreateEvent) bool {
 			// New pods created are relevant (StatefulSet scale-up or recreation)
 			return true
 		},
@@ -1940,7 +1932,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 			return false
 		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
+		DeleteFunc: func(_ event.DeleteEvent) bool {
 			// Pod deletions are relevant (StatefulSet will recreate)
 			return true
 		},

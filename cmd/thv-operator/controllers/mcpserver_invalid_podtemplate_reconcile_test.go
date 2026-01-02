@@ -216,7 +216,7 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	ctx = log.IntoContext(ctx, log.Log)
 
 	// Call deploymentForMCPServer to check that it handles invalid PodTemplateSpec gracefully
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum", "test-revision")
 
 	// Check that the deployment was created successfully
 	require.NotNil(t, deployment)

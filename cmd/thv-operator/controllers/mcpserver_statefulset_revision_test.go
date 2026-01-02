@@ -509,8 +509,9 @@ func TestDeploymentNeedsUpdateWhenAddingRevisionForFirstTime(t *testing.T) {
 	newRevision := "test-server-xyz123"
 
 	// Check if deployment needs update when we have a revision but deployment doesn't have annotation
-	// This should return FALSE - we don't trigger updates just to add the annotation
-	// The annotation will be added during the next reconciliation naturally
+	// This should return TRUE - we need to add the annotation to track future StatefulSet changes
+	// This updates deployment metadata (not pod template), so it doesn't restart pods
+	// The pod restart only happens when the revision changes (not on initial annotation addition)
 	needsUpdate := reconciler.deploymentNeedsUpdate(
 		ctx,
 		deploymentWithoutRevision,
@@ -519,6 +520,6 @@ func TestDeploymentNeedsUpdateWhenAddingRevisionForFirstTime(t *testing.T) {
 		newRevision, // StatefulSet now has a revision
 	)
 
-	assert.False(t, needsUpdate,
-		"Deployment should NOT need update when adding revision annotation for first time (prevents unnecessary restart)")
+	assert.True(t, needsUpdate,
+		"Deployment should need update when StatefulSet exists but annotation is missing (adds tracking without restart)")
 }

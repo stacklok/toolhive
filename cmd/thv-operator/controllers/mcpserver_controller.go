@@ -1492,9 +1492,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	// Only trigger pod restart when the revision actually changes
 	if statefulSetRevision != "" {
 		currentRevision := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+		// If the deployment doesn't have the annotation yet, we need to add it
+		// This handles the case where the Deployment was created before the StatefulSet existed
+		if currentRevision == "" {
+			log.FromContext(ctx).Info("StatefulSet revision annotation missing, deployment needs update to add it",
+				"newRevision", statefulSetRevision,
+				"mcpserver", mcpServer.Name)
+			return true
+		}
 		// Only trigger restart if the revision has changed from a previous value
-		// Don't trigger on initial annotation addition (empty current revision)
-		if currentRevision != "" && currentRevision != statefulSetRevision {
+		if currentRevision != statefulSetRevision {
 			log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",
 				"currentRevision", currentRevision,
 				"newRevision", statefulSetRevision,

@@ -10,16 +10,14 @@ mdx:
 ---
 
 ## thv start
-> **Note**  
-> `thv restart` is supported as an alias for backward compatibility.  
-> Users are encouraged to use `thv start` going forward.
 
-Start (or resume) a tooling server
+Start (resume) a tooling server
 
 ### Synopsis
 
 Start (or resume) a tooling server managed by ToolHive.
 If the server is not running, it will be started.
+The alias "thv restart" is kept for backward compatibility.
 Supports both container-based and remote MCP servers.
 
 ```
@@ -30,8 +28,8 @@ thv start [workload-name] [flags]
 
 ```
   -a, --all            Restart all MCP servers
-  -f, --foreground     Run the workload in foreground mode
-  -g, --group string   Start all MCP servers in a specific group
+  -f, --foreground     Run the restarted workload in foreground mode
+  -g, --group string   Restart all MCP servers in a specific group
   -h, --help           help for start
 ```
 

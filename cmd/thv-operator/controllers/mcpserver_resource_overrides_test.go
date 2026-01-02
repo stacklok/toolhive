@@ -63,7 +63,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive":                   "true",
 				"toolhive-name":              "test-server",
 			},
-			expectedDeploymentAnns: map[string]string{},
+			expectedDeploymentAnns: map[string]string{
+				"mcpserver.toolhive.stacklok.dev/statefulset-revision": "test-revision",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -181,7 +183,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive-name":              "test-server",
 				"environment":                "test",
 			},
-			expectedDeploymentAnns: map[string]string{},
+			expectedDeploymentAnns: map[string]string{
+				"mcpserver.toolhive.stacklok.dev/statefulset-revision": "test-revision",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -217,7 +221,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive":                   "true",
 				"toolhive-name":              "test-server",
 			},
-			expectedDeploymentAnns: map[string]string{},
+			expectedDeploymentAnns: map[string]string{
+				"mcpserver.toolhive.stacklok.dev/statefulset-revision": "test-revision",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -321,7 +327,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive":                   "true",
 				"toolhive-name":              "test-server",
 			},
-			expectedDeploymentAnns: map[string]string{},
+			expectedDeploymentAnns: map[string]string{
+				"mcpserver.toolhive.stacklok.dev/statefulset-revision": "test-revision",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",

@@ -25,13 +25,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -1826,45 +1823,8 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// findMCPServerForPod maps pod events to MCPServer reconciliation requests.
-// This enables the controller to detect when StatefulSet pods restart and trigger
-// proxy Deployment updates to reestablish stdio connections.
-func (*MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj client.Object) []reconcile.Request {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		return nil
-	}
-
-	// Only process StatefulSet pods (not proxy deployment pods)
-	// StatefulSet pods have the statefulset.kubernetes.io/pod-name label
-	_, isStatefulSetPod := pod.Labels["statefulset.kubernetes.io/pod-name"]
-	if !isStatefulSetPod {
-		return nil
-	}
-
-	// Get the MCPServer name from the toolhive-name label
-	mcpServerName, hasMCPServerLabel := pod.Labels["toolhive-name"]
-	if !hasMCPServerLabel {
-		return nil
-	}
-
-	log.FromContext(ctx).Info("StatefulSet pod event detected, triggering MCPServer reconciliation",
-		"pod", pod.Name,
-		"mcpserver", mcpServerName,
-		"namespace", pod.Namespace,
-		"phase", pod.Status.Phase)
-
-	return []reconcile.Request{{
-		NamespacedName: types.NamespacedName{
-			Name:      mcpServerName,
-			Namespace: pod.Namespace,
-		},
-	}}
-}
-
 // SetupWithManager sets up the controller with the Manager.
-// It configures watches for MCPServer, StatefulSet, Deployment, ConfigMap, Secret, ServiceAccount,
-// MCPExternalAuthConfig, and Pod resources to enable comprehensive reconciliation.
+// It configures watches for MCPServer, Deployment, and MCPExternalAuthConfig resources.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
@@ -1899,92 +1859,10 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
-	// Create a predicate to filter pod events
-	// We only care about:
-	// 1. Pods that have restarted (phase change or container restarts)
-	// 2. Pods that have been deleted (will be recreated)
-	podEventPredicate := predicate.Funcs{
-		CreateFunc: func(_ event.CreateEvent) bool {
-			// New pods created are relevant (StatefulSet scale-up or recreation)
-			return true
-		},
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldPod, ok := e.ObjectOld.(*corev1.Pod)
-			if !ok {
-				return false
-			}
-			newPod, ok := e.ObjectNew.(*corev1.Pod)
-			if !ok {
-				return false
-			}
-
-			// Trigger reconciliation if:
-			// 1. Pod UID changed (pod was recreated)
-			if oldPod.UID != newPod.UID {
-				return true
-			}
-
-			// 2. Container restart count increased (container restarted)
-			for i, oldContainer := range oldPod.Status.ContainerStatuses {
-				if i < len(newPod.Status.ContainerStatuses) {
-					newContainer := newPod.Status.ContainerStatuses[i]
-					if newContainer.RestartCount > oldContainer.RestartCount {
-						return true
-					}
-				}
-			}
-
-			// 3. Pod phase changed (e.g., Running -> Pending -> Running after restart)
-			if oldPod.Status.Phase != newPod.Status.Phase {
-				return true
-			}
-
-			return false
-		},
-		DeleteFunc: func(_ event.DeleteEvent) bool {
-			// Pod deletions are relevant (StatefulSet will recreate)
-			return true
-		},
-	}
-
-	// Create handler for StatefulSet events to trigger MCPServer reconciliation
-	statefulSetHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			statefulSet, ok := obj.(*appsv1.StatefulSet)
-			if !ok {
-				return nil
-			}
-
-			// StatefulSets created by thv-proxyrunner have the toolhive-name label
-			mcpServerName, hasMCPServerLabel := statefulSet.Labels["toolhive-name"]
-			if !hasMCPServerLabel {
-				return nil
-			}
-
-			log.FromContext(ctx).Info("StatefulSet event detected, triggering MCPServer reconciliation",
-				"statefulset", statefulSet.Name,
-				"mcpserver", mcpServerName,
-				"namespace", statefulSet.Namespace)
-
-			return []reconcile.Request{{
-				NamespacedName: types.NamespacedName{
-					Name:      mcpServerName,
-					Namespace: statefulSet.Namespace,
-				},
-			}}
-		},
-	)
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
-		Watches(
-			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.findMCPServerForPod),
-			builder.WithPredicates(podEventPredicate),
-		).
-		Watches(&appsv1.StatefulSet{}, statefulSetHandler).
 		Complete(r)
 }

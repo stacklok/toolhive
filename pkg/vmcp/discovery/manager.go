@@ -24,8 +24,8 @@ import (
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 
 const (
-	// cacheTTL is the time-to-live for cached capability entries.
-	cacheTTL = 5 * time.Minute
+	// DefaultCacheTTL is the default time-to-live for cached capability entries.
+	DefaultCacheTTL = 5 * time.Minute
 	// maxCacheSize is the maximum number of entries allowed in the cache.
 	maxCacheSize = 1000
 	// cleanupInterval is how often expired cache entries are removed.
@@ -59,21 +59,33 @@ type cacheEntry struct {
 type DefaultManager struct {
 	aggregator aggregator.Aggregator
 	cache      map[string]*cacheEntry
+	cacheTTL   time.Duration
 	cacheMu    sync.RWMutex
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	wg         sync.WaitGroup
 }
 
-// NewManager creates a new discovery manager with the given aggregator.
+// NewManager creates a new discovery manager with the given aggregator using the default cache TTL.
 func NewManager(agg aggregator.Aggregator) (Manager, error) {
+	return NewManagerWithTTL(agg, DefaultCacheTTL)
+}
+
+// NewManagerWithTTL creates a new discovery manager with the given aggregator and cache TTL.
+// Use this when you need custom cache TTL (e.g., shorter TTL for testing).
+func NewManagerWithTTL(agg aggregator.Aggregator, cacheTTL time.Duration) (Manager, error) {
 	if agg == nil {
 		return nil, ErrAggregatorNil
+	}
+
+	if cacheTTL <= 0 {
+		cacheTTL = DefaultCacheTTL
 	}
 
 	m := &DefaultManager{
 		aggregator: agg,
 		cache:      make(map[string]*cacheEntry),
+		cacheTTL:   cacheTTL,
 		stopCh:     make(chan struct{}),
 	}
 
@@ -184,7 +196,7 @@ func (m *DefaultManager) cacheCapabilities(key string, caps *aggregator.Aggregat
 
 	m.cache[key] = &cacheEntry{
 		capabilities: caps,
-		expiresAt:    time.Now().Add(cacheTTL),
+		expiresAt:    time.Now().Add(m.cacheTTL),
 	}
 }
 

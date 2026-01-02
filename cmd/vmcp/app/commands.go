@@ -295,7 +295,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
 	// Create discovery manager for lazy per-user capability discovery
-	discoveryMgr, err := discovery.NewManager(agg)
+	// Use configured cache TTL if available, otherwise use default
+	var discoveryMgr discovery.Manager
+	if cfg.Operational != nil && cfg.Operational.CapabilityCacheTTL > 0 {
+		cacheTTL := time.Duration(cfg.Operational.CapabilityCacheTTL)
+		logger.Debugf("Creating discovery manager with custom cache TTL: %v", cacheTTL)
+		discoveryMgr, err = discovery.NewManagerWithTTL(agg, cacheTTL)
+	} else {
+		logger.Debugf("Creating discovery manager with default cache TTL: %v", discovery.DefaultCacheTTL)
+		discoveryMgr, err = discovery.NewManager(agg)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}

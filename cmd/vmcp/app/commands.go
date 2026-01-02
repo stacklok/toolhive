@@ -378,6 +378,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Extract partial failure mode from config (with default)
+	partialFailureMode := "fail" // default
+	if cfg.Operational != nil &&
+		cfg.Operational.FailureHandling != nil &&
+		cfg.Operational.FailureHandling.PartialFailureMode != "" {
+		partialFailureMode = cfg.Operational.FailureHandling.PartialFailureMode
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,
 		Version:             getVersion(),
@@ -388,6 +396,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		TelemetryProvider:   telemetryProvider,
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
+		PartialFailureMode:  partialFailureMode,
 	}
 
 	// Convert composite tool configurations to workflow definitions

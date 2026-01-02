@@ -7,21 +7,31 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
-// FilterHealthyBackends filters backends to only include those that can handle requests.
+// FilterHealthyBackends filters backends based on health status and partial failure mode.
 // Backends that are unhealthy or unauthenticated are excluded from the returned list.
 //
 // When healthProvider is nil (health monitoring disabled), all backends are returned.
 //
-// Filtering logic (uses health.IsBackendUsable):
-//   - Include: Healthy, Degraded (slow but functional), Unknown (not yet determined)
-//   - Exclude: Unhealthy, Unauthenticated (cannot be used)
+// Filtering logic depends on the partial failure mode:
+//   - "fail" mode (strict): Include Healthy, Unknown; Exclude Degraded, Unhealthy, Unauthenticated
+//   - "best_effort" mode (lenient): Include Healthy, Degraded, Unknown; Exclude Unhealthy, Unauthenticated
 //
 // Returns the filtered backend list and logs excluded backends.
-func FilterHealthyBackends(backends []vmcp.Backend, healthProvider health.StatusProvider) []vmcp.Backend {
+func FilterHealthyBackends(
+	backends []vmcp.Backend,
+	healthProvider health.StatusProvider,
+	mode string,
+) []vmcp.Backend {
 	// If health monitoring is disabled, return all backends
 	// Note: Check both interface nil and typed nil (Go interface semantics)
 	if !health.IsProviderInitialized(healthProvider) {
 		return backends
+	}
+
+	// Default mode if not specified
+	if mode == "" {
+		mode = "fail" // Default to strict mode for safety
+		logger.Debugf("No partial failure mode specified, using default: %s", mode)
 	}
 
 	filtered := make([]vmcp.Backend, 0, len(backends))
@@ -33,7 +43,7 @@ func FilterHealthyBackends(backends []vmcp.Backend, healthProvider health.Status
 
 		// Include backend if:
 		// 1. Health status cannot be determined (err != nil) - assume healthy during transitions
-		// 2. Status indicates backend can handle requests (uses health.IsBackendUsable)
+		// 2. Status indicates backend can handle requests in the given mode
 		if err != nil {
 			// Backend not found in health monitor yet (new backend) - include it
 			logger.Debugf("Backend %s not found in health monitor, including in capabilities", backend.Name)
@@ -41,18 +51,20 @@ func FilterHealthyBackends(backends []vmcp.Backend, healthProvider health.Status
 			continue
 		}
 
-		if health.IsBackendUsable(status) {
-			// Include usable backends (Healthy, Degraded, Unknown)
+		if health.IsBackendUsableInMode(status, mode) {
+			// Include usable backends based on mode
 			filtered = append(filtered, *backend)
 		} else {
-			// Exclude unusable backends (Unhealthy, Unauthenticated)
-			logger.Infof("Excluding backend %s from capabilities (status: %s)", backend.Name, status)
+			// Exclude unusable backends
+			logger.Infof("Excluding backend %s from capabilities (status: %s, mode: %s)",
+				backend.Name, status, mode)
 			excludedCount++
 		}
 	}
 
 	if excludedCount > 0 {
-		logger.Infof("Health filtering: %d backends included, %d backends excluded", len(filtered), excludedCount)
+		logger.Infof("Health filtering (%s mode): %d backends included, %d backends excluded",
+			mode, len(filtered), excludedCount)
 	}
 
 	return filtered

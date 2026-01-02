@@ -596,6 +596,251 @@ var _ = Describe("VirtualMCPServer Circuit Breaker and Health Filtering", Ordere
 	})
 })
 
+var _ = Describe("VirtualMCPServer Partial Failure Mode", Ordered, func() {
+	var (
+		testNamespace          = "default"
+		mcpGroupName           = "test-partial-failure-group"
+		vmcpServerFailMode     = "test-vmcp-fail-mode"
+		vmcpServerBestEffort   = "test-vmcp-best-effort"
+		backend1               = "pfm-backend-1"
+		backend2               = "pfm-backend-2"
+		timeout                = 3 * time.Minute
+		pollingInterval        = 2 * time.Second
+		healthCheckInterval    = "5s"
+		unhealthyThreshold     = 3
+		vmcpFailModeNodePort   int32
+		vmcpBestEffortNodePort int32
+		mcpClientFailMode      *InitializedMCPClient
+		mcpClientBestEffort    *InitializedMCPClient
+	)
+
+	BeforeAll(func() {
+		By("Creating MCPGroup for partial failure mode tests")
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"MCP Group for partial failure mode e2e tests", timeout, pollingInterval)
+
+		By("Creating backend MCPServers")
+		for _, backendName := range []string{backend1, backend2} {
+			backendResource := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backendName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					GroupRef:  mcpGroupName,
+					Image:     images.YardstickServerImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					Env: []mcpv1alpha1.EnvVar{
+						{Name: "TRANSPORT", Value: "streamable-http"},
+						{Name: "TOOL_PREFIX", Value: backendName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, backendResource)).To(Succeed())
+		}
+
+		By("Waiting for backends to be running")
+		for _, backendName := range []string{backend1, backend2} {
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backendName,
+					Namespace: testNamespace,
+				}, server); err != nil {
+					return fmt.Errorf("failed to get server: %w", err)
+				}
+				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+					return fmt.Errorf("not ready yet, phase: %s", server.Status.Phase)
+				}
+				return nil
+			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be running", backendName))
+		}
+
+		By("Creating VirtualMCPServer with FAIL mode (strict)")
+		vmcpFailModeServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vmcpServerFailMode,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: mcpv1alpha1.GroupRef{
+					Name: mcpGroupName,
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
+				},
+				Aggregation: &mcpv1alpha1.AggregationConfig{
+					ConflictResolution: "prefix",
+					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+						PrefixFormat: "{workload}_",
+					},
+				},
+				Operational: &mcpv1alpha1.OperationalConfig{
+					LogLevel:           "debug",
+					CapabilityCacheTTL: "10s",
+					FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
+						HealthCheckInterval: healthCheckInterval,
+						UnhealthyThreshold:  unhealthyThreshold,
+						PartialFailureMode:  "fail", // STRICT MODE
+					},
+				},
+				ServiceType: "NodePort",
+			},
+		}
+		Expect(k8sClient.Create(ctx, vmcpFailModeServer)).To(Succeed())
+
+		By("Creating VirtualMCPServer with BEST_EFFORT mode (lenient)")
+		vmcpBestEffortServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vmcpServerBestEffort,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: mcpv1alpha1.GroupRef{
+					Name: mcpGroupName,
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
+				},
+				Aggregation: &mcpv1alpha1.AggregationConfig{
+					ConflictResolution: "prefix",
+					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+						PrefixFormat: "{workload}_",
+					},
+				},
+				Operational: &mcpv1alpha1.OperationalConfig{
+					LogLevel:           "debug",
+					CapabilityCacheTTL: "10s",
+					FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
+						HealthCheckInterval: healthCheckInterval,
+						UnhealthyThreshold:  unhealthyThreshold,
+						PartialFailureMode:  "best_effort", // LENIENT MODE
+					},
+				},
+				ServiceType: "NodePort",
+			},
+		}
+		Expect(k8sClient.Create(ctx, vmcpBestEffortServer)).To(Succeed())
+
+		By("Waiting for both VirtualMCPServers to be ready")
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerFailMode, testNamespace, timeout, pollingInterval)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerBestEffort, testNamespace, timeout, pollingInterval)
+
+		By("Getting NodePorts for VirtualMCPServers")
+		vmcpFailModeNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerFailMode, testNamespace, timeout, pollingInterval)
+		vmcpBestEffortNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerBestEffort, testNamespace, timeout, pollingInterval)
+
+		By(fmt.Sprintf("Creating MCP clients (FAIL: %d, BEST_EFFORT: %d)", vmcpFailModeNodePort, vmcpBestEffortNodePort))
+		var err error
+		mcpClientFailMode, err = CreateInitializedMCPClient(vmcpFailModeNodePort, "partial-failure-fail-client", 30*time.Second)
+		Expect(err).ToNot(HaveOccurred())
+		mcpClientBestEffort, err = CreateInitializedMCPClient(vmcpBestEffortNodePort, "partial-failure-best-effort-client", 30*time.Second)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		By("Closing MCP clients")
+		if mcpClientFailMode != nil {
+			mcpClientFailMode.Close()
+		}
+		if mcpClientBestEffort != nil {
+			mcpClientBestEffort.Close()
+		}
+
+		By("Cleaning up VirtualMCPServers")
+		for _, serverName := range []string{vmcpServerFailMode, vmcpServerBestEffort} {
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, vmcpServer)
+		}
+
+		By("Cleaning up MCPServers")
+		for _, backendName := range []string{backend1, backend2} {
+			backend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backendName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, backend)
+		}
+
+		By("Cleaning up MCPGroup")
+		group := &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mcpGroupName,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, group)
+	})
+
+	It("should deploy both vMCP servers successfully with different partial failure modes", func() {
+		By("Verifying FAIL mode server is ready")
+		vmcpFail := &mcpv1alpha1.VirtualMCPServer{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      vmcpServerFailMode,
+			Namespace: testNamespace,
+		}, vmcpFail)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(vmcpFail.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
+		Expect(vmcpFail.Spec.Operational.FailureHandling.PartialFailureMode).To(Equal("fail"))
+
+		By("Verifying BEST_EFFORT mode server is ready")
+		vmcpBestEffort := &mcpv1alpha1.VirtualMCPServer{}
+		err = k8sClient.Get(ctx, types.NamespacedName{
+			Name:      vmcpServerBestEffort,
+			Namespace: testNamespace,
+		}, vmcpBestEffort)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(vmcpBestEffort.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
+		Expect(vmcpBestEffort.Spec.Operational.FailureHandling.PartialFailureMode).To(Equal("best_effort"))
+	})
+
+	It("should discover all healthy backends in both modes", func() {
+		By("Checking FAIL mode discovered backends")
+		vmcpFail := &mcpv1alpha1.VirtualMCPServer{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      vmcpServerFailMode,
+			Namespace: testNamespace,
+		}, vmcpFail)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(vmcpFail.Status.DiscoveredBackends).To(HaveLen(2), "FAIL mode should discover 2 backends")
+
+		By("Checking BEST_EFFORT mode discovered backends")
+		vmcpBestEffort := &mcpv1alpha1.VirtualMCPServer{}
+		err = k8sClient.Get(ctx, types.NamespacedName{
+			Name:      vmcpServerBestEffort,
+			Namespace: testNamespace,
+		}, vmcpBestEffort)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(vmcpBestEffort.Status.DiscoveredBackends).To(HaveLen(2), "BEST_EFFORT mode should discover 2 backends")
+	})
+
+	It("should handle MCP requests successfully in both modes", func() {
+		listRequest := mcp.ListToolsRequest{}
+
+		By("Listing tools from FAIL mode server")
+		toolsFail, err := mcpClientFailMode.Client.ListTools(mcpClientFailMode.Ctx, listRequest)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toolsFail.Tools).ToNot(BeEmpty(), "FAIL mode should expose tools")
+
+		By("Listing tools from BEST_EFFORT mode server")
+		toolsBestEffort, err := mcpClientBestEffort.Client.ListTools(mcpClientBestEffort.Ctx, listRequest)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(toolsBestEffort.Tools).ToNot(BeEmpty(), "BEST_EFFORT mode should expose tools")
+
+		By("Verifying both modes expose the same tools when all backends are healthy")
+		Expect(toolsFail.Tools).To(HaveLen(len(toolsBestEffort.Tools)), "Both modes should expose same number of tools when all backends are healthy")
+	})
+})
+
 // containsAny checks if the text contains any of the given patterns (case-insensitive)
 func containsAny(text string, patterns ...string) bool {
 	lowerText := strings.ToLower(text)

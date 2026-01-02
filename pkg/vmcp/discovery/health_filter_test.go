@@ -62,7 +62,7 @@ func TestFilterHealthyBackends_NoHealthMonitoring(t *testing.T) {
 	}
 
 	// When health monitoring is disabled (nil provider), all backends should be returned
-	filtered := FilterHealthyBackends(backends, nil)
+	filtered := FilterHealthyBackends(backends, nil, "fail")
 
 	assert.Len(t, filtered, 3, "all backends should be included when health monitoring is disabled")
 	assert.Equal(t, backends, filtered, "backends should be unchanged")
@@ -82,7 +82,7 @@ func TestFilterHealthyBackends_AllHealthy(t *testing.T) {
 	healthProvider.setStatus("backend2", vmcp.BackendHealthy)
 	healthProvider.setStatus("backend3", vmcp.BackendHealthy)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	assert.Len(t, filtered, 3, "all healthy backends should be included")
 	assert.Equal(t, backends, filtered, "all backends should be present")
@@ -104,7 +104,7 @@ func TestFilterHealthyBackends_MixedHealthStatus(t *testing.T) {
 	healthProvider.setStatus("backend3", vmcp.BackendDegraded)
 	healthProvider.setStatus("backend4", vmcp.BackendUnauthenticated)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	// Should include: healthy (backend1) and degraded (backend3)
 	// Should exclude: unhealthy (backend2) and unauthenticated (backend4)
@@ -127,7 +127,7 @@ func TestFilterHealthyBackends_ExcludesUnhealthy(t *testing.T) {
 	healthProvider.setStatus("backend2", vmcp.BackendUnhealthy)
 	healthProvider.setStatus("backend3", vmcp.BackendHealthy)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	require.Len(t, filtered, 2, "unhealthy backend should be excluded")
 	assert.Equal(t, "backend1", filtered[0].ID)
@@ -146,7 +146,7 @@ func TestFilterHealthyBackends_ExcludesUnauthenticated(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 	healthProvider.setStatus("backend2", vmcp.BackendUnauthenticated)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	require.Len(t, filtered, 1, "unauthenticated backend should be excluded")
 	assert.Equal(t, "backend1", filtered[0].ID)
@@ -164,7 +164,7 @@ func TestFilterHealthyBackends_IncludesDegraded(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 	healthProvider.setStatus("backend2", vmcp.BackendDegraded)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	// Degraded backends are still functional (just slow), so they should be included
 	require.Len(t, filtered, 2, "degraded backends should be included")
@@ -184,7 +184,7 @@ func TestFilterHealthyBackends_IncludesUnknown(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 	healthProvider.setStatus("backend2", vmcp.BackendUnknown)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	// Unknown backends should be included (health not yet determined, give them a chance)
 	require.Len(t, filtered, 2, "unknown backends should be included")
@@ -204,7 +204,7 @@ func TestFilterHealthyBackends_BackendNotFoundInMonitor(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 	// backend2 not in health monitor (GetBackendStatus will return error)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	// Backend not found in monitor should be included (new backend during transitions)
 	require.Len(t, filtered, 2, "backends not found in monitor should be included")
@@ -224,7 +224,7 @@ func TestFilterHealthyBackends_AllUnhealthy(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendUnhealthy)
 	healthProvider.setStatus("backend2", vmcp.BackendUnhealthy)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	assert.Len(t, filtered, 0, "all unhealthy backends should be excluded")
 }
@@ -235,7 +235,7 @@ func TestFilterHealthyBackends_EmptyBackendList(t *testing.T) {
 	backends := []vmcp.Backend{}
 	healthProvider := newMockHealthProvider()
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	assert.Len(t, filtered, 0, "empty input should return empty output")
 	assert.NotNil(t, filtered, "result should not be nil")
@@ -258,7 +258,7 @@ func TestFilterHealthyBackends_PreservesBackendData(t *testing.T) {
 	healthProvider := newMockHealthProvider()
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	require.Len(t, filtered, 1)
 	// Verify all backend data is preserved
@@ -282,7 +282,7 @@ func TestFilterHealthyBackends_ErrorRetrievingStatus(t *testing.T) {
 	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
 	healthProvider.setError("backend2", errors.New("health monitor error"))
 
-	filtered := FilterHealthyBackends(backends, healthProvider)
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
 
 	// Backend with error should be included (assume healthy during error conditions)
 	require.Len(t, filtered, 2, "backends with health monitor errors should be included")
@@ -304,7 +304,7 @@ func TestFilterHealthyBackends_NilTypedPointer(t *testing.T) {
 	var provider health.StatusProvider = nilMonitor
 
 	// Should not panic and should return all backends (health monitoring disabled)
-	filtered := FilterHealthyBackends(backends, provider)
+	filtered := FilterHealthyBackends(backends, provider, "fail")
 
 	assert.Len(t, filtered, 1, "Should return all backends when provider is nil pointer")
 	assert.Equal(t, "backend1", filtered[0].ID)
@@ -343,6 +343,141 @@ func TestIsProviderInitialized(t *testing.T) {
 			t.Parallel()
 			result := health.IsProviderInitialized(tt.provider)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestFilterHealthyBackends_FailMode(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "b1", Name: "Backend 1"},
+		{ID: "b2", Name: "Backend 2"},
+		{ID: "b3", Name: "Backend 3"},
+		{ID: "b4", Name: "Backend 4"},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("b1", vmcp.BackendHealthy)
+	healthProvider.setStatus("b2", vmcp.BackendDegraded)
+	healthProvider.setStatus("b3", vmcp.BackendUnhealthy)
+	healthProvider.setStatus("b4", vmcp.BackendUnauthenticated)
+
+	filtered := FilterHealthyBackends(backends, healthProvider, "fail")
+
+	// In "fail" mode: only healthy and unknown backends included
+	// Degraded backends are excluded in strict mode
+	require.Len(t, filtered, 1, "only healthy backends should be included in fail mode")
+	assert.Equal(t, "b1", filtered[0].ID)
+}
+
+func TestFilterHealthyBackends_BestEffortMode(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "b1", Name: "Backend 1"},
+		{ID: "b2", Name: "Backend 2"},
+		{ID: "b3", Name: "Backend 3"},
+		{ID: "b4", Name: "Backend 4"},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("b1", vmcp.BackendHealthy)
+	healthProvider.setStatus("b2", vmcp.BackendDegraded)
+	healthProvider.setStatus("b3", vmcp.BackendUnhealthy)
+	healthProvider.setStatus("b4", vmcp.BackendUnauthenticated)
+
+	filtered := FilterHealthyBackends(backends, healthProvider, "best_effort")
+
+	// In "best_effort" mode: healthy, degraded, and unknown backends included
+	require.Len(t, filtered, 2, "healthy and degraded backends should be included in best_effort mode")
+	assert.Equal(t, "b1", filtered[0].ID)
+	assert.Equal(t, "b2", filtered[1].ID)
+}
+
+func TestFilterHealthyBackends_DefaultMode(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "b1", Name: "Backend 1"},
+		{ID: "b2", Name: "Backend 2"},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("b1", vmcp.BackendHealthy)
+	healthProvider.setStatus("b2", vmcp.BackendDegraded)
+
+	// Empty mode string should default to "fail"
+	filtered := FilterHealthyBackends(backends, healthProvider, "")
+
+	// Default mode is "fail" (strict), so degraded is excluded
+	require.Len(t, filtered, 1, "empty mode should default to fail mode")
+	assert.Equal(t, "b1", filtered[0].ID)
+}
+
+func TestFilterHealthyBackends_UnknownMode(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "b1", Name: "Backend 1"},
+		{ID: "b2", Name: "Backend 2"},
+		{ID: "b3", Name: "Backend 3"},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("b1", vmcp.BackendHealthy)
+	healthProvider.setStatus("b2", vmcp.BackendDegraded)
+	healthProvider.setStatus("b3", vmcp.BackendUnhealthy)
+
+	// Unknown mode should default to best_effort behavior
+	filtered := FilterHealthyBackends(backends, healthProvider, "unknown_mode")
+
+	// Should behave like best_effort (includes degraded)
+	require.Len(t, filtered, 2, "unknown mode should default to best_effort behavior")
+	assert.Equal(t, "b1", filtered[0].ID)
+	assert.Equal(t, "b2", filtered[1].ID)
+}
+
+func TestFilterHealthyBackends_ModeWithUnknownStatus(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "b1", Name: "Backend 1"},
+		{ID: "b2", Name: "Backend 2"},
+		{ID: "b3", Name: "Backend 3"},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("b1", vmcp.BackendHealthy)
+	healthProvider.setStatus("b2", vmcp.BackendUnknown)
+	healthProvider.setStatus("b3", vmcp.BackendDegraded)
+
+	tests := []struct {
+		name     string
+		mode     string
+		expected []string
+	}{
+		{
+			name:     "fail mode includes unknown",
+			mode:     "fail",
+			expected: []string{"b1", "b2"}, // Healthy and Unknown
+		},
+		{
+			name:     "best_effort mode includes unknown",
+			mode:     "best_effort",
+			expected: []string{"b1", "b2", "b3"}, // Healthy, Unknown, and Degraded
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture range variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			filtered := FilterHealthyBackends(backends, healthProvider, tt.mode)
+			require.Len(t, filtered, len(tt.expected))
+			for i, expectedID := range tt.expected {
+				assert.Equal(t, expectedID, filtered[i].ID)
+			}
 		})
 	}
 }

@@ -102,6 +102,11 @@ type Config struct {
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
+
+	// PartialFailureMode defines behavior when some backends are unavailable during discovery.
+	// Options: "fail" (strict, default), "best_effort" (lenient)
+	// Default: "fail"
+	PartialFailureMode string
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -168,6 +173,10 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// partialFailureMode defines Layer 1 discovery filtering behavior.
+	// Options: "fail" (strict), "best_effort" (lenient)
+	partialFailureMode string
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -199,6 +208,9 @@ func New(
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = defaultSessionTTL
+	}
+	if cfg.PartialFailureMode == "" {
+		cfg.PartialFailureMode = "fail" // Default to strict mode for safety
 	}
 
 	// Create hooks for SDK integration
@@ -302,19 +314,20 @@ func New(
 
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backends:          backends,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		workflowDefs:      workflowDefs,
-		workflowExecutors: workflowExecutors,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
+		config:             cfg,
+		mcpServer:          mcpServer,
+		router:             rt,
+		backendClient:      backendClient,
+		handlerFactory:     handlerFactory,
+		discoveryMgr:       discoveryMgr,
+		backends:           backends,
+		sessionManager:     sessionManager,
+		capabilityAdapter:  capabilityAdapter,
+		workflowDefs:       workflowDefs,
+		workflowExecutors:  workflowExecutors,
+		ready:              make(chan struct{}),
+		healthMonitor:      healthMon,
+		partialFailureMode: cfg.PartialFailureMode,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -468,9 +481,17 @@ func (s *Server) Start(ctx context.Context) error {
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	// Pass healthMonitor to filter unhealthy backends from capabilities (nil = no filtering)
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager, s.healthMonitor)(mcpHandler)
+	// Pass partialFailureMode to control filtering strictness
+	mcpHandler = discovery.Middleware(
+		s.discoveryMgr,
+		s.backends,
+		s.sessionManager,
+		s.healthMonitor,
+		s.partialFailureMode,
+	)(mcpHandler)
 	if s.healthMonitor != nil {
-		logger.Info("Discovery middleware enabled with health-based backend filtering")
+		logger.Infof("Discovery middleware enabled with health-based backend filtering (mode: %s)",
+			s.partialFailureMode)
 	} else {
 		logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 	}

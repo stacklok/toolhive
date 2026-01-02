@@ -107,6 +107,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		Port:          port,
 		Labels:        userLabels,
 		Group:         runConfig.Group,
+		StartedAt:     container.StartedAt,
 	}, nil
 }
 

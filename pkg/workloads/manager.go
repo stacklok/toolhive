@@ -73,6 +73,8 @@ type Manager interface {
 	ListWorkloadsUsingSecret(ctx context.Context, secretName string) ([]string, error)
 	// DoesWorkloadExist checks if a workload with the given name exists.
 	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
+	// GetWorkloadStats retrieves statistics for a workload.
+	GetWorkloadStats(ctx context.Context, workloadName string) (rt.WorkloadStats, error)
 }
 
 // DefaultManager is the default implementation of the Manager interface.
@@ -1509,4 +1511,9 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 	}
 
 	return remoteWorkloads, nil
+}
+
+// GetWorkloadStats returns CPU and memory statistics for a workload.
+func (d *DefaultManager) GetWorkloadStats(ctx context.Context, workloadName string) (rt.WorkloadStats, error) {
+	return d.runtime.GetWorkloadStats(ctx, workloadName)
 }

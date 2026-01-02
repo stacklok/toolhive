@@ -161,3 +161,60 @@ func CreateProxyServiceURL(resourceName, namespace string, port int32) string {
 func ProxyRunnerServiceAccountName(resourceName string) string {
 	return fmt.Sprintf("%s-proxy-runner", resourceName)
 }
+
+// BuildDefaultProxyRunnerResourceRequirements returns default resource requirements for proxy runners.
+// Defaults: 50m/200m CPU (requests/limits), 64Mi/256Mi memory (requests/limits).
+// These defaults provide reasonable resource limits to prevent containers from monopolizing cluster resources.
+func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+}
+
+// MergeResourceRequirements merges user-provided resource requirements with defaults.
+// User-provided values take precedence over defaults.
+// If a resource is specified in userResources, it will override the corresponding default.
+func MergeResourceRequirements(defaultResources, userResources corev1.ResourceRequirements) corev1.ResourceRequirements {
+	result := corev1.ResourceRequirements{}
+
+	// Start with defaults
+	if defaultResources.Requests != nil {
+		result.Requests = make(corev1.ResourceList)
+		for k, v := range defaultResources.Requests {
+			result.Requests[k] = v
+		}
+	}
+	if defaultResources.Limits != nil {
+		result.Limits = make(corev1.ResourceList)
+		for k, v := range defaultResources.Limits {
+			result.Limits[k] = v
+		}
+	}
+
+	// Override with user-provided values
+	if userResources.Requests != nil {
+		if result.Requests == nil {
+			result.Requests = make(corev1.ResourceList)
+		}
+		for k, v := range userResources.Requests {
+			result.Requests[k] = v
+		}
+	}
+	if userResources.Limits != nil {
+		if result.Limits == nil {
+			result.Limits = make(corev1.ResourceList)
+		}
+		for k, v := range userResources.Limits {
+			result.Limits[k] = v
+		}
+	}
+
+	return result
+}

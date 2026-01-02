@@ -688,7 +688,7 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 	}
 
 	// Check if resources have changed
-	expectedResources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	expectedResources := resourceRequirementsForRemoteProxy(proxy)
 	if !reflect.DeepEqual(container.Resources, expectedResources) {
 		return true
 	}

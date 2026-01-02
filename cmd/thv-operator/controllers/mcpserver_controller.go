@@ -116,7 +116,6 @@ const (
 	RestartStrategyImmediate = "immediate"
 )
 
-
 // Authorization ConfigMap label constants
 const (
 	// authzLabelKey is the label key for authorization configuration type
@@ -439,11 +438,22 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// to avoid triggering unnecessary deployments during initial creation
 	// Use statefulSetRevision directly - it's already empty if StatefulSet doesn't exist
 	effectiveRevision := statefulSetRevision
-	
+
 	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum, effectiveRevision) {
 		// Update the deployment
+		// Pass the current revision from deployment metadata so we can detect changes
+		currentRevision := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum, effectiveRevision)
 		deployment.Spec = newDeployment.Spec
+		deployment.Annotations = newDeployment.Annotations
+		// If StatefulSet revision changed, add timestamp to pod template to force restart
+		if currentRevision != "" && currentRevision != effectiveRevision {
+			if deployment.Spec.Template.Annotations == nil {
+				deployment.Spec.Template.Annotations = make(map[string]string)
+			}
+			revisionChangedKey := "mcpserver.toolhive.stacklok.dev/statefulset-revision-changed"
+			deployment.Spec.Template.Annotations[revisionChangedKey] = time.Now().Format(time.RFC3339)
+		}
 		err = r.Update(ctx, deployment)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment",
@@ -1125,11 +1135,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 
-	// Add StatefulSet revision annotation to track pod restarts
-	// This ensures proxy Deployment restarts when StatefulSet pods restart
-	// Only add the annotation if we have a real revision (not empty or not-found)
+	// Store StatefulSet revision in Deployment metadata (not pod template) to avoid unnecessary restarts
+	// We track the revision here, and when it changes, we add a timestamp to pod template to force restart
+	// This prevents restarts during initial setup while still detecting StatefulSet pod restarts
 	if statefulSetRevision != "" {
-		deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = statefulSetRevision
+		deploymentAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = statefulSetRevision
 	}
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
@@ -1478,11 +1488,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	}
 
 	// Check if StatefulSet revision has changed (indicates pod restart)
-	// This ensures proxy Deployment restarts to reestablish stdio connection
-	// Only check if we have a real revision (not empty, which means StatefulSet doesn't exist yet)
+	// The revision is stored in Deployment metadata (not pod template) to avoid unnecessary restarts
+	// Only trigger pod restart when the revision actually changes
 	if statefulSetRevision != "" {
-		currentRevision, hasRevision := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
-		if !hasRevision || currentRevision != statefulSetRevision {
+		currentRevision := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+		// Only trigger restart if the revision has changed from a previous value
+		// Don't trigger on initial annotation addition (empty current revision)
+		if currentRevision != "" && currentRevision != statefulSetRevision {
 			log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",
 				"currentRevision", currentRevision,
 				"newRevision", statefulSetRevision,

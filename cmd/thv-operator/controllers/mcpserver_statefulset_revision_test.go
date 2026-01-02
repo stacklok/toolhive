@@ -86,6 +86,10 @@ func TestStatefulSetRevisionTracking(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
+					// Store revision in Deployment metadata, not pod template
+					Annotations: map[string]string{
+						"mcpserver.toolhive.stacklok.dev/statefulset-revision": tt.initialRevision,
+					},
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: int32Ptr(1),
@@ -95,9 +99,6 @@ func TestStatefulSetRevisionTracking(t *testing.T) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: labelsForMCPServer("test-server"),
-							Annotations: map[string]string{
-								"mcpserver.toolhive.stacklok.dev/statefulset-revision": tt.initialRevision,
-							},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
@@ -169,7 +170,7 @@ func TestStatefulSetRevisionTracking(t *testing.T) {
 				// but we specifically check that revision tracking works
 				if tt.statefulSetExists && tt.initialRevision == tt.updatedRevision {
 					// If revision hasn't changed, the annotation check should pass
-					currentRev := updatedDeployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+					currentRev := updatedDeployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
 					assert.Equal(t, tt.initialRevision, currentRev, "Current revision should match")
 				}
 			}
@@ -229,7 +230,7 @@ func TestDeploymentForMCPServerWithStatefulSetRevision(t *testing.T) {
 
 			require.NotNil(t, deployment, "Deployment should not be nil")
 
-			revisionAnnotation, exists := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+			revisionAnnotation, exists := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
 
 			if tt.expectedInTemplate {
 				assert.True(t, exists, "StatefulSet revision annotation should exist in deployment template")
@@ -407,9 +408,9 @@ func TestDeploymentNeedsUpdateWithSameRevision(t *testing.T) {
 		currentRevision,
 	)
 
-	// Verify that the deployment has the revision annotation
-	revisionAnnotation, exists := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
-	assert.True(t, exists, "Deployment should have StatefulSet revision annotation")
+	// Verify that the deployment has the revision annotation in metadata (not pod template)
+	revisionAnnotation, exists := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+	assert.True(t, exists, "Deployment should have StatefulSet revision annotation in metadata")
 	assert.Equal(t, currentRevision, revisionAnnotation, "Deployment should have correct revision")
 
 	// Check if deployment needs update with same revision
@@ -468,7 +469,56 @@ func TestStatefulSetRevisionFallback(t *testing.T) {
 	)
 
 	require.NotNil(t, deployment)
-	revisionAnnotation := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+	revisionAnnotation := deployment.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
 	assert.Equal(t, "test-server-current-xyz789", revisionAnnotation,
 		"Should use CurrentRevision when UpdateRevision is empty")
+}
+
+// TestDeploymentNeedsUpdateWhenAddingRevisionForFirstTime verifies that adding a
+// StatefulSet revision annotation for the first time does NOT trigger a deployment update.
+// This prevents unnecessary proxy restarts when the StatefulSet is initially created.
+// The annotation will be added during normal reconciliation, but won't trigger a restart.
+func TestDeploymentNeedsUpdateWhenAddingRevisionForFirstTime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	mcpServer := createTestMCPServer("test-server", "default")
+	mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
+	testScheme := createTestScheme()
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(mcpServer).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	// Create a deployment WITHOUT a revision annotation (simulates initial creation)
+	deploymentWithoutRevision := reconciler.deploymentForMCPServer(
+		ctx,
+		mcpServer,
+		"test-checksum",
+		"", // No StatefulSet revision yet
+	)
+
+	// Verify the deployment has NO revision annotation
+	_, exists := deploymentWithoutRevision.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+	assert.False(t, exists, "Initial deployment should not have StatefulSet revision annotation")
+
+	// Now simulate the StatefulSet being created with a revision
+	newRevision := "test-server-xyz123"
+
+	// Check if deployment needs update when we have a revision but deployment doesn't have annotation
+	// This should return FALSE - we don't trigger updates just to add the annotation
+	// The annotation will be added during the next reconciliation naturally
+	needsUpdate := reconciler.deploymentNeedsUpdate(
+		ctx,
+		deploymentWithoutRevision,
+		mcpServer,
+		"test-checksum",
+		newRevision, // StatefulSet now has a revision
+	)
+
+	assert.False(t, needsUpdate,
+		"Deployment should NOT need update when adding revision annotation for first time (prevents unnecessary restart)")
 }

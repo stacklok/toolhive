@@ -75,6 +75,7 @@ type MiddlewareRunner interface {
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration
 type RunnerConfig interface {
+	GetName() string
 	GetPort() int
 }
 

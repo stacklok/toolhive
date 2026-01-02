@@ -1,5 +1,5 @@
-// Package authz provides authorization utilities using Cedar policies.
-package authz
+// Package cedar provides authorization utilities using Cedar policies.
+package cedar
 
 import (
 	cedar "github.com/cedar-policy/cedar-go"

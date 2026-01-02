@@ -86,7 +86,7 @@ tasks:
         platforms: [linux, darwin]
       # we have to use ldflags to avoid the LC_DYSYMTAB linker error.
       # https://github.com/stacklok/toolhive/issues/1687
-      - go test -ldflags=-extldflags=-Wl,-w -json -race -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
+      - go test -ldflags=-extldflags=-Wl,-w -json -race -coverpkg=./... -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
@@ -101,7 +101,7 @@ tasks:
     cmds:
       - cmd: cmd.exe /c mkdir coverage
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
-      - go test -race -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
+      - go test -race -coverpkg=./... -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html

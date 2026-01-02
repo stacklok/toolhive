@@ -47,11 +47,22 @@ var (
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+	AddFormatFlag(listCmd, &listFormat)
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 	listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
 
-	listCmd.PreRunE = validateGroupFlag()
+	listCmd.PreRunE = ChainPreRunE(validateGroupFlag(), validateListFormat)
+}
+
+// validateListFormat validates the format flag for the list command.
+// It accepts all standard formats plus "mcpservers".
+func validateListFormat(_ *cobra.Command, _ []string) error {
+	switch listFormat {
+	case FormatJSON, FormatText, "mcpservers":
+		return nil
+	default:
+		return fmt.Errorf("invalid format %q: must be one of [json text mcpservers]", listFormat)
+	}
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {

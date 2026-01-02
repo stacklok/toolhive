@@ -50,10 +50,14 @@ func init() {
 	registryCmd.AddCommand(registryInfoCmd)
 
 	// Add flags for list and info commands
-	registryListCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	AddFormatFlag(registryListCmd, &registryFormat)
 	registryListCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
-	registryInfoCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	AddFormatFlag(registryInfoCmd, &registryFormat)
 	registryInfoCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
+
+	// Add format validation
+	registryListCmd.PreRunE = ValidateFormatFlag(&registryFormat)
+	registryInfoCmd.PreRunE = ValidateFormatFlag(&registryFormat)
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {

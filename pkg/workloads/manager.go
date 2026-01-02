@@ -536,9 +536,9 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		logger.Infof("Logging to: %s", logFilePath)
 	}
 
-	// Use the restart command to start the detached process
-	// The config has already been saved to disk, so restart can load it
-	detachedArgs := []string{"restart", runConfig.BaseName, "--foreground"}
+	// Use the start command to start the detached process
+	// The config has already been saved to disk, so start can load it
+	detachedArgs := []string{"start", runConfig.BaseName, "--foreground"}
 
 	if runConfig.Debug {
 		detachedArgs = append(detachedArgs, "--debug")

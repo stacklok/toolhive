@@ -99,10 +99,10 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(workloadNames) == 1 {
-		fmt.Printf("Container %s removed successfully\n", workloadNames[0])
+		fmt.Printf("Workload %s removed successfully\n", workloadNames[0])
 	} else {
 		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("Containers %s removed successfully\n", formattedNames)
+		fmt.Printf("Workloads %s removed successfully\n", formattedNames)
 	}
 	return nil
 }

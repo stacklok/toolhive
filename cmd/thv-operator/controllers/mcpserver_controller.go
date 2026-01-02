@@ -119,6 +119,12 @@ const (
 	RestartStrategyImmediate = "immediate"
 )
 
+// StatefulSet revision constants
+const (
+	// StatefulSetRevisionNotFound indicates that the StatefulSet doesn't exist yet
+	StatefulSetRevisionNotFound = "not-found"
+)
+
 // Authorization ConfigMap label constants
 const (
 	// authzLabelKey is the label key for authorization configuration type
@@ -339,7 +345,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err != nil {
 		if errors.IsNotFound(err) {
 			ctxLogger.Info("StatefulSet not found, proxy deployment will not track pod restarts yet")
-			statefulSetRevision = "not-found"
+			statefulSetRevision = StatefulSetRevisionNotFound
 		} else {
 			ctxLogger.Error(err, "Failed to get StatefulSet")
 			return ctrl.Result{}, err
@@ -1120,7 +1126,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add StatefulSet revision annotation to track pod restarts
 	// This ensures proxy Deployment restarts when StatefulSet pods restart
-	if statefulSetRevision != "" && statefulSetRevision != "not-found" {
+	if statefulSetRevision != "" && statefulSetRevision != StatefulSetRevisionNotFound {
 		deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = statefulSetRevision
 	}
 
@@ -1471,13 +1477,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if StatefulSet revision has changed (indicates pod restart)
 	// This ensures proxy Deployment restarts to reestablish stdio connection
-	currentRevision, hasRevision := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
-	if !hasRevision || currentRevision != statefulSetRevision {
-		log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",
-			"currentRevision", currentRevision,
-			"newRevision", statefulSetRevision,
-			"mcpserver", mcpServer.Name)
-		return true
+	// Skip this check if StatefulSet doesn't exist yet (revision == StatefulSetRevisionNotFound)
+	if statefulSetRevision != "" && statefulSetRevision != StatefulSetRevisionNotFound {
+		currentRevision, hasRevision := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+		if !hasRevision || currentRevision != statefulSetRevision {
+			log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",
+				"currentRevision", currentRevision,
+				"newRevision", statefulSetRevision,
+				"mcpserver", mcpServer.Name)
+			return true
+		}
 	}
 	// Check if the container args have changed
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {

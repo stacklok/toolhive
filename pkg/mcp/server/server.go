@@ -98,6 +98,11 @@ func (s *Server) GetAddress() string {
 	return fmt.Sprintf("http://%s:%s/mcp", s.config.Host, s.config.Port)
 }
 
+// boolPtr returns a pointer to a bool value
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // registerTools registers all MCP tools with the server
 func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 	mcpServer.AddTool(mcp.Tool{
@@ -112,6 +117,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 				},
 			},
 			Required: []string{"query"},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:        "Search Registry",
+			ReadOnlyHint: boolPtr(true),
 		},
 	}, handler.SearchRegistry)
 
@@ -157,6 +166,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 			},
 			Required: []string{"server"},
 		},
+		Annotations: mcp.ToolAnnotation{
+			Title:           "Run Server",
+			DestructiveHint: boolPtr(true),
+		},
 	}, handler.RunServer)
 
 	mcpServer.AddTool(mcp.Tool{
@@ -165,6 +178,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 		InputSchema: mcp.ToolInputSchema{
 			Type:       "object",
 			Properties: map[string]interface{}{},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:        "List Servers",
+			ReadOnlyHint: boolPtr(true),
 		},
 	}, handler.ListServers)
 
@@ -181,6 +198,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 			},
 			Required: []string{"name"},
 		},
+		Annotations: mcp.ToolAnnotation{
+			Title:           "Stop Server",
+			DestructiveHint: boolPtr(true),
+		},
 	}, handler.StopServer)
 
 	mcpServer.AddTool(mcp.Tool{
@@ -195,6 +216,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 				},
 			},
 			Required: []string{"name"},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:           "Remove Server",
+			DestructiveHint: boolPtr(true),
 		},
 	}, handler.RemoveServer)
 
@@ -211,6 +236,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 			},
 			Required: []string{"name"},
 		},
+		Annotations: mcp.ToolAnnotation{
+			Title:        "Get Server Logs",
+			ReadOnlyHint: boolPtr(true),
+		},
 	}, handler.GetServerLogs)
 
 	mcpServer.AddTool(mcp.Tool{
@@ -219,6 +248,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 		InputSchema: mcp.ToolInputSchema{
 			Type:       "object",
 			Properties: map[string]interface{}{},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:        "List Secrets",
+			ReadOnlyHint: boolPtr(true),
 		},
 	}, handler.ListSecrets)
 
@@ -238,6 +271,10 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 				},
 			},
 			Required: []string{"name", "file_path"},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:           "Set Secret",
+			DestructiveHint: boolPtr(true),
 		},
 	}, handler.SetSecret)
 }

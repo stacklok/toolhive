@@ -1147,3 +1147,148 @@ func TestNewMonitor_CircuitBreakerValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestIsBackendUsableInMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		status   vmcp.BackendHealthStatus
+		mode     string
+		expected bool
+	}{
+		// Fail mode tests (strict)
+		{
+			name:     "fail mode - healthy backend usable",
+			status:   vmcp.BackendHealthy,
+			mode:     "fail",
+			expected: true,
+		},
+		{
+			name:     "fail mode - degraded backend NOT usable",
+			status:   vmcp.BackendDegraded,
+			mode:     "fail",
+			expected: false,
+		},
+		{
+			name:     "fail mode - unknown backend usable",
+			status:   vmcp.BackendUnknown,
+			mode:     "fail",
+			expected: true,
+		},
+		{
+			name:     "fail mode - unhealthy backend NOT usable",
+			status:   vmcp.BackendUnhealthy,
+			mode:     "fail",
+			expected: false,
+		},
+		{
+			name:     "fail mode - unauthenticated backend NOT usable",
+			status:   vmcp.BackendUnauthenticated,
+			mode:     "fail",
+			expected: false,
+		},
+		// Best effort mode tests (lenient)
+		{
+			name:     "best_effort mode - healthy backend usable",
+			status:   vmcp.BackendHealthy,
+			mode:     "best_effort",
+			expected: true,
+		},
+		{
+			name:     "best_effort mode - degraded backend usable",
+			status:   vmcp.BackendDegraded,
+			mode:     "best_effort",
+			expected: true,
+		},
+		{
+			name:     "best_effort mode - unknown backend usable",
+			status:   vmcp.BackendUnknown,
+			mode:     "best_effort",
+			expected: true,
+		},
+		{
+			name:     "best_effort mode - unhealthy backend NOT usable",
+			status:   vmcp.BackendUnhealthy,
+			mode:     "best_effort",
+			expected: false,
+		},
+		{
+			name:     "best_effort mode - unauthenticated backend NOT usable",
+			status:   vmcp.BackendUnauthenticated,
+			mode:     "best_effort",
+			expected: false,
+		},
+		// Unknown mode tests (should default to best_effort)
+		{
+			name:     "unknown mode - healthy backend usable",
+			status:   vmcp.BackendHealthy,
+			mode:     "unknown_mode",
+			expected: true,
+		},
+		{
+			name:     "unknown mode - degraded backend usable (defaults to best_effort)",
+			status:   vmcp.BackendDegraded,
+			mode:     "unknown_mode",
+			expected: true,
+		},
+		{
+			name:     "unknown mode - unhealthy backend NOT usable",
+			status:   vmcp.BackendUnhealthy,
+			mode:     "unknown_mode",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := IsBackendUsableInMode(tt.status, tt.mode)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsBackendUsable_BackwardCompatibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		status   vmcp.BackendHealthStatus
+		expected bool
+	}{
+		{
+			name:     "healthy backend usable",
+			status:   vmcp.BackendHealthy,
+			expected: true,
+		},
+		{
+			name:     "degraded backend usable (backward compatible behavior)",
+			status:   vmcp.BackendDegraded,
+			expected: true,
+		},
+		{
+			name:     "unknown backend usable",
+			status:   vmcp.BackendUnknown,
+			expected: true,
+		},
+		{
+			name:     "unhealthy backend NOT usable",
+			status:   vmcp.BackendUnhealthy,
+			expected: false,
+		},
+		{
+			name:     "unauthenticated backend NOT usable",
+			status:   vmcp.BackendUnauthenticated,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := IsBackendUsable(tt.status)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

@@ -113,7 +113,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	// Validate user-provided resource indicator (RFC 8707)
 	if req.OAuthConfig.Resource != "" {
 		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
-			return nil, fmt.Errorf("%w: invalid resource parameter: %v", retriever.ErrInvalidRunConfig, err)
+			return nil, fmt.Errorf("%w: invalid resource parameter: %w", retriever.ErrInvalidRunConfig, err)
 		}
 	}
 
@@ -275,7 +275,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
-		return nil, fmt.Errorf("%w: Failed to build run config: %v", retriever.ErrInvalidRunConfig, err)
+		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
 	}
 
 	return runConfig, nil

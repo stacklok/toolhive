@@ -55,7 +55,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	// Query capabilities using the backend client
 	capabilities, err := a.backendClient.ListCapabilities(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrBackendQueryFailed, backend.ID, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrBackendQueryFailed, backend.ID, err)
 	}
 
 	// Apply per-backend tool filtering and overrides (before conflict resolution)

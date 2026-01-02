@@ -1837,17 +1837,16 @@ func (r *MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj clien
 		return nil
 	}
 
-	// Only process pods that are part of an MCPServer StatefulSet
-	// Check for the instance label that identifies which MCPServer this pod belongs to
-	mcpServerName, hasMCPServerLabel := pod.Labels["app.kubernetes.io/instance"]
-	if !hasMCPServerLabel {
+	// Only process StatefulSet pods (not proxy deployment pods)
+	// StatefulSet pods have the statefulset.kubernetes.io/pod-name label
+	_, isStatefulSetPod := pod.Labels["statefulset.kubernetes.io/pod-name"]
+	if !isStatefulSetPod {
 		return nil
 	}
 
-	// Also check if this is a StatefulSet pod (not the proxy deployment pod)
-	// StatefulSet pods have app=mcpserver
-	app, hasApp := pod.Labels["app"]
-	if !hasApp || app != "mcpserver" {
+	// Get the MCPServer name from the toolhive-name label
+	mcpServerName, hasMCPServerLabel := pod.Labels["toolhive-name"]
+	if !hasMCPServerLabel {
 		return nil
 	}
 

@@ -142,7 +142,8 @@ func TestStatefulSetRevisionTracking(t *testing.T) {
 			if tt.statefulSetExists {
 				expectedRevision = tt.updatedRevision
 			} else {
-				expectedRevision = StatefulSetRevisionNotFound
+				// Empty string when StatefulSet doesn't exist
+				expectedRevision = ""
 			}
 
 			// Check if deployment needs update
@@ -194,8 +195,8 @@ func TestDeploymentForMCPServerWithStatefulSetRevision(t *testing.T) {
 			expectedInTemplate:  true,
 		},
 		{
-			name:                "with not-found revision",
-			statefulSetRevision: StatefulSetRevisionNotFound,
+			name:                "with not-found revision (empty string)",
+			statefulSetRevision: "",
 			expectedInTemplate:  false,
 		},
 		{

@@ -116,11 +116,6 @@ const (
 	RestartStrategyImmediate = "immediate"
 )
 
-// StatefulSet revision constants
-const (
-	// StatefulSetRevisionNotFound indicates that the StatefulSet doesn't exist yet
-	StatefulSetRevisionNotFound = "not-found"
-)
 
 // Authorization ConfigMap label constants
 const (
@@ -336,13 +331,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Get the StatefulSet to track its revision for proxy reconnection
 	// This ensures the proxy Deployment restarts when StatefulSet pods restart
+	// Note: The StatefulSet is created by the proxy runner, not by this controller,
+	// so it may not exist yet during initial MCPServer creation
 	statefulSet := &appsv1.StatefulSet{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulSet)
 	var statefulSetRevision string
 	if err != nil {
 		if errors.IsNotFound(err) {
-			ctxLogger.Info("StatefulSet not found, proxy deployment will not track pod restarts yet")
-			statefulSetRevision = StatefulSetRevisionNotFound
+			// StatefulSet doesn't exist yet - this is normal during initial creation
+			// Leave revision as empty string to avoid unnecessary Deployment updates
+			ctxLogger.V(1).Info("StatefulSet not found yet, will track revisions once it's created")
+			statefulSetRevision = ""
 		} else {
 			ctxLogger.Error(err, "Failed to get StatefulSet")
 			return ctrl.Result{}, err
@@ -436,9 +435,14 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the deployment spec changed or if StatefulSet pods have restarted
-	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum, statefulSetRevision) {
+	// Only check StatefulSet revision if the StatefulSet actually exists and is ready
+	// to avoid triggering unnecessary deployments during initial creation
+	// Use statefulSetRevision directly - it's already empty if StatefulSet doesn't exist
+	effectiveRevision := statefulSetRevision
+	
+	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum, effectiveRevision) {
 		// Update the deployment
-		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum, statefulSetRevision)
+		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum, effectiveRevision)
 		deployment.Spec = newDeployment.Spec
 		err = r.Update(ctx, deployment)
 		if err != nil {
@@ -1123,7 +1127,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add StatefulSet revision annotation to track pod restarts
 	// This ensures proxy Deployment restarts when StatefulSet pods restart
-	if statefulSetRevision != "" && statefulSetRevision != StatefulSetRevisionNotFound {
+	// Only add the annotation if we have a real revision (not empty or not-found)
+	if statefulSetRevision != "" {
 		deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = statefulSetRevision
 	}
 
@@ -1474,8 +1479,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if StatefulSet revision has changed (indicates pod restart)
 	// This ensures proxy Deployment restarts to reestablish stdio connection
-	// Skip this check if StatefulSet doesn't exist yet (revision == StatefulSetRevisionNotFound)
-	if statefulSetRevision != "" && statefulSetRevision != StatefulSetRevisionNotFound {
+	// Only check if we have a real revision (not empty, which means StatefulSet doesn't exist yet)
+	if statefulSetRevision != "" {
 		currentRevision, hasRevision := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
 		if !hasRevision || currentRevision != statefulSetRevision {
 			log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",

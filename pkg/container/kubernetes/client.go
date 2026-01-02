@@ -103,6 +103,15 @@ func NewClientWithConfigAndPlatformDetector(
 }
 
 // AttachToWorkload implements runtime.Runtime.
+// It establishes a kubectl attach connection to the MCP server pod.
+//
+// Connection Failure Handling:
+// If the connection fails permanently (after 5 retries with exponential backoff),
+// this function causes the process to exit with code 1. This triggers a Kubernetes
+// restart, allowing the proxy to establish a fresh connection to the current pod.
+// This is critical for handling StatefulSet pod restarts - when the MCP pod restarts,
+// the old kubectl attach connection becomes stale and cannot be reused. Exiting allows
+// Kubernetes to restart the proxy, which then attaches to the new pod.
 func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachToWorkload attaches to a workload in Kubernetes
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
@@ -151,9 +160,6 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
-	//nolint:gosec // we don't check for an error here because it's not critical
-	// and it also returns with an error of statuscode `0`'. perhaps someone
-	// who knows the function a bit more can fix this.
 	go func() {
 		// wrap with retry so we can retry if the connection fails
 		// Create exponential backoff with max 5 retries
@@ -182,12 +188,18 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 					statusErr.ErrStatus.Code)
 
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Info("Empty status error - this typically means the connection was closed unexpectedly")
-					logger.Info("This often happens when the container terminates or doesn't read from stdin")
+					logger.Errorf("Connection closed unexpectedly for workload %s", workloadName)
+					logger.Errorf("This typically means the pod terminated or restarted")
 				}
 			} else {
 				logger.Errorf("Non-status error: %v", err)
 			}
+
+			// Exit the process to trigger a restart by Kubernetes
+			// This allows the proxy to establish a fresh connection to the current pod
+			// after a pod restart, rather than maintaining a stale connection
+			logger.Errorf("kubectl attach failed after all retries for workload %s, exiting to allow restart", workloadName)
+			os.Exit(1)
 		}
 	}()
 

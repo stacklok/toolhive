@@ -25,10 +25,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -407,8 +410,30 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	// Check if the deployment spec changed
-	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum) {
+	// Get the StatefulSet to track its revision for proxy reconnection
+	// This ensures the proxy Deployment restarts when StatefulSet pods restart
+	statefulSet := &appsv1.StatefulSet{}
+	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulSet)
+	var statefulSetRevision string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			ctxLogger.Info("StatefulSet not found, proxy deployment will not track pod restarts yet")
+			statefulSetRevision = "not-found"
+		} else {
+			ctxLogger.Error(err, "Failed to get StatefulSet")
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Use the StatefulSet's update revision which changes when pods are restarted
+		statefulSetRevision = statefulSet.Status.UpdateRevision
+		if statefulSetRevision == "" {
+			// Fallback to current revision if update revision is not set
+			statefulSetRevision = statefulSet.Status.CurrentRevision
+		}
+	}
+
+	// Check if the deployment spec changed or if StatefulSet pods have restarted
+	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum, statefulSetRevision) {
 		// Update the deployment
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		deployment.Spec = newDeployment.Spec
@@ -1093,6 +1118,22 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 
+	// Get StatefulSet revision to track pod restarts
+	// This ensures proxy Deployment restarts when StatefulSet pods restart
+	statefulSet := &appsv1.StatefulSet{}
+	statefulSetErr := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, statefulSet)
+	if statefulSetErr == nil {
+		// Use the StatefulSet's update revision which changes when pods are restarted
+		revision := statefulSet.Status.UpdateRevision
+		if revision == "" {
+			// Fallback to current revision if update revision is not set
+			revision = statefulSet.Status.CurrentRevision
+		}
+		if revision != "" {
+			deploymentTemplateAnnotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"] = revision
+		}
+	}
+
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
 			deploymentLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
@@ -1432,8 +1473,20 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	mcpServer *mcpv1alpha1.MCPServer,
 	runConfigChecksum string,
+	statefulSetRevision string,
 ) bool {
 	if deployment == nil || mcpServer == nil {
+		return true
+	}
+
+	// Check if StatefulSet revision has changed (indicates pod restart)
+	// This ensures proxy Deployment restarts to reestablish stdio connection
+	currentRevision, hasRevision := deployment.Spec.Template.Annotations["mcpserver.toolhive.stacklok.dev/statefulset-revision"]
+	if !hasRevision || currentRevision != statefulSetRevision {
+		log.FromContext(ctx).Info("StatefulSet revision changed, proxy deployment needs update",
+			"currentRevision", currentRevision,
+			"newRevision", statefulSetRevision,
+			"mcpserver", mcpServer.Name)
 		return true
 	}
 	// Check if the container args have changed
@@ -1775,6 +1828,43 @@ func int32Ptr(i int32) *int32 {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// findMCPServerForPod maps pod events to MCPServer reconciliation requests.
+// This enables the controller to detect when StatefulSet pods restart and trigger
+// proxy Deployment updates to reestablish stdio connections.
+func (r *MCPServerReconciler) findMCPServerForPod(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return nil
+	}
+
+	// Only process pods that are part of an MCPServer StatefulSet
+	// Check for the instance label that identifies which MCPServer this pod belongs to
+	mcpServerName, hasMCPServerLabel := pod.Labels["app.kubernetes.io/instance"]
+	if !hasMCPServerLabel {
+		return nil
+	}
+
+	// Also check if this is a StatefulSet pod (not the proxy deployment pod)
+	// StatefulSet pods have app=mcpserver
+	app, hasApp := pod.Labels["app"]
+	if !hasApp || app != "mcpserver" {
+		return nil
+	}
+
+	log.FromContext(ctx).Info("StatefulSet pod event detected, triggering MCPServer reconciliation",
+		"pod", pod.Name,
+		"mcpserver", mcpServerName,
+		"namespace", pod.Namespace,
+		"phase", pod.Status.Phase)
+
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{
+			Name:      mcpServerName,
+			Namespace: pod.Namespace,
+		},
+	}}
+}
+
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
@@ -1809,10 +1899,63 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// Create a predicate to filter pod events
+	// We only care about:
+	// 1. Pods that have restarted (phase change or container restarts)
+	// 2. Pods that have been deleted (will be recreated)
+	podEventPredicate := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			// New pods created are relevant (StatefulSet scale-up or recreation)
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, ok := e.ObjectOld.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+			newPod, ok := e.ObjectNew.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+
+			// Trigger reconciliation if:
+			// 1. Pod UID changed (pod was recreated)
+			if oldPod.UID != newPod.UID {
+				return true
+			}
+
+			// 2. Container restart count increased (container restarted)
+			for i, oldContainer := range oldPod.Status.ContainerStatuses {
+				if i < len(newPod.Status.ContainerStatuses) {
+					newContainer := newPod.Status.ContainerStatuses[i]
+					if newContainer.RestartCount > oldContainer.RestartCount {
+						return true
+					}
+				}
+			}
+
+			// 3. Pod phase changed (e.g., Running -> Pending -> Running after restart)
+			if oldPod.Status.Phase != newPod.Status.Phase {
+				return true
+			}
+
+			return false
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			// Pod deletions are relevant (StatefulSet will recreate)
+			return true
+		},
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.findMCPServerForPod),
+			builder.WithPredicates(podEventPredicate),
+		).
 		Complete(r)
 }

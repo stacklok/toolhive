@@ -279,10 +279,10 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 		return nil, fmt.Errorf("empty WWW-Authenticate header")
 	}
 
-	// Check for OAuth/Bearer authentication
+	// Check for Bearer token authentication (static token)
 	// Note: We don't split by comma because Bearer parameters can contain commas in quoted values
 	if strings.HasPrefix(header, "Bearer") {
-		authInfo := &AuthInfo{Type: "OAuth"}
+		authInfo := &AuthInfo{Type: "Bearer"}
 
 		// Extract parameters after "Bearer"
 		params := strings.TrimSpace(strings.TrimPrefix(header, "Bearer"))

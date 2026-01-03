@@ -709,6 +709,28 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	resolvedBearerToken, err := resolveSecret(
+		f.RemoteAuthBearerToken,
+		f.RemoteAuthBearerTokenFile,
+		f.RemoteAuthBearerTokenEnvVar,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	authCfg.BearerToken = resolvedBearerToken
+	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
+	authCfg.BearerTokenEnvVar = f.RemoteAuthBearerTokenEnvVar
+
+	// Determine source type based on which value was provided (flag → file → env priority)
+	if f.RemoteAuthBearerToken != "" {
+		authCfg.BearerTokenSourceType = remote.TokenSourceTypeFlag
+	} else if f.RemoteAuthBearerTokenFile != "" {
+		authCfg.BearerTokenSourceType = remote.TokenSourceTypeFile
+	} else if f.RemoteAuthBearerTokenEnvVar != "" {
+		authCfg.BearerTokenSourceType = remote.TokenSourceTypeEnv
+	}
+
 	return authCfg, nil
 }
 
@@ -735,24 +757,48 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		}
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	resolvedBearerToken, err := resolveSecret(
+		runFlags.RemoteAuthFlags.RemoteAuthBearerToken,
+		runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
+		runFlags.RemoteAuthFlags.RemoteAuthBearerTokenEnvVar,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+
 	// Derive the resource parameter (RFC 8707)
 	resource := runFlags.RemoteAuthFlags.RemoteAuthResource
 	if resource == "" && runFlags.ResourceURL != "" {
 		resource = remote.DefaultResourceIndicator(runFlags.RemoteURL)
 	}
 
+	// Determine source type based on which value was provided (flag → file → env priority)
+	var bearerTokenSourceType remote.TokenSourceType
+	if runFlags.RemoteAuthFlags.RemoteAuthBearerToken != "" {
+		bearerTokenSourceType = remote.TokenSourceTypeFlag
+	} else if runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile != "" {
+		bearerTokenSourceType = remote.TokenSourceTypeFile
+	} else if runFlags.RemoteAuthFlags.RemoteAuthBearerTokenEnvVar != "" {
+		bearerTokenSourceType = remote.TokenSourceTypeEnv
+	}
+
 	return &remote.Config{
-		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-		ClientSecret: clientSecret,
-		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
-		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-		CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
-		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
-		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
-		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
-		Resource:     resource,
-		OAuthParams:  runFlags.OAuthParams,
+		ClientID:              runFlags.RemoteAuthFlags.RemoteAuthClientID,
+		ClientSecret:          clientSecret,
+		Scopes:                runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		SkipBrowser:           runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+		Timeout:               runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+		CallbackPort:          runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
+		Issuer:                runFlags.RemoteAuthFlags.RemoteAuthIssuer,
+		AuthorizeURL:          runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
+		TokenURL:              runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:              resource,
+		OAuthParams:           runFlags.OAuthParams,
+		BearerToken:           resolvedBearerToken,
+		BearerTokenFile:       runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
+		BearerTokenEnvVar:     runFlags.RemoteAuthFlags.RemoteAuthBearerTokenEnvVar,
+		BearerTokenSourceType: bearerTokenSourceType,
 	}, nil
 }
 

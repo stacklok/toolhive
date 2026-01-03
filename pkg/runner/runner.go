@@ -250,14 +250,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Wrap the token source with authentication monitoring for remote workloads
+		// Skip monitoring for bearer tokens since they never fail Token() calls and we rely on 401 detection instead
 		if tokenSource != nil {
-			// Create a child context for monitoring that can be cancelled during cleanup
-			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
-			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
-			adapter := &statusManagerAdapter{sm: r.statusManager}
-			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
-			tokenSource = r.authenticatedTokenSource
-			r.authenticatedTokenSource.StartBackgroundMonitoring()
+			// Check if this is a bearer token source (which doesn't need background monitoring)
+			_, isBearerToken := tokenSource.(*remote.BearerTokenSource)
+
+			if !isBearerToken {
+				// Only wrap OAuth token sources with monitoring (bearer tokens use 401 detection)
+				// Create a child context for monitoring that can be cancelled during cleanup
+				r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
+				// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
+				adapter := &statusManagerAdapter{sm: r.statusManager}
+				r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
+				tokenSource = r.authenticatedTokenSource
+				r.authenticatedTokenSource.StartBackgroundMonitoring()
+			}
 		}
 
 		// Set the token source on the HTTP transport
@@ -276,6 +283,43 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.Config.BaseName,
 					rt.WorkloadStatusUnhealthy,
 					"Health check failed",
+				); err != nil {
+					logger.Errorf("Failed to update workload status: %v", err)
+				}
+			})
+		}
+
+		// Set the unauthorized response callback for bearer token authentication
+		if httpTransport, ok := transportHandler.(interface {
+			SetOnUnauthorizedResponse(types.UnauthorizedResponseCallback)
+		}); ok {
+			// Build actionable error message based on token source type
+			var errorMsg string
+			if r.Config.RemoteAuthConfig != nil {
+				switch r.Config.RemoteAuthConfig.BearerTokenSourceType {
+				case remote.TokenSourceTypeFlag:
+					errorMsg = "Bearer token authentication failed. Please restart the server with a new token using --remote-auth-bearer-token"
+				case remote.TokenSourceTypeFile:
+					filePath := r.Config.RemoteAuthConfig.BearerTokenFile
+					errorMsg = fmt.Sprintf("Bearer token authentication failed. Please restart the server with --remote-auth-bearer-token-file=%s after updating the token file at %s", filePath, filePath)
+				case remote.TokenSourceTypeEnv:
+					envVar := r.Config.RemoteAuthConfig.BearerTokenEnvVar
+					errorMsg = fmt.Sprintf("Bearer token authentication failed. Please update the %s environment variable and restart the server", envVar)
+				default:
+					errorMsg = "Bearer token authentication failed"
+				}
+			} else {
+				errorMsg = "Bearer token authentication failed"
+			}
+
+			finalErrorMsg := errorMsg
+			httpTransport.SetOnUnauthorizedResponse(func() {
+				logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
+				if err := r.statusManager.SetWorkloadStatus(
+					context.Background(),
+					r.Config.BaseName,
+					rt.WorkloadStatusUnauthenticated,
+					finalErrorMsg,
 				); err != nil {
 					logger.Errorf("Failed to update workload status: %v", err)
 				}
@@ -407,9 +451,22 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
-		// If we can't set the status to `running` - treat it as a fatal error.
-		return fmt.Errorf("failed to set workload status: %w", err)
+	// However, we should preserve unauthenticated status if it was already set
+	// (e.g., if bearer token authentication failed during initialization)
+	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
+		logger.Warnf("Failed to get current workload status: %v", err)
+	}
+
+	// Only set status to running if it's not already unauthenticated
+	// This preserves the unauthenticated state when bearer token authentication fails
+	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
+		logger.Debugf("Preserving unauthenticated status for workload %s", r.Config.BaseName)
+	} else {
+		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
+			// If we can't set the status to `running` - treat it as a fatal error.
+			return fmt.Errorf("failed to set workload status: %w", err)
+		}
 	}
 
 	// Wait for either a signal or the done channel to be closed

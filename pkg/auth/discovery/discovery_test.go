@@ -256,7 +256,7 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 			},
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
 			},
 		},

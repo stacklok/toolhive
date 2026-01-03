@@ -690,3 +690,97 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthenticate_BearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		config         *Config
+		serverResponse func(w http.ResponseWriter, r *http.Request)
+		expectError    bool
+		expectToken    bool
+		expectedType   string
+	}{
+		{
+			name: "explicit bearer token configured",
+			config: &Config{
+				BearerToken: "test-bearer-token-123",
+			},
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+			expectError:  false,
+			expectToken:  true,
+			expectedType: "Bearer",
+		},
+		{
+			name: "bearer token from server detection",
+			config: &Config{
+				BearerToken: "test-bearer-token-456",
+			},
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expectError: false,
+			expectToken: true,
+		},
+		{
+			name:   "server requires bearer token but none configured",
+			config: &Config{},
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expectError: true,
+			expectToken: false,
+		},
+		{
+			name: "bearer token takes precedence over OAuth",
+			config: &Config{
+				BearerToken: "test-bearer-token-789",
+				ClientID:    "oauth-client-id",
+				Issuer:      "https://oauth.example.com",
+			},
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", `OAuth realm="https://oauth.example.com"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expectError: false,
+			expectToken: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create test server
+			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
+			defer server.Close()
+
+			handler := NewHandler(tt.config)
+			ctx := context.Background()
+
+			tokenSource, err := handler.Authenticate(ctx, server.URL)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Nil(t, tokenSource)
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.expectToken {
+				require.NotNil(t, tokenSource, "Expected token source to be created")
+				token, err := tokenSource.Token()
+				require.NoError(t, err)
+				assert.Equal(t, tt.config.BearerToken, token.AccessToken)
+				assert.Equal(t, "Bearer", token.TokenType)
+			} else {
+				assert.Nil(t, tokenSource)
+			}
+		})
+	}
+}

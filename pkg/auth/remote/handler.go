@@ -27,6 +27,7 @@ func NewHandler(config *Config) *Handler {
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 
 	// If bearer token is explicitly configured, use it (takes precedence over detection)
+	// if no bearer token is configured but the server returns a Bearer header, use the OAuth flow for backward compatibility
 	if h.config.BearerToken != "" {
 		logger.Infof("Using explicitly configured bearer token authentication")
 		return NewBearerTokenSource(h.config.BearerToken), nil
@@ -46,12 +47,21 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		// Handle Bearer authentication type detected from server
 		if authInfo.Type == "Bearer" {
 			// If we reach here, bearer token is not configured (we already checked above)
-			return nil, fmt.Errorf("server requires bearer token authentication, but no bearer token is configured. " +
-				"Please provide --remote-auth-bearer-token, --remote-auth-bearer-token-file, or --remote-auth-bearer-token-env-var")
+			// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
+			// Many servers use Bearer header but support OAuth flow
+			if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
+				logger.Infof("Server returned Bearer header but no bearer token configured. " +
+					"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
+				// Fall through to OAuth handling below
+			} else {
+				// No realm or resource_metadata - likely requires static bearer token
+				return nil, fmt.Errorf("server requires bearer token authentication, but no bearer token is configured. " +
+					"Please provide --remote-auth-bearer-token, --remote-auth-bearer-token-file, or --remote-auth-bearer-token-env-var")
+			}
 		}
 
-		// Handle OAuth authentication
-		if authInfo.Type == "OAuth" {
+		// Handle OAuth authentication (including Bearer fallback for backward compatibility)
+		if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
 			// Discover the issuer and potentially update scopes
 			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 			if err != nil {

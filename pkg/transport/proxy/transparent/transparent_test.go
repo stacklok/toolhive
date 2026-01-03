@@ -421,12 +421,16 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", callback, nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
+
+	// Verify callback is set
+	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	tracingTrans := &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = tracingTrans
 
 	// Make a request through the proxy
 	rec := httptest.NewRecorder()
@@ -466,7 +470,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", callback, nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -511,7 +515,7 @@ func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", callback, nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)

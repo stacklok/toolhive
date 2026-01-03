@@ -626,6 +626,8 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
 // giving CLI flags priority. For OAuthParams: if CLI provides any, they REPLACE metadata entirely.
+//
+//nolint:gocyclo // This function is complex by design - it handles multiple configuration sources and priority resolution
 func getRemoteAuthFromRemoteServerMetadata(
 	remoteServerMetadata *regtypes.RemoteServerMetadata,
 	runFlags *RunFlags,

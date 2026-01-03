@@ -48,14 +48,14 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "simple bearer",
 			header: "Bearer",
 			expected: &AuthInfo{
-				Type: "OAuth",
+				Type: "Bearer",
 			},
 		},
 		{
 			name:   "bearer with realm",
 			header: `Bearer realm="https://example.com"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
 			},
 		},
@@ -63,7 +63,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "bearer with quoted realm",
 			header: `Bearer realm="https://example.com/oauth"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com/oauth",
 			},
 		},
@@ -79,7 +79,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "multiple schemes with bearer first",
 			header: `Bearer realm="https://example.com", Basic realm="test"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
 			},
 		},
@@ -1106,7 +1106,16 @@ func TestDetectAuthenticationFromServer_WellKnownFallback(t *testing.T) {
 
 			if tt.expectedAuthFound {
 				require.NotNil(t, result, "Expected AuthInfo but got nil")
-				assert.Equal(t, "OAuth", result.Type)
+				// Type depends on discovery method:
+				// - WWW-Authenticate header → Bearer (for Bearer headers) or OAuth (for OAuth headers)
+				// - Well-known URI fallback → OAuth
+				if tt.expectedResourceMeta {
+					// Well-known URI fallback should return OAuth
+					assert.Equal(t, "OAuth", result.Type)
+				} else {
+					// WWW-Authenticate header takes precedence - test uses Bearer header
+					assert.Equal(t, "Bearer", result.Type)
+				}
 
 				if tt.expectedResourceMeta {
 					assert.NotEmpty(t, result.ResourceMetadata, "Expected ResourceMetadata to be set")

@@ -707,7 +707,7 @@ func TestAuthenticate_BearerToken(t *testing.T) {
 			config: &Config{
 				BearerToken: "test-bearer-token-123",
 			},
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			},
 			expectError:  false,
@@ -719,7 +719,7 @@ func TestAuthenticate_BearerToken(t *testing.T) {
 			config: &Config{
 				BearerToken: "test-bearer-token-456",
 			},
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},
@@ -727,10 +727,22 @@ func TestAuthenticate_BearerToken(t *testing.T) {
 			expectToken: true,
 		},
 		{
-			name:   "server requires bearer token but none configured",
+			name:   "server requires bearer token but none configured - fallback to OAuth for backward compatibility",
 			config: &Config{},
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			// With backward compatibility, Bearer header with realm should attempt OAuth flow
+			// This will fail OAuth discovery, but that's expected without OAuth config
+			expectError: true, // OAuth discovery will fail without issuer/client config
+			expectToken: false,
+		},
+		{
+			name:   "server requires bearer token without realm - should error",
+			config: &Config{},
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},
 			expectError: true,
@@ -743,7 +755,7 @@ func TestAuthenticate_BearerToken(t *testing.T) {
 				ClientID:    "oauth-client-id",
 				Issuer:      "https://oauth.example.com",
 			},
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `OAuth realm="https://oauth.example.com"`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},

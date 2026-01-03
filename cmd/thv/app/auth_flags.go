@@ -88,8 +88,8 @@ type RemoteAuthFlags struct {
 	TokenExchangeHeaderName       string
 
 	// Bearer Token Configuration
-	RemoteAuthBearerToken     string
-	RemoteAuthBearerTokenFile string
+	RemoteAuthBearerToken       string
+	RemoteAuthBearerTokenFile   string
 	RemoteAuthBearerTokenEnvVar string
 }
 

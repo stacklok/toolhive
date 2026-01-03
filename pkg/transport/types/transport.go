@@ -168,6 +168,7 @@ type HealthCheckFailedCallback func()
 // This allows the transport to notify the runner/status manager when bearer tokens become invalid.
 type UnauthorizedResponseCallback func()
 
+// Config represents the configuration for a transport.
 type Config struct {
 	// Type is the type of transport to use.
 	Type TransportType

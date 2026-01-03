@@ -738,7 +738,7 @@ type mockUpstreamIDP struct {
 	server *httptest.Server
 
 	// tokens to return on exchange
-	tokens *IDPTokens
+	tokens *storage.IDPTokens
 
 	// userInfo to return on userinfo request
 	userInfo *idp.UserInfo
@@ -766,7 +766,7 @@ func startMockUpstreamIDP(t *testing.T, opts ...mockIDPOption) *mockUpstreamIDP 
 	t.Helper()
 
 	mock := &mockUpstreamIDP{
-		tokens: &IDPTokens{
+		tokens: &storage.IDPTokens{
 			AccessToken:  "mock-idp-access-token-" + generateRandomID(t),
 			RefreshToken: "mock-idp-refresh-token-" + generateRandomID(t),
 			IDToken:      "mock-idp-id-token-" + generateRandomID(t),

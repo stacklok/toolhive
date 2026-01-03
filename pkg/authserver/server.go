@@ -32,26 +32,13 @@ type Server interface {
 	//   - /oauth/callback (Upstream IDP callback)
 	//   - /oauth2/register (Dynamic Client Registration)
 	//
-	// This is the preferred method for mounting the auth server.
 	// The handler uses internal routing - the consumer doesn't need to know
 	// about the endpoint structure.
 	Handler() http.Handler
 
-	// OAuthHandler returns a handler for OAuth endpoints only.
-	// This is provided for backward compatibility with systems that
-	// need separate handlers for different path prefixes.
-	// Prefer using Handler() when possible.
-	OAuthHandler() http.Handler
-
-	// WellKnownHandler returns a handler for well-known endpoints only.
-	// This is provided for backward compatibility with systems that
-	// need separate handlers for different path prefixes.
-	// Prefer using Handler() when possible.
-	WellKnownHandler() http.Handler
-
 	// IDPTokenStorage returns storage for upstream IDP tokens.
 	// Returns nil if no upstream IDP is configured.
-	IDPTokenStorage() IDPTokenStorage
+	IDPTokenStorage() storage.IDPTokenStorage
 
 	// Close releases resources held by the server.
 	Close() error

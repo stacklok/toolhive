@@ -132,16 +132,12 @@ type RunConfig struct {
 	// Deployer is the container runtime to use (not serialized)
 	Deployer rt.Deployer `json:"-" yaml:"-"`
 
-	// AuthServerMux is an optional HTTP handler for the embedded OAuth authorization server (not serialized)
-	AuthServerMux http.Handler `json:"-" yaml:"-"`
-
-	// AuthServerWellKnownMux is an optional HTTP handler for the embedded OAuth authorization server's
-	// well-known endpoints (not serialized)
-	AuthServerWellKnownMux http.Handler `json:"-" yaml:"-"`
+	// AuthServerHandler is an optional HTTP handler for the embedded OAuth authorization server (not serialized)
+	AuthServerHandler http.Handler `json:"-" yaml:"-"`
 
 	// AuthServerConfig configures the embedded OAuth authorization server.
 	// When set and Enabled is true, the proxy will mount OAuth endpoints.
-	// This takes precedence over AuthServerMux/AuthServerWellKnownMux if set.
+	// This takes precedence over AuthServerHandler if set.
 	AuthServerConfig *runconfig.RunConfig `json:"auth_server_config,omitempty" yaml:"auth_server_config,omitempty"`
 
 	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)

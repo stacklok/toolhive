@@ -64,21 +64,11 @@ func WithRuntime(deployer rt.Deployer) RunConfigBuilderOption {
 	}
 }
 
-// WithAuthServerMux sets the embedded OAuth authorization server handler
-func WithAuthServerMux(mux http.Handler) RunConfigBuilderOption {
+// WithAuthServerHandler sets the embedded OAuth authorization server handler.
+func WithAuthServerHandler(handler http.Handler) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if b.buildContext == BuildContextCLI {
-			b.config.AuthServerMux = mux
-		}
-		return nil
-	}
-}
-
-// WithAuthServerWellKnownMux sets the embedded OAuth authorization server's well-known endpoints handler
-func WithAuthServerWellKnownMux(mux http.Handler) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		if b.buildContext == BuildContextCLI {
-			b.config.AuthServerWellKnownMux = mux
+			b.config.AuthServerHandler = handler
 		}
 		return nil
 	}
@@ -86,7 +76,7 @@ func WithAuthServerWellKnownMux(mux http.Handler) RunConfigBuilderOption {
 
 // WithAuthServerRunConfig sets the embedded auth server configuration.
 // When set and Enabled is true, the runner will create OAuth handlers from this config.
-// This takes precedence over WithAuthServerMux/WithAuthServerWellKnownMux.
+// This takes precedence over WithAuthServerHandler.
 func WithAuthServerRunConfig(cfg *runconfig.RunConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.AuthServerConfig = cfg

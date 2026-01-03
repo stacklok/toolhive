@@ -60,8 +60,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TargetHost,
 			config.AuthInfoHandler,
 			config.PrometheusHandler,
-			config.AuthServerMux,
-			config.AuthServerWellKnownMux,
+			config.AuthServerHandler,
 			config.Middlewares...,
 		)
 	case types.TransportTypeStreamableHTTP:
@@ -75,8 +74,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TargetHost,
 			config.AuthInfoHandler,
 			config.PrometheusHandler,
-			config.AuthServerMux,
-			config.AuthServerWellKnownMux,
+			config.AuthServerHandler,
 			config.Middlewares...,
 		)
 	case types.TransportTypeInspector:

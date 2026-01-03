@@ -32,11 +32,9 @@ import (
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler          http.Handler
-	oauthHandler     http.Handler
-	wellKnownHandler http.Handler
-	storage          storage.Storage
-	upstreamIDP      idp.Provider
+	handler     http.Handler
+	storage     storage.Storage
+	upstreamIDP idp.Provider
 }
 
 // newServer creates a new OAuth authorization server.
@@ -84,25 +82,16 @@ func newServer(ctx context.Context, cfg Config, opts ...Option) (*server, error)
 
 	router := oauth.NewRouter(slog.Default(), provider, oauth2Config, stor, routerOpts...)
 
-	// Create combined mux serving all endpoints
-	combinedMux := http.NewServeMux()
-	router.Routes(combinedMux)
-
-	// Create separate muxes for backward compatibility
-	oauthMux := http.NewServeMux()
-	router.OAuthRoutes(oauthMux)
-
-	wellKnownMux := http.NewServeMux()
-	router.WellKnownRoutes(wellKnownMux)
+	// Create mux serving all endpoints
+	mux := http.NewServeMux()
+	router.Routes(mux)
 
 	logger.Infof("OAuth authorization server configured with issuer: %s", cfg.Issuer)
 
 	return &server{
-		handler:          combinedMux,
-		oauthHandler:     oauthMux,
-		wellKnownHandler: wellKnownMux,
-		storage:          stor,
-		upstreamIDP:      upstreamIDP,
+		handler:     mux,
+		storage:     stor,
+		upstreamIDP: upstreamIDP,
 	}, nil
 }
 
@@ -111,18 +100,8 @@ func (s *server) Handler() http.Handler {
 	return s.handler
 }
 
-// OAuthHandler returns the HTTP handler for OAuth endpoints only.
-func (s *server) OAuthHandler() http.Handler {
-	return s.oauthHandler
-}
-
-// WellKnownHandler returns the HTTP handler for well-known endpoints only.
-func (s *server) WellKnownHandler() http.Handler {
-	return s.wellKnownHandler
-}
-
 // IDPTokenStorage returns the IDP token storage interface.
-func (s *server) IDPTokenStorage() IDPTokenStorage {
+func (s *server) IDPTokenStorage() storage.IDPTokenStorage {
 	return s.storage
 }
 

@@ -13,8 +13,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/authserver/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 )
 
 // Test constants
@@ -32,7 +32,7 @@ func TestCreateIDPTokenSwapMiddleware_HappyPath(t *testing.T) {
 
 	// Setup expectations
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -234,7 +234,7 @@ func TestCreateIDPTokenSwapMiddleware_SubjectMismatch(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "different-user-456", // Different from JWT sub
@@ -283,7 +283,7 @@ func TestCreateIDPTokenSwapMiddleware_ClientIDMismatch(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -332,7 +332,7 @@ func TestCreateIDPTokenSwapMiddleware_ClientIDFromClientIDClaim(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -381,7 +381,7 @@ func TestCreateIDPTokenSwapMiddleware_TokenExpired(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(-time.Hour), // Expired
 		Subject:     "user-123",
@@ -430,7 +430,7 @@ func TestCreateIDPTokenSwapMiddleware_BindingVerificationDisabled(t *testing.T) 
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "different-user-456", // Mismatch should be ignored
@@ -482,7 +482,7 @@ func TestCreateIDPTokenSwapMiddleware_CustomSessionIDClaimKey(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -532,7 +532,7 @@ func TestCreateIDPTokenSwapMiddleware_EmptySubjectInStoredTokens(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "", // Empty - should skip validation
@@ -581,7 +581,7 @@ func TestCreateIDPTokenSwapMiddleware_EmptyClientIDInStoredTokens(t *testing.T) 
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -630,7 +630,7 @@ func TestCreateIDPTokenSwapMiddleware_NoClientIDInJWTClaims(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := testSessionID
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-access-token-xyz",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",
@@ -678,7 +678,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 	tests := []struct {
 		name       string
 		identity   *auth.Identity
-		idpTokens  *authserver.IDPTokens
+		idpTokens  *storage.IDPTokens
 		expectErr  bool
 		errContain string
 	}{
@@ -690,7 +690,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"azp": "client-456",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "user-123",
 				ClientID: "client-456",
 			},
@@ -704,7 +704,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"azp": "client-456",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "different-user",
 				ClientID: "client-456",
 			},
@@ -719,7 +719,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"azp": "client-456",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "user-123",
 				ClientID: "different-client",
 			},
@@ -734,7 +734,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"azp": "client-456",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "",
 				ClientID: "client-456",
 			},
@@ -748,7 +748,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"azp": "any-client",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "user-123",
 				ClientID: "",
 			},
@@ -762,7 +762,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"client_id": "client-456",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "user-123",
 				ClientID: "client-456",
 			},
@@ -777,7 +777,7 @@ func TestVerifyTokenBinding(t *testing.T) {
 					"client_id": "client_id-client",
 				},
 			},
-			idpTokens: &authserver.IDPTokens{
+			idpTokens: &storage.IDPTokens{
 				Subject:  "user-123",
 				ClientID: "azp-client", // Should match azp, not client_id
 			},
@@ -829,7 +829,7 @@ func TestConfig_Defaults(t *testing.T) {
 
 	// Test 1: Default session ID claim key should be "tsid"
 	sessionID := "test-session"
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "token",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
@@ -867,7 +867,7 @@ func TestMiddleware_PreservesRequestContext(t *testing.T) {
 	mockStorage := mocks.NewMockIDPTokenStorage(ctrl)
 
 	sessionID := "test-session"
-	idpTokens := &authserver.IDPTokens{
+	idpTokens := &storage.IDPTokens{
 		AccessToken: "idp-token",
 		ExpiresAt:   time.Now().Add(time.Hour),
 		Subject:     "user-123",

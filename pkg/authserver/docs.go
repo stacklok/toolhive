@@ -69,23 +69,3 @@
 //   - oauth: OAuth protocol handlers and configuration
 //   - runconfig: ToolHive-specific configuration with file paths and env vars
 package authserver
-
-import (
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
-)
-
-// Type aliases for backward compatibility and convenience.
-// External consumers can use these without importing subpackages directly.
-type (
-	// Storage is the interface for OAuth authorization storage.
-	Storage = storage.Storage
-
-	// IDPTokenStorage is the interface for IDP token storage operations.
-	IDPTokenStorage = storage.IDPTokenStorage
-
-	// IDPTokens represents tokens obtained from an upstream Identity Provider.
-	IDPTokens = storage.IDPTokens
-
-	// PendingAuthorization tracks a client's authorization request.
-	PendingAuthorization = storage.PendingAuthorization
-)

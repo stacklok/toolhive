@@ -68,7 +68,7 @@ type Runner struct {
 
 	// idpTokenStorage stores the IDP token storage for middleware access.
 	// This is set when an embedded auth server is configured.
-	idpTokenStorage authserver.IDPTokenStorage
+	idpTokenStorage storage.IDPTokenStorage
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -122,7 +122,7 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 // GetIDPTokenStorage returns the IDP token storage for middleware.
 // Implements idptokenswap.IDPTokenStorageProvider.
 // Returns nil if no embedded auth server is configured.
-func (r *Runner) GetIDPTokenStorage() authserver.IDPTokenStorage {
+func (r *Runner) GetIDPTokenStorage() storage.IDPTokenStorage {
 	return r.idpTokenStorage
 }
 
@@ -163,15 +163,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("failed to create auth server: %w", err)
 		}
 		if authServer != nil {
-			transportConfig.AuthServerMux = authServer.OAuthHandler()
-			transportConfig.AuthServerWellKnownMux = authServer.WellKnownHandler()
+			transportConfig.AuthServerHandler = authServer.Handler()
 			// Store the IDP token storage for middleware access
 			r.idpTokenStorage = authServer.IDPTokenStorage()
 		}
 	} else {
-		// Fall back to pre-created handlers for backward compatibility
-		transportConfig.AuthServerMux = r.Config.AuthServerMux
-		transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
+		// Fall back to pre-created handler for backward compatibility
+		transportConfig.AuthServerHandler = r.Config.AuthServerHandler
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.

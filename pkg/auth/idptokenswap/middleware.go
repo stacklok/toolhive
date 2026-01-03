@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -23,7 +23,7 @@ const DefaultSessionIDClaimKey = "tsid"
 // Config holds configuration for the IDP token swap middleware
 type Config struct {
 	// Storage provides access to stored IDP tokens (required)
-	Storage authserver.IDPTokenStorage
+	Storage storage.IDPTokenStorage
 
 	// SessionIDClaimKey is the JWT claim containing the session ID
 	// Defaults to "tsid" if empty
@@ -116,7 +116,7 @@ func CreateIDPTokenSwapMiddleware(config Config) types.MiddlewareFunction {
 
 // verifyTokenBinding verifies that the JWT claims match the stored IDP token bindings.
 // Returns an error if there is a mismatch.
-func verifyTokenBinding(identity *auth.Identity, idpTokens *authserver.IDPTokens, sessionID string) error {
+func verifyTokenBinding(identity *auth.Identity, idpTokens *storage.IDPTokens, sessionID string) error {
 	// Get subject from JWT claims
 	jwtSubject, _ := identity.Claims["sub"].(string)
 

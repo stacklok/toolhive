@@ -67,10 +67,7 @@ type TransparentProxy struct {
 	authInfoHandler http.Handler
 
 	// Optional embedded OAuth authorization server handler
-	authServerMux http.Handler
-
-	// Optional embedded OAuth authorization server well-known endpoints handler
-	authServerWellKnownMux http.Handler
+	authServerHandler http.Handler
 
 	// Sessions for tracking state
 	sessionManager *session.Manager
@@ -98,8 +95,7 @@ func NewTransparentProxy(
 	targetURI string,
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
-	authServerMux http.Handler,
-	authServerWellKnownMux http.Handler,
+	authServerHandler http.Handler,
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
@@ -107,19 +103,18 @@ func NewTransparentProxy(
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:                   host,
-		port:                   port,
-		targetURI:              targetURI,
-		middlewares:            middlewares,
-		shutdownCh:             make(chan struct{}),
-		prometheusHandler:      prometheusHandler,
-		authInfoHandler:        authInfoHandler,
-		authServerMux:          authServerMux,
-		authServerWellKnownMux: authServerWellKnownMux,
-		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:               isRemote,
-		transportType:          transportType,
-		onHealthCheckFailed:    onHealthCheckFailed,
+		host:                host,
+		port:                port,
+		targetURI:           targetURI,
+		middlewares:         middlewares,
+		shutdownCh:          make(chan struct{}),
+		prometheusHandler:   prometheusHandler,
+		authInfoHandler:     authInfoHandler,
+		authServerHandler:   authServerHandler,
+		sessionManager:      session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:            isRemote,
+		transportType:       transportType,
+		onHealthCheckFailed: onHealthCheckFailed,
 	}
 
 	// Create health checker always for Kubernetes probes
@@ -380,9 +375,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	// Add embedded OAuth authorization server endpoints if provided (no middlewares)
-	if p.authServerMux != nil {
-		mux.Handle("/oauth/", p.authServerMux)
-		mux.Handle("/oauth2/", p.authServerMux) // DCR endpoint at /oauth2/register
+	if p.authServerHandler != nil {
+		mux.Handle("/oauth/", p.authServerHandler)
+		mux.Handle("/oauth2/", p.authServerHandler) // DCR endpoint at /oauth2/register
 		logger.Info("Embedded OAuth authorization server enabled at /oauth/ and /oauth2/")
 	}
 
@@ -464,14 +459,14 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 
 // createWellKnownHandler creates a composite handler for all /.well-known/* endpoints.
 // It routes requests to the appropriate handler based on the path:
-//   - /.well-known/openid-configuration, /.well-known/jwks.json -> authServerWellKnownMux
+//   - /.well-known/openid-configuration, /.well-known/jwks.json -> authServerHandler
 //   - /.well-known/oauth-protected-resource/* -> auth.NewWellKnownHandler(authInfoHandler)
 //
 // Returns nil if neither handler is available.
 func (p *TransparentProxy) createWellKnownHandler() http.Handler {
 	protectedResourceHandler := auth.NewWellKnownHandler(p.authInfoHandler)
 
-	hasAuthServer := p.authServerWellKnownMux != nil
+	hasAuthServer := p.authServerHandler != nil
 	hasProtectedResource := protectedResourceHandler != nil
 
 	// Case 1: Neither handler is available
@@ -482,7 +477,7 @@ func (p *TransparentProxy) createWellKnownHandler() http.Handler {
 	// Case 2: Only auth server well-known endpoints
 	if hasAuthServer && !hasProtectedResource {
 		logger.Info("Embedded OAuth authorization server well-known endpoints enabled at /.well-known/")
-		return p.authServerWellKnownMux
+		return p.authServerHandler
 	}
 
 	// Case 3: Only protected resource metadata
@@ -502,7 +497,7 @@ func (p *TransparentProxy) createWellKnownHandler() http.Handler {
 			return
 		}
 		// All other .well-known paths go to auth server
-		p.authServerWellKnownMux.ServeHTTP(w, r)
+		p.authServerHandler.ServeHTTP(w, r)
 	})
 }
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -19,7 +19,7 @@ type MiddlewareParams struct {
 // The runner implements this interface when an embedded auth server is configured,
 // allowing the IDP token swap middleware to access the same storage.
 type IDPTokenStorageProvider interface {
-	GetIDPTokenStorage() authserver.IDPTokenStorage
+	GetIDPTokenStorage() storage.IDPTokenStorage
 }
 
 // Middleware wraps the IDP token swap middleware function.
@@ -60,13 +60,13 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		)
 	}
 
-	storage := storageProvider.GetIDPTokenStorage()
-	if storage == nil {
+	idpStorage := storageProvider.GetIDPTokenStorage()
+	if idpStorage == nil {
 		return fmt.Errorf("IDP token storage not configured; ensure auth server is enabled")
 	}
 
 	middlewareFunc := CreateIDPTokenSwapMiddleware(Config{
-		Storage:           storage,
+		Storage:           idpStorage,
 		SessionIDClaimKey: params.SessionIDClaimKey,
 	})
 

@@ -291,14 +291,14 @@ func TestParseWWWAuthenticate_WithResourceMetadata(t *testing.T) {
 		{
 			name:                     "bearer with resource_metadata",
 			header:                   `Bearer resource_metadata="https://mcp.stripe.com/.well-known/oauth-protected-resource"`,
-			expectedType:             "OAuth",
+			expectedType:             "Bearer",
 			expectedResourceMetadata: "https://mcp.stripe.com/.well-known/oauth-protected-resource",
 			expectedError:            false,
 		},
 		{
 			name:                     "bearer with realm and resource_metadata",
 			header:                   `Bearer realm="https://auth.example.com", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource"`,
-			expectedType:             "OAuth",
+			expectedType:             "Bearer",
 			expectedRealm:            "https://auth.example.com",
 			expectedResourceMetadata: "https://resource.example.com/.well-known/oauth-protected-resource",
 			expectedError:            false,
@@ -306,7 +306,7 @@ func TestParseWWWAuthenticate_WithResourceMetadata(t *testing.T) {
 		{
 			name:          "bearer with error and error_description",
 			header:        `Bearer error="invalid_token", error_description="The access token expired"`,
-			expectedType:  "OAuth",
+			expectedType:  "Bearer",
 			expectedError: false,
 		},
 	}

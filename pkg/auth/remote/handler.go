@@ -26,6 +26,13 @@ func NewHandler(config *Config) *Handler {
 // Authenticate is the main entry point for remote MCP server authentication
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 
+	// If bearer token is explicitly configured, use it (takes precedence over detection)
+	// if no bearer token is configured but the server returns a Bearer header, use the OAuth flow for backward compatibility
+	if h.config.BearerToken != "" {
+		logger.Infof("Using explicitly configured bearer token authentication")
+		return NewBearerTokenSource(h.config.BearerToken), nil
+	}
+
 	// First, try to detect if authentication is required
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
 	if err != nil {
@@ -37,8 +44,24 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		logger.Infof("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
 			authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
 
-		// Handle OAuth authentication
-		if authInfo.Type == "OAuth" {
+		// Handle Bearer authentication type detected from server
+		if authInfo.Type == "Bearer" {
+			// If we reach here, bearer token is not configured (we already checked above)
+			// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
+			// Many servers use Bearer header but support OAuth flow
+			if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
+				logger.Infof("Server returned Bearer header but no bearer token configured. " +
+					"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
+				// Fall through to OAuth handling below
+			} else {
+				// No realm or resource_metadata - likely requires static bearer token
+				return nil, fmt.Errorf("server requires bearer token authentication, but no bearer token is configured. " +
+					"Please provide --remote-auth-bearer-token, --remote-auth-bearer-token-file, or --remote-auth-bearer-token-env-var")
+			}
+		}
+
+		// Handle OAuth authentication (including Bearer fallback for backward compatibility)
+		if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
 			// Discover the issuer and potentially update scopes
 			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 			if err != nil {
@@ -79,9 +102,9 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 			return result.TokenSource, nil
 		}
 
-		// Currently only OAuth-based authentication is supported
+		// Unsupported authentication type
 		logger.Infof("Unsupported authentication type: %s", authInfo.Type)
-		return nil, nil
+		return nil, fmt.Errorf("unsupported authentication type: %s", authInfo.Type)
 	}
 
 	return nil, nil // No authentication required

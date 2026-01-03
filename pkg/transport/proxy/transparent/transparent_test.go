@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "streamable-http", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "streamable-http", nil, nil)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -82,7 +83,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -108,7 +109,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -148,7 +149,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil)
+	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil, nil)
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
@@ -357,7 +358,7 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil)
 
 	ctx := context.Background()
 
@@ -385,7 +386,7 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy but don't start it
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil)
 
 	ctx := context.Background()
 
@@ -394,4 +395,175 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	// This may return an error or succeed depending on implementation
 	// The key is it shouldn't panic
 	_ = err
+}
+
+// TestTransparentProxy_UnauthorizedResponseCallback tests that 401 responses trigger the callback
+func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
+	t.Parallel()
+
+	callbackCalled := false
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCalled = true
+	}
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
+
+	// Verify callback is set
+	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	tracingTrans := &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = tracingTrans
+
+	// Make a request through the proxy
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 401 was returned
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Verify callback was called
+	mu.Lock()
+	actualCalled := callbackCalled
+	mu.Unlock()
+	assert.True(t, actualCalled, "Unauthorized response callback should have been called")
+}
+
+func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T) {
+	t.Parallel()
+
+	callbackCallCount := 0
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCallCount++
+	}
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make multiple requests through the proxy
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", target.URL, nil)
+		reverseProxy.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	}
+
+	// Verify callback was called for each 401 response
+	mu.Lock()
+	actualCount := callbackCallCount
+	mu.Unlock()
+	assert.Equal(t, 5, actualCount, "Callback should be called for each 401 response")
+}
+
+func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	callbackCalled := false
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCalled = true
+	}
+
+	// Create a test server that returns 200 OK
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make a request through the proxy
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 200 was returned
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify callback was NOT called
+	mu.Lock()
+	actualCalled := callbackCalled
+	mu.Unlock()
+	assert.False(t, actualCalled, "Unauthorized response callback should NOT have been called for 200 OK")
+}
+
+func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy with nil unauthorized response callback
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil)
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make a request through the proxy - should not panic
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 401 was returned
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }

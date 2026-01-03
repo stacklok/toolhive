@@ -397,6 +397,21 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
+	// Process RemoteAuthConfig.BearerToken if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
+			// It's in CLI format, resolve the actual secret value
+			actualToken, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual token value
+			c.RemoteAuthConfig.BearerToken = actualToken
+		}
+		// If it's not in CLI format (plain text), leave it as is
+	}
+
 	return c, nil
 }
 

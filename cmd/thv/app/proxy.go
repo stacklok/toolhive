@@ -262,6 +262,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		false, // isRemote
 		"",
 		nil, // onHealthCheckFailed - not needed for local proxies
+		nil, // onUnauthorizedResponse - not needed for local proxies
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)

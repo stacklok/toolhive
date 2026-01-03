@@ -83,6 +83,9 @@ type TransparentProxy struct {
 
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Callback when 401 Unauthorized response is received (for bearer token authentication)
+	onUnauthorizedResponse types.UnauthorizedResponseCallback
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -96,20 +99,22 @@ func NewTransparentProxy(
 	isRemote bool,
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:                host,
-		port:                port,
-		targetURI:           targetURI,
-		middlewares:         middlewares,
-		shutdownCh:          make(chan struct{}),
-		prometheusHandler:   prometheusHandler,
-		authInfoHandler:     authInfoHandler,
-		sessionManager:      session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:            isRemote,
-		transportType:       transportType,
-		onHealthCheckFailed: onHealthCheckFailed,
+		host:                   host,
+		port:                   port,
+		targetURI:              targetURI,
+		middlewares:            middlewares,
+		shutdownCh:             make(chan struct{}),
+		prometheusHandler:      prometheusHandler,
+		authInfoHandler:        authInfoHandler,
+		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:               isRemote,
+		transportType:          transportType,
+		onHealthCheckFailed:    onHealthCheckFailed,
+		onUnauthorizedResponse: onUnauthorizedResponse,
 	}
 
 	// Create health checker always for Kubernetes probes
@@ -177,6 +182,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		logger.Errorf("Failed to forward request: %v", err)
 		return nil, err
 	}
+
+	// Check for 401 Unauthorized responses (indicates invalid bearer token)
+	if resp.StatusCode == http.StatusUnauthorized {
+		logger.Warnf("Received 401 Unauthorized response from %s, bearer token may be invalid", t.p.targetURI)
+		if t.p.onUnauthorizedResponse != nil {
+			t.p.onUnauthorizedResponse()
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")

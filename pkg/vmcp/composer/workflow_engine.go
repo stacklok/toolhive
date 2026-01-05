@@ -13,7 +13,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
 
 const (
@@ -384,6 +386,15 @@ func (e *workflowEngine) executeToolStep(
 			ErrTemplateExpansion, step.ID, err)
 		workflowCtx.RecordStepFailure(step.ID, expandErr)
 		return expandErr
+	}
+
+	// Coerce expanded arguments to expected types based on backend tool schema.
+	// Template expansion returns strings, but backend tools expect typed values
+	// (integer, boolean, number) as defined in their InputSchema.
+	rawSchema := e.getToolInputSchema(ctx, step.Tool)
+	s := schema.MakeSchema(rawSchema)
+	if coerced, ok := s.TryCoerce(expandedArgs).(map[string]any); ok {
+		expandedArgs = coerced
 	}
 
 	// Route tool to backend
@@ -991,16 +1002,16 @@ func (*workflowEngine) updateWorkflowMetadata(
 //
 // If a parameter is missing from params but has a default in the schema, the default is applied.
 // Parameters explicitly provided by the client are never overwritten.
-func applyParameterDefaults(schema map[string]any, params map[string]any) map[string]any {
+func applyParameterDefaults(inputSchema map[string]any, params map[string]any) map[string]any {
 	if params == nil {
 		params = make(map[string]any)
 	}
-	if schema == nil {
+	if inputSchema == nil {
 		return params
 	}
 
 	// Extract properties from JSON Schema
-	properties, ok := schema["properties"].(map[string]any)
+	properties, ok := inputSchema["properties"].(map[string]any)
 	if !ok || properties == nil {
 		return params
 	}
@@ -1134,4 +1145,22 @@ func (e *workflowEngine) auditStepSkipped(
 	if e.auditor != nil {
 		e.auditor.LogStepSkipped(ctx, workflowID, stepID, condition)
 	}
+}
+
+// getToolInputSchema looks up a tool's InputSchema from discovered capabilities.
+// Returns nil if the tool is not found or capabilities are not in context.
+func (*workflowEngine) getToolInputSchema(ctx context.Context, toolName string) map[string]any {
+	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || caps == nil {
+		return nil
+	}
+
+	// Search in backend tools
+	for i := range caps.Tools {
+		if caps.Tools[i].Name == toolName {
+			return caps.Tools[i].InputSchema
+		}
+	}
+
+	return nil
 }

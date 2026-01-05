@@ -19,17 +19,19 @@ var _ transportsession.Session = (*VMCPSession)(nil)
 // Design Rationale:
 //   - Embeds StreamableSession to inherit Session interface and streamable HTTP behavior
 //   - Adds routing table for per-session capability routing
+//   - Stores tool list with InputSchema for type coercion in composite tool workflows
 //   - Maintains lifecycle synchronization with underlying transport session
 //   - Provides type-safe access to routing table (vs. interface{} casting)
 //
 // Lifecycle:
 //  1. Created by VMCPSessionFactory during sessionIDAdapter.Generate()
-//  2. Routing table populated in AfterInitialize hook
+//  2. Routing table and tools populated in AfterInitialize hook
 //  3. Retrieved by middleware on subsequent requests via type assertion
 //  4. Cleaned up automatically by session.Manager TTL worker
 type VMCPSession struct {
 	*transportsession.StreamableSession
 	routingTable *vmcp.RoutingTable
+	tools        []vmcp.Tool // Stores tools with InputSchema for type coercion
 	mu           sync.RWMutex
 }
 
@@ -75,6 +77,23 @@ func (s *VMCPSession) SetRoutingTable(rt *vmcp.RoutingTable) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routingTable = rt
+}
+
+// GetTools retrieves the tools list for this session.
+// Returns nil if capabilities have not been initialized yet.
+func (s *VMCPSession) GetTools() []vmcp.Tool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tools
+}
+
+// SetTools sets the tools list for this session.
+// Called during AfterInitialize hook after capability discovery.
+// The tools list includes InputSchema needed for type coercion in composite tool workflows.
+func (s *VMCPSession) SetTools(tools []vmcp.Tool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tools = tools
 }
 
 // Type identifies this as a streamable vMCP session.

@@ -86,7 +86,8 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -155,7 +156,8 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	require.NoError(t, err, "failed to add session")
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, sessionMgr)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, sessionMgr)
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -195,7 +197,8 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -235,7 +238,8 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -335,7 +339,8 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -399,7 +404,8 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -451,7 +457,8 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen

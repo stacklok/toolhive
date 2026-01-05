@@ -117,6 +117,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	}
 
 	// For object types, attempt JSON deserialization
+	// Note, the following type coercion is duplicative with the tool call type coercion
+	// from the schema package.
+	// TODO: Refactor the two to use one implementation.
 	if propertyDef.Type == typeObject {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(expandedStr), &obj); err != nil {
@@ -208,14 +211,11 @@ func (*workflowEngine) coerceStringToType(value string, targetType string) (any,
 
 	case typeBoolean:
 		// Try to parse as boolean
-		switch value {
-		case "true", "True", "TRUE", "1": //nolint:goconst // Boolean literals are clearer than constants
-			return true, nil
-		case "false", "False", "FALSE", "0": //nolint:goconst // Boolean literals are clearer than constants
-			return false, nil
-		default:
-			return nil, fmt.Errorf("cannot coerce %q to boolean (expected true/false/1/0)", value)
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("cannot coerce %q to boolean: %w", value, err)
 		}
+		return b, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported type for string coercion: %s", targetType)

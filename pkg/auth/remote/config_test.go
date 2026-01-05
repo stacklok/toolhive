@@ -65,33 +65,33 @@ func TestConfig_BearerTokenFields(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                  string
-		bearerToken           string
-		bearerTokenFile       string
-		bearerTokenEnvVar     string
-		bearerTokenSourceType TokenSourceType
+		name              string
+		bearerToken       string
+		bearerTokenFile   string
+		bearerTokenEnvVar string
+		expectedMsg       string
 	}{
 		{
-			name:                  "bearer token from flag",
-			bearerToken:           "test-token-123",
-			bearerTokenSourceType: TokenSourceTypeFlag,
+			name:        "bearer token from flag",
+			bearerToken: "test-token-123",
+			expectedMsg: "Bearer token authentication failed. Please restart the server with a new token using --remote-auth-bearer-token",
 		},
 		{
-			name:                  "bearer token from file",
-			bearerTokenFile:       "/path/to/token.txt",
-			bearerTokenSourceType: TokenSourceTypeFile,
+			name:            "bearer token from file",
+			bearerTokenFile: "/path/to/token.txt",
+			expectedMsg:     "Bearer token authentication failed. Please restart the server with --remote-auth-bearer-token-file=/path/to/token.txt after updating the token file at /path/to/token.txt",
 		},
 		{
-			name:                  "bearer token from env var",
-			bearerTokenEnvVar:     "BEARER_TOKEN",
-			bearerTokenSourceType: TokenSourceTypeEnv,
+			name:              "bearer token from env var",
+			bearerTokenEnvVar: "BEARER_TOKEN",
+			expectedMsg:       "Bearer token authentication failed. Please update the BEARER_TOKEN environment variable and restart the server",
 		},
 		{
-			name:                  "all bearer token fields set",
-			bearerToken:           "flag-token",
-			bearerTokenFile:       "/path/to/token.txt",
-			bearerTokenEnvVar:     "BEARER_TOKEN",
-			bearerTokenSourceType: TokenSourceTypeFlag,
+			name:              "all bearer token fields set (file takes precedence)",
+			bearerToken:       "flag-token",
+			bearerTokenFile:   "/path/to/token.txt",
+			bearerTokenEnvVar: "BEARER_TOKEN",
+			expectedMsg:       "Bearer token authentication failed. Please restart the server with --remote-auth-bearer-token-file=/path/to/token.txt after updating the token file at /path/to/token.txt",
 		},
 	}
 
@@ -100,16 +100,15 @@ func TestConfig_BearerTokenFields(t *testing.T) {
 			t.Parallel()
 
 			config := &Config{
-				BearerToken:           tt.bearerToken,
-				BearerTokenFile:       tt.bearerTokenFile,
-				BearerTokenEnvVar:     tt.bearerTokenEnvVar,
-				BearerTokenSourceType: tt.bearerTokenSourceType,
+				BearerToken:       tt.bearerToken,
+				BearerTokenFile:   tt.bearerTokenFile,
+				BearerTokenEnvVar: tt.bearerTokenEnvVar,
 			}
 
 			assert.Equal(t, tt.bearerToken, config.BearerToken)
 			assert.Equal(t, tt.bearerTokenFile, config.BearerTokenFile)
 			assert.Equal(t, tt.bearerTokenEnvVar, config.BearerTokenEnvVar)
-			assert.Equal(t, tt.bearerTokenSourceType, config.BearerTokenSourceType)
+			assert.Equal(t, tt.expectedMsg, config.GetBearerTokenErrorMessage())
 		})
 	}
 }
@@ -123,43 +122,51 @@ func TestConfig_UnmarshalJSON_BearerTokenFields(t *testing.T) {
 		expectedBearerToken  string
 		expectedBearerFile   string
 		expectedBearerEnvVar string
-		expectedSourceType   TokenSourceType
+		expectedMsg          string
 	}{
 		{
-			name: "snake_case format with bearer token",
+			name: "snake_case format with bearer token from flag only",
 			jsonData: `{
-				"bearer_token": "test-token-123",
-				"bearer_token_file": "/path/to/token.txt",
-				"bearer_token_env_var": "BEARER_TOKEN",
-				"bearer_token_source_type": "flag"
+				"bearer_token": "test-token-123"
 			}`,
 			expectedBearerToken:  "test-token-123",
-			expectedBearerFile:   "/path/to/token.txt",
-			expectedBearerEnvVar: "BEARER_TOKEN",
-			expectedSourceType:   TokenSourceTypeFlag,
+			expectedBearerFile:   "",
+			expectedBearerEnvVar: "",
+			expectedMsg:          "Bearer token authentication failed. Please restart the server with a new token using --remote-auth-bearer-token",
 		},
 		{
-			name: "PascalCase format with bearer token",
+			name: "snake_case format with bearer token from file",
 			jsonData: `{
-				"ClientID": "",
-				"BearerToken": "test-token-456",
-				"BearerTokenFile": "/path/to/token2.txt",
-				"BearerTokenEnvVar": "TOKEN_VAR",
-				"BearerTokenSourceType": "file"
+				"bearer_token": "test-token-456",
+				"bearer_token_file": "/path/to/token2.txt"
 			}`,
 			expectedBearerToken:  "test-token-456",
 			expectedBearerFile:   "/path/to/token2.txt",
-			expectedBearerEnvVar: "TOKEN_VAR",
-			expectedSourceType:   TokenSourceTypeFile,
+			expectedBearerEnvVar: "",
+			expectedMsg:          "Bearer token authentication failed. Please restart the server with --remote-auth-bearer-token-file=/path/to/token2.txt after updating the token file at /path/to/token2.txt",
+		},
+		{
+			name: "PascalCase format with bearer token from file",
+			jsonData: `{
+				"ClientID": "",
+				"BearerToken": "test-token-789",
+				"BearerTokenFile": "/path/to/token3.txt"
+			}`,
+			expectedBearerToken:  "test-token-789",
+			expectedBearerFile:   "/path/to/token3.txt",
+			expectedBearerEnvVar: "",
+			expectedMsg:          "Bearer token authentication failed. Please restart the server with --remote-auth-bearer-token-file=/path/to/token3.txt after updating the token file at /path/to/token3.txt",
 		},
 		{
 			name: "env source type",
 			jsonData: `{
 				"bearer_token": "env-token",
-				"bearer_token_source_type": "env"
+				"bearer_token_env_var": "BEARER_TOKEN"
 			}`,
-			expectedBearerToken: "env-token",
-			expectedSourceType:  TokenSourceTypeEnv,
+			expectedBearerToken:  "env-token",
+			expectedBearerFile:   "",
+			expectedBearerEnvVar: "BEARER_TOKEN",
+			expectedMsg:          "Bearer token authentication failed. Please update the BEARER_TOKEN environment variable and restart the server",
 		},
 	}
 
@@ -174,7 +181,7 @@ func TestConfig_UnmarshalJSON_BearerTokenFields(t *testing.T) {
 			assert.Equal(t, tt.expectedBearerToken, config.BearerToken)
 			assert.Equal(t, tt.expectedBearerFile, config.BearerTokenFile)
 			assert.Equal(t, tt.expectedBearerEnvVar, config.BearerTokenEnvVar)
-			assert.Equal(t, tt.expectedSourceType, config.BearerTokenSourceType)
+			assert.Equal(t, tt.expectedMsg, config.GetBearerTokenErrorMessage())
 		})
 	}
 }

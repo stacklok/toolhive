@@ -12,18 +12,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 )
 
-// TokenSourceType represents the source type of a bearer token
-type TokenSourceType string
-
-const (
-	// TokenSourceTypeFlag indicates the token was provided via CLI flag
-	TokenSourceTypeFlag TokenSourceType = "flag"
-	// TokenSourceTypeFile indicates the token was loaded from a file
-	TokenSourceTypeFile TokenSourceType = "file"
-	// TokenSourceTypeEnv indicates the token was loaded from an environment variable
-	TokenSourceTypeEnv TokenSourceType = "env"
-)
-
 // Config holds authentication configuration for remote MCP servers.
 // Supports OAuth/OIDC-based authentication with automatic discovery.
 type Config struct {
@@ -54,10 +42,29 @@ type Config struct {
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
 
 	// Bearer token configuration (alternative to OAuth)
-	BearerToken           string          `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
-	BearerTokenFile       string          `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
-	BearerTokenEnvVar     string          `json:"bearer_token_env_var,omitempty" yaml:"bearer_token_env_var,omitempty"`
-	BearerTokenSourceType TokenSourceType `json:"bearer_token_source_type,omitempty" yaml:"bearer_token_source_type,omitempty"`
+	BearerToken       string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
+	BearerTokenFile   string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
+	BearerTokenEnvVar string `json:"bearer_token_env_var,omitempty" yaml:"bearer_token_env_var,omitempty"`
+}
+
+// GetBearerTokenErrorMessage returns an actionable error message for bearer token authentication failures.
+// The message is tailored based on how the token was provided (flag, file, or environment variable).
+func (r *Config) GetBearerTokenErrorMessage() string {
+	if r.BearerTokenFile != "" {
+		return fmt.Sprintf(
+			"Bearer token authentication failed. Please restart the server with "+
+				"--remote-auth-bearer-token-file=%s after updating the token file at %s",
+			r.BearerTokenFile, r.BearerTokenFile)
+	}
+	if r.BearerTokenEnvVar != "" {
+		return fmt.Sprintf(
+			"Bearer token authentication failed. Please update the %s environment variable "+
+				"and restart the server", r.BearerTokenEnvVar)
+	}
+	if r.BearerToken != "" {
+		return "Bearer token authentication failed. Please restart the server with a new token using --remote-auth-bearer-token"
+	}
+	return "Bearer token authentication failed"
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for backward compatibility
@@ -74,24 +81,23 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 	if _, isOld := raw["ClientID"]; isOld {
 		// Unmarshal using old PascalCase format
 		var oldFormat struct {
-			ClientID              string             `json:"ClientID,omitempty"`
-			ClientSecret          string             `json:"ClientSecret,omitempty"`
-			ClientSecretFile      string             `json:"ClientSecretFile,omitempty"`
-			Scopes                []string           `json:"Scopes,omitempty"`
-			SkipBrowser           bool               `json:"SkipBrowser,omitempty"`
-			Timeout               time.Duration      `json:"Timeout,omitempty"`
-			CallbackPort          int                `json:"CallbackPort,omitempty"`
-			UsePKCE               bool               `json:"UsePKCE,omitempty"`
-			Issuer                string             `json:"Issuer,omitempty"`
-			AuthorizeURL          string             `json:"AuthorizeURL,omitempty"`
-			TokenURL              string             `json:"TokenURL,omitempty"`
-			Headers               []*registry.Header `json:"Headers,omitempty"`
-			EnvVars               []*registry.EnvVar `json:"EnvVars,omitempty"`
-			OAuthParams           map[string]string  `json:"OAuthParams,omitempty"`
-			BearerToken           string             `json:"BearerToken,omitempty"`
-			BearerTokenFile       string             `json:"BearerTokenFile,omitempty"`
-			BearerTokenEnvVar     string             `json:"BearerTokenEnvVar,omitempty"`
-			BearerTokenSourceType TokenSourceType    `json:"BearerTokenSourceType,omitempty"`
+			ClientID          string             `json:"ClientID,omitempty"`
+			ClientSecret      string             `json:"ClientSecret,omitempty"`
+			ClientSecretFile  string             `json:"ClientSecretFile,omitempty"`
+			Scopes            []string           `json:"Scopes,omitempty"`
+			SkipBrowser       bool               `json:"SkipBrowser,omitempty"`
+			Timeout           time.Duration      `json:"Timeout,omitempty"`
+			CallbackPort      int                `json:"CallbackPort,omitempty"`
+			UsePKCE           bool               `json:"UsePKCE,omitempty"`
+			Issuer            string             `json:"Issuer,omitempty"`
+			AuthorizeURL      string             `json:"AuthorizeURL,omitempty"`
+			TokenURL          string             `json:"TokenURL,omitempty"`
+			Headers           []*registry.Header `json:"Headers,omitempty"`
+			EnvVars           []*registry.EnvVar `json:"EnvVars,omitempty"`
+			OAuthParams       map[string]string  `json:"OAuthParams,omitempty"`
+			BearerToken       string             `json:"BearerToken,omitempty"`
+			BearerTokenFile   string             `json:"BearerTokenFile,omitempty"`
+			BearerTokenEnvVar string             `json:"BearerTokenEnvVar,omitempty"`
 		}
 
 		if err := json.Unmarshal(data, &oldFormat); err != nil {
@@ -116,7 +122,6 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 		r.BearerToken = oldFormat.BearerToken
 		r.BearerTokenFile = oldFormat.BearerTokenFile
 		r.BearerTokenEnvVar = oldFormat.BearerTokenEnvVar
-		r.BearerTokenSourceType = oldFormat.BearerTokenSourceType
 		return nil
 	}
 

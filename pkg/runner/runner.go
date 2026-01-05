@@ -293,26 +293,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		if httpTransport, ok := transportHandler.(interface {
 			SetOnUnauthorizedResponse(types.UnauthorizedResponseCallback)
 		}); ok {
-			// Build actionable error message based on token source type
+			// Build actionable error message based on bearer token source
 			var errorMsg string
 			if r.Config.RemoteAuthConfig != nil {
-				switch r.Config.RemoteAuthConfig.BearerTokenSourceType {
-				case remote.TokenSourceTypeFlag:
-					errorMsg = "Bearer token authentication failed. Please restart the server with a new token using --remote-auth-bearer-token"
-				case remote.TokenSourceTypeFile:
-					filePath := r.Config.RemoteAuthConfig.BearerTokenFile
-					errorMsg = fmt.Sprintf(
-						"Bearer token authentication failed. Please restart the server with "+
-							"--remote-auth-bearer-token-file=%s after updating the token file at %s",
-						filePath, filePath)
-				case remote.TokenSourceTypeEnv:
-					envVar := r.Config.RemoteAuthConfig.BearerTokenEnvVar
-					errorMsg = fmt.Sprintf(
-						"Bearer token authentication failed. Please update the %s environment variable "+
-							"and restart the server", envVar)
-				default:
-					errorMsg = "Bearer token authentication failed"
-				}
+				errorMsg = r.Config.RemoteAuthConfig.GetBearerTokenErrorMessage()
 			} else {
 				errorMsg = "Bearer token authentication failed"
 			}

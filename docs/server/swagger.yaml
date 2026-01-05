@@ -712,8 +712,6 @@ components:
           type: string
         bearer_token_file:
           type: string
-        bearer_token_source_type:
-          $ref: '#/components/schemas/remote.TokenSourceType'
         callback_port:
           type: integer
         client_id:
@@ -760,12 +758,6 @@ components:
         use_pkce:
           type: boolean
       type: object
-    remote.TokenSourceType:
-      type: string
-      x-enum-varnames:
-      - TokenSourceTypeFlag
-      - TokenSourceTypeFile
-      - TokenSourceTypeEnv
     runner.RunConfig:
       properties:
         audit_config:

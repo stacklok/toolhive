@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 func TestBearerTokenSource(t *testing.T) {
@@ -68,10 +69,13 @@ func TestBearerTokenSource_Consistency(t *testing.T) {
 	assert.Equal(t, token1.TokenType, token2.TokenType)
 }
 
-func TestStaticTokenSource(t *testing.T) {
+func TestBearerTokenSource_ImplementsTokenSource(t *testing.T) {
 	t.Parallel()
 
-	tokenSource := StaticTokenSource("test-static-token")
+	// Verify that BearerTokenSource implements oauth2.TokenSource interface
+	var _ oauth2.TokenSource = NewBearerTokenSource("test-token")
+
+	tokenSource := NewBearerTokenSource("test-static-token")
 	require.NotNil(t, tokenSource)
 
 	token, err := tokenSource.Token()

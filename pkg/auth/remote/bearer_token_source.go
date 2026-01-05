@@ -28,9 +28,3 @@ func (b *BearerTokenSource) Token() (*oauth2.Token, error) {
 		Expiry:      time.Time{}, // No expiry for static bearer tokens
 	}, nil
 }
-
-// StaticTokenSource is a convenience function that creates a BearerTokenSource
-// and returns it as an oauth2.TokenSource interface.
-func StaticTokenSource(bearerToken string) oauth2.TokenSource {
-	return NewBearerTokenSource(bearerToken)
-}

@@ -200,7 +200,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    4484,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Validate server address
@@ -332,7 +332,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 		Port:           0, // Use random available port
 		SessionTTL:     5 * time.Minute,
 		AuthMiddleware: identityMiddleware,
-	}, rt, mockBackendClient, discoveryMgr, backends, nil)
+	}, rt, mockBackendClient, discoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	serverCtx, cancelServer := context.WithCancel(ctx)
@@ -666,7 +666,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Host:        "127.0.0.1",
 		Port:        0, // Random port
 		AuditConfig: auditConfig,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Start server
@@ -941,7 +941,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Start server

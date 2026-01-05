@@ -164,6 +164,9 @@ func NewVMCPServer(
 	// Create router
 	rtr := router.NewDefaultRouter()
 
+	// Create immutable backend registry for tests (backends don't change during test execution)
+	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
+
 	// Create vMCP server with test-specific defaults
 	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
 		Name:              "test-vmcp",
@@ -172,7 +175,7 @@ func NewVMCPServer(
 		Port:              getFreePort(tb), // Get a random available port for parallel test execution
 		AuthMiddleware:    auth.AnonymousMiddleware,
 		TelemetryProvider: config.telemetryProvider,
-	}, rtr, backendClient, discoveryMgr, backends, config.workflowDefs)
+	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 
 	// Start server automatically

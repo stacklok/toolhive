@@ -574,3 +574,312 @@ func newTestTool(name, backendID string) vmcp.Tool {
 		BackendID:   backendID,
 	}
 }
+
+// Version-based cache invalidation tests
+
+func TestNewManagerWithRegistry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success with valid aggregator and registry", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+
+		require.NoError(t, err)
+		assert.NotNil(t, mgr)
+		assert.IsType(t, &DefaultManager{}, mgr)
+
+		dm := mgr.(*DefaultManager)
+		assert.NotNil(t, dm.registry)
+	})
+
+	t.Run("success with nil registry", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, nil)
+
+		require.NoError(t, err)
+		assert.NotNil(t, mgr)
+
+		dm := mgr.(*DefaultManager)
+		assert.Nil(t, dm.registry)
+	})
+
+	t.Run("error with nil aggregator", func(t *testing.T) {
+		t.Parallel()
+
+		registry := vmcp.NewDynamicRegistry(nil)
+
+		mgr, err := NewManagerWithRegistry(nil, registry)
+
+		require.Error(t, err)
+		assert.Nil(t, mgr)
+		assert.ErrorIs(t, err, ErrAggregatorNil)
+	})
+}
+
+func TestDefaultManager_VersionBasedCacheInvalidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cache invalidated when registry version changes", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		// Expect two calls to aggregator - once for initial, once after version change
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(2)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// First call - populates cache
+		caps1, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps1)
+		assert.Equal(t, uint64(0), registry.Version())
+
+		// Mutate registry - increments version
+		err = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		require.NoError(t, err)
+		assert.Equal(t, uint64(1), registry.Version())
+
+		// Second call - cache should be invalidated due to version mismatch
+		caps2, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps2)
+	})
+
+	t.Run("cache hit when registry version unchanged", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		// Expect only one call to aggregator
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(1)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// First call
+		caps1, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps1)
+
+		// Second call - registry version unchanged, should hit cache
+		caps2, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps2)
+	})
+
+	t.Run("multiple registry mutations invalidate cache multiple times", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		// Expect three calls to aggregator
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(3)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// Call 1 - initial discovery
+		_, err = mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(0), registry.Version())
+
+		// Mutation 1
+		_ = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		assert.Equal(t, uint64(1), registry.Version())
+
+		// Call 2 - cache invalidated
+		_, err = mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+
+		// Mutation 2
+		_ = registry.Remove("backend2")
+		assert.Equal(t, uint64(2), registry.Version())
+
+		// Call 3 - cache invalidated again
+		_, err = mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+	})
+
+	t.Run("version check only applies when registry is set", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		// Expect only one call - no version checking without registry
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(1)
+
+		// Create manager without registry
+		mgr, err := NewManager(mockAgg)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		dm := mgr.(*DefaultManager)
+		assert.Nil(t, dm.registry)
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// First call
+		caps1, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps1)
+
+		// Second call - should hit cache (no version checking)
+		caps2, err := mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+		assert.Equal(t, expectedCaps, caps2)
+	})
+
+	t.Run("cache tags entries with registry version", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(1)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		dm := mgr.(*DefaultManager)
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// Initial discovery
+		_, err = mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+
+		// Check cache entry has correct version
+		cacheKey := dm.generateCacheKey(identity.Subject, backends)
+		dm.cacheMu.RLock()
+		entry, exists := dm.cache[cacheKey]
+		dm.cacheMu.RUnlock()
+
+		require.True(t, exists)
+		assert.Equal(t, uint64(0), entry.registryVersion)
+	})
+
+	t.Run("lazy invalidation - stale entries remain until accessed", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		registry := vmcp.NewDynamicRegistry(nil)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+		expectedCaps := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{newTestTool("tool1", "backend1")},
+		}
+
+		mockAgg.EXPECT().
+			AggregateCapabilities(gomock.Any(), backends).
+			Return(expectedCaps, nil).
+			Times(1)
+
+		mgr, err := NewManagerWithRegistry(mockAgg, registry)
+		require.NoError(t, err)
+		defer mgr.Stop()
+
+		dm := mgr.(*DefaultManager)
+
+		identity := &auth.Identity{Subject: "user123"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		// Populate cache
+		_, err = mgr.Discover(ctx, backends)
+		require.NoError(t, err)
+
+		// Verify cache entry exists
+		cacheKey := dm.generateCacheKey(identity.Subject, backends)
+		dm.cacheMu.RLock()
+		_, exists := dm.cache[cacheKey]
+		dm.cacheMu.RUnlock()
+		assert.True(t, exists)
+
+		// Mutate registry multiple times - stale entry should remain in cache
+		_ = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		_ = registry.Upsert(&vmcp.Backend{ID: "backend3", Name: "Backend 3"})
+		_ = registry.Remove("backend2")
+
+		// Stale entry still exists (lazy invalidation)
+		dm.cacheMu.RLock()
+		_, stillExists := dm.cache[cacheKey]
+		dm.cacheMu.RUnlock()
+		assert.True(t, stillExists, "stale entry should remain until accessed")
+	})
+}

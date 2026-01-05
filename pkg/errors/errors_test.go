@@ -52,7 +52,7 @@ func TestError_Unwrap(t *testing.T) {
 		Cause:   cause,
 	}
 
-	if got := err.Unwrap(); got != cause {
+	if got := err.Unwrap(); !errors.Is(got, cause) {
 		t.Errorf("Error.Unwrap() = %v, want %v", got, cause)
 	}
 
@@ -78,7 +78,7 @@ func TestNewError(t *testing.T) {
 	if err.Message != "test message" {
 		t.Errorf("NewError().Message = %v, want %v", err.Message, "test message")
 	}
-	if err.Cause != cause {
+	if !errors.Is(cause, err.Cause) {
 		t.Errorf("NewError().Cause = %v, want %v", err.Cause, cause)
 	}
 }
@@ -164,7 +164,7 @@ func TestNewErrorConstructors(t *testing.T) {
 			if err.Message != "test message" {
 				t.Errorf("%s().Message = %v, want %v", tt.name, err.Message, "test message")
 			}
-			if err.Cause != cause {
+			if !errors.Is(err.Cause, cause) {
 				t.Errorf("%s().Cause = %v, want %v", tt.name, err.Cause, cause)
 			}
 		})

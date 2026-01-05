@@ -4,6 +4,7 @@ package httpsse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -185,7 +186,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
 		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
 
-		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := p.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
@@ -427,10 +428,10 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 			// Try to send the message
 			if err := sseSession.SendMessage(sseString); err != nil {
 				// Log the error but continue sending to other clients
-				switch err {
-				case session.ErrSessionDisconnected:
+				switch {
+				case errors.Is(err, session.ErrSessionDisconnected):
 					logger.Debugf("Client %s is disconnected, skipping message", clientID)
-				case session.ErrMessageChannelFull:
+				case errors.Is(err, session.ErrMessageChannelFull):
 					logger.Debugf("Client %s channel full, skipping message", clientID)
 				}
 			}

@@ -177,7 +177,7 @@ func (e *workflowEngine) ExecuteWorkflow(
 		logger.Errorf("Workflow %s failed: %v", def.Name, dagErr)
 
 		// Check if it was a timeout
-		if execCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 			result.Status = WorkflowStatusTimedOut
 			result.Error = ErrWorkflowTimeout
 			result.EndTime = time.Now()

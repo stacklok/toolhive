@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -165,7 +166,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		)
 		if err != nil {
 			// Check if the error is due to context timeout
-			if imageCtx.Err() == context.DeadlineExceeded {
+			if errors.Is(imageCtx.Err(), context.DeadlineExceeded) {
 				return nil, fmt.Errorf("image retrieval timed out after %v - image may be too large or connection too slow",
 					imageRetrievalTimeout)
 			}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -213,7 +214,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	// Start server in background
 	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
 			serverErrCh <- err
 		}
 	}()
@@ -340,7 +341,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
 			serverErrCh <- err
 		}
 	}()
@@ -675,7 +676,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
 			serverErrCh <- err
 		}
 	}()
@@ -950,7 +951,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+		if err := srv.Start(serverCtx); err != nil && !errors.Is(err, context.Canceled) {
 			serverErrCh <- err
 		}
 	}()

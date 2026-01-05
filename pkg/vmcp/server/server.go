@@ -391,7 +391,8 @@ func New(
 		}
 
 		vmcpSess.SetRoutingTable(caps.RoutingTable)
-		logger.Debugw("routing table stored in VMCPSession",
+		vmcpSess.SetTools(caps.Tools)
+		logger.Debugw("routing table and tools stored in VMCPSession",
 			"session_id", sessionID,
 			"tool_count", len(caps.RoutingTable.Tools),
 			"resource_count", len(caps.RoutingTable.Resources),

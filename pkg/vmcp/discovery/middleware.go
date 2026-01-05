@@ -146,9 +146,13 @@ func handleSubsequentRequest(
 		return ctx, fmt.Errorf("routing table not initialized")
 	}
 
-	// Reconstruct minimal AggregatedCapabilities for routing
+	// Get tools from session (needed for type coercion in composite tool workflows)
+	tools := vmcpSess.GetTools()
+
+	// Reconstruct AggregatedCapabilities for routing and type coercion
 	capabilities := &aggregator.AggregatedCapabilities{
 		RoutingTable: routingTable,
+		Tools:        tools,
 	}
 
 	logger.Debugw("capabilities retrieved from session",

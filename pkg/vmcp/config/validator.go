@@ -82,27 +82,27 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 
 func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error {
 	if auth == nil {
-		return fmt.Errorf("incoming_auth is required")
+		return fmt.Errorf("incomingAuth is required")
 	}
 
 	// Validate auth type
 	validTypes := []string{IncomingAuthTypeOIDC, IncomingAuthTypeLocal, IncomingAuthTypeAnonymous}
 	if !contains(validTypes, auth.Type) {
-		return fmt.Errorf("incoming_auth.type must be one of: %s", strings.Join(validTypes, ", "))
+		return fmt.Errorf("incomingAuth.type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
 	// Validate OIDC configuration
 	if auth.Type == IncomingAuthTypeOIDC {
 		if auth.OIDC == nil {
-			return fmt.Errorf("incoming_auth.oidc is required when type is 'oidc'")
+			return fmt.Errorf("incomingAuth.oidc is required when type is 'oidc'")
 		}
 
 		if auth.OIDC.Issuer == "" {
-			return fmt.Errorf("incoming_auth.oidc.issuer is required")
+			return fmt.Errorf("incomingAuth.oidc.issuer is required")
 		}
 
 		if auth.OIDC.Audience == "" {
-			return fmt.Errorf("incoming_auth.oidc.audience is required")
+			return fmt.Errorf("incomingAuth.oidc.audience is required")
 		}
 
 		// ClientID is optional - only required for specific flows:
@@ -119,7 +119,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 	// Validate authorization configuration
 	if auth.Authz != nil {
 		if err := v.validateAuthz(auth.Authz); err != nil {
-			return fmt.Errorf("incoming_auth.authz: %w", err)
+			return fmt.Errorf("incomingAuth.authz: %w", err)
 		}
 	}
 
@@ -141,26 +141,26 @@ func (*DefaultValidator) validateAuthz(authz *AuthzConfig) error {
 
 func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error {
 	if auth == nil {
-		return fmt.Errorf("outgoing_auth is required")
+		return fmt.Errorf("outgoingAuth is required")
 	}
 
 	// Validate source
 	validSources := []string{"inline", "discovered"}
 	if !contains(validSources, auth.Source) {
-		return fmt.Errorf("outgoing_auth.source must be one of: %s", strings.Join(validSources, ", "))
+		return fmt.Errorf("outgoingAuth.source must be one of: %s", strings.Join(validSources, ", "))
 	}
 
 	// Validate default strategy
 	if auth.Default != nil {
 		if err := v.validateBackendAuthStrategy("default", auth.Default); err != nil {
-			return fmt.Errorf("outgoing_auth.default: %w", err)
+			return fmt.Errorf("outgoingAuth.default: %w", err)
 		}
 	}
 
 	// Validate per-backend strategies
 	for backendName, strategy := range auth.Backends {
 		if err := v.validateBackendAuthStrategy(backendName, strategy); err != nil {
-			return fmt.Errorf("outgoing_auth.backends.%s: %w", backendName, err)
+			return fmt.Errorf("outgoingAuth.backends.%s: %w", backendName, err)
 		}
 	}
 
@@ -186,24 +186,24 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 	// Validate type-specific requirements
 	switch strategy.Type {
 	case authtypes.StrategyTypeTokenExchange:
-		// Token exchange requires TokenExchange config with token_url
+		// Token exchange requires TokenExchange config with tokenUrl
 		if strategy.TokenExchange == nil {
-			return fmt.Errorf("token_exchange requires TokenExchange configuration")
+			return fmt.Errorf("tokenExchange requires TokenExchange configuration")
 		}
 		if strategy.TokenExchange.TokenURL == "" {
-			return fmt.Errorf("token_exchange requires token_url field")
+			return fmt.Errorf("tokenExchange requires tokenUrl field")
 		}
 
 	case authtypes.StrategyTypeHeaderInjection:
 		// Header injection requires HeaderInjection config with header name and value
 		if strategy.HeaderInjection == nil {
-			return fmt.Errorf("header_injection requires HeaderInjection configuration")
+			return fmt.Errorf("headerInjection requires HeaderInjection configuration")
 		}
 		if strategy.HeaderInjection.HeaderName == "" {
-			return fmt.Errorf("header_injection requires header_name field")
+			return fmt.Errorf("headerInjection requires headerName field")
 		}
 		if strategy.HeaderInjection.HeaderValue == "" {
-			return fmt.Errorf("header_injection requires header_value field")
+			return fmt.Errorf("headerInjection requires headerValue field")
 		}
 	}
 
@@ -222,12 +222,12 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		vmcp.ConflictStrategyManual,
 	}
 	if !containsStrategy(validStrategies, agg.ConflictResolution) {
-		return fmt.Errorf("conflict_resolution must be one of: prefix, priority, manual")
+		return fmt.Errorf("conflictResolution must be one of: prefix, priority, manual")
 	}
 
 	// Validate strategy-specific configuration
 	if agg.ConflictResolutionConfig == nil {
-		return fmt.Errorf("conflict_resolution_config is required")
+		return fmt.Errorf("conflictResolutionConfig is required")
 	}
 
 	if err := v.validateConflictStrategy(agg); err != nil {
@@ -242,12 +242,12 @@ func (*DefaultValidator) validateConflictStrategy(agg *AggregationConfig) error 
 	switch agg.ConflictResolution {
 	case vmcp.ConflictStrategyPrefix:
 		if agg.ConflictResolutionConfig.PrefixFormat == "" {
-			return fmt.Errorf("prefix_format is required for prefix strategy")
+			return fmt.Errorf("prefixFormat is required for prefix strategy")
 		}
 
 	case vmcp.ConflictStrategyPriority:
 		if len(agg.ConflictResolutionConfig.PriorityOrder) == 0 {
-			return fmt.Errorf("priority_order is required for priority strategy")
+			return fmt.Errorf("priorityOrder is required for priority strategy")
 		}
 
 	case vmcp.ConflictStrategyManual:
@@ -312,7 +312,7 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 	// Validate failure handling
 	if ops.FailureHandling != nil {
 		if err := v.validateFailureHandling(ops.FailureHandling); err != nil {
-			return fmt.Errorf("operational.failure_handling: %w", err)
+			return fmt.Errorf("operational.failureHandling: %w", err)
 		}
 	}
 
@@ -321,25 +321,25 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 
 func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) error {
 	if fh.HealthCheckInterval <= 0 {
-		return fmt.Errorf("health_check_interval must be positive")
+		return fmt.Errorf("healthCheckInterval must be positive")
 	}
 
 	if fh.UnhealthyThreshold <= 0 {
-		return fmt.Errorf("unhealthy_threshold must be positive")
+		return fmt.Errorf("unhealthyThreshold must be positive")
 	}
 
-	validModes := []string{"fail", "best_effort"}
+	validModes := []string{"fail", "bestEffort"}
 	if !contains(validModes, fh.PartialFailureMode) {
-		return fmt.Errorf("partial_failure_mode must be one of: %s", strings.Join(validModes, ", "))
+		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
 	}
 
 	// Validate circuit breaker
 	if fh.CircuitBreaker != nil && fh.CircuitBreaker.Enabled {
 		if fh.CircuitBreaker.FailureThreshold <= 0 {
-			return fmt.Errorf("circuit_breaker.failure_threshold must be positive")
+			return fmt.Errorf("circuitBreaker.failureThreshold must be positive")
 		}
 		if fh.CircuitBreaker.Timeout <= 0 {
-			return fmt.Errorf("circuit_breaker.timeout must be positive")
+			return fmt.Errorf("circuitBreaker.timeout must be positive")
 		}
 	}
 
@@ -356,7 +356,7 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 	for i, tool := range tools {
 		// Validate basic fields
 		if tool.Name == "" {
-			return fmt.Errorf("composite_tools[%d].name is required", i)
+			return fmt.Errorf("compositeTools[%d].name is required", i)
 		}
 
 		if toolNames[tool.Name] {
@@ -365,21 +365,21 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 		toolNames[tool.Name] = true
 
 		if tool.Description == "" {
-			return fmt.Errorf("composite_tools[%d].description is required", i)
+			return fmt.Errorf("compositeTools[%d].description is required", i)
 		}
 
 		// Timeout can be 0 (uses default) or positive (explicit timeout)
 		if tool.Timeout < 0 {
-			return fmt.Errorf("composite_tools[%d].timeout cannot be negative", i)
+			return fmt.Errorf("compositeTools[%d].timeout cannot be negative", i)
 		}
 
 		// Validate steps
 		if len(tool.Steps) == 0 {
-			return fmt.Errorf("composite_tools[%d] must have at least one step", i)
+			return fmt.Errorf("compositeTools[%d] must have at least one step", i)
 		}
 
 		if err := v.validateWorkflowSteps(tool.Name, tool.Steps); err != nil {
-			return fmt.Errorf("composite_tools[%d]: %w", i, err)
+			return fmt.Errorf("compositeTools[%d]: %w", i, err)
 		}
 	}
 
@@ -466,7 +466,7 @@ func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) e
 func (*DefaultValidator) validateStepDependencies(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
 	for _, depID := range step.DependsOn {
 		if !stepIDs[depID] {
-			return fmt.Errorf("step[%d].depends_on references non-existent step: %s", index, depID)
+			return fmt.Errorf("step[%d].dependsOn references non-existent step: %s", index, depID)
 		}
 	}
 	return nil
@@ -480,11 +480,11 @@ func (*DefaultValidator) validateStepErrorHandling(step *WorkflowStepConfig, ind
 
 	validActions := []string{"abort", "continue", "retry"}
 	if !contains(validActions, step.OnError.Action) {
-		return fmt.Errorf("step[%d].on_error.action must be one of: %s", index, strings.Join(validActions, ", "))
+		return fmt.Errorf("step[%d].onError.action must be one of: %s", index, strings.Join(validActions, ", "))
 	}
 
 	if step.OnError.Action == "retry" && step.OnError.RetryCount <= 0 {
-		return fmt.Errorf("step[%d].on_error.retry_count must be positive for retry action", index)
+		return fmt.Errorf("step[%d].onError.retryCount must be positive for retry action", index)
 	}
 
 	return nil

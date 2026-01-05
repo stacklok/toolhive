@@ -45,20 +45,20 @@ func TestYAMLLoader_Load(t *testing.T) {
 			name: "valid minimal configuration",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
@@ -84,28 +84,28 @@ aggregation:
 			name: "valid OIDC configuration with env vars",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: oidc
   oidc:
     issuer: https://auth.example.com
-    client_id: test-client
-    client_secret_env: TEST_SECRET
+    clientId: test-client
+    clientSecretEnv: TEST_SECRET
     audience: vmcp
     scopes:
       - openid
       - profile
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			envVars: map[string]string{
 				"TEST_SECRET": "my-secret-value",
@@ -131,20 +131,20 @@ aggregation:
 			name: "partial operational config gets defaults for missing fields",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 
 operational:
   timeouts:
@@ -179,22 +179,22 @@ operational:
 			name: "valid configuration with composite tools",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 
-composite_tools:
+compositeTools:
   - name: deploy_workflow
     description: Deploy and notify
     parameters:
@@ -214,7 +214,7 @@ composite_tools:
         tool: slack.post_message
         arguments:
           message: "Deployed PR {{.params.pr_number}}"
-        depends_on:
+        dependsOn:
           - merge
 `,
 			want: func(t *testing.T, cfg *Config) {
@@ -239,7 +239,7 @@ composite_tools:
 			name: "invalid YAML syntax",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 incoming_auth
   type: anonymous
 `,
@@ -250,25 +250,25 @@ incoming_auth
 			name: "OIDC with unset environment variable is allowed (validation happens at runtime)",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: oidc
   oidc:
     issuer: https://auth.example.com
-    client_id: test-client
-    client_secret_env: MISSING_VAR
+    clientId: test-client
+    clientSecretEnv: MISSING_VAR
     audience: vmcp
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
@@ -286,22 +286,22 @@ aggregation:
 			name: "composite tool with missing parameter type",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 
-composite_tools:
+compositeTools:
   - name: test_tool
     description: Test tool
     timeout: 5m
@@ -322,24 +322,24 @@ composite_tools:
 			name: "header_injection with header_value_env resolves environment variable",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
-        header_value_env: "GITHUB_TOKEN"
+      headerInjection:
+        headerName: "Authorization"
+        headerValueEnv: "GITHUB_TOKEN"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			envVars: map[string]string{
 				"GITHUB_TOKEN": "secret-token-123",
@@ -351,7 +351,7 @@ aggregation:
 					t.Fatal("github backend not found")
 				}
 				if backend.Type != "header_injection" {
-					t.Errorf("Backend.Type = %v, want header_injection", backend.Type)
+					t.Errorf("Backend.Type = %v, want headerInjection", backend.Type)
 				}
 				// Verify the resolved value is in HeaderInjection config
 				if backend.HeaderInjection == nil {
@@ -367,24 +367,24 @@ aggregation:
 			name: "header_injection with literal header_value works",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     api-service:
       type: header_injection
-      header_injection:
-        header_name: "X-API-Version"
-        header_value: "v1"
+      headerInjection:
+        headerName: "X-API-Version"
+        headerValue: "v1"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
@@ -405,24 +405,24 @@ aggregation:
 			name: "header_injection fails when env var not set",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
-        header_value_env: "MISSING_TOKEN"
+      headerInjection:
+        headerName: "Authorization"
+        headerValueEnv: "MISSING_TOKEN"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			wantErr: true,
 			errMsg:  "environment variable MISSING_TOKEN not set",
@@ -431,76 +431,76 @@ aggregation:
 			name: "header_injection fails when both header_value and header_value_env set",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
-        header_value: "literal-value"
-        header_value_env: "ENV_VALUE"
+      headerInjection:
+        headerName: "Authorization"
+        headerValue: "literal-value"
+        headerValueEnv: "ENV_VALUE"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			wantErr: true,
-			errMsg:  "only one of header_value or header_value_env must be set",
+			errMsg:  "only one of headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when neither header_value nor header_value_env set",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
+      headerInjection:
+        headerName: "Authorization"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			wantErr: true,
-			errMsg:  "either header_value or header_value_env must be set",
+			errMsg:  "either headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when env var is empty string",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   backends:
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
-        header_value_env: "EMPTY_TOKEN"
+      headerInjection:
+        headerName: "Authorization"
+        headerValueEnv: "EMPTY_TOKEN"
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			envVars: map[string]string{
 				"EMPTY_TOKEN": "",
@@ -512,20 +512,20 @@ aggregation:
 			name: "valid audit configuration",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 
 audit:
   component: "vmcp-server"
@@ -637,40 +637,40 @@ func TestYAMLLoader_IntegrationWithValidator(t *testing.T) {
 			name: "valid configuration passes validation",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			shouldPass: true,
 		},
 		{
 			name: "configuration with missing name fails validation",
 			yaml: `
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: anonymous
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			shouldPass: false,
 			errMsg:     "name is required",
@@ -679,23 +679,23 @@ aggregation:
 			name: "configuration with invalid auth type fails validation",
 			yaml: `
 name: test-vmcp
-group: test-group
+groupRef: test-group
 
-incoming_auth:
+incomingAuth:
   type: invalid_type
 
-outgoing_auth:
+outgoingAuth:
   source: inline
   default:
     type: unauthenticated
 
 aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			shouldPass: false,
-			errMsg:     "incoming_auth.type must be one of",
+			errMsg:     "incomingAuth.type must be one of",
 		},
 	}
 

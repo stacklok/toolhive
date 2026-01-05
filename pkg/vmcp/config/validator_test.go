@@ -157,7 +157,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 				Type: "invalid",
 			},
 			wantErr: true,
-			errMsg:  "incoming_auth.type must be one of",
+			errMsg:  "incomingAuth.type must be one of",
 		},
 		{
 			name: "OIDC without config",
@@ -165,7 +165,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 				Type: "oidc",
 			},
 			wantErr: true,
-			errMsg:  "incoming_auth.oidc is required",
+			errMsg:  "incomingAuth.oidc is required",
 		},
 		{
 			name: "OIDC missing issuer",
@@ -221,7 +221,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid header_injection backend",
+			name: "valid headerInjection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Backends: map[string]*authtypes.BackendAuthStrategy{
@@ -260,7 +260,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 				Source: "invalid",
 			},
 			wantErr: true,
-			errMsg:  "outgoing_auth.source must be one of",
+			errMsg:  "outgoingAuth.source must be one of",
 		},
 		{
 			name: "invalid backend auth type",
@@ -368,7 +368,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
-			errMsg:  "prefix_format is required",
+			errMsg:  "prefixFormat is required",
 		},
 		{
 			name: "priority strategy missing order",
@@ -377,7 +377,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
-			errMsg:  "priority_order is required",
+			errMsg:  "priorityOrder is required",
 		},
 		{
 			name: "manual strategy missing overrides",

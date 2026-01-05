@@ -383,13 +383,13 @@ func TestYAMLFieldNaming(t *testing.T) {
 
 	yamlStr := string(yamlBytes)
 
-	// Verify expected field names are present in YAML
+	// Verify expected field names are present in YAML (camelCase for K8s compatibility)
 	expectedFields := []string{
 		"type:",
-		"header_injection:",
-		"header_name:",
-		"header_value:",
-		"header_value_env:",
+		"headerInjection:",
+		"headerName:",
+		"headerValue:",
+		"headerValueEnv:",
 	}
 
 	for _, field := range expectedFields {
@@ -419,13 +419,13 @@ func TestYAMLFieldNaming(t *testing.T) {
 	tokenYamlStr := string(tokenYamlBytes)
 
 	expectedTokenFields := []string{
-		"token_exchange:",
-		"token_url:",
-		"client_id:",
-		"client_secret_env:",
+		"tokenExchange:",
+		"tokenUrl:",
+		"clientId:",
+		"clientSecretEnv:",
 		"audience:",
 		"scopes:",
-		"subject_token_type:",
+		"subjectTokenType:",
 	}
 
 	for _, field := range expectedTokenFields {

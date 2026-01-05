@@ -71,7 +71,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "only one of header_value or header_value_env must be set",
+			errMsg:  "only one of headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when neither value nor env set",
@@ -82,7 +82,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "either header_value or header_value_env must be set",
+			errMsg:  "either headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when env var not set",
@@ -117,10 +117,10 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
-			errMsg:  "header_injection configuration is required",
+			errMsg:  "headerInjection configuration is required",
 		},
 		{
-			name: "token_exchange validates env var is set",
+			name: "tokenExchange validates env var is set",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 				TokenExchange: &authtypes.TokenExchangeConfig{
@@ -140,7 +140,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 			},
 		},
 		{
-			name: "token_exchange fails when env var not set",
+			name: "tokenExchange fails when env var not set",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 				TokenExchange: &authtypes.TokenExchangeConfig{
@@ -153,12 +153,12 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 			errMsg:  "environment variable MISSING_SECRET not set",
 		},
 		{
-			name: "token_exchange fails when config block missing",
+			name: "tokenExchange fails when config block missing",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 			},
 			wantErr: true,
-			errMsg:  "token_exchange configuration is required",
+			errMsg:  "tokenExchange configuration is required",
 		},
 		{
 			name: "unauthenticated strategy requires no extra config",

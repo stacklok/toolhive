@@ -112,7 +112,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go func() {
 		logger.Infof("Streamable HTTP proxy started on port %d", p.port)
 		logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
-		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("Streamable HTTP server error: %v", err)
 		}
 	}()

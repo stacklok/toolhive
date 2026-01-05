@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/workloads"
+	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
 var runCmd *cobra.Command
@@ -197,9 +197,8 @@ func runWithFileBasedConfig(
 		config.Name = imageMetadata.Name
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
-	}
-	return workloadManager.RunWorkload(ctx, config)
+	// statusManager is only needed for the local use case, use a stub here.
+	statusManager := statuses.NewNoopStatusManager()
+	mcpRunner := runner.NewRunner(config, statusManager)
+	return mcpRunner.Run(ctx)
 }

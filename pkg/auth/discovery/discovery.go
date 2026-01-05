@@ -159,7 +159,11 @@ func detectAuthWithRequest(
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if we got a 401 Unauthorized with WWW-Authenticate header
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -733,7 +737,11 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("metadata request failed with status %d", resp.StatusCode)

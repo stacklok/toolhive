@@ -20,7 +20,12 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary file: %w", err)
 	}
-	defer tempFile.Close()
+	defer func() {
+		if err := tempFile.Close(); err != nil {
+			// Non-fatal: temp file cleanup failure
+			logger.Warnf("Failed to close temp file: %v", err)
+		}
+	}()
 
 	// Get the temporary file path
 	permProfilePath := tempFile.Name()

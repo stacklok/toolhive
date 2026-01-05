@@ -390,7 +390,10 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			},
 		}
 		if data, mErr := json.Marshal(errObj); mErr == nil {
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				logger.Debugf("Failed to write error message: %v", err)
+				return
+			}
 			flusher.Flush()
 		}
 		return
@@ -403,7 +406,10 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		logger.Debugf("Failed to write response: %v", err)
+		return
+	}
 	flusher.Flush()
 }
 

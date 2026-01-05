@@ -106,12 +106,15 @@ func NewClientWithConfigAndPlatformDetector(
 // It establishes a kubectl attach connection to the MCP server pod.
 //
 // Connection Failure Handling:
-// If the connection fails permanently (after 5 retries with exponential backoff),
+// If the connection fails permanently (after retries with exponential backoff up to 90 seconds),
 // this function causes the process to exit with code 1. This triggers a Kubernetes
 // restart, allowing the proxy to establish a fresh connection to the current pod.
 // This is critical for handling StatefulSet pod restarts - when the MCP pod restarts,
 // the old kubectl attach connection becomes stale and cannot be reused. Exiting allows
 // Kubernetes to restart the proxy, which then attaches to the new pod.
+//
+// The 90-second retry window accommodates typical pod restart times in both local
+// and CI environments, while still failing fast enough for truly unavailable pods.
 func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachToWorkload attaches to a workload in Kubernetes
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
@@ -161,9 +164,12 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	go func() {
-		// wrap with retry so we can retry if the connection fails
-		// Create exponential backoff with max 5 retries
+		// Create exponential backoff with extended retry window to handle pod restarts
+		// in both local and CI environments. The 90-second window covers typical pod
+		// restart times, including container image pulls and startup delays.
 		expBackoff := backoff.NewExponentialBackOff()
+		expBackoff.MaxInterval = 15 * time.Second    // Cap individual retry intervals at 15s
+		expBackoff.InitialInterval = 1 * time.Second // Start with 1 second delay
 
 		_, err := backoff.Retry(ctx, func() (any, error) {
 			return nil, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
@@ -174,7 +180,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			})
 		},
 			backoff.WithBackOff(expBackoff),
-			backoff.WithMaxTries(5),
+			backoff.WithMaxElapsedTime(90*time.Second), // Wait up to 90 seconds before giving up
 			backoff.WithNotify(func(err error, duration time.Duration) {
 				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
 			}),

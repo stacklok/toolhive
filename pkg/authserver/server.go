@@ -44,24 +44,10 @@ type Server interface {
 	Close() error
 }
 
-// Option is a functional option for configuring the server.
-type Option func(*serverOptions)
-
-// serverOptions holds optional configuration for the server.
-type serverOptions struct {
-	storage storage.Storage
-}
-
-// WithStorage sets the storage backend for the server.
-// If not provided, an in-memory storage is used.
-func WithStorage(s storage.Storage) Option {
-	return func(o *serverOptions) {
-		o.storage = s
-	}
-}
-
 // New creates a new OAuth authorization server.
-// If no storage is provided via WithStorage, an in-memory storage is used.
-func New(ctx context.Context, cfg Config, opts ...Option) (Server, error) {
-	return newServer(ctx, cfg, opts...)
+// The storage parameter is required and determines where OAuth state is persisted.
+// Use storage.NewMemoryStorage() for single-instance deployments or provide
+// a distributed storage backend for production deployments.
+func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
+	return newServer(ctx, cfg, stor)
 }

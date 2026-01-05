@@ -32,29 +32,26 @@ func testSetup(t *testing.T) *Router {
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	cfg := &Config{
+	cfg := &AuthServerConfig{
 		Issuer:               "https://auth.example.com",
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: time.Hour * 24,
 		AuthCodeLifespan:     time.Minute * 10,
-		Secret:               secret,
-		PrivateKeys: []PrivateKey{
-			{
-				KeyID:     "test-key-1",
-				Algorithm: "RS256",
-				Key:       rsaKey,
-			},
-		},
+		HMACSecret:           secret,
+		SigningKeyID:         "test-key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
 	}
 
-	oauth2Config, err := NewOAuth2Config(cfg)
+	oauth2Config, err := NewOAuth2ConfigFromAuthServerConfig(cfg)
 	require.NoError(t, err)
 
 	stor := storage.NewMemoryStorage()
 	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, stor)
+	// Use nil upstream for basic handler tests that don't need IDP functionality
+	router := NewRouter(logger, provider, oauth2Config, stor, nil)
 
 	return router
 }
@@ -102,7 +99,7 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 	stor := storage.NewMemoryStorage()
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, cfg, stor)
+	router := NewRouter(logger, provider, cfg, stor, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rec := httptest.NewRecorder()
@@ -225,7 +222,7 @@ func TestNewRouter_NilLogger(t *testing.T) {
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 
 	// Should not panic with nil logger
-	router := NewRouter(nil, provider, cfg, stor)
+	router := NewRouter(nil, provider, cfg, stor, nil)
 	assert.NotNil(t, router)
 	assert.NotNil(t, router.logger)
 }

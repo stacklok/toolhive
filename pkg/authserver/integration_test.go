@@ -61,21 +61,19 @@ func integrationTestSetup(t *testing.T) *testServer {
 	require.NoError(t, err)
 
 	// 3. Create config
-	config := &oauthpkg.Config{
+	config := &oauthpkg.AuthServerConfig{
 		Issuer:               testIssuer,
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
-		Secret:               secret,
-		PrivateKeys: []oauthpkg.PrivateKey{{
-			KeyID:     "test-key",
-			Algorithm: "RS256",
-			Key:       privateKey,
-		}},
+		HMACSecret:           secret,
+		SigningKeyID:         "test-key",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           privateKey,
 	}
 
 	// 4. Create OAuth2Config
-	oauth2Config, err := oauthpkg.NewOAuth2Config(config)
+	oauth2Config, err := oauthpkg.NewOAuth2ConfigFromAuthServerConfig(config)
 	require.NoError(t, err)
 
 	// 5. Create storage
@@ -111,8 +109,9 @@ func integrationTestSetup(t *testing.T) *testServer {
 	)
 
 	// 8. Create router and HTTP server
+	// Use nil upstream for basic integration tests that don't need IDP functionality
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor)
+	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, nil)
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)
@@ -920,29 +919,29 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	// 3. Create config with upstream
-	config := &oauthpkg.Config{
+	// 3. Create OAuth config
+	oauthCfg := &oauthpkg.AuthServerConfig{
 		Issuer:               testIssuer,
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
-		Secret:               secret,
-		PrivateKeys: []oauthpkg.PrivateKey{{
-			KeyID:     "test-key",
-			Algorithm: "RS256",
-			Key:       privateKey,
-		}},
-		Upstream: oauthpkg.UpstreamConfig{
-			Issuer:       mockIDP.URL(),
-			ClientID:     "auth-server-client",
-			ClientSecret: "auth-server-secret",
-			Scopes:       []string{"openid", "profile", "email"},
-			RedirectURI:  testIssuer + "/oauth/callback",
-		},
+		HMACSecret:           secret,
+		SigningKeyID:         "test-key",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           privateKey,
+	}
+
+	// 3a. Create upstream config separately
+	upstreamCfg := &UpstreamConfig{
+		Issuer:       mockIDP.URL(),
+		ClientID:     "auth-server-client",
+		ClientSecret: "auth-server-secret",
+		Scopes:       []string{"openid", "profile", "email"},
+		RedirectURI:  testIssuer + "/oauth/callback",
 	}
 
 	// 4. Create OAuth2Config
-	oauth2Config, err := oauthpkg.NewOAuth2Config(config)
+	oauth2Config, err := oauthpkg.NewOAuth2ConfigFromAuthServerConfig(oauthCfg)
 	require.NoError(t, err)
 
 	// 5. Create storage
@@ -980,18 +979,18 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	// 8. Create upstream provider
 	ctx := context.Background()
 	idpConfig := idp.Config{
-		Issuer:       config.Upstream.Issuer,
-		ClientID:     config.Upstream.ClientID,
-		ClientSecret: config.Upstream.ClientSecret,
-		Scopes:       config.Upstream.Scopes,
-		RedirectURI:  config.Upstream.RedirectURI,
+		Issuer:       upstreamCfg.Issuer,
+		ClientID:     upstreamCfg.ClientID,
+		ClientSecret: upstreamCfg.ClientSecret,
+		Scopes:       upstreamCfg.Scopes,
+		RedirectURI:  upstreamCfg.RedirectURI,
 	}
 	upstream, err := idp.NewOIDCProvider(ctx, idpConfig)
 	require.NoError(t, err)
 
 	// 9. Create router with upstream and HTTP server
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, oauthpkg.WithIDPProvider(upstream))
+	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, upstream)
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)

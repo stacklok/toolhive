@@ -573,19 +573,21 @@ func (r *Runner) setupAuthServer(ctx context.Context) (authserver.Server, error)
 		return nil, fmt.Errorf("failed to build auth server config: %w", err)
 	}
 
-	// Build storage options
-	var opts []authserver.Option
+	// Create storage - required for auth server
+	var stor storage.Storage
 	if cfg.Storage != nil {
 		storCfg := runconfig.BuildStorageConfig(cfg.Storage)
-		stor, err := storage.NewFromRunConfig(storCfg)
+		stor, err = storage.NewFromRunConfig(storCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create storage: %w", err)
 		}
-		opts = append(opts, authserver.WithStorage(stor))
+	} else {
+		// Default to memory storage for single-instance deployments
+		stor = storage.NewMemoryStorage()
 	}
 
 	// Create server
-	server, err := authserver.New(ctx, *genericCfg, opts...)
+	server, err := authserver.New(ctx, *genericCfg, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth server: %w", err)
 	}

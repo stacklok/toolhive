@@ -16,9 +16,15 @@ package authserver
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"fmt"
 	"time"
 )
+
+// MinRSAKeyBits is the minimum required size for RSA keys in bits.
+// 2048 bits is required per NIST SP 800-57 recommendations.
+const MinRSAKeyBits = 2048
 
 // Config is the pure configuration for the OAuth authorization server.
 // All values must be fully resolved (no file paths, no env vars).
@@ -31,8 +37,12 @@ type Config struct {
 	// SigningKey is the key used for signing JWT tokens.
 	SigningKey SigningKey
 
-	// HMACSecret is the HMAC secret used for opaque tokens.
-	// Must be at least 32 bytes.
+	// HMACSecret is the symmetric secret used for signing authorization codes
+	// and refresh tokens (opaque tokens). Unlike the asymmetric SigningKey which
+	// signs JWTs for distributed verification, this secret is used internally
+	// by the authorization server only.
+	// Must be at least 32 bytes and cryptographically random.
+	// Must be consistent across all replicas in multi-instance deployments.
 	HMACSecret []byte
 
 	// AccessTokenLifespan is the duration that access tokens are valid.
@@ -148,6 +158,35 @@ func (k *SigningKey) Validate() error {
 	if k.Key == nil {
 		return fmt.Errorf("key is required")
 	}
+
+	switch k.Algorithm {
+	case "RS256", "RS384", "RS512":
+		rsaKey, ok := k.Key.(*rsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("RSA algorithm requires *rsa.PrivateKey, got %T", k.Key)
+		}
+		if rsaKey.N.BitLen() < MinRSAKeyBits {
+			return fmt.Errorf("RSA key must be at least %d bits, got %d", MinRSAKeyBits, rsaKey.N.BitLen())
+		}
+	case "ES256", "ES384", "ES512":
+		ecdsaKey, ok := k.Key.(*ecdsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("ECDSA algorithm requires *ecdsa.PrivateKey, got %T", k.Key)
+		}
+		expectedCurves := map[string]string{
+			"ES256": "P-256",
+			"ES384": "P-384",
+			"ES512": "P-521",
+		}
+		expectedCurve := expectedCurves[k.Algorithm]
+		if ecdsaKey.Curve.Params().Name != expectedCurve {
+			return fmt.Errorf("algorithm %s requires curve %s, got %s",
+				k.Algorithm, expectedCurve, ecdsaKey.Curve.Params().Name)
+		}
+	default:
+		return fmt.Errorf("unsupported algorithm: %s", k.Algorithm)
+	}
+
 	return nil
 }
 

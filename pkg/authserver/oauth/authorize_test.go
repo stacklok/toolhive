@@ -91,22 +91,18 @@ func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDP
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	cfg := &Config{
+	cfg := &AuthServerConfig{
 		Issuer:               testAuthIssuer,
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: time.Hour * 24,
 		AuthCodeLifespan:     time.Minute * 10,
-		Secret:               secret,
-		PrivateKeys: []PrivateKey{
-			{
-				KeyID:     "test-key-1",
-				Algorithm: "RS256",
-				Key:       rsaKey,
-			},
-		},
+		HMACSecret:           secret,
+		SigningKeyID:         "test-key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
 	}
 
-	oauth2Config, err := NewOAuth2Config(cfg)
+	oauth2Config, err := NewOAuth2ConfigFromAuthServerConfig(cfg)
 	require.NoError(t, err)
 
 	stor := storage.NewMemoryStorage()
@@ -160,7 +156,7 @@ func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDP
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, stor, WithIDPProvider(mockUpstream))
+	router := NewRouter(logger, provider, oauth2Config, stor, mockUpstream)
 
 	return router, stor, mockUpstream
 }

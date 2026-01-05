@@ -33,40 +33,26 @@ type Router struct {
 	upstream idp.Provider
 }
 
-// RouterOption configures a Router instance.
-type RouterOption func(*Router)
-
-// WithIDPProvider sets the upstream IDP provider for the router.
-func WithIDPProvider(upstream idp.Provider) RouterOption {
-	return func(r *Router) {
-		r.upstream = upstream
-	}
-}
-
 // NewRouter creates a new Router with the given dependencies.
+// The upstream IDP provider is required for the auth server to function.
 func NewRouter(
 	logger *slog.Logger,
 	provider fosite.OAuth2Provider,
 	config *OAuth2Config,
 	stor storage.Storage,
-	opts ...RouterOption,
+	upstream idp.Provider,
 ) *Router {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	r := &Router{
+	return &Router{
 		logger:   logger,
 		provider: provider,
 		config:   config,
 		storage:  stor,
+		upstream: upstream,
 	}
-
-	for _, opt := range opts {
-		opt(r)
-	}
-
-	return r
 }
 
 // Routes registers the OAuth/OIDC endpoints on the provided mux.

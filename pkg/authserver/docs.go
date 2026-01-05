@@ -25,9 +25,10 @@
 // # Usage
 //
 // The primary entry point is authserver.New(), which creates an OAuth authorization
-// server with a single handler:
+// server with a single handler. Storage is a required parameter:
 //
-//	server, err := authserver.New(ctx, cfg)
+//	stor := storage.NewMemoryStorage()
+//	server, err := authserver.New(ctx, cfg, stor)
 //	if err != nil {
 //	    return err
 //	}
@@ -43,17 +44,19 @@
 //	if err != nil {
 //	    return err
 //	}
-//	server, err := authserver.New(ctx, *genericCfg)
+//	stor := storage.NewMemoryStorage()
+//	server, err := authserver.New(ctx, *genericCfg, stor)
 //
 // # Storage
 //
-// The auth server supports pluggable storage backends:
-//   - In-memory storage (default, suitable for single-instance deployments)
+// The auth server requires a storage backend. Available options:
+//   - In-memory storage (suitable for single-instance deployments)
 //   - Redis storage (for distributed deployments)
 //
-// Use WithStorage option to provide a custom storage backend:
+// Example with memory storage:
 //
-//	server, err := authserver.New(ctx, cfg, authserver.WithStorage(customStorage))
+//	stor := storage.NewMemoryStorage()
+//	server, err := authserver.New(ctx, cfg, stor)
 //
 // # IDP Token Storage
 //

@@ -16,14 +16,17 @@ package oauth
 
 import (
 	"context"
+	"crypto"
 	"fmt"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 )
 
-// ErrInvalidKey is returned when a key is invalid or cannot be parsed.
-var ErrInvalidKey = fmt.Errorf("invalid key")
+// MinSecretLength is the minimum required length for the HMAC secret in bytes.
+// 32 bytes (256 bits) is required per OWASP/NIST security guidelines.
+const MinSecretLength = 32
 
 // OAuth2Config wraps fosite.Config with additional configuration
 // for JWT signing and other extensions.
@@ -42,30 +45,52 @@ type OAuth2Config struct {
 // that do not share a common base interface.
 type Factory func(config *OAuth2Config, storage fosite.Storage, strategy any) any
 
-// NewOAuth2Config creates an OAuth2Config from the provided Config.
-func NewOAuth2Config(config *Config) (*OAuth2Config, error) {
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+// AuthServerConfig contains the configuration needed to create an OAuth2Config.
+// This is a minimal subset of the authserver.Config fields needed for OAuth2.
+type AuthServerConfig struct {
+	Issuer               string
+	AccessTokenLifespan  time.Duration
+	RefreshTokenLifespan time.Duration
+	AuthCodeLifespan     time.Duration
+	HMACSecret           []byte
+	SigningKeyID         string
+	SigningKeyAlgorithm  string
+	SigningKey           crypto.Signer
+}
+
+// NewOAuth2ConfigFromAuthServerConfig creates an OAuth2Config from the provided configuration.
+func NewOAuth2ConfigFromAuthServerConfig(cfg *AuthServerConfig) (*OAuth2Config, error) {
+	if cfg.SigningKeyID == "" {
+		return nil, fmt.Errorf("signing key ID is required")
+	}
+	if cfg.SigningKeyAlgorithm == "" {
+		return nil, fmt.Errorf("signing key algorithm is required")
+	}
+	if cfg.SigningKey == nil {
+		return nil, fmt.Errorf("signing key is required")
 	}
 
-	signingKey, jwks, err := buildJWKS(config.PrivateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build JWKS: %w", err)
+	// Build JWK from signing key
+	jwk := jose.JSONWebKey{
+		Key:       cfg.SigningKey,
+		KeyID:     cfg.SigningKeyID,
+		Algorithm: cfg.SigningKeyAlgorithm,
+		Use:       "sig",
 	}
 
 	fositeConfig := &fosite.Config{
-		AccessTokenIssuer:     config.Issuer,
-		AccessTokenLifespan:   config.AccessTokenLifespan,
-		RefreshTokenLifespan:  config.RefreshTokenLifespan,
-		AuthorizeCodeLifespan: config.AuthCodeLifespan,
-		GlobalSecret:          config.Secret,
-		TokenURL:              config.Issuer + "/oauth2/token",
+		AccessTokenIssuer:     cfg.Issuer,
+		AccessTokenLifespan:   cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:  cfg.RefreshTokenLifespan,
+		AuthorizeCodeLifespan: cfg.AuthCodeLifespan,
+		GlobalSecret:          cfg.HMACSecret,
+		TokenURL:              cfg.Issuer + "/oauth2/token",
 	}
 
 	return &OAuth2Config{
 		Config:      fositeConfig,
-		SigningKey:  signingKey,
-		SigningJWKS: jwks,
+		SigningKey:  &jwk,
+		SigningJWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
 	}, nil
 }
 
@@ -128,34 +153,4 @@ func (c *OAuth2Config) PublicJWKS() *jose.JSONWebKeySet {
 	}
 
 	return publicJWKS
-}
-
-// buildJWKS builds a JSON Web Key Set from the provided private keys.
-func buildJWKS(keys []PrivateKey) (*jose.JSONWebKey, *jose.JSONWebKeySet, error) {
-	if len(keys) == 0 {
-		return nil, nil, fmt.Errorf("%w: no private keys provided", ErrInvalidKey)
-	}
-
-	jwks := &jose.JSONWebKeySet{
-		Keys: make([]jose.JSONWebKey, 0, len(keys)),
-	}
-
-	var signingKey *jose.JSONWebKey
-
-	for i, pk := range keys {
-		jwk := jose.JSONWebKey{
-			Key:       pk.Key,
-			KeyID:     pk.KeyID,
-			Algorithm: pk.Algorithm,
-			Use:       "sig",
-		}
-
-		if i == 0 {
-			signingKey = &jwk
-		}
-
-		jwks.Keys = append(jwks.Keys, jwk)
-	}
-
-	return signingKey, jwks, nil
 }

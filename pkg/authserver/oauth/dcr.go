@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/ory/fosite"
 )
 
 // DCR error codes per RFC 7591 Section 3.2.2
@@ -231,18 +230,14 @@ func (r *Router) RegisterClientHandler(w http.ResponseWriter, req *http.Request)
 	// Generate client ID
 	clientID := uuid.NewString()
 
-	// Create fosite client
-	defaultClient := &fosite.DefaultClient{
+	// Create fosite client using factory
+	client := NewClient(ClientConfig{
 		ID:            clientID,
 		RedirectURIs:  validated.RedirectURIs,
-		ResponseTypes: validated.ResponseTypes,
-		GrantTypes:    validated.GrantTypes,
-		Scopes:        []string{"openid", "profile", "email"},
 		Public:        true,
-	}
-
-	// Wrap in LoopbackClient for RFC 8252 Section 7.3 dynamic port matching
-	client := NewLoopbackClient(defaultClient)
+		GrantTypes:    validated.GrantTypes,
+		ResponseTypes: validated.ResponseTypes,
+	})
 
 	// Register client
 	r.storage.RegisterClient(client)

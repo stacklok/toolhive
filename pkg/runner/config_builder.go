@@ -300,6 +300,15 @@ func WithTransportAndPorts(mcpTransport string, port, targetPort int) RunConfigB
 	}
 }
 
+// WithCurrentProxyPort sets the current proxy port of the workload being updated.
+// This allows the port validation to skip availability checks when reusing the same port.
+func WithCurrentProxyPort(port int) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.currentProxyPort = port
+		return nil
+	}
+}
+
 // WithAuditEnabled configures audit settings
 func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

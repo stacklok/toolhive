@@ -133,6 +133,10 @@ type RunConfig struct {
 	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
 	buildContext BuildContext
 
+	// currentProxyPort is the port currently used by the workload being updated (not serialized)
+	// When updating a workload, this allows reusing the same port without validation errors
+	currentProxyPort int
+
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
@@ -300,7 +304,10 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	// If not available - treat as an error, since picking a random port here
 	// is going to lead to confusion.
 	if proxyPort != 0 {
-		if !networking.IsAvailable(proxyPort) {
+		// Skip availability check if this is the same port as the workload being updated.
+		// This allows updating a workload while keeping the same port.
+		isReusingSamePort := c.currentProxyPort != 0 && c.currentProxyPort == proxyPort
+		if !isReusingSamePort && !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
 		}
 		logger.Debugf("Using requested port: %d", proxyPort)

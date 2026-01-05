@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -81,7 +82,7 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 // Start starts the MCP server
 func (s *Server) Start() error {
 	logger.Infof("Starting ToolHive MCP server on http://%s:%s/mcp", s.config.Host, s.config.Port)
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("MCP server error: %w", err)
 	}
 	return nil

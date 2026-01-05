@@ -18,6 +18,7 @@ type TokenType string
 
 const (
 	// TokenTypeOAuthClientSecret represents an OAuth client secret
+	// #nosec G101 - this is a type identifier, not a credential
 	TokenTypeOAuthClientSecret TokenType = "oauth_client_secret"
 	// TokenTypeBearerToken represents a bearer token
 	TokenTypeBearerToken TokenType = "bearer_token"
@@ -58,7 +59,7 @@ func ProcessSecret(workloadName, secretValue string, tokenType TokenType) (strin
 	}
 
 	// Get the configuration for this token type
-	config, ok := tokenTypeConfigs[tokenType]
+	tokenConfig, ok := tokenTypeConfigs[tokenType]
 	if !ok {
 		return "", fmt.Errorf("unknown token type: %s", tokenType)
 	}
@@ -70,7 +71,7 @@ func ProcessSecret(workloadName, secretValue string, tokenType TokenType) (strin
 	}
 
 	// Process the secret using the provider
-	return processSecretWithProvider(workloadName, secretValue, secretManager, config)
+	return processSecretWithProvider(workloadName, secretValue, secretManager, tokenConfig)
 }
 
 // ProcessSecretWithProvider processes a secret using the provided secret manager
@@ -82,12 +83,12 @@ func ProcessSecretWithProvider(
 	tokenType TokenType,
 ) (string, error) {
 	// Get the configuration for this token type
-	config, ok := tokenTypeConfigs[tokenType]
+	tokenConfig, ok := tokenTypeConfigs[tokenType]
 	if !ok {
 		return "", fmt.Errorf("unknown token type: %s", tokenType)
 	}
 
-	return processSecretWithProvider(workloadName, secretValue, secretManager, config)
+	return processSecretWithProvider(workloadName, secretValue, secretManager, tokenConfig)
 }
 
 // processSecretWithProvider processes a secret using the provided secret manager
@@ -96,7 +97,7 @@ func processSecretWithProvider(
 	workloadName,
 	secretValue string,
 	secretManager secrets.Provider,
-	config tokenTypeConfig,
+	tokenConfig tokenTypeConfig,
 ) (string, error) {
 	if secretValue == "" {
 		return "", nil
@@ -108,18 +109,18 @@ func processSecretWithProvider(
 	}
 
 	// It's plain text - convert to CLI format
-	secretName, err := GenerateUniqueSecretNameWithPrefix(workloadName, config.prefix, secretManager)
+	secretName, err := GenerateUniqueSecretNameWithPrefix(workloadName, tokenConfig.prefix, secretManager)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate unique secret name: %w", err)
 	}
 
 	// Store the secret in the secret manager
 	if err := StoreSecretInManagerWithProvider(context.Background(), secretName, secretValue, secretManager); err != nil {
-		return "", fmt.Errorf("failed to store %s in manager: %w", config.errorContext, err)
+		return "", fmt.Errorf("failed to store %s in manager: %w", tokenConfig.errorContext, err)
 	}
 
 	// Return CLI format reference
-	return secrets.SecretParameter{Name: secretName, Target: config.target}.ToCLIString(), nil
+	return secrets.SecretParameter{Name: secretName, Target: tokenConfig.target}.ToCLIString(), nil
 }
 
 // GenerateUniqueSecretNameWithPrefix generates a unique secret name with a custom prefix

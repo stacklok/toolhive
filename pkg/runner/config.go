@@ -234,7 +234,11 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := authsecrets.ProcessSecret(config.Name, config.RemoteAuthConfig.ClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	cliFormatSecret, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.ClientSecret,
+		authsecrets.TokenTypeOAuthClientSecret,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
@@ -265,7 +269,11 @@ func migrateBearerToken(config *RunConfig) error {
 	}
 
 	// The bearer token is in plain text format - migrate it
-	cliFormatToken, err := authsecrets.ProcessSecret(config.Name, config.RemoteAuthConfig.BearerToken, authsecrets.TokenTypeBearerToken)
+	cliFormatToken, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.BearerToken,
+		authsecrets.TokenTypeBearerToken,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to process bearer token: %w", err)
 	}

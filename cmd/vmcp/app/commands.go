@@ -306,8 +306,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	logger.Info("Immutable backend registry created for CLI environment")
 
-	// K8s manager is not used in CLI mode (always nil)
-	var k8sManager *k8s.Manager
+	// Backend watcher is not used in CLI mode (always nil)
+	var backendWatcher *k8s.BackendWatcher
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
@@ -374,7 +374,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		TelemetryProvider:   telemetryProvider,
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
-		K8sManager:          k8sManager,
+		K8sManager:          backendWatcher,
 	}
 
 	// Convert composite tool configurations to workflow definitions

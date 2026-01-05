@@ -13,8 +13,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 )
 
-// TestNewManager tests the manager factory function validation
-func TestNewManager(t *testing.T) {
+// TestNewBackendWatcher tests the backend watcher factory function validation
+func TestNewBackendWatcher(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -63,7 +63,7 @@ func TestNewManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			mgr, err := k8s.NewManager(tc.cfg, tc.namespace, tc.groupRef, tc.registry)
+			mgr, err := k8s.NewBackendWatcher(tc.cfg, tc.namespace, tc.groupRef, tc.registry)
 
 			if tc.expectedError != "" {
 				require.Error(t, err)
@@ -77,10 +77,10 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-// TestNewManager_ValidInputs tests that NewManager succeeds with valid inputs
-// Note: This test validates that the manager can be created, but doesn't start it
+// TestNewBackendWatcher_ValidInputs tests that NewBackendWatcher succeeds with valid inputs
+// Note: This test validates that the watcher can be created, but doesn't start it
 // to avoid requiring kubebuilder/envtest binaries in CI.
-func TestNewManager_ValidInputs(t *testing.T) {
+func TestNewBackendWatcher_ValidInputs(t *testing.T) {
 	t.Parallel()
 
 	// Create a basic REST config (doesn't need to connect to real cluster)
@@ -95,14 +95,14 @@ func TestNewManager_ValidInputs(t *testing.T) {
 		},
 	})
 
-	mgr, err := k8s.NewManager(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
 	require.NoError(t, err)
 	assert.NotNil(t, mgr)
 }
 
-// TestManager_WaitForCacheSync_NotStarted tests that WaitForCacheSync returns false
-// when called before the manager is started
-func TestManager_WaitForCacheSync_NotStarted(t *testing.T) {
+// TestBackendWatcher_WaitForCacheSync_NotStarted tests that WaitForCacheSync returns false
+// when called before the watcher is started
+func TestBackendWatcher_WaitForCacheSync_NotStarted(t *testing.T) {
 	t.Parallel()
 
 	cfg := &rest.Config{
@@ -110,7 +110,7 @@ func TestManager_WaitForCacheSync_NotStarted(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewManager(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
 	require.NoError(t, err)
 
 	// Try to wait for cache sync without starting manager
@@ -118,11 +118,11 @@ func TestManager_WaitForCacheSync_NotStarted(t *testing.T) {
 	defer cancel()
 
 	synced := mgr.WaitForCacheSync(ctx)
-	assert.False(t, synced, "Cache sync should fail when manager not started")
+	assert.False(t, synced, "Cache sync should fail when watcher not started")
 }
 
-// TestManager_StartValidation tests that Start can be called and respects context
-func TestManager_StartValidation(t *testing.T) {
+// TestBackendWatcher_StartValidation tests that Start can be called and respects context
+func TestBackendWatcher_StartValidation(t *testing.T) {
 	t.Parallel()
 
 	cfg := &rest.Config{
@@ -130,15 +130,15 @@ func TestManager_StartValidation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewManager(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
 	require.NoError(t, err)
 
-	// Start manager in background with a short timeout
+	// Start watcher in background with a short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	// Start will exit when context times out (no real cluster to connect to)
-	// This validates the manager respects context cancellation
+	// This validates the watcher respects context cancellation
 	err = mgr.Start(ctx)
 
 	// Either nil (graceful exit) or error (connection failure) are both acceptable
@@ -146,31 +146,31 @@ func TestManager_StartValidation(t *testing.T) {
 	t.Logf("Start returned: %v", err)
 }
 
-// mockK8sManagerForTest is a simple mock for testing readiness endpoint behavior
-type mockK8sManagerForTest struct {
+// mockBackendWatcherForTest is a simple mock for testing readiness endpoint behavior
+type mockBackendWatcherForTest struct {
 	cacheSynced bool
 	syncCalled  bool
 }
 
-func (m *mockK8sManagerForTest) WaitForCacheSync(_ context.Context) bool {
+func (m *mockBackendWatcherForTest) WaitForCacheSync(_ context.Context) bool {
 	m.syncCalled = true
 	return m.cacheSynced
 }
 
-// TestMockManager_InterfaceCompliance verifies the mock implements the interface
-func TestMockManager_InterfaceCompliance(t *testing.T) {
+// TestMockBackendWatcher_InterfaceCompliance verifies the mock implements the interface
+func TestMockBackendWatcher_InterfaceCompliance(t *testing.T) {
 	t.Parallel()
 
 	var _ interface {
 		WaitForCacheSync(ctx context.Context) bool
-	} = (*mockK8sManagerForTest)(nil)
+	} = (*mockBackendWatcherForTest)(nil)
 }
 
-// TestMockManager_CacheSynced tests mock manager behavior when cache is synced
-func TestMockManager_CacheSynced(t *testing.T) {
+// TestMockBackendWatcher_CacheSynced tests mock watcher behavior when cache is synced
+func TestMockBackendWatcher_CacheSynced(t *testing.T) {
 	t.Parallel()
 
-	mock := &mockK8sManagerForTest{cacheSynced: true}
+	mock := &mockBackendWatcherForTest{cacheSynced: true}
 
 	ctx := context.Background()
 	synced := mock.WaitForCacheSync(ctx)
@@ -179,11 +179,11 @@ func TestMockManager_CacheSynced(t *testing.T) {
 	assert.True(t, mock.syncCalled, "WaitForCacheSync should have been called")
 }
 
-// TestMockManager_CacheNotSynced tests mock manager behavior when cache is not synced
-func TestMockManager_CacheNotSynced(t *testing.T) {
+// TestMockBackendWatcher_CacheNotSynced tests mock watcher behavior when cache is not synced
+func TestMockBackendWatcher_CacheNotSynced(t *testing.T) {
 	t.Parallel()
 
-	mock := &mockK8sManagerForTest{cacheSynced: false}
+	mock := &mockBackendWatcherForTest{cacheSynced: false}
 
 	ctx := context.Background()
 	synced := mock.WaitForCacheSync(ctx)
@@ -192,32 +192,34 @@ func TestMockManager_CacheNotSynced(t *testing.T) {
 	assert.True(t, mock.syncCalled, "WaitForCacheSync should have been called")
 }
 
-// TestManager_Lifecycle documents the expected lifecycle without requiring real cluster
-func TestManager_Lifecycle(t *testing.T) {
+// TestBackendWatcher_Lifecycle documents the expected lifecycle without requiring real cluster
+func TestBackendWatcher_Lifecycle(t *testing.T) {
 	t.Parallel()
 
-	// This test documents the expected manager lifecycle:
-	// 1. Create manager with NewManager
-	// 2. Start manager in background goroutine
+	// This test documents the expected watcher lifecycle:
+	// 1. Create watcher with NewBackendWatcher
+	// 2. Start watcher in background goroutine
 	// 3. Wait for cache sync before serving requests
 	// 4. Cancel context to trigger graceful shutdown
 
 	t.Run("documentation", func(t *testing.T) {
+		t.Parallel()
+
 		// Example lifecycle (documented, not executed):
 		expectedLifecycle := `
-		// Create manager
+		// Create watcher
 		cfg, _ := rest.InClusterConfig()
 		registry := vmcp.NewDynamicRegistry(backends)
-		mgr, _ := k8s.NewManager(cfg, "default", "default/my-group", registry)
+		watcher, _ := k8s.NewBackendWatcher(cfg, "default", "default/my-group", registry)
 
 		// Start in background
 		ctx, cancel := context.WithCancel(context.Background())
-		go mgr.Start(ctx)
+		go watcher.Start(ctx)
 
 		// Wait for cache sync (for readiness probe)
 		syncCtx, syncCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer syncCancel()
-		if !mgr.WaitForCacheSync(syncCtx) {
+		if !watcher.WaitForCacheSync(syncCtx) {
 			return fmt.Errorf("cache sync failed")
 		}
 
@@ -231,8 +233,8 @@ func TestManager_Lifecycle(t *testing.T) {
 	})
 }
 
-// TestManager_ContextCancellation tests that context cancellation is respected
-func TestManager_ContextCancellation(t *testing.T) {
+// TestBackendWatcher_ContextCancellation tests that context cancellation is respected
+func TestBackendWatcher_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
 	cfg := &rest.Config{
@@ -240,7 +242,7 @@ func TestManager_ContextCancellation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewManager(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
 	require.NoError(t, err)
 
 	// Create a context that's already cancelled
@@ -248,7 +250,7 @@ func TestManager_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	// Start should exit quickly when context is already cancelled
-	// This validates the manager respects pre-cancelled contexts
+	// This validates the watcher respects pre-cancelled contexts
 	startTime := time.Now()
 	err = mgr.Start(ctx)
 	duration := time.Since(startTime)

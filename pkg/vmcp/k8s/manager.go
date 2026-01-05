@@ -8,6 +8,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,15 +17,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// Manager wraps a controller-runtime manager for vMCP dynamic mode.
+// BackendWatcher wraps a controller-runtime manager for vMCP dynamic mode.
 //
-// In K8s mode (outgoingAuth.source: discovered), this manager runs informers
+// In K8s mode (outgoingAuth.source: discovered), this watcher runs informers
 // that watch for backend changes in the referenced MCPGroup. When backends
-// are added or removed, the manager updates the DynamicRegistry which triggers
+// are added or removed, the watcher updates the DynamicRegistry which triggers
 // cache invalidation via version-based lazy invalidation.
 //
 // Design Philosophy:
@@ -34,7 +36,7 @@ import (
 //   - Single responsibility: watch K8s resources and update registry
 //
 // Static mode (CLI) skips this entirely - no controller-runtime, no informers.
-type Manager struct {
+type BackendWatcher struct {
 	// ctrlManager is the underlying controller-runtime manager
 	ctrlManager manager.Manager
 
@@ -47,14 +49,17 @@ type Manager struct {
 	// registry is the DynamicRegistry to update when backends change
 	registry vmcp.DynamicRegistry
 
-	// started tracks if the manager has been started
+	// mu protects the started field for thread-safe access
+	mu sync.Mutex
+
+	// started tracks if the watcher has been started (protected by mu)
 	started bool
 }
 
-// NewManager creates a new manager for vMCP dynamic mode.
+// NewBackendWatcher creates a new backend watcher for vMCP dynamic mode.
 //
 // This initializes a controller-runtime manager configured to watch resources
-// in the specified namespace. The manager will monitor the referenced MCPGroup
+// in the specified namespace. The watcher will monitor the referenced MCPGroup
 // and update the DynamicRegistry when backends are added or removed.
 //
 // Parameters:
@@ -64,27 +69,27 @@ type Manager struct {
 //   - registry: DynamicRegistry to update when backends change
 //
 // Returns:
-//   - *Manager: Configured manager ready to Start()
+//   - *BackendWatcher: Configured watcher ready to Start()
 //   - error: Configuration or initialization errors
 //
 // Example:
 //
 //	restConfig, _ := rest.InClusterConfig()
 //	registry := vmcp.NewDynamicRegistry(initialBackends)
-//	mgr, err := k8s.NewManager(restConfig, "default", "default/my-group", registry)
+//	watcher, err := k8s.NewBackendWatcher(restConfig, "default", "default/my-group", registry)
 //	if err != nil {
 //	    return err
 //	}
-//	go mgr.Start(ctx)
-//	if !mgr.WaitForCacheSync(ctx) {
+//	go watcher.Start(ctx)
+//	if !watcher.WaitForCacheSync(ctx) {
 //	    return fmt.Errorf("cache sync failed")
 //	}
-func NewManager(
+func NewBackendWatcher(
 	cfg *rest.Config,
 	namespace string,
 	groupRef string,
 	registry vmcp.DynamicRegistry,
-) (*Manager, error) {
+) (*BackendWatcher, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rest config cannot be nil")
 	}
@@ -98,13 +103,11 @@ func NewManager(
 		return nil, fmt.Errorf("registry cannot be nil")
 	}
 
-	// Get the runtime scheme for ToolHive CRDs
+	// Create runtime scheme and register ToolHive CRDs
 	scheme := runtime.NewScheme()
-	// TODO: Add scheme registration for ToolHive CRDs
-	// err := thvscheme.AddToScheme(scheme)
-	// if err != nil {
-	//     return nil, fmt.Errorf("failed to add scheme: %w", err)
-	// }
+	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to register ToolHive CRDs to scheme: %w", err)
+	}
 
 	// Create controller-runtime manager with namespace-scoped cache
 	ctrlManager, err := ctrl.NewManager(cfg, manager.Options{
@@ -123,7 +126,7 @@ func NewManager(
 		return nil, fmt.Errorf("failed to create controller manager: %w", err)
 	}
 
-	return &Manager{
+	return &BackendWatcher{
 		ctrlManager: ctrlManager,
 		namespace:   namespace,
 		groupRef:    groupRef,
@@ -146,37 +149,40 @@ func NewManager(
 // Example:
 //
 //	go func() {
-//	    if err := mgr.Start(ctx); err != nil {
-//	        logger.Errorf("Manager stopped with error: %v", err)
+//	    if err := watcher.Start(ctx); err != nil {
+//	        logger.Errorf("BackendWatcher stopped with error: %v", err)
 //	    }
 //	}()
-func (m *Manager) Start(ctx context.Context) error {
-	if m.started {
-		return fmt.Errorf("manager already started")
+func (w *BackendWatcher) Start(ctx context.Context) error {
+	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return fmt.Errorf("watcher already started")
 	}
-	m.started = true
+	w.started = true
+	w.mu.Unlock()
 
-	logger.Info("Starting Kubernetes manager for vMCP dynamic mode")
-	logger.Infof("Watching namespace: %s, group: %s", m.namespace, m.groupRef)
+	logger.Info("Starting Kubernetes backend watcher for vMCP dynamic mode")
+	logger.Infof("Watching namespace: %s, group: %s", w.namespace, w.groupRef)
 
 	// TODO: Add backend watcher controller
-	// err := m.addBackendWatcher()
+	// err := w.addBackendWatchController()
 	// if err != nil {
-	//     return fmt.Errorf("failed to add backend watcher: %w", err)
+	//     return fmt.Errorf("failed to add backend watch controller: %w", err)
 	// }
 
 	// Start the manager (blocks until context cancelled)
-	if err := m.ctrlManager.Start(ctx); err != nil {
-		return fmt.Errorf("manager failed: %w", err)
+	if err := w.ctrlManager.Start(ctx); err != nil {
+		return fmt.Errorf("watcher failed: %w", err)
 	}
 
-	logger.Info("Kubernetes manager stopped")
+	logger.Info("Kubernetes backend watcher stopped")
 	return nil
 }
 
-// WaitForCacheSync waits for the manager's informer caches to sync.
+// WaitForCacheSync waits for the watcher's informer caches to sync.
 //
-// This is used by the /readyz endpoint to gate readiness until the manager
+// This is used by the /readyz endpoint to gate readiness until the watcher
 // has populated its caches. This ensures the vMCP server doesn't serve requests
 // until it has an accurate view of backends.
 //
@@ -187,31 +193,35 @@ func (m *Manager) Start(ctx context.Context) error {
 //   - bool: true if caches synced successfully, false on timeout or error
 //
 // Design Notes:
-//   - Non-blocking if manager not started (returns false)
+//   - Non-blocking if watcher not started (returns false)
 //   - Respects context timeout (e.g., 5-second readiness probe timeout)
 //   - Safe to call multiple times (idempotent)
 //
 // Example (readiness probe):
 //
 //	func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
-//	    if s.k8sManager != nil {
+//	    if s.backendWatcher != nil {
 //	        ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 //	        defer cancel()
-//	        if !s.k8sManager.WaitForCacheSync(ctx) {
+//	        if !s.backendWatcher.WaitForCacheSync(ctx) {
 //	            w.WriteHeader(http.StatusServiceUnavailable)
 //	            return
 //	        }
 //	    }
 //	    w.WriteHeader(http.StatusOK)
 //	}
-func (m *Manager) WaitForCacheSync(ctx context.Context) bool {
-	if !m.started {
-		logger.Warn("WaitForCacheSync called but manager not started")
+func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
+	w.mu.Lock()
+	started := w.started
+	w.mu.Unlock()
+
+	if !started {
+		logger.Warn("WaitForCacheSync called but watcher not started")
 		return false
 	}
 
 	// Get the cache from the manager
-	informerCache := m.ctrlManager.GetCache()
+	informerCache := w.ctrlManager.GetCache()
 
 	// Create a timeout context if not already set
 	// Default to 30 seconds to handle typical K8s API latency
@@ -234,9 +244,9 @@ func (m *Manager) WaitForCacheSync(ctx context.Context) bool {
 	return true
 }
 
-// TODO: Add backend watcher implementation in next phase
+// TODO: Add backend watch controller implementation in next phase
 // This will watch the MCPGroup and call registry.Upsert/Remove when backends change
-// func (m *Manager) addBackendWatcher() error {
+// func (w *BackendWatcher) addBackendWatchController() error {
 //     // Create reconciler that watches MCPGroup
 //     // On reconcile:
 //     //   1. Get MCPGroup spec

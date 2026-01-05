@@ -555,7 +555,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 			config.AllowPrivateIP, config.InsecureAllowHTTP,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
+			return nil, fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
 		}
 		jwksURL = doc.JWKSURI
 	}

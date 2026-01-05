@@ -110,10 +110,10 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to stop workloads %v: %w", workloadNames, err)
 	}
 	if len(workloadNames) == 1 {
-		fmt.Printf("workload %s stopped successfully\n", workloadNames[0])
+		fmt.Printf("Workload %s stopped successfully\n", workloadNames[0])
 	} else {
 		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("workloads %v stopped successfully\n", formattedNames)
+		fmt.Printf("Workloads %s stopped successfully\n", formattedNames)
 	}
 
 	return nil

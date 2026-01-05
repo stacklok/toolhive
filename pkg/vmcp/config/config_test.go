@@ -278,7 +278,11 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 					}
 				}
 			}
+		default:
+			// Skip other types
+			continue
 		}
+
 	}
 
 	return nil

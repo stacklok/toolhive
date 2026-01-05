@@ -58,6 +58,8 @@ type Client struct {
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 	// namespaceFunc is used for testing to override namespace detection
 	namespaceFunc func() string
+	// exitFunc is used for testing to override os.Exit behavior
+	exitFunc func(code int)
 }
 
 // NewClient creates a new container client
@@ -205,7 +207,11 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			// This allows the proxy to establish a fresh connection to the current pod
 			// after a pod restart, rather than maintaining a stale connection
 			logger.Errorf("kubectl attach failed after all retries for workload %s, exiting to allow restart", workloadName)
-			os.Exit(1)
+			exitFunc := c.exitFunc
+			if exitFunc == nil {
+				exitFunc = os.Exit
+			}
+			exitFunc(1)
 		}
 	}()
 

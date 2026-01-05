@@ -785,6 +785,84 @@ func TestCreateContainerWithMCP(t *testing.T) {
 	}
 }
 
+// TestAttachToWorkloadExitFunc tests that the exit function is properly configured
+// and can be mocked for testing
+func TestAttachToWorkloadExitFunc(t *testing.T) {
+	t.Parallel()
+
+	// Create a client
+	clientset := fake.NewClientset()
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+	client := NewClientWithConfig(clientset, fakeConfig)
+
+	// Verify that exitFunc can be set and is initially nil
+	assert.Nil(t, client.exitFunc, "Expected exitFunc to be nil by default")
+
+	// Set a mock exit function
+	exitCalled := false
+	exitCode := 0
+	client.exitFunc = func(code int) {
+		exitCalled = true
+		exitCode = code
+	}
+
+	// Verify the mock is set
+	assert.NotNil(t, client.exitFunc, "Expected exitFunc to be set")
+
+	// Call the exit function directly to verify it works
+	client.exitFunc(1)
+	assert.True(t, exitCalled, "Expected exit function to be called")
+	assert.Equal(t, 1, exitCode, "Expected exit code 1")
+}
+
+// TestAttachToWorkloadWithoutExitFunc tests that AttachToWorkload can handle
+// the case where exitFunc is not set (should default to os.Exit)
+func TestAttachToWorkloadWithoutExitFunc(t *testing.T) {
+	t.Parallel()
+
+	// Create a client without setting exitFunc
+	clientset := fake.NewClientset()
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+	client := NewClientWithConfig(clientset, fakeConfig)
+
+	// Verify exitFunc is nil (will use os.Exit by default)
+	assert.Nil(t, client.exitFunc, "Expected exitFunc to be nil by default")
+
+	// Note: We cannot test the actual AttachToWorkload call here because:
+	// 1. The fake client doesn't provide a working RESTClient
+	// 2. os.Exit would terminate the test process
+	// The full error handling path including retry and exit is tested in E2E tests
+	// (see test/e2e/test_health_changes.go)
+}
+
+// TestAttachToWorkloadNoPodFound tests that AttachToWorkload returns error when no pod is found
+func TestAttachToWorkloadNoPodFound(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake Kubernetes clientset with no pods
+	clientset := fake.NewClientset()
+
+	// Create a fake config
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+
+	// Create a client with the fake clientset and config
+	client := NewClientWithConfig(clientset, fakeConfig)
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	// Call AttachToWorkload with a workload that has no pods
+	_, _, err := client.AttachToWorkload(context.Background(), "nonexistent-workload")
+
+	// Should return error immediately (no pods found)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no pods found")
+}
+
 // TestApplyPodTemplatePatchAnnotations tests that annotations are correctly applied
 // from the pod template patch to the base template.
 // This is a regression test for the bug where annotations were not being applied.

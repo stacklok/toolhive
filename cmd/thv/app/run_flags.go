@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -656,13 +656,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	authCfg := &remote.Config{
@@ -726,13 +722,9 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	// Derive the resource parameter (RFC 8707)
@@ -880,9 +872,4 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 	}
-}
-
-// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
-func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
 }

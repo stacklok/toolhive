@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -11,7 +12,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -108,7 +108,7 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) {
 	err := s.groupManager.Create(ctx, req.Name)
 	if err != nil {
 		logger.Errorf("Failed to create group: %v", err)
-		if errors.IsGroupAlreadyExists(err) {
+		if errors.Is(err, groups.ErrGroupAlreadyExists) {
 			http.Error(w, err.Error(), http.StatusConflict)
 		} else {
 			http.Error(w, "Failed to create group", http.StatusInternalServerError)

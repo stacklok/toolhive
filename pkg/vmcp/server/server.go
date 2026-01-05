@@ -130,8 +130,10 @@ type Server struct {
 	// Discovery manager for lazy per-user capability discovery
 	discoveryMgr discovery.Manager
 
-	// Backends for capability discovery
-	backends []vmcp.Backend
+	// Backend registry for capability discovery
+	// For static mode (CLI), this is an immutable registry created from initial backends.
+	// For dynamic mode (K8s), this is a DynamicRegistry updated by the operator.
+	backendRegistry vmcp.BackendRegistry
 
 	// Session manager for tracking MCP protocol sessions
 	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
@@ -172,6 +174,10 @@ type Server struct {
 
 // New creates a new Virtual MCP Server instance.
 //
+// The backendRegistry parameter provides the list of available backends:
+// - For static mode (CLI), pass an immutable registry created from initial backends
+// - For dynamic mode (K8s), pass a DynamicRegistry that will be updated by the operator
+//
 //nolint:gocyclo // Complexity from hook logic is acceptable
 func New(
 	ctx context.Context,
@@ -179,7 +185,7 @@ func New(
 	rt router.Router,
 	backendClient vmcp.BackendClient,
 	discoveryMgr discovery.Manager,
-	backends []vmcp.Backend,
+	backendRegistry vmcp.BackendRegistry,
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (*Server, error) {
 	// Apply defaults
@@ -226,11 +232,13 @@ func New(
 	// backend calls are instrumented when they occur during workflow execution.
 	if cfg.TelemetryProvider != nil {
 		var err error
+		// Get initial backends list from registry for telemetry setup
+		initialBackends := backendRegistry.List(ctx)
 		backendClient, err = monitorBackends(
 			ctx,
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
-			backends,
+			initialBackends,
 			backendClient,
 		)
 		if err != nil {
@@ -286,7 +294,9 @@ func New(
 	// Create health monitor if configured
 	var healthMon *health.Monitor
 	if cfg.HealthMonitorConfig != nil {
-		healthMon, err = health.NewMonitor(backendClient, backends, *cfg.HealthMonitorConfig)
+		// Get initial backends list from registry for health monitoring setup
+		initialBackends := backendRegistry.List(ctx)
+		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
@@ -307,7 +317,7 @@ func New(
 		backendClient:     backendClient,
 		handlerFactory:    handlerFactory,
 		discoveryMgr:      discoveryMgr,
-		backends:          backends,
+		backendRegistry:   backendRegistry,
 		sessionManager:    sessionManager,
 		capabilityAdapter: capabilityAdapter,
 		workflowDefs:      workflowDefs,
@@ -467,7 +477,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Apply discovery middleware (runs after audit/auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
+	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
@@ -521,7 +532,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start server in background
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()

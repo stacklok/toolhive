@@ -485,7 +485,12 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	if err != nil {
 		return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to get workload logs: %v", err))
 	}
-	defer logs.Close()
+	defer func() {
+		if err := logs.Close(); err != nil {
+			// Non-fatal: log stream cleanup failure
+			logger.Debugf("Failed to close log stream: %v", err)
+		}
+	}()
 
 	if follow {
 		_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, logs)
@@ -599,7 +604,12 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	stdoutReader, stdoutWriter := io.Pipe()
 
 	go func() {
-		defer stdoutWriter.Close()
+		defer func() {
+			if err := stdoutWriter.Close(); err != nil {
+				// Non-fatal: writer cleanup failure
+				logger.Debugf("Failed to close stdout writer: %v", err)
+			}
+		}()
 		defer resp.Close()
 
 		// Use stdcopy to demultiplex the container streams

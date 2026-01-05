@@ -294,11 +294,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Create discovery manager for lazy per-user capability discovery
+	// Create backend registry for CLI environment
+	// CLI always uses immutable registry (backends fixed at startup)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+
+	// Use standard manager (no version-based invalidation needed)
 	discoveryMgr, err := discovery.NewManager(agg)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
+	logger.Info("Immutable backend registry created for CLI environment")
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
@@ -375,8 +380,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
 	}
 
-	// Create server with discovery manager, backends, and workflow definitions
-	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	// Create server with discovery manager, backend registry, and workflow definitions
+	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}

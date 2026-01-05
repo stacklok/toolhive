@@ -180,7 +180,7 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 			_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
 			if err != nil {
-				return fmt.Errorf("%w: %v", errBug, err)
+				return fmt.Errorf("%w: %w", errBug, err)
 			}
 
 			written = true
@@ -189,13 +189,13 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 		if !written {
 			_, err := rfw.ResponseWriter.Write(line)
 			if err != nil {
-				return fmt.Errorf("%w: %v", errBug, err)
+				return fmt.Errorf("%w: %w", errBug, err)
 			}
 		}
 
 		_, err := rfw.ResponseWriter.Write(linesep)
 		if err != nil {
-			return fmt.Errorf("%w: %v", errBug, err)
+			return fmt.Errorf("%w: %w", errBug, err)
 		}
 		linesepCount++
 	}
@@ -205,7 +205,7 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	if linesepCount < linesepTotal {
 		_, err := rfw.ResponseWriter.Write(linesep)
 		if err != nil {
-			return fmt.Errorf("%w: %v", errBug, err)
+			return fmt.Errorf("%w: %w", errBug, err)
 		}
 	}
 

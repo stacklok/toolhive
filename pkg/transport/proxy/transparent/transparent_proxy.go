@@ -244,7 +244,11 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	// NOTE: it would be better to have a proper function instead of a goroutine, as this
 	// makes it harder to debug and test.
 	go func() {
-		defer pw.Close()
+		defer func() {
+			if err := pw.Close(); err != nil {
+				logger.Debugf("Failed to close pipe writer: %v", err)
+			}
+		}()
 		scanner := bufio.NewScanner(originalBody)
 		// NOTE: The following line mitigates the issue of the response body being too large.
 		// By default, the maximum token size of the scanner is 64KB, which is too small in
@@ -383,7 +387,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	server := p.server
 	go func() {
 		err := server.Serve(ln)
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {
 				// Expected when listener is closed—silently return
@@ -462,7 +466,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	// Stop the HTTP server
 	if p.server != nil {
 		err := p.server.Shutdown(ctx)
-		if err != nil && err != http.ErrServerClosed && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}

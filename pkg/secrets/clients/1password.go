@@ -26,7 +26,7 @@ func NewOnePasswordClient(ctx context.Context, token string) (OnePasswordClient,
 		onepassword.WithIntegrationInfo(onepassword.DefaultIntegrationName, onepassword.DefaultIntegrationVersion),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error creating 1Password client: %v", err)
+		return nil, fmt.Errorf("error creating 1Password client: %w", err)
 	}
 
 	return &onePasswordClient{client: client}, nil
@@ -42,7 +42,7 @@ type onePasswordClient struct {
 func (opc *onePasswordClient) Resolve(ctx context.Context, secretReference string) (string, error) {
 	secret, err := opc.client.Secrets().Resolve(ctx, secretReference)
 	if err != nil {
-		return "", fmt.Errorf("error resolving secret: %v", err)
+		return "", fmt.Errorf("error resolving secret: %w", err)
 	}
 	return secret, nil
 }

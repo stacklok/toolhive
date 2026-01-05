@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	registrytypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -72,7 +73,11 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 
 		resp, err := client.Get(fullAPIURL)
 		if err == nil {
-			defer resp.Body.Close()
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					logger.Debugf("Failed to close response body: %v", err)
+				}
+			}()
 			// If API endpoint returns 2xx or 401/403 (auth errors), it's an API
 			// 404 means endpoint doesn't exist, 405 means method not supported, 5xx means server error
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -140,7 +145,11 @@ func isValidRegistryJSON(client *http.Client, url string) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Parse into the actual Registry type for strong validation
 	registry := &registrytypes.Registry{}

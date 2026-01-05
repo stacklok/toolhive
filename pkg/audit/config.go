@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -62,7 +63,11 @@ func LoadFromFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit config file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Warnf("Failed to close audit config file: %v", err)
+		}
+	}()
 
 	return LoadFromReader(file)
 }

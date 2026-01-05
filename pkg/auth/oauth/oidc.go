@@ -107,7 +107,11 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		if err != nil {
 			return nil, fmt.Errorf("GET %s: %w", urlStr, err)
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				logger.Debugf("Failed to close response body: %v", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("%s: HTTP %d", urlStr, resp.StatusCode)

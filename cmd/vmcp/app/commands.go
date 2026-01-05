@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -305,6 +306,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	logger.Info("Immutable backend registry created for CLI environment")
 
+	// K8s manager is not used in CLI mode (always nil)
+	var k8sManager *k8s.Manager
+
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
 
@@ -362,6 +366,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,
 		Version:             getVersion(),
+		GroupRef:            cfg.Group,
 		Host:                host,
 		Port:                port,
 		AuthMiddleware:      authMiddleware,
@@ -369,6 +374,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		TelemetryProvider:   telemetryProvider,
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
+		K8sManager:          k8sManager,
 	}
 
 	// Convert composite tool configurations to workflow definitions

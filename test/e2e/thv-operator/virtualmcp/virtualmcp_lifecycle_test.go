@@ -2,7 +2,9 @@ package virtualmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,8 +13,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -580,6 +584,376 @@ var _ = Describe("VirtualMCPServer Lifecycle - DynamicRegistry", Ordered, Pendin
 			}
 			Expect(backendNames).To(ContainElements(backend1Name, backend3Name))
 			Expect(backendNames).ToNot(ContainElement(backend2Name), "Removed backend should not be present")
+		})
+	})
+})
+
+// ReadinessResponse represents the /readyz endpoint response
+type ReadinessResponse struct {
+	Status string `json:"status"`
+	Mode   string `json:"mode"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// VirtualMCPServer K8s Manager Infrastructure Tests
+// These tests verify the K8s manager integration that was implemented as part of THV-2884.
+// Unlike the dynamic backend tests above (which are Pending until watcher is implemented),
+// these tests verify the infrastructure is in place: manager creation, readiness probes,
+// and endpoint behavior.
+var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() {
+	var (
+		testNamespace   = "default"
+		mcpGroupName    = "test-k8s-manager-infra-group"
+		vmcpServerName  = "test-vmcp-k8s-manager-infra"
+		backendName     = "backend-k8s-manager-infra-fetch"
+		timeout         = 3 * time.Minute
+		pollingInterval = 2 * time.Second
+		vmcpNodePort    int32
+	)
+
+	BeforeAll(func() {
+		By("Creating MCPGroup for K8s manager infrastructure tests")
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for K8s manager infrastructure E2E tests", timeout, pollingInterval)
+
+		By("Creating backend MCPServer")
+		backend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backendName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.GofetchServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+			},
+		}
+		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
+
+		By("Waiting for backend MCPServer to be ready")
+		Eventually(func() error {
+			server := &mcpv1alpha1.MCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backendName,
+				Namespace: testNamespace,
+			}, server)
+			if err != nil {
+				return fmt.Errorf("failed to get server: %w", err)
+			}
+
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+				return nil
+			}
+			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
+		}, timeout, pollingInterval).Should(Succeed(), "Backend should be ready")
+
+		By("Creating VirtualMCPServer with discovered auth source (dynamic mode)")
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: mcpv1alpha1.GroupRef{
+					Name: mcpGroupName,
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
+				},
+				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+					Source: "discovered", // This triggers K8s manager creation
+				},
+				Aggregation: &mcpv1alpha1.AggregationConfig{
+					ConflictResolution: "prefix",
+				},
+				ServiceType: "NodePort",
+			},
+		}
+		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+		By("Waiting for VirtualMCPServer to be ready")
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Getting NodePort for VirtualMCPServer")
+		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By(fmt.Sprintf("VirtualMCPServer is ready on NodePort: %d", vmcpNodePort))
+
+		By("Waiting for VirtualMCPServer to be accessible")
+		Eventually(func() error {
+			httpClient := &http.Client{Timeout: 5 * time.Second}
+			url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
+			resp, err := httpClient.Get(url)
+			if err != nil {
+				return fmt.Errorf("health check failed: %w", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			}
+			return nil
+		}, 30*time.Second, 2*time.Second).Should(Succeed(), "VirtualMCPServer health endpoint should be accessible")
+	})
+
+	AfterAll(func() {
+		By("Cleaning up VirtualMCPServer")
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, vmcpServer)
+
+		By("Cleaning up backend MCPServer")
+		backend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backendName,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, backend)
+
+		By("Cleaning up MCPGroup")
+		group := &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mcpGroupName,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, group)
+	})
+
+	Context("Readiness Probe Integration", func() {
+		It("should expose /readyz endpoint", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /readyz endpoint is accessible")
+			Eventually(func() error {
+				resp, err := http.Get(vmcpURL + "/readyz")
+				if err != nil {
+					return fmt.Errorf("failed to connect to /readyz: %w", err)
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK {
+					body, _ := io.ReadAll(resp.Body)
+					return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "/readyz should return 200 OK")
+		})
+
+		It("should return dynamic mode status", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting /readyz response")
+			resp, err := http.Get(vmcpURL + "/readyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			By("Parsing readiness response")
+			var readiness ReadinessResponse
+			err = json.NewDecoder(resp.Body).Decode(&readiness)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying dynamic mode is enabled")
+			Expect(readiness.Status).To(Equal("ready"), "Status should be ready")
+			Expect(readiness.Mode).To(Equal("dynamic"), "Mode should be dynamic since outgoingAuth.source is 'discovered'")
+		})
+
+		It("should indicate cache sync in dynamic mode", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Verifying cache is synced")
+			resp, err := http.Get(vmcpURL + "/readyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			var readiness ReadinessResponse
+			err = json.NewDecoder(resp.Body).Decode(&readiness)
+			Expect(err).NotTo(HaveOccurred())
+
+			// In dynamic mode with synced cache, status should be "ready"
+			Expect(readiness.Status).To(Equal("ready"))
+			Expect(readiness.Mode).To(Equal("dynamic"))
+			// Reason should be empty when ready
+			Expect(readiness.Reason).To(BeEmpty())
+		})
+	})
+
+	Context("K8s Manager Lifecycle", func() {
+		It("should start with K8s manager running", func() {
+			By("Verifying pod is running")
+			Eventually(func() error {
+				pods := &corev1.PodList{}
+				err := k8sClient.List(ctx, pods,
+					ctrlclient.InNamespace(testNamespace),
+					ctrlclient.MatchingLabels{"app": vmcpServerName})
+				if err != nil {
+					return fmt.Errorf("failed to list pods: %w", err)
+				}
+
+				if len(pods.Items) == 0 {
+					return fmt.Errorf("no pods found")
+				}
+
+				pod := pods.Items[0]
+				if pod.Status.Phase != corev1.PodRunning {
+					return fmt.Errorf("pod not running yet, phase: %s", pod.Status.Phase)
+				}
+
+				// Check pod is ready
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == corev1.PodReady {
+						if condition.Status != corev1.ConditionTrue {
+							return fmt.Errorf("pod not ready: %s", condition.Message)
+						}
+						return nil
+					}
+				}
+
+				return fmt.Errorf("pod ready condition not found")
+			}, timeout, pollingInterval).Should(Succeed(), "Pod should be running and ready")
+		})
+
+		It("should have healthy container status", func() {
+			By("Getting pod name")
+			pods := &corev1.PodList{}
+			err := k8sClient.List(ctx, pods,
+				ctrlclient.InNamespace(testNamespace),
+				ctrlclient.MatchingLabels{"app": vmcpServerName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty(), "Should have at least one pod")
+
+			podName := pods.Items[0].Name
+
+			By("Checking container status")
+			Eventually(func() error {
+				pod := &corev1.Pod{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      podName,
+					Namespace: testNamespace,
+				}, pod)
+				if err != nil {
+					return err
+				}
+
+				// Check all containers are ready
+				for _, status := range pod.Status.ContainerStatuses {
+					if !status.Ready {
+						return fmt.Errorf("container %s not ready", status.Name)
+					}
+				}
+
+				return nil
+			}, timeout, pollingInterval).Should(Succeed(), "All containers should be ready")
+		})
+	})
+
+	Context("Health Endpoints", func() {
+		It("should expose /health endpoint that always returns 200", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /health endpoint")
+			resp, err := http.Get(vmcpURL + "/health")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var health map[string]string
+			err = json.NewDecoder(resp.Body).Decode(&health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(health["status"]).To(Equal("ok"))
+		})
+
+		It("should distinguish between /health and /readyz", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting /health response")
+			healthResp, err := http.Get(vmcpURL + "/health")
+			Expect(err).NotTo(HaveOccurred())
+			defer healthResp.Body.Close()
+
+			By("Getting /readyz response")
+			readyResp, err := http.Get(vmcpURL + "/readyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer readyResp.Body.Close()
+
+			// Both should return 200 when ready
+			Expect(healthResp.StatusCode).To(Equal(http.StatusOK))
+			Expect(readyResp.StatusCode).To(Equal(http.StatusOK))
+
+			// Parse both responses
+			var health map[string]string
+			err = json.NewDecoder(healthResp.Body).Decode(&health)
+			Expect(err).NotTo(HaveOccurred())
+
+			var readiness ReadinessResponse
+			err = json.NewDecoder(readyResp.Body).Decode(&readiness)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Health is simple status
+			Expect(health).To(HaveKey("status"))
+			Expect(health).NotTo(HaveKey("mode"))
+
+			// Readiness includes mode information
+			Expect(readiness.Status).To(Equal("ready"))
+			Expect(readiness.Mode).To(Equal("dynamic"))
+		})
+	})
+
+	Context("Status Endpoint", func() {
+		It("should expose /status endpoint with group reference", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /status endpoint")
+			resp, err := http.Get(vmcpURL + "/status")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var status map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&status)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying group_ref is present")
+			Expect(status).To(HaveKey("group_ref"))
+			groupRef, ok := status["group_ref"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(groupRef).To(ContainSubstring(mcpGroupName))
+		})
+
+		It("should list discovered backends", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting /status response")
+			resp, err := http.Get(vmcpURL + "/status")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			var status map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&status)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying backends are listed")
+			Expect(status).To(HaveKey("backends"))
+			backends, ok := status["backends"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(backends).NotTo(BeEmpty(), "Should have at least one backend")
+
+			// Verify backend structure
+			backend := backends[0].(map[string]interface{})
+			Expect(backend).To(HaveKey("name"))
+			Expect(backend).To(HaveKey("health"))
+			Expect(backend).To(HaveKey("transport"))
 		})
 	})
 })

@@ -176,13 +176,25 @@ func TestConfigFieldTagsAreCamelCase(t *testing.T) {
 // checkStructTags recursively checks all struct fields for yaml tags and camelCase naming.
 // Returns the first error encountered, or nil if all fields are valid.
 func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool) error {
-	// Handle pointer types
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
+	// Skip over maps, slices, and pointers to get to the underlying struct type.
+	t = func() reflect.Type {
+		for {
+			switch t.Kind() { //nolint:exhaustive // Only checking slice, map, and ptr types
+			case reflect.Slice, reflect.Map, reflect.Ptr:
+				t = t.Elem()
+			default:
+				return t
+			}
+		}
+	}()
 
 	// Only process struct types
 	if t.Kind() != reflect.Struct {
+		return nil
+	}
+
+	// Skip types in other libraries.
+	if t.PkgPath() != "" && !strings.HasPrefix(t.PkgPath(), "github.com/stacklok/toolhive") {
 		return nil
 	}
 
@@ -229,6 +241,9 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 
 		// Check for json tag consistency with yaml tag
 		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" {
+			return fmt.Errorf("field %s is missing json tag", fieldPath)
+		}
 		if jsonTag != "" {
 			jsonName := strings.Split(jsonTag, ",")[0]
 			yamlName := strings.Split(yamlTag, ",")[0]
@@ -237,52 +252,9 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 			}
 		}
 
-		// Recursively check nested types
-		fieldType := field.Type
-		if fieldType.Kind() == reflect.Ptr {
-			fieldType = fieldType.Elem()
+		if err := checkStructTags(field.Type, fieldPath, visited); err != nil {
+			return err
 		}
-
-		switch fieldType.Kind() { //nolint:exhaustive // Only checking struct, slice, and map types
-		case reflect.Struct:
-			// Skip time.Duration and other standard library types
-			if fieldType.PkgPath() != "" && !strings.HasPrefix(fieldType.PkgPath(), "github.com/stacklok/toolhive") {
-				continue
-			}
-			if err := checkStructTags(fieldType, fieldPath, visited); err != nil {
-				return err
-			}
-
-		case reflect.Slice:
-			elemType := fieldType.Elem()
-			if elemType.Kind() == reflect.Ptr {
-				elemType = elemType.Elem()
-			}
-			if elemType.Kind() == reflect.Struct {
-				if elemType.PkgPath() != "" && strings.HasPrefix(elemType.PkgPath(), "github.com/stacklok/toolhive") {
-					if err := checkStructTags(elemType, fieldPath+"[]", visited); err != nil {
-						return err
-					}
-				}
-			}
-
-		case reflect.Map:
-			elemType := fieldType.Elem()
-			if elemType.Kind() == reflect.Ptr {
-				elemType = elemType.Elem()
-			}
-			if elemType.Kind() == reflect.Struct {
-				if elemType.PkgPath() != "" && strings.HasPrefix(elemType.PkgPath(), "github.com/stacklok/toolhive") {
-					if err := checkStructTags(elemType, fieldPath+"[key]", visited); err != nil {
-						return err
-					}
-				}
-			}
-		default:
-			// Skip other types
-			continue
-		}
-
 	}
 
 	return nil

@@ -40,7 +40,7 @@ func newMockOIDCServer() *mockOIDCServer {
 		TokenEndpoint:                 mock.issuer + "/token",
 		UserInfoEndpoint:              mock.issuer + "/userinfo",
 		JWKSEndpoint:                  mock.issuer + "/.well-known/jwks.json",
-		CodeChallengeMethodsSupported: []string{PKCEChallengeMethodS256},
+		CodeChallengeMethodsSupported: []string{pkceChallengeMethodS256},
 	}
 
 	return mock
@@ -328,8 +328,8 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 			t.Errorf("expected code_challenge=test-challenge, got %q", query.Get("code_challenge"))
 		}
 
-		if query.Get("code_challenge_method") != PKCEChallengeMethodS256 {
-			t.Errorf("expected code_challenge_method=%s, got %q", PKCEChallengeMethodS256, query.Get("code_challenge_method"))
+		if query.Get("code_challenge_method") != pkceChallengeMethodS256 {
+			t.Errorf("expected code_challenge_method=%s, got %q", pkceChallengeMethodS256, query.Get("code_challenge_method"))
 		}
 	})
 
@@ -910,7 +910,7 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 	}
 }
 
-func TestBuildDiscoveryURL(t *testing.T) {
+func Test_buildDiscoveryURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -959,7 +959,7 @@ func TestBuildDiscoveryURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := BuildDiscoveryURL(tt.issuer)
+			result, err := buildDiscoveryURL(tt.issuer)
 			if tt.expectError {
 				if err == nil {
 					t.Error("expected error")
@@ -976,7 +976,7 @@ func TestBuildDiscoveryURL(t *testing.T) {
 	}
 }
 
-func TestValidateDiscoveryDocument(t *testing.T) {
+func Test_validateDiscoveryDocument(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1041,7 +1041,7 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateDiscoveryDocument(tt.doc, tt.issuer)
+			err := validateDiscoveryDocument(tt.doc, tt.issuer)
 			if tt.expectError {
 				if err == nil {
 					t.Error("expected error")

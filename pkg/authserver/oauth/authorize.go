@@ -117,7 +117,7 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		scopes = strings.Split(scope, " ")
 	}
 
-	r.logger.DebugContext(ctx, "DEBUG: parsed client-requested scopes",
+	r.logger.DebugContext(ctx, "parsed client-requested scopes",
 		slog.String("raw_scope_param", scope),
 		slog.Any("parsed_scopes", scopes),
 	)

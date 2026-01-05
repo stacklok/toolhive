@@ -20,6 +20,8 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
 )
 
 // MinRSAKeyBits is the minimum required size for RSA keys in bits.
@@ -62,7 +64,7 @@ type Config struct {
 
 	// Upstream contains configuration for connecting to an upstream IDP.
 	// If nil, no upstream IDP is configured and the server operates in standalone mode.
-	Upstream *UpstreamConfig
+	Upstream *idp.UpstreamConfig
 }
 
 // SigningKey represents a key used for signing JWT tokens.
@@ -92,26 +94,6 @@ type ClientConfig struct {
 	// Public indicates whether this is a public client (e.g., native app, SPA).
 	// Public clients do not have a secret.
 	Public bool
-}
-
-// UpstreamConfig contains configuration for connecting to an upstream
-// Identity Provider (e.g., Google, Okta, Auth0).
-type UpstreamConfig struct {
-	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
-	Issuer string
-
-	// ClientID is the OAuth client ID registered with the upstream IDP.
-	ClientID string
-
-	// ClientSecret is the OAuth client secret registered with the upstream IDP.
-	ClientSecret string
-
-	// Scopes are the OAuth scopes to request from the upstream IDP.
-	Scopes []string
-
-	// RedirectURI is the callback URL where the upstream IDP will redirect
-	// after authentication. This should be our authorization server's callback endpoint.
-	RedirectURI string
 }
 
 // MinSecretLength is the minimum required length for the HMAC secret in bytes.
@@ -204,23 +186,6 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("secret is required for confidential clients")
 	}
 
-	return nil
-}
-
-// Validate checks that the UpstreamConfig is valid.
-func (c *UpstreamConfig) Validate() error {
-	if c.Issuer == "" {
-		return fmt.Errorf("upstream issuer is required")
-	}
-	if c.ClientID == "" {
-		return fmt.Errorf("upstream client_id is required")
-	}
-	if c.ClientSecret == "" {
-		return fmt.Errorf("upstream client_secret is required")
-	}
-	if c.RedirectURI == "" {
-		return fmt.Errorf("upstream redirect_uri is required")
-	}
 	return nil
 }
 

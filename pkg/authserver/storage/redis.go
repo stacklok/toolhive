@@ -114,19 +114,18 @@ func (s *RedisStorage) key(prefix, id string) string {
 }
 
 // RegisterClient adds or updates a client in the storage.
-func (s *RedisStorage) RegisterClient(client fosite.Client) {
-	ctx := context.Background()
+func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
 	serialized := serializeClient(client)
 	data, err := json.Marshal(serialized)
 	if err != nil {
-		logger.Errorw("failed to marshal client", "client_id", client.GetID(), "error", err)
-		return
+		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
 	key := s.key(keyPrefixClients, client.GetID())
 	if err := s.client.Set(ctx, key, data, 0).Err(); err != nil {
-		logger.Errorw("failed to store client", "client_id", client.GetID(), "error", err)
+		return fmt.Errorf("failed to store client: %w", err)
 	}
+	return nil
 }
 
 // -----------------------

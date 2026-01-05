@@ -69,7 +69,9 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	}
 
 	// Register clients
-	registerClients(stor, cfg.Clients)
+	if err := registerClients(ctx, stor, cfg.Clients); err != nil {
+		return nil, fmt.Errorf("failed to register clients: %w", err)
+	}
 
 	// Create fosite provider
 	provider := createProvider(oauth2Config, stor)
@@ -80,8 +82,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	}
 
 	// Create upstream IDP provider from config
-	upstreamCfg := upstreamConfigToIDP(cfg.Upstream)
-	upstreamIDP, err := idp.NewFromConfig(ctx, upstreamCfg)
+	upstreamIDP, err := idp.NewFromConfig(ctx, cfg.Upstream)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
@@ -118,7 +119,7 @@ func (*server) Close() error {
 }
 
 // registerClients adds clients from config to storage.
-func registerClients(stor storage.Storage, clients []ClientConfig) {
+func registerClients(ctx context.Context, stor storage.Storage, clients []ClientConfig) error {
 	for _, c := range clients {
 		client := oauth.NewClient(oauth.ClientConfig{
 			ID:           c.ID,
@@ -126,8 +127,11 @@ func registerClients(stor storage.Storage, clients []ClientConfig) {
 			RedirectURIs: c.RedirectURIs,
 			Public:       c.Public,
 		})
-		stor.RegisterClient(client)
+		if err := stor.RegisterClient(ctx, client); err != nil {
+			return fmt.Errorf("failed to register client %s: %w", c.ID, err)
+		}
 	}
+	return nil
 }
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.
@@ -180,19 +184,4 @@ func createProvider(oauth2Config *oauth.OAuth2Config, stor storage.Storage) fosi
 		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
 		compose.OAuth2PKCEFactory,              // PKCE for public clients
 	)
-}
-
-// upstreamConfigToIDP converts authserver.UpstreamConfig to idp.UpstreamConfig.
-// Returns nil if upstream is nil.
-func upstreamConfigToIDP(upstream *UpstreamConfig) *idp.UpstreamConfig {
-	if upstream == nil {
-		return nil
-	}
-	return &idp.UpstreamConfig{
-		Issuer:       upstream.Issuer,
-		ClientID:     upstream.ClientID,
-		ClientSecret: upstream.ClientSecret,
-		Scopes:       upstream.Scopes,
-		RedirectURI:  upstream.RedirectURI,
-	}
 }

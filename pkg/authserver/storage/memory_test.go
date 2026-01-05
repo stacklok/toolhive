@@ -175,7 +175,8 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 
 	client := &mockClient{id: "test-client"}
 
-	storage.RegisterClient(client)
+	err := storage.RegisterClient(context.Background(), client)
+	require.NoError(t, err)
 
 	retrieved, err := storage.GetClient(context.Background(), "test-client")
 	require.NoError(t, err)
@@ -197,7 +198,7 @@ func TestMemoryStorage_GetClient(t *testing.T) {
 			name:     "existing client",
 			clientID: "test-client",
 			setup: func(s *MemoryStorage) {
-				s.RegisterClient(&mockClient{id: "test-client"})
+				_ = s.RegisterClient(context.Background(), &mockClient{id: "test-client"})
 			},
 			wantErr: false,
 		},
@@ -1052,7 +1053,7 @@ func TestMemoryStorage_Stats(t *testing.T) {
 
 	// Add some items
 	client := &mockClient{id: "test-client"}
-	storage.RegisterClient(client)
+	_ = storage.RegisterClient(ctx, client)
 
 	request := newMockRequester("req-1", client)
 	_ = storage.CreateAuthorizeCodeSession(ctx, "code-1", request)
@@ -1214,7 +1215,7 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 			go func(idx int) {
 				defer wg.Done()
 				c := &mockClient{id: fmt.Sprintf("client-%d", idx)}
-				storage.RegisterClient(c)
+				_ = storage.RegisterClient(ctx, c)
 			}(i)
 			// Look up clients (may or may not exist yet)
 			go func(idx int) {

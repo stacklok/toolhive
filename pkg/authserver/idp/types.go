@@ -23,8 +23,8 @@ import (
 	"time"
 )
 
-// PKCEChallengeMethodS256 is the PKCE challenge method for SHA-256.
-const PKCEChallengeMethodS256 = "S256"
+// pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
+const pkceChallengeMethodS256 = "S256"
 
 // Config contains configuration for connecting to an upstream
 // Identity Provider (e.g., Google, Okta, Auth0).
@@ -146,4 +146,41 @@ type Provider interface {
 // This allows for mocking in tests.
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
+}
+
+// UpstreamConfig contains configuration for connecting to an upstream
+// Identity Provider (e.g., Google, Okta, Auth0).
+type UpstreamConfig struct {
+	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
+	Issuer string
+
+	// ClientID is the OAuth client ID registered with the upstream IDP.
+	ClientID string
+
+	// ClientSecret is the OAuth client secret registered with the upstream IDP.
+	ClientSecret string
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	Scopes []string
+
+	// RedirectURI is the callback URL where the upstream IDP will redirect
+	// after authentication. This should be our authorization server's callback endpoint.
+	RedirectURI string
+}
+
+// Validate checks that the UpstreamConfig is valid.
+func (c *UpstreamConfig) Validate() error {
+	if c.Issuer == "" {
+		return fmt.Errorf("upstream issuer is required")
+	}
+	if c.ClientID == "" {
+		return fmt.Errorf("upstream client_id is required")
+	}
+	if c.ClientSecret == "" {
+		return fmt.Errorf("upstream client_secret is required")
+	}
+	if c.RedirectURI == "" {
+		return fmt.Errorf("upstream redirect_uri is required")
+	}
+	return nil
 }

@@ -80,7 +80,7 @@ func integrationTestSetup(t *testing.T) *testServer {
 	stor := storage.NewMemoryStorage()
 
 	// 6. Register test client (public client for PKCE)
-	stor.RegisterClient(&fosite.DefaultClient{
+	err = stor.RegisterClient(context.Background(), &fosite.DefaultClient{
 		ID:            testClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testRedirectURI},
@@ -89,6 +89,7 @@ func integrationTestSetup(t *testing.T) *testServer {
 		Scopes:        []string{"openid", "profile"},
 		Public:        true,
 	})
+	require.NoError(t, err)
 
 	// 7. Create fosite provider using compose.Compose()
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
@@ -932,7 +933,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	}
 
 	// 3a. Create upstream config separately
-	upstreamCfg := &UpstreamConfig{
+	upstreamCfg := &idp.UpstreamConfig{
 		Issuer:       mockIDP.URL(),
 		ClientID:     "auth-server-client",
 		ClientSecret: "auth-server-secret",
@@ -948,7 +949,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	stor := storage.NewMemoryStorage()
 
 	// 6. Register test client (public client for PKCE)
-	stor.RegisterClient(&fosite.DefaultClient{
+	err = stor.RegisterClient(context.Background(), &fosite.DefaultClient{
 		ID:            testClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testRedirectURI},
@@ -957,6 +958,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 		Scopes:        []string{"openid", "profile", "email"},
 		Public:        true,
 	})
+	require.NoError(t, err)
 
 	// 7. Create fosite provider using compose.Compose()
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
@@ -1563,9 +1565,9 @@ func TestRegisterClients_UsesLoopbackClientForPublicClients(t *testing.T) {
 		},
 	}
 
-	registerClients(stor, clients)
-
 	ctx := t.Context()
+	err := registerClients(ctx, stor, clients)
+	require.NoError(t, err)
 
 	// Verify public client is a LoopbackClient
 	publicClient, err := stor.GetClient(ctx, "public-client")

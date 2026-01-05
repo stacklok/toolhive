@@ -125,11 +125,11 @@ func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, _ []string)
 	if codeChallenge != "" {
 		if p.supportsPKCE() {
 			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", PKCEChallengeMethodS256)
+			params.Set("code_challenge_method", pkceChallengeMethodS256)
 		} else {
 			p.logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
 			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", PKCEChallengeMethodS256)
+			params.Set("code_challenge_method", pkceChallengeMethodS256)
 		}
 	}
 
@@ -253,7 +253,7 @@ func (p *OIDCProvider) Endpoints() *OIDCEndpoints {
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
 func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
-	discoveryURL, err := BuildDiscoveryURL(p.config.Issuer)
+	discoveryURL, err := buildDiscoveryURL(p.config.Issuer)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 		return fmt.Errorf("failed to parse discovery document: %w", err)
 	}
 
-	if err := ValidateDiscoveryDocument(&endpoints, p.config.Issuer); err != nil {
+	if err := validateDiscoveryDocument(&endpoints, p.config.Issuer); err != nil {
 		return fmt.Errorf("invalid discovery document: %w", err)
 	}
 
@@ -377,7 +377,7 @@ func (p *OIDCProvider) supportsPKCE() bool {
 		return false
 	}
 	for _, method := range p.endpoints.CodeChallengeMethodsSupported {
-		if method == PKCEChallengeMethodS256 {
+		if method == pkceChallengeMethodS256 {
 			return true
 		}
 	}
@@ -401,8 +401,8 @@ type tokenErrorResponse struct {
 	ErrorURI         string `json:"error_uri,omitempty"`
 }
 
-// BuildDiscoveryURL constructs the OIDC discovery URL from the issuer.
-func BuildDiscoveryURL(issuer string) (string, error) {
+// buildDiscoveryURL constructs the OIDC discovery URL from the issuer.
+func buildDiscoveryURL(issuer string) (string, error) {
 	if issuer == "" {
 		return "", errors.New("issuer is required")
 	}
@@ -414,7 +414,7 @@ func BuildDiscoveryURL(issuer string) (string, error) {
 	}
 
 	// Ensure HTTPS (except for localhost for testing)
-	if issuerURL.Scheme != "https" && !IsLocalhost(issuerURL.Host) {
+	if issuerURL.Scheme != "https" && !isLocalhost(issuerURL.Host) {
 		return "", fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
@@ -424,8 +424,8 @@ func BuildDiscoveryURL(issuer string) (string, error) {
 	return basePath + "/.well-known/openid-configuration", nil
 }
 
-// ValidateDiscoveryDocument validates the OIDC discovery document.
-func ValidateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error {
+// validateDiscoveryDocument validates the OIDC discovery document.
+func validateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error {
 	if doc.Issuer == "" {
 		return errors.New("missing issuer")
 	}
@@ -446,8 +446,8 @@ func ValidateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error 
 	return nil
 }
 
-// IsLocalhost checks if the host is localhost.
-func IsLocalhost(host string) bool {
+// isLocalhost checks if the host is localhost.
+func isLocalhost(host string) bool {
 	// Remove port if present
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]

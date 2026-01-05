@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/idp"
 	"github.com/stacklok/toolhive/pkg/authserver/oauth"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -123,13 +124,13 @@ func buildClientConfigs(clients []ClientConfig) []authserver.ClientConfig {
 }
 
 // buildUpstreamConfig converts RunConfig upstream to generic UpstreamConfig.
-func buildUpstreamConfig(upstream *UpstreamConfig, issuer string) (*authserver.UpstreamConfig, error) {
+func buildUpstreamConfig(upstream *UpstreamConfig, issuer string) (*idp.UpstreamConfig, error) {
 	clientSecret, err := resolveClientSecret(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve upstream client secret: %w", err)
 	}
 
-	return &authserver.UpstreamConfig{
+	return &idp.UpstreamConfig{
 		Issuer:       upstream.Issuer,
 		ClientID:     upstream.ClientID,
 		ClientSecret: clientSecret,

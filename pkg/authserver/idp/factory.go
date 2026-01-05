@@ -18,27 +18,6 @@ import (
 	"context"
 )
 
-// UpstreamConfig contains configuration for connecting to an upstream
-// Identity Provider. This is a parallel struct definition that mirrors
-// the authserver package's UpstreamConfig to avoid import cycles.
-type UpstreamConfig struct {
-	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
-	Issuer string
-
-	// ClientID is the OAuth client ID registered with the upstream IDP.
-	ClientID string
-
-	// ClientSecret is the OAuth client secret registered with the upstream IDP.
-	ClientSecret string
-
-	// Scopes are the OAuth scopes to request from the upstream IDP.
-	Scopes []string
-
-	// RedirectURI is the callback URL where the upstream IDP will redirect
-	// after authentication. This should be our authorization server's callback endpoint.
-	RedirectURI string
-}
-
 // NewFromConfig creates an IDP provider from UpstreamConfig.
 // Returns nil, nil if upstream is not configured (nil or empty Issuer).
 func NewFromConfig(ctx context.Context, upstream *UpstreamConfig) (Provider, error) {

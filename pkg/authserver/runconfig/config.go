@@ -21,19 +21,19 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-// Environment variable names for upstream configuration
-const (
-	// UpstreamClientSecretEnvVar is the environment variable name for the upstream OAuth client secret.
-	// This corresponds to the "client_secret" field in the upstream configuration.
-	//nolint:gosec // G101: This is an environment variable name, not a credential
-	UpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
+// UpstreamClientSecretEnvVar is the environment variable name for the upstream OAuth client secret.
+// This corresponds to the "client_secret" field in the upstream configuration.
+//
+//nolint:gosec // G101: This is an environment variable name, not a credential
+const UpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
 
-	// RedisPasswordEnvVar is the environment variable name for the Redis password.
-	//nolint:gosec // G101: This is an environment variable name, not a credential
-	RedisPasswordEnvVar = "TOOLHIVE_AUTHSERVER_REDIS_PASSWORD"
-)
+// RedisPasswordEnvVar is re-exported from storage for convenience.
+// The authoritative definition is in pkg/authserver/storage.
+const RedisPasswordEnvVar = storage.RedisPasswordEnvVar
 
 // RunConfig is the serializable configuration for the embedded OAuth authorization server.
 // This is embedded in runner.RunConfig and serialized to JSON for proxyrunner.

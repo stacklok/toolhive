@@ -111,7 +111,7 @@ func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDP
 	})
 
 	// Register a test client (public client for PKCE)
-	stor.RegisterClient(&fosite.DefaultClient{
+	err = stor.RegisterClient(context.Background(), &fosite.DefaultClient{
 		ID:            testAuthClientID,
 		Secret:        nil, // public client
 		RedirectURIs:  []string{testAuthRedirectURI},
@@ -120,6 +120,7 @@ func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDP
 		Scopes:        []string{"openid", "profile", "email"},
 		Public:        true,
 	})
+	require.NoError(t, err)
 
 	// Create fosite provider with authorization code support
 	jwtStrategy := compose.NewOAuth2JWTStrategy(

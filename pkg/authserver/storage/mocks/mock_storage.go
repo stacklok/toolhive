@@ -57,6 +57,20 @@ func (mr *MockStorageMockRecorder) ClientAssertionJWTValid(ctx, jti any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClientAssertionJWTValid", reflect.TypeOf((*MockStorage)(nil).ClientAssertionJWTValid), ctx, jti)
 }
 
+// Close mocks base method.
+func (m *MockStorage) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockStorageMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockStorage)(nil).Close))
+}
+
 // CreateAccessTokenSession mocks base method.
 func (m *MockStorage) CreateAccessTokenSession(ctx context.Context, signature string, request fosite.Requester) error {
 	m.ctrl.T.Helper()
@@ -303,15 +317,17 @@ func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gom
 }
 
 // RegisterClient mocks base method.
-func (m *MockStorage) RegisterClient(client fosite.Client) {
+func (m *MockStorage) RegisterClient(ctx context.Context, client fosite.Client) error {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "RegisterClient", client)
+	ret := m.ctrl.Call(m, "RegisterClient", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
 // RegisterClient indicates an expected call of RegisterClient.
-func (mr *MockStorageMockRecorder) RegisterClient(client any) *gomock.Call {
+func (mr *MockStorageMockRecorder) RegisterClient(ctx, client any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockStorage)(nil).RegisterClient), client)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockStorage)(nil).RegisterClient), ctx, client)
 }
 
 // RotateRefreshToken mocks base method.

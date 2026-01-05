@@ -240,7 +240,16 @@ func (r *Router) RegisterClientHandler(w http.ResponseWriter, req *http.Request)
 	})
 
 	// Register client
-	r.storage.RegisterClient(client)
+	if err := r.storage.RegisterClient(ctx, client); err != nil {
+		r.logger.ErrorContext(ctx, "failed to register client",
+			slog.String("error", err.Error()),
+		)
+		r.writeDCRError(w, http.StatusInternalServerError, &DCRError{
+			Error:            "server_error",
+			ErrorDescription: "failed to register client",
+		})
+		return
+	}
 
 	r.logger.InfoContext(ctx, "registered new DCR client",
 		slog.String("client_id", clientID),

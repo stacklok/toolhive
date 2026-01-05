@@ -103,9 +103,10 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 
 // Close stops the background cleanup goroutine and waits for it to finish.
 // This should be called when the storage is no longer needed.
-func (s *MemoryStorage) Close() {
+func (s *MemoryStorage) Close() error {
 	close(s.stopCleanup)
 	<-s.cleanupDone
+	return nil
 }
 
 // cleanupLoop runs periodic cleanup of expired entries.
@@ -214,10 +215,11 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 
 // RegisterClient adds or updates a client in the storage.
 // This is useful for setting up test clients.
-func (s *MemoryStorage) RegisterClient(client fosite.Client) {
+func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[client.GetID()] = client
+	return nil
 }
 
 // -----------------------

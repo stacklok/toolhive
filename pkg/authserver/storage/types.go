@@ -107,6 +107,10 @@ type Storage interface {
 	// pkce.PKCERequestStorage provides PKCE storage
 	pkce.PKCERequestStorage
 
+	// Close releases any resources held by the storage implementation.
+	// This should be called when the storage is no longer needed.
+	Close() error
+
 	// StoreIDPTokens stores the upstream IDP tokens for a session.
 	// The sessionID should correspond to the session ID in the authorization server.
 	StoreIDPTokens(ctx context.Context, sessionID string, tokens *IDPTokens) error
@@ -129,7 +133,7 @@ type Storage interface {
 
 	// RegisterClient registers a new OAuth client.
 	// This supports both static configuration and dynamic client registration (RFC 7591).
-	RegisterClient(client fosite.Client)
+	RegisterClient(ctx context.Context, client fosite.Client) error
 }
 
 // IDPTokenStorage provides storage for upstream IDP tokens.

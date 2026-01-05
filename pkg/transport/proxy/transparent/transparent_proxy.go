@@ -244,7 +244,11 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	// NOTE: it would be better to have a proper function instead of a goroutine, as this
 	// makes it harder to debug and test.
 	go func() {
-		defer pw.Close()
+		defer func() {
+			if err := pw.Close(); err != nil {
+				logger.Debugf("Failed to close pipe writer: %v", err)
+			}
+		}()
 		scanner := bufio.NewScanner(originalBody)
 		// NOTE: The following line mitigates the issue of the response body being too large.
 		// By default, the maximum token size of the scanner is 64KB, which is too small in

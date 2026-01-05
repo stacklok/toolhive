@@ -228,7 +228,12 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	if err != nil {
 		return "", fmt.Errorf("failed to get logs for pod %s: %w", podName, err)
 	}
-	defer podLogs.Close()
+	defer func() {
+		if err := podLogs.Close(); err != nil {
+			// Non-fatal: pod logs cleanup failure
+			logger.Debugf("Failed to close pod logs: %v", err)
+		}
+	}()
 
 	// Read logs
 	logBytes, err := io.ReadAll(podLogs)

@@ -152,7 +152,10 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED")
+	if _, err := fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED"); err != nil {
+		logger.Warnf("Failed to write output header: %v", err)
+		return
+	}
 
 	// Print workload information
 	for _, c := range workloadList {
@@ -163,7 +166,7 @@ func printTextOutput(workloadList []core.Workload) {
 		}
 
 		// Print workload information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			c.Name,
 			c.Package,
 			status,
@@ -171,7 +174,9 @@ func printTextOutput(workloadList []core.Workload) {
 			c.Port,
 			c.Group,
 			c.CreatedAt,
-		)
+		); err != nil {
+			logger.Debugf("Failed to write workload information: %v", err)
+		}
 	}
 
 	// Flush the tabwriter

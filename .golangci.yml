@@ -27,6 +27,7 @@ linters:
     - tparallel
     - unparam
     - unused
+    - errcheck
   settings:
     depguard:
       rules:

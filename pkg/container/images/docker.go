@@ -61,7 +61,12 @@ func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) er
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			// Non-fatal: reader cleanup failure
+			logger.Debugf("Failed to close image reader: %v", err)
+		}
+	}()
 
 	// Parse and filter the pull output
 	if err := parsePullOutput(reader, os.Stdout); err != nil {
@@ -80,8 +85,18 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 	if err != nil {
 		return fmt.Errorf("failed to create temporary tar file: %w", err)
 	}
-	defer os.Remove(tarFile.Name())
-	defer tarFile.Close()
+	defer func() {
+		if err := os.Remove(tarFile.Name()); err != nil {
+			// Non-fatal: temp file cleanup failure
+			logger.Debugf("Failed to remove temporary file %s: %v", tarFile.Name(), err)
+		}
+	}()
+	defer func() {
+		if err := tarFile.Close(); err != nil {
+			// Non-fatal: file cleanup failure
+			logger.Warnf("Failed to close tar file: %v", err)
+		}
+	}()
 
 	// Create a tar archive of the context directory
 	if err := createTarFromDir(contextDir, tarFile); err != nil {
@@ -104,7 +119,12 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 	if err != nil {
 		return fmt.Errorf("failed to build image: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			// Non-fatal: response body cleanup failure
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Parse and log the build output
 	if err := parseBuildOutput(response.Body, os.Stdout); err != nil {
@@ -118,7 +138,12 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 func createTarFromDir(srcDir string, writer io.Writer) error {
 	// Create a new tar writer
 	tw := tar.NewWriter(writer)
-	defer tw.Close()
+	defer func() {
+		if err := tw.Close(); err != nil {
+			// Non-fatal: tar writer cleanup failure
+			logger.Warnf("Failed to close tar writer: %v", err)
+		}
+	}()
 
 	// Walk through the directory and add files to the tar archive
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
@@ -158,7 +183,12 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("failed to open file: %w", err)
 			}
-			defer file.Close()
+			defer func() {
+				if err := file.Close(); err != nil {
+					// Non-fatal: file cleanup failure
+					logger.Warnf("Failed to close file: %v", err)
+				}
+			}()
 
 			if _, err := io.Copy(tw, file); err != nil {
 				return fmt.Errorf("failed to copy file contents: %w", err)
@@ -192,7 +222,9 @@ func parseBuildOutput(reader io.Reader, writer io.Writer) error {
 
 		// Print the stream output
 		if buildOutput.Stream != "" {
-			fmt.Fprint(writer, buildOutput.Stream)
+			if _, err := fmt.Fprint(writer, buildOutput.Stream); err != nil {
+				logger.Debugf("Failed to write build output: %v", err)
+			}
 		}
 	}
 
@@ -220,13 +252,19 @@ func parsePullOutput(reader io.Reader, writer io.Writer) error {
 		// Format the output based on the type of message
 		if pullStatus.Progress != "" {
 			// This is a progress update
-			fmt.Fprintf(writer, "%s: %s %s\n", pullStatus.Status, pullStatus.ID, pullStatus.Progress)
+			if _, err := fmt.Fprintf(writer, "%s: %s %s\n", pullStatus.Status, pullStatus.ID, pullStatus.Progress); err != nil {
+				logger.Debugf("Failed to write pull output: %v", err)
+			}
 		} else if pullStatus.ID != "" {
 			// This is a layer-specific status update
-			fmt.Fprintf(writer, "%s: %s\n", pullStatus.Status, pullStatus.ID)
+			if _, err := fmt.Fprintf(writer, "%s: %s\n", pullStatus.Status, pullStatus.ID); err != nil {
+				logger.Debugf("Failed to write pull output: %v", err)
+			}
 		} else {
 			// This is a general status update
-			fmt.Fprintf(writer, "%s\n", pullStatus.Status)
+			if _, err := fmt.Fprintf(writer, "%s\n", pullStatus.Status); err != nil {
+				logger.Debugf("Failed to write pull output: %v", err)
+			}
 		}
 	}
 

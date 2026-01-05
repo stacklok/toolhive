@@ -101,7 +101,10 @@ func getFreePort(tb testing.TB) int {
 	// Listen on port 0 to get a random available port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(tb, err, "failed to get free port")
-	defer listener.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = listener.Close()
+	}()
 
 	// Extract the port number from the listener's address
 	addr, ok := listener.Addr().(*net.TCPAddr)

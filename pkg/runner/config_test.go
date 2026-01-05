@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -156,6 +157,77 @@ func TestRunConfig_WithPorts(t *testing.T) {
 				} else {
 					assert.Zero(t, tc.config.TargetPort, "TargetPort should not be set for stdio")
 				}
+			}
+		})
+	}
+}
+
+// TestRunConfig_WithPorts_CurrentProxyPort tests that port validation skips
+// availability check when reusing the same port during workload updates
+func TestRunConfig_WithPorts_CurrentProxyPort(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	// Find an available port first
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Failed to find available port")
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	// Keep the listener open to make the port unavailable
+	defer listener.Close()
+
+	testCases := []struct {
+		name             string
+		config           *RunConfig
+		requestedPort    int
+		currentProxyPort int
+		expectError      bool
+	}{
+		{
+			name: "reusing same port should succeed",
+			config: &RunConfig{
+				Transport:        types.TransportTypeSSE,
+				currentProxyPort: port, // Same as requested port
+			},
+			requestedPort:    port,
+			currentProxyPort: port,
+			expectError:      false,
+		},
+		{
+			name: "different port that is in use should fail",
+			config: &RunConfig{
+				Transport:        types.TransportTypeSSE,
+				currentProxyPort: 12345, // Different from requested port
+			},
+			requestedPort:    port, // This port is in use by our listener
+			currentProxyPort: 12345,
+			expectError:      true,
+		},
+		{
+			name: "no current port set and port in use should fail",
+			config: &RunConfig{
+				Transport:        types.TransportTypeSSE,
+				currentProxyPort: 0, // Not set (new workload)
+			},
+			requestedPort:    port, // This port is in use by our listener
+			currentProxyPort: 0,
+			expectError:      true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set the current proxy port on the config
+			tc.config.currentProxyPort = tc.currentProxyPort
+
+			result, err := tc.config.WithPorts(tc.requestedPort, 0)
+
+			if tc.expectError {
+				assert.Error(t, err, "WithPorts should return an error for unavailable port")
+				assert.Contains(t, err.Error(), "not available", "Error should mention port not available")
+			} else {
+				assert.NoError(t, err, "WithPorts should not return an error when reusing same port")
+				assert.Equal(t, tc.requestedPort, result.Port, "Port should be set to requested port")
 			}
 		})
 	}

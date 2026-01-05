@@ -12,12 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -344,6 +346,100 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			mockSecrets: map[string]string{},
 			expectError: true,
 		},
+		{
+			name: "Bearer token in CLI format resolved successfully",
+			config: &RunConfig{
+				EnvVars: map[string]string{},
+				RemoteAuthConfig: &remote.Config{
+					BearerToken: "BEARER_TOKEN_SECRET,target=bearer_token",
+				},
+			},
+			secrets: []string{},
+			mockSecrets: map[string]string{
+				"BEARER_TOKEN_SECRET": "my-bearer-token-value",
+			},
+			expectError: false,
+			expected:    map[string]string{},
+		},
+		{
+			name: "Bearer token in plain text remains unchanged",
+			config: &RunConfig{
+				EnvVars: map[string]string{},
+				RemoteAuthConfig: &remote.Config{
+					BearerToken: "plain-text-bearer-token",
+				},
+			},
+			secrets:     []string{},
+			mockSecrets: map[string]string{},
+			expectError: false,
+			expected:    map[string]string{},
+		},
+		{
+			name: "Bearer token secret not found returns error",
+			config: &RunConfig{
+				EnvVars: map[string]string{},
+				RemoteAuthConfig: &remote.Config{
+					BearerToken: "NONEXISTENT_BEARER_TOKEN,target=bearer_token",
+				},
+			},
+			secrets:     []string{},
+			mockSecrets: map[string]string{},
+			expectError: true,
+		},
+		{
+			name: "Bearer token and OAuth client secret both resolved",
+			config: &RunConfig{
+				EnvVars: map[string]string{},
+				RemoteAuthConfig: &remote.Config{
+					BearerToken:  "BEARER_TOKEN_SECRET,target=bearer_token",
+					ClientSecret: "OAUTH_SECRET,target=oauth_secret",
+				},
+			},
+			secrets: []string{},
+			mockSecrets: map[string]string{
+				"BEARER_TOKEN_SECRET": "my-bearer-token",
+				"OAUTH_SECRET":        "my-oauth-secret",
+			},
+			expectError: false,
+			expected:    map[string]string{},
+		},
+		{
+			name: "Bearer token resolved alongside regular secrets",
+			config: &RunConfig{
+				EnvVars: map[string]string{},
+				RemoteAuthConfig: &remote.Config{
+					BearerToken: "BEARER_TOKEN_SECRET,target=bearer_token",
+				},
+			},
+			secrets: []string{
+				"secret1,target=ENV_VAR1",
+			},
+			mockSecrets: map[string]string{
+				"BEARER_TOKEN_SECRET": "my-bearer-token",
+				"secret1":             "value1",
+			},
+			expectError: false,
+			expected: map[string]string{
+				"ENV_VAR1": "value1",
+			},
+		},
+		{
+			name: "Bearer token with empty RemoteAuthConfig",
+			config: &RunConfig{
+				EnvVars:          map[string]string{},
+				RemoteAuthConfig: nil,
+			},
+			secrets: []string{
+				"secret1,target=ENV_VAR1",
+			},
+			mockSecrets: map[string]string{
+				"secret1": "value1",
+			},
+			expectError: false,
+			expected: map[string]string{
+				"ENV_VAR1": "value1",
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -355,12 +451,68 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			// Create a mock secret manager
 			secretManager := secretsmocks.NewMockProvider(ctrl)
 
-			// Set up mock expectations
-			if len(tc.mockSecrets) == 0 {
-				secretManager.EXPECT().GetSecret(gomock.Any(), "nonexistent").Return("", fmt.Errorf("secret nonexistent not found")).AnyTimes()
-			} else {
-				for secretName, secretValue := range tc.mockSecrets {
-					secretManager.EXPECT().GetSecret(gomock.Any(), secretName).Return(secretValue, nil).AnyTimes()
+			// Collect all secret names that need to be mocked
+			secretNamesToMock := make(map[string]string)
+
+			// Add regular secrets
+			for secretName, secretValue := range tc.mockSecrets {
+				secretNamesToMock[secretName] = secretValue
+			}
+
+			// Set up mock expectations for RemoteAuthConfig secrets (BearerToken and ClientSecret)
+			if tc.config.RemoteAuthConfig != nil {
+				// Handle BearerToken if present
+				if tc.config.RemoteAuthConfig.BearerToken != "" {
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.BearerToken); err == nil {
+						// It's in CLI format, need to mock GetSecret for it
+						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
+							secretNamesToMock[secretParam.Name] = expectedToken
+						}
+					}
+				}
+				// Handle ClientSecret if present
+				if tc.config.RemoteAuthConfig.ClientSecret != "" {
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.ClientSecret); err == nil {
+						// It's in CLI format, need to mock GetSecret for it
+						if expectedSecret, exists := tc.mockSecrets[secretParam.Name]; exists {
+							secretNamesToMock[secretParam.Name] = expectedSecret
+						}
+					}
+				}
+			}
+
+			// Set up mock expectations for all secrets that should succeed
+			for secretName, secretValue := range secretNamesToMock {
+				secretManager.EXPECT().GetSecret(gomock.Any(), secretName).Return(secretValue, nil).AnyTimes()
+			}
+
+			// Set up mock expectations for secrets that should fail (error cases)
+			if tc.expectError {
+				// Handle regular secret not found
+				if len(tc.secrets) > 0 {
+					for _, secretStr := range tc.secrets {
+						if secretParam, err := secrets.ParseSecretParameter(secretStr); err == nil {
+							if _, exists := secretNamesToMock[secretParam.Name]; !exists {
+								secretManager.EXPECT().GetSecret(gomock.Any(), secretParam.Name).Return("", fmt.Errorf("secret %s not found", secretParam.Name)).AnyTimes()
+							}
+						}
+					}
+				}
+				// Handle bearer token secret not found
+				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.BearerToken != "" {
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.BearerToken); err == nil {
+						if _, exists := secretNamesToMock[secretParam.Name]; !exists {
+							secretManager.EXPECT().GetSecret(gomock.Any(), secretParam.Name).Return("", fmt.Errorf("secret %s not found", secretParam.Name)).AnyTimes()
+						}
+					}
+				}
+				// Handle OAuth client secret not found
+				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.ClientSecret != "" {
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.ClientSecret); err == nil {
+						if _, exists := secretNamesToMock[secretParam.Name]; !exists {
+							secretManager.EXPECT().GetSecret(gomock.Any(), secretParam.Name).Return("", fmt.Errorf("secret %s not found", secretParam.Name)).AnyTimes()
+						}
+					}
 				}
 			}
 
@@ -379,6 +531,35 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 				// Check that all expected environment variables are set
 				for key, value := range tc.expected {
 					assert.Equal(t, value, tc.config.EnvVars[key], "Environment variable %s should be set correctly", key)
+				}
+
+				// Check bearer token resolution if RemoteAuthConfig is present
+				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.BearerToken != "" {
+					// Check if bearer token was in CLI format
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.BearerToken); err == nil {
+						// It was in CLI format, should be resolved to the actual value
+						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
+							assert.Equal(t, expectedToken, tc.config.RemoteAuthConfig.BearerToken, "Bearer token should be resolved from CLI format")
+						}
+					} else {
+						// It was plain text, should remain unchanged
+						// We need to check against the original value from the test case
+						originalToken := "plain-text-bearer-token" // Default for the plain text test case
+						if tc.name == "Bearer token in plain text remains unchanged" {
+							assert.Equal(t, originalToken, tc.config.RemoteAuthConfig.BearerToken, "Plain text bearer token should remain unchanged")
+						}
+					}
+				}
+
+				// Check OAuth client secret resolution if RemoteAuthConfig is present
+				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.ClientSecret != "" {
+					// Check if client secret was in CLI format
+					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.ClientSecret); err == nil {
+						// It was in CLI format, should be resolved to the actual value
+						if expectedSecret, exists := tc.mockSecrets[secretParam.Name]; exists {
+							assert.Equal(t, expectedSecret, tc.config.RemoteAuthConfig.ClientSecret, "OAuth client secret should be resolved from CLI format")
+						}
+					}
 				}
 			}
 		})

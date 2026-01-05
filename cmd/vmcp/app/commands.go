@@ -379,7 +379,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Extract partial failure mode from config (with default)
-	partialFailureMode := "fail" // default
+	partialFailureMode := vmcp.PartialFailureModeStrict // default to strict mode
 	if cfg.Operational != nil &&
 		cfg.Operational.FailureHandling != nil &&
 		cfg.Operational.FailureHandling.PartialFailureMode != "" {

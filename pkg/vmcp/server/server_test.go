@@ -248,3 +248,77 @@ func TestNew_WithAuditConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestNew_PartialFailureModeValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid strict mode",
+			mode:    vmcp.PartialFailureModeStrict,
+			wantErr: false,
+		},
+		{
+			name:    "valid lenient mode",
+			mode:    vmcp.PartialFailureModeLenient,
+			wantErr: false,
+		},
+		{
+			name:    "empty mode uses default (no error)",
+			mode:    "",
+			wantErr: false,
+		},
+		{
+			name:    "invalid mode with typo",
+			mode:    "fial", // codespell:ignore fial - intentional typo for testing
+			wantErr: true,
+			errMsg:  "partial_failure_mode must be one of",
+		},
+		{
+			name:    "invalid mode with hyphen",
+			mode:    "best-effort",
+			wantErr: true,
+			errMsg:  "partial_failure_mode must be one of",
+		},
+		{
+			name:    "completely invalid mode",
+			mode:    "invalid",
+			wantErr: true,
+			errMsg:  "partial_failure_mode must be one of",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockRouter := routerMocks.NewMockRouter(ctrl)
+			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+			config := &server.Config{
+				PartialFailureMode: tt.mode,
+			}
+
+			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+				assert.Nil(t, s)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, s)
+		})
+	}
+}

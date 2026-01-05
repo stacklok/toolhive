@@ -321,7 +321,7 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		return fmt.Errorf("unhealthy_threshold must be positive")
 	}
 
-	validModes := []string{"fail", "best_effort"}
+	validModes := []string{vmcp.PartialFailureModeStrict, vmcp.PartialFailureModeLenient}
 	if !contains(validModes, fh.PartialFailureMode) {
 		return fmt.Errorf("partial_failure_mode must be one of: %s", strings.Join(validModes, ", "))
 	}

@@ -596,6 +596,34 @@ var _ = Describe("VirtualMCPServer Circuit Breaker and Health Filtering", Ordere
 	})
 })
 
+// VirtualMCPServer Partial Failure Mode E2E Tests
+//
+// These tests validate that partial failure mode configuration works end-to-end
+// in a Kubernetes environment. The modes control Layer 1 (discovery) health filtering:
+//
+// - "fail" mode (strict): Excludes Degraded, Unhealthy, Unauthenticated backends
+// - "best_effort" mode (lenient): Includes Degraded; excludes Unhealthy, Unauthenticated
+//
+// E2E Test Scope:
+// ✓ Configuration is properly applied through CRD → operator → server
+// ✓ Both modes deploy successfully and handle requests
+// ✓ Health filtering mechanism is functional
+//
+// E2E Test Limitations:
+// ✗ Cannot reliably create "degraded" backends (health checks that succeed but exceed
+//
+//	DegradedThreshold) because:
+//	- CRD doesn't expose DegradedThreshold configuration (defaults to 5s)
+//	- Test backends respond to health checks in milliseconds
+//	- RESPONSE_DELAY env var doesn't affect MCP protocol health checks
+//
+// The key behavioral difference (fail mode excludes degraded, best_effort includes
+// degraded) is thoroughly tested in unit tests:
+// - pkg/vmcp/health/monitor_test.go: IsBackendUsableInMode with all statuses
+// - pkg/vmcp/discovery/health_filter_test.go: FilterHealthyBackends with modes
+// - pkg/vmcp/discovery/middleware_test.go: Mode propagation through middleware
+//
+// TODO: Add degraded backend E2E test when DegradedThreshold becomes configurable in CRD
 var _ = Describe("VirtualMCPServer Partial Failure Mode", Ordered, func() {
 	var (
 		testNamespace          = "default"
@@ -823,21 +851,26 @@ var _ = Describe("VirtualMCPServer Partial Failure Mode", Ordered, func() {
 		Expect(vmcpBestEffort.Status.DiscoveredBackends).To(HaveLen(2), "BEST_EFFORT mode should discover 2 backends")
 	})
 
-	It("should handle MCP requests successfully in both modes", func() {
+	It("should handle MCP requests successfully in both modes with healthy backends", func() {
+		// Note: This test validates both modes work correctly when all backends are healthy.
+		// Both modes behave identically in this scenario since no backends are degraded.
+		// The behavioral difference (fail excludes degraded, best_effort includes degraded)
+		// is validated in unit tests due to E2E limitations (see test suite comment above).
 		listRequest := mcp.ListToolsRequest{}
 
 		By("Listing tools from FAIL mode server")
 		toolsFail, err := mcpClientFailMode.Client.ListTools(mcpClientFailMode.Ctx, listRequest)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(toolsFail.Tools).ToNot(BeEmpty(), "FAIL mode should expose tools")
+		Expect(toolsFail.Tools).ToNot(BeEmpty(), "FAIL mode should expose tools from healthy backends")
 
 		By("Listing tools from BEST_EFFORT mode server")
 		toolsBestEffort, err := mcpClientBestEffort.Client.ListTools(mcpClientBestEffort.Ctx, listRequest)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(toolsBestEffort.Tools).ToNot(BeEmpty(), "BEST_EFFORT mode should expose tools")
+		Expect(toolsBestEffort.Tools).ToNot(BeEmpty(), "BEST_EFFORT mode should expose tools from healthy backends")
 
 		By("Verifying both modes expose the same tools when all backends are healthy")
-		Expect(toolsFail.Tools).To(HaveLen(len(toolsBestEffort.Tools)), "Both modes should expose same number of tools when all backends are healthy")
+		Expect(toolsFail.Tools).To(HaveLen(len(toolsBestEffort.Tools)),
+			"Both modes should expose same number of tools when all backends are healthy")
 	})
 })
 

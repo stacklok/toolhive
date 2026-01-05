@@ -1219,7 +1219,7 @@ func TestIsBackendUsableInMode(t *testing.T) {
 			mode:     "best_effort",
 			expected: false,
 		},
-		// Unknown mode tests (should default to best_effort)
+		// Unknown mode tests (defaults to strict/fail for fail-safe behavior)
 		{
 			name:     "unknown mode - healthy backend usable",
 			status:   vmcp.BackendHealthy,
@@ -1227,10 +1227,10 @@ func TestIsBackendUsableInMode(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "unknown mode - degraded backend usable (defaults to best_effort)",
+			name:     "unknown mode - degraded backend NOT usable (defaults to strict/fail)",
 			status:   vmcp.BackendDegraded,
 			mode:     "unknown_mode",
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "unknown mode - unhealthy backend NOT usable",

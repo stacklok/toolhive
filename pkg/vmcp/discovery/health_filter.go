@@ -30,7 +30,7 @@ func FilterHealthyBackends(
 
 	// Default mode if not specified
 	if mode == "" {
-		mode = "fail" // Default to strict mode for safety
+		mode = vmcp.PartialFailureModeStrict // Default to strict mode for safety
 		logger.Debugf("No partial failure mode specified, using default: %s", mode)
 	}
 

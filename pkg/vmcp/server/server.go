@@ -210,7 +210,16 @@ func New(
 		cfg.SessionTTL = defaultSessionTTL
 	}
 	if cfg.PartialFailureMode == "" {
-		cfg.PartialFailureMode = "fail" // Default to strict mode for safety
+		cfg.PartialFailureMode = vmcp.PartialFailureModeStrict // Default to strict mode for safety
+	}
+
+	// Validate configuration
+	if cfg.PartialFailureMode != vmcp.PartialFailureModeStrict && cfg.PartialFailureMode != vmcp.PartialFailureModeLenient {
+		return nil, fmt.Errorf("%w: partial_failure_mode must be one of: %q, %q (got %q)",
+			vmcp.ErrInvalidConfig,
+			vmcp.PartialFailureModeStrict,
+			vmcp.PartialFailureModeLenient,
+			cfg.PartialFailureMode)
 	}
 
 	// Create hooks for SDK integration

@@ -429,13 +429,12 @@ func TestFilterHealthyBackends_UnknownMode(t *testing.T) {
 	healthProvider.setStatus("b2", vmcp.BackendDegraded)
 	healthProvider.setStatus("b3", vmcp.BackendUnhealthy)
 
-	// Unknown mode should default to best_effort behavior
+	// Unknown mode should default to strict (fail) behavior for fail-safe operation
 	filtered := FilterHealthyBackends(backends, healthProvider, "unknown_mode")
 
-	// Should behave like best_effort (includes degraded)
-	require.Len(t, filtered, 2, "unknown mode should default to best_effort behavior")
-	assert.Equal(t, "b1", filtered[0].ID)
-	assert.Equal(t, "b2", filtered[1].ID)
+	// Should behave like "fail" mode (excludes degraded, includes only healthy)
+	require.Len(t, filtered, 1, "unknown mode should default to strict (fail) behavior")
+	assert.Equal(t, "b1", filtered[0].ID) // Only healthy backend
 }
 
 func TestFilterHealthyBackends_ModeWithUnknownStatus(t *testing.T) {

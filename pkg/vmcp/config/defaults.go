@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"dario.cat/mergo"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // Default constants for operational configuration.
@@ -18,8 +20,8 @@ const (
 	defaultUnhealthyThreshold = 3
 
 	// defaultPartialFailureMode defines the default behavior when some backends fail.
-	// "fail" means the entire request fails if any backend is unavailable.
-	defaultPartialFailureMode = "fail"
+	// Strict mode excludes degraded, unhealthy, and unauthenticated backends.
+	defaultPartialFailureMode = vmcp.PartialFailureModeStrict
 
 	// defaultTimeoutDefault is the default timeout for backend requests.
 	defaultTimeoutDefault = 30 * time.Second

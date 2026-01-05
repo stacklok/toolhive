@@ -286,3 +286,27 @@ type CapabilityList struct {
 	// SupportsSampling indicates if the backend supports MCP sampling.
 	SupportsSampling bool
 }
+
+// Partial Failure Mode Constants
+//
+// These constants define Layer 1 (discovery) health filtering behavior,
+// controlling which backends are included in capability aggregation.
+
+const (
+	// PartialFailureModeStrict excludes degraded, unhealthy, and unauthenticated backends
+	// from capability aggregation.
+	//
+	// Use this mode for zero-tolerance environments where performance issues are unacceptable.
+	// Only healthy and unknown backends will be included in the aggregated capabilities.
+	//
+	// Example: Production systems requiring consistent sub-second response times.
+	PartialFailureModeStrict = "fail"
+
+	// PartialFailureModeLenient includes degraded backends but excludes unhealthy and unauthenticated.
+	//
+	// Use this mode for high-availability environments that can tolerate slower backend response times.
+	// Degraded backends (responding slowly but still functional) will be included in capabilities.
+	//
+	// Example: Development environments or systems prioritizing availability over performance.
+	PartialFailureModeLenient = "best_effort"
+)

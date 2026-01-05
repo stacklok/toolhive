@@ -532,7 +532,11 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	if err != nil {
 		logger.Warnf("Warning: Failed to create log file: %v", err)
 	} else {
-		defer logFile.Close()
+		defer func() {
+			if err := logFile.Close(); err != nil {
+				logger.Warnf("Failed to close log file: %v", err)
+			}
+		}()
 		logger.Infof("Logging to: %s", logFilePath)
 	}
 

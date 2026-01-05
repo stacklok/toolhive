@@ -316,7 +316,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	endpointMsg := ssecommon.NewSSEMessage("endpoint", endpointURL)
 
 	// Send the initial event
-	fmt.Fprint(w, endpointMsg.ToSSEString())
+	if _, err := fmt.Fprint(w, endpointMsg.ToSSEString()); err != nil {
+		logger.Debugf("Failed to write endpoint message: %v", err)
+		return
+	}
 	flusher.Flush()
 
 	// Create a context that is canceled when the client disconnects
@@ -343,11 +346,17 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			if !ok {
 				return
 			}
-			fmt.Fprint(w, msg)
+			if _, err := fmt.Fprint(w, msg); err != nil {
+				logger.Debugf("Failed to write message: %v", err)
+				return
+			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
 			// Send SSE comment as keep-alive
-			fmt.Fprint(w, ": keep-alive\n\n")
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				logger.Debugf("Failed to write keep-alive: %v", err)
+				return
+			}
 			flusher.Flush()
 		}
 	}

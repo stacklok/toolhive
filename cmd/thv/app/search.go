@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -80,7 +81,10 @@ func printJSONSearchResults(servers []types.ServerMetadata) error {
 func printTextSearchResults(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return
+	}
 
 	// Print server information
 	for _, server := range servers {
@@ -97,14 +101,16 @@ func printTextSearchResults(servers []types.ServerMetadata) {
 		}
 
 		// Print server information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
 			server.GetName(),
 			serverType,
 			truncateSearchString(server.GetDescription(), 50),
 			server.GetTransport(),
 			stars,
 			pulls,
-		)
+		); err != nil {
+			logger.Debugf("Failed to write server information: %v", err)
+		}
 	}
 
 	// Flush the tabwriter

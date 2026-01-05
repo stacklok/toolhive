@@ -135,7 +135,12 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("found config file at %s but failed to open: %w", path, err)
 		}
-		defer file.Close()
+		defer func() {
+			if err := file.Close(); err != nil {
+				// Non-fatal: file cleanup failure after successful read
+				logger.Warnf("Failed to close config file: %v", err)
+			}
+		}()
 
 		// Use existing runner.ReadJSON function for consistency
 		runConfig, err := runner.ReadJSON(file)

@@ -24,15 +24,50 @@ type StatusProvider interface {
 	IsBackendHealthy(backendID string) bool
 }
 
+// IsBackendUsableInMode returns true if the backend can handle requests in the given partial failure mode.
+// This function enables mode-aware filtering at Layer 1 (discovery).
+//
+// Modes:
+//
+//   - "fail" (strict): Only Healthy and Unknown backends are usable.
+//     Excludes: Degraded, Unhealthy, Unauthenticated
+//     Use case: Zero tolerance for performance issues; prefer failing fast over degraded experience
+//
+//   - "best_effort" (lenient): Healthy, Degraded, and Unknown backends are usable.
+//     Excludes: Unhealthy, Unauthenticated
+//     Use case: Maximize availability; tolerate slow backends rather than complete failure
+//
+// Both modes exclude: Unhealthy (not responding), Unauthenticated (auth failed)
+//
+// For unknown/invalid modes, defaults to "fail" (strict) for fail-safe behavior.
+// This should not occur in production since server.New() validates mode values.
+func IsBackendUsableInMode(status vmcp.BackendHealthStatus, mode string) bool {
+	switch mode {
+	case vmcp.PartialFailureModeStrict:
+		// Strict mode: Exclude degraded backends (performance issues not tolerated)
+		return status == vmcp.BackendHealthy || status == vmcp.BackendUnknown
+	case vmcp.PartialFailureModeLenient:
+		// Lenient mode: Include degraded backends (slow but functional)
+		return status == vmcp.BackendHealthy ||
+			status == vmcp.BackendDegraded ||
+			status == vmcp.BackendUnknown
+	default:
+		// Unknown/invalid mode defaults to strict for fail-safe behavior.
+		// This should not occur in production since server.New() validates modes.
+		return status == vmcp.BackendHealthy || status == vmcp.BackendUnknown
+	}
+}
+
 // IsBackendUsable returns true if the backend can handle requests.
 // This is a helper function that checks if a backend status allows execution.
 // - Healthy and Degraded backends can handle requests (degraded = slow but functional)
 // - Unknown backends are given a chance (health not yet determined)
 // - Unhealthy and Unauthenticated backends cannot handle requests
+//
+// Deprecated: Use IsBackendUsableInMode for mode-aware filtering.
+// This function uses lenient mode for backward compatibility.
 func IsBackendUsable(status vmcp.BackendHealthStatus) bool {
-	return status == vmcp.BackendHealthy ||
-		status == vmcp.BackendDegraded ||
-		status == vmcp.BackendUnknown
+	return IsBackendUsableInMode(status, vmcp.PartialFailureModeLenient)
 }
 
 // IsProviderInitialized checks if a StatusProvider is properly initialized.

@@ -86,7 +86,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -155,7 +155,7 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	require.NoError(t, err, "failed to add session")
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, sessionMgr, nil)
+	middleware := Middleware(mockMgr, backends, sessionMgr, nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -195,7 +195,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -235,7 +235,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -335,7 +335,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -399,7 +399,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -451,7 +451,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -527,7 +527,7 @@ func TestMiddleware_FiltersUnhealthyBackends(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider, "best_effort")
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen with filtering
@@ -588,7 +588,7 @@ func TestMiddleware_NoFilteringWhenHealthMonitoringDisabled(t *testing.T) {
 	})
 
 	// Pass nil health provider (health monitoring disabled)
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil, "fail")
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
@@ -638,7 +638,7 @@ func TestMiddleware_AllBackendsUnhealthy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider, "best_effort")
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)

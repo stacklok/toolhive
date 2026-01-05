@@ -95,7 +95,8 @@ func (f *DefaultHandlerFactory) checkBackendHealth(
 		return nil
 	}
 
-	if !health.IsBackendUsable(status) {
+	// Layer 2 runtime health checks use lenient mode to allow degraded backends
+	if !health.IsBackendUsableInMode(status, vmcp.PartialFailureModeLenient) {
 		// Backend cannot handle requests (Unhealthy or Unauthenticated)
 		logger.Warnf("Rejecting %s request to unhealthy backend: %s=%s, backend=%s, status=%s",
 			requestType, requestType, requestName, target.WorkloadName, status)

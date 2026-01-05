@@ -11,6 +11,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -646,7 +647,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	// Start OAuth flow
 	tokenResult, err := flow.Start(oauthCtx, config.SkipBrowser)
 	if err != nil {
-		if oauthCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(oauthCtx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 		}
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)

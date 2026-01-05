@@ -383,7 +383,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	server := p.server
 	go func() {
 		err := server.Serve(ln)
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {
 				// Expected when listener is closed—silently return
@@ -462,7 +462,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	// Stop the HTTP server
 	if p.server != nil {
 		err := p.server.Shutdown(ctx)
-		if err != nil && err != http.ErrServerClosed && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}

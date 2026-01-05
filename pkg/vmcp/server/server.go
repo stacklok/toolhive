@@ -520,7 +520,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start server in background
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()

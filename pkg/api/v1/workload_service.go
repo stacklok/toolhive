@@ -82,9 +82,11 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 }
 
 // UpdateWorkloadFromRequest updates a workload from a request
-func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest) (*runner.RunConfig, error) { //nolint:lll
-	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req)
+// currentProxyPort is the port currently used by the workload being updated,
+// which allows reusing the same port without validation errors.
+func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest, currentProxyPort int) (*runner.RunConfig, error) { //nolint:lll
+	// Build the full run config, passing the current port to allow reusing it
+	runConfig, err := s.BuildFullRunConfig(ctx, req, runner.WithCurrentProxyPort(currentProxyPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
@@ -98,9 +100,10 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 }
 
 // BuildFullRunConfig builds a complete RunConfig
+// Additional options can be passed to customize the build (e.g., WithCurrentProxyPort for updates)
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
-func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest, extraOptions ...runner.RunConfigBuilderOption) (*runner.RunConfig, error) {
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -271,6 +274,9 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			s.appConfig.DisableUsageMetrics,
 		),
 	)
+
+	// Append any extra options (e.g., WithCurrentProxyPort for updates)
+	options = append(options, extraOptions...)
 
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {

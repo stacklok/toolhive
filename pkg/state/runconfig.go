@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // LoadRunConfigJSON loads a run configuration from the state store and returns the raw reader
@@ -24,7 +24,7 @@ func LoadRunConfigJSON(ctx context.Context, name string) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("failed to check if run configuration exists: %w", err)
 	}
 	if !exists {
-		return nil, errors.NewRunConfigNotFoundError(fmt.Sprintf("run configuration for %s not found", name), nil)
+		return nil, fmt.Errorf("%w: %s", errors.ErrRunConfigNotFound, name)
 	}
 
 	// Get a reader for the state

@@ -173,6 +173,131 @@ func TestConfigFieldTagsAreCamelCase(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestCheckStructTags verifies that checkStructTags correctly detects various tag issues.
+// checkStructTags is complex and some errors could result in false negatives (e.g. checkStructTags returns no error due to an implementation bug).
+func TestCheckStructTags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		testType    reflect.Type
+		errContains string
+	}{
+		{
+			name: "valid struct passes",
+			testType: reflect.TypeOf(struct {
+				Name string `json:"name" yaml:"name"`
+			}{}),
+		},
+		{
+			name: "missing yaml tag detected",
+			testType: reflect.TypeOf(struct {
+				Name string `json:"name"`
+			}{}),
+			errContains: "is missing yaml tag",
+		},
+		{
+			name: "missing json tag detected",
+			testType: reflect.TypeOf(struct {
+				Name string `yaml:"name"`
+			}{}),
+			errContains: "is missing json tag",
+		},
+		{
+			name: "snake_case yaml tag detected",
+			testType: reflect.TypeOf(struct {
+				UserName string `json:"user_name" yaml:"user_name"`
+			}{}),
+			errContains: "has snake_case yaml tag",
+		},
+		{
+			name: "uppercase yaml tag detected",
+			testType: reflect.TypeOf(struct {
+				Name string `json:"Name" yaml:"Name"`
+			}{}),
+			errContains: "starting with uppercase",
+		},
+		{
+			name: "mismatched json and yaml tags detected",
+			testType: reflect.TypeOf(struct {
+				Name string `json:"name" yaml:"userName"`
+			}{}),
+			errContains: "has mismatched json",
+		},
+		{
+			name: "nested struct with missing tag detected",
+			testType: reflect.TypeOf(struct {
+				Outer struct {
+					Inner string `json:"inner"`
+				} `json:"outer" yaml:"outer"`
+			}{}),
+			errContains: "Outer.Inner is missing yaml tag",
+		},
+		{
+			name: "pointer to struct with missing tag detected",
+			testType: reflect.TypeOf(struct {
+				Ptr *struct {
+					Field string `json:"field"`
+				} `json:"ptr" yaml:"ptr"`
+			}{}),
+			errContains: "Ptr.Field is missing yaml tag",
+		},
+		{
+			name: "slice of structs with missing tag detected",
+			testType: reflect.TypeOf(struct {
+				Items []struct {
+					Value string `json:"value"`
+				} `json:"items" yaml:"items"`
+			}{}),
+			errContains: "Items.Value is missing yaml tag",
+		},
+		{
+			name: "map value struct with missing tag detected",
+			testType: reflect.TypeOf(struct {
+				Data map[string]struct {
+					Key string `json:"key"`
+				} `json:"data" yaml:"data"`
+			}{}),
+			errContains: "Data.Key is missing yaml tag",
+		},
+		{
+			name: "unexported fields are skipped",
+			testType: reflect.TypeOf(struct {
+				Name       string `json:"name" yaml:"name"`
+				unexported string //nolint:unused // intentionally unexported for test
+			}{}),
+		},
+		{
+			name: "dash tag is allowed",
+			testType: reflect.TypeOf(struct {
+				Ignored string `json:"-" yaml:"-"`
+			}{}),
+		},
+		{
+			name: "omitempty is handled correctly",
+			testType: reflect.TypeOf(struct {
+				Optional string `json:"optional,omitempty" yaml:"optional,omitempty"`
+			}{}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			visited := make(map[reflect.Type]bool)
+			err := checkStructTags(tt.testType, "", visited)
+			if tt.errContains == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
+
 // checkStructTags recursively checks all struct fields for yaml tags and camelCase naming.
 // Returns the first error encountered, or nil if all fields are valid.
 func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool) error {

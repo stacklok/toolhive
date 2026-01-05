@@ -529,15 +529,15 @@ aggregation:
 
 audit:
   component: "vmcp-server"
-  event_types:
+  eventTypes:
     - "mcp_initialize"
     - "mcp_tool_call"
-  exclude_event_types:
+  excludeEventTypes:
     - "mcp_ping"
-  include_request_data: true
-  include_response_data: false
-  max_data_size: 10000
-  log_file: "/var/log/vmcp/audit.log"
+  includeRequestData: true
+  includeResponseData: false
+  maxDataSize: 10000
+  logFile: "/var/log/vmcp/audit.log"
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()

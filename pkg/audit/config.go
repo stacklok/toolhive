@@ -18,18 +18,18 @@ type Config struct {
 	// Component is the component name to use in audit events
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`
 	// EventTypes specifies which event types to audit. If empty, all events are audited.
-	EventTypes []string `json:"event_types,omitempty" yaml:"event_types,omitempty"`
+	EventTypes []string `json:"eventTypes,omitempty" yaml:"eventTypes,omitempty"`
 	// ExcludeEventTypes specifies which event types to exclude from auditing.
 	// This takes precedence over EventTypes.
-	ExcludeEventTypes []string `json:"exclude_event_types,omitempty" yaml:"exclude_event_types,omitempty"`
+	ExcludeEventTypes []string `json:"excludeEventTypes,omitempty" yaml:"excludeEventTypes,omitempty"`
 	// IncludeRequestData determines whether to include request data in audit logs
-	IncludeRequestData bool `json:"include_request_data,omitempty" yaml:"include_request_data,omitempty"`
+	IncludeRequestData bool `json:"includeRequestData,omitempty" yaml:"includeRequestData,omitempty"`
 	// IncludeResponseData determines whether to include response data in audit logs
-	IncludeResponseData bool `json:"include_response_data,omitempty" yaml:"include_response_data,omitempty"`
+	IncludeResponseData bool `json:"includeResponseData,omitempty" yaml:"includeResponseData,omitempty"`
 	// MaxDataSize limits the size of request/response data included in audit logs (in bytes)
-	MaxDataSize int `json:"max_data_size,omitempty" yaml:"max_data_size,omitempty"`
+	MaxDataSize int `json:"maxDataSize,omitempty" yaml:"maxDataSize,omitempty"`
 	// LogFile specifies the file path for audit logs. If empty, logs to stdout.
-	LogFile string `json:"log_file,omitempty" yaml:"log_file,omitempty"`
+	LogFile string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 }
 
 // GetLogWriter creates and returns the appropriate io.Writer based on the configuration.
@@ -139,7 +139,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.MaxDataSize < 0 {
-		return fmt.Errorf("max_data_size cannot be negative")
+		return fmt.Errorf("maxDataSize cannot be negative")
 	}
 
 	// Validate event types (basic validation - could be extended)

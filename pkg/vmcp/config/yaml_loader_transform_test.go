@@ -395,17 +395,17 @@ func TestYAMLLoader_Load_TelemetryConfig(t *testing.T) {
 name: telemetry-test
 telemetry:
   endpoint: "localhost:4318"
-  servicename: "test-service"
-  serviceversion: "1.2.3"
-  tracingenabled: true
-  metricsenabled: true
-  samplingrate: 0.75
+  serviceName: "test-service"
+  serviceVersion: "1.2.3"
+  tracingEnabled: true
+  metricsEnabled: true
+  samplingRate: 0.75
   insecure: true
-  enableprometheusmetricspath: true
+  enablePrometheusMetricsPath: true
   headers:
     Authorization: "Bearer token123"
     X-Custom-Header: "custom-value"
-  environmentvariables:
+  environmentVariables:
     - "NODE_ENV"
     - "DEPLOYMENT_ENV"
 `

@@ -705,6 +705,11 @@ components:
       properties:
         authorize_url:
           type: string
+        bearer_token:
+          description: Bearer token configuration (alternative to OAuth)
+          type: string
+        bearer_token_file:
+          type: string
         callback_port:
           type: integer
         client_id:

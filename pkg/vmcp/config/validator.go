@@ -304,7 +304,7 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 
 		for workload, timeout := range ops.Timeouts.PerWorkload {
 			if timeout <= 0 {
-				return fmt.Errorf("operational.timeouts.per_workload.%s must be positive", workload)
+				return fmt.Errorf("operational.timeouts.perWorkload.%s must be positive", workload)
 			}
 		}
 	}

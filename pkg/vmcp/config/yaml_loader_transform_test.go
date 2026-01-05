@@ -117,10 +117,10 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
-			errMsg:  "headerInjection configuration is required",
+			errMsg:  "header_injection configuration is required",
 		},
 		{
-			name: "tokenExchange validates env var is set",
+			name: "token_exchange validates env var is set",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 				TokenExchange: &authtypes.TokenExchangeConfig{
@@ -140,7 +140,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 			},
 		},
 		{
-			name: "tokenExchange fails when env var not set",
+			name: "token_exchange fails when env var not set",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 				TokenExchange: &authtypes.TokenExchangeConfig{
@@ -153,12 +153,12 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 			errMsg:  "environment variable MISSING_SECRET not set",
 		},
 		{
-			name: "tokenExchange fails when config block missing",
+			name: "token_exchange fails when config block missing",
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 			},
 			wantErr: true,
-			errMsg:  "tokenExchange configuration is required",
+			errMsg:  "token_exchange configuration is required",
 		},
 		{
 			name: "unauthenticated strategy requires no extra config",

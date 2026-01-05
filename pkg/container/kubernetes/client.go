@@ -48,6 +48,20 @@ const (
 // RuntimeName is the name identifier for the Kubernetes runtime
 const RuntimeName = "kubernetes"
 
+// Retry configuration for kubectl attach operations
+const (
+	// attachRetryTimeout is the maximum time to retry kubectl attach before giving up
+	// This accommodates typical pod restart times in both local and CI environments,
+	// including container image pulls and startup delays
+	attachRetryTimeout = 90 * time.Second
+
+	// attachMaxRetryInterval is the maximum delay between individual retry attempts
+	attachMaxRetryInterval = 15 * time.Second
+
+	// attachInitialRetryInterval is the initial delay before the first retry
+	attachInitialRetryInterval = 1 * time.Second
+)
+
 // Client implements the Deployer interface for container operations
 type Client struct {
 	runtimeType      runtime.Type
@@ -108,15 +122,16 @@ func NewClientWithConfigAndPlatformDetector(
 // It establishes a kubectl attach connection to the MCP server pod.
 //
 // Connection Failure Handling:
-// If the connection fails permanently (after retries with exponential backoff up to 90 seconds),
+// If the connection fails permanently (after retries with exponential backoff),
 // this function causes the process to exit with code 1. This triggers a Kubernetes
 // restart, allowing the proxy to establish a fresh connection to the current pod.
 // This is critical for handling StatefulSet pod restarts - when the MCP pod restarts,
 // the old kubectl attach connection becomes stale and cannot be reused. Exiting allows
 // Kubernetes to restart the proxy, which then attaches to the new pod.
 //
-// The 90-second retry window accommodates typical pod restart times in both local
-// and CI environments, while still failing fast enough for truly unavailable pods.
+// The retry configuration (see attachRetryTimeout constant) accommodates typical pod
+// restart times in both local and CI environments, while still failing fast enough
+// for truly unavailable pods.
 func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachToWorkload attaches to a workload in Kubernetes
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
@@ -167,11 +182,10 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	stdoutReader, stdoutWriter := io.Pipe()
 	go func() {
 		// Create exponential backoff with extended retry window to handle pod restarts
-		// in both local and CI environments. The 90-second window covers typical pod
-		// restart times, including container image pulls and startup delays.
+		// in both local and CI environments.
 		expBackoff := backoff.NewExponentialBackOff()
-		expBackoff.MaxInterval = 15 * time.Second    // Cap individual retry intervals at 15s
-		expBackoff.InitialInterval = 1 * time.Second // Start with 1 second delay
+		expBackoff.MaxInterval = attachMaxRetryInterval
+		expBackoff.InitialInterval = attachInitialRetryInterval
 
 		_, err := backoff.Retry(ctx, func() (any, error) {
 			return nil, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
@@ -182,7 +196,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			})
 		},
 			backoff.WithBackOff(expBackoff),
-			backoff.WithMaxElapsedTime(90*time.Second), // Wait up to 90 seconds before giving up
+			backoff.WithMaxElapsedTime(attachRetryTimeout),
 			backoff.WithNotify(func(err error, duration time.Duration) {
 				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
 			}),

@@ -817,26 +817,21 @@ func TestAttachToWorkloadExitFunc(t *testing.T) {
 	assert.Equal(t, 1, exitCode, "Expected exit code 1")
 }
 
-// TestAttachToWorkloadWithoutExitFunc tests that AttachToWorkload can handle
-// the case where exitFunc is not set (should default to os.Exit)
-func TestAttachToWorkloadWithoutExitFunc(t *testing.T) {
+// TestClientExitFuncDefaultsToNil verifies that the exitFunc field defaults to nil,
+// meaning the code will use os.Exit in production. The actual exit behavior on
+// connection failure is verified in E2E tests (see test/e2e/thv-operator/virtualmcp/
+// virtualmcp_yardstick_base_test.go "should reflect backend health changes in status").
+func TestClientExitFuncDefaultsToNil(t *testing.T) {
 	t.Parallel()
 
-	// Create a client without setting exitFunc
 	clientset := fake.NewClientset()
 	fakeConfig := &rest.Config{
 		Host: "https://fake-k8s-api.example.com",
 	}
 	client := NewClientWithConfig(clientset, fakeConfig)
 
-	// Verify exitFunc is nil (will use os.Exit by default)
+	// Verify exitFunc defaults to nil (production will use os.Exit)
 	assert.Nil(t, client.exitFunc, "Expected exitFunc to be nil by default")
-
-	// Note: We cannot test the actual AttachToWorkload call here because:
-	// 1. The fake client doesn't provide a working RESTClient
-	// 2. os.Exit would terminate the test process
-	// The full error handling path including retry and exit is tested in E2E tests
-	// (see test/e2e/test_health_changes.go)
 }
 
 // TestAttachToWorkloadNoPodFound tests that AttachToWorkload returns error when no pod is found

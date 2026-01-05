@@ -62,12 +62,13 @@ func createTestServer(t *testing.T) *server.Server {
 	// Create context for server
 	ctx, cancel := context.WithCancel(t.Context())
 
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
 	srv, err := server.New(ctx, &server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    port,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server in background
@@ -176,11 +177,12 @@ func TestServer_SessionManager(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		rt := router.NewDefaultRouter()
 
+		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: 10 * time.Minute,
-		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 
 		// SessionManager should be accessible
@@ -199,11 +201,12 @@ func TestServer_SessionManager(t *testing.T) {
 		rt := router.NewDefaultRouter()
 
 		customTTL := 15 * time.Minute
+		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: customTTL,
-		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		}, rt, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 		require.NoError(t, err)
 
 		mgr := srv.SessionManager()

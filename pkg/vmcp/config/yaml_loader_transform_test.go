@@ -117,7 +117,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
-			errMsg:  "header_injection configuration is required",
+			errMsg:  "headerInjection configuration is required",
 		},
 		{
 			name: "token_exchange validates env var is set",
@@ -158,7 +158,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: "token_exchange",
 			},
 			wantErr: true,
-			errMsg:  "token_exchange configuration is required",
+			errMsg:  "tokenExchange configuration is required",
 		},
 		{
 			name: "unauthenticated strategy requires no extra config",

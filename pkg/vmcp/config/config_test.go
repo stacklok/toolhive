@@ -243,7 +243,7 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 			fieldType = fieldType.Elem()
 		}
 
-		switch fieldType.Kind() {
+		switch fieldType.Kind() { //nolint:exhaustive // Only checking struct, slice, and map types
 		case reflect.Struct:
 			// Skip time.Duration and other standard library types
 			if fieldType.PkgPath() != "" && !strings.HasPrefix(fieldType.PkgPath(), "github.com/stacklok/toolhive") {

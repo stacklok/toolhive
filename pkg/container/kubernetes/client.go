@@ -195,6 +195,8 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 					statusErr.ErrStatus.Reason,
 					statusErr.ErrStatus.Code)
 
+				// Note: statuscode 0 with empty message indicates the connection was closed
+				// unexpectedly (e.g., container terminated or doesn't read from stdin)
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
 					logger.Errorf("Connection closed unexpectedly for workload %s", workloadName)
 					logger.Errorf("This typically means the pod terminated or restarted")
@@ -203,9 +205,15 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 				logger.Errorf("Non-status error: %v", err)
 			}
 
-			// Exit the process to trigger a restart by Kubernetes
+			// Exit the process to trigger a restart by Kubernetes.
 			// This allows the proxy to establish a fresh connection to the current pod
-			// after a pod restart, rather than maintaining a stale connection
+			// after a pod restart, rather than maintaining a stale connection.
+			//
+			// Note: We call os.Exit(1) directly (bypassing deferred cleanup) because:
+			// 1. The proxy is in a permanently broken state with stale stdin/stdout pipes
+			// 2. Any cleanup of these broken resources would likely fail or hang
+			// 3. We want Kubernetes to perform a complete container restart with fresh state
+			// 4. Deferred cleanup is designed for graceful shutdown, not recovery from broken state
 			logger.Errorf("kubectl attach failed after all retries for workload %s, exiting to allow restart", workloadName)
 			exitFunc := c.exitFunc
 			if exitFunc == nil {

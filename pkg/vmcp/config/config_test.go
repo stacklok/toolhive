@@ -244,12 +244,11 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 		if jsonTag == "" {
 			return fmt.Errorf("field %s is missing json tag", fieldPath)
 		}
-		if jsonTag != "" {
-			jsonName := strings.Split(jsonTag, ",")[0]
-			yamlName := strings.Split(yamlTag, ",")[0]
-			if jsonName != yamlName && jsonName != "-" && yamlName != "-" {
-				return fmt.Errorf("field %s has mismatched json ('%s') and yaml ('%s') tag names", fieldPath, jsonName, yamlName)
-			}
+
+		jsonName := strings.Split(jsonTag, ",")[0]
+		yamlName := strings.Split(yamlTag, ",")[0]
+		if jsonName != yamlName && jsonName != "-" && yamlName != "-" {
+			return fmt.Errorf("field %s has mismatched json ('%s') and yaml ('%s') tag names", fieldPath, jsonName, yamlName)
 		}
 
 		if err := checkStructTags(field.Type, fieldPath, visited); err != nil {

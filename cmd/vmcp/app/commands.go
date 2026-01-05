@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/audit"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -295,33 +294,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Create backend registry based on runtime environment
-	// For Kubernetes, use DynamicRegistry for live backend updates
-	// For CLI (Docker/Podman), use immutable registry (backends never change)
-	var backendRegistry vmcp.BackendRegistry
-	var discoveryMgr discovery.Manager
-	if rt.IsKubernetesRuntime() {
-		// Dynamic mode: Create DynamicRegistry that can be updated when backends change
-		dynamicRegistry := vmcp.NewDynamicRegistry(backends)
-		backendRegistry = dynamicRegistry
+	// Create backend registry for CLI environment
+	// CLI always uses immutable registry (backends fixed at startup)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
 
-		// Use NewManagerWithRegistry to enable version-based cache invalidation
-		discoveryMgr, err = discovery.NewManagerWithRegistry(agg, dynamicRegistry)
-		if err != nil {
-			return fmt.Errorf("failed to create discovery manager: %w", err)
-		}
-		logger.Info("Dynamic backend registry enabled for Kubernetes environment")
-	} else {
-		// Static mode: Create immutable registry (backends fixed at startup)
-		backendRegistry = vmcp.NewImmutableRegistry(backends)
-
-		// Use standard manager (no version-based invalidation needed)
-		discoveryMgr, err = discovery.NewManager(agg)
-		if err != nil {
-			return fmt.Errorf("failed to create discovery manager: %w", err)
-		}
-		logger.Info("Immutable backend registry created for CLI environment")
+	// Use standard manager (no version-based invalidation needed)
+	discoveryMgr, err := discovery.NewManager(agg)
+	if err != nil {
+		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
+	logger.Info("Immutable backend registry created for CLI environment")
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()

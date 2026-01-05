@@ -894,7 +894,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := &Backend{
+		backend := Backend{
 			ID:           "github-mcp",
 			Name:         "GitHub MCP",
 			HealthStatus: BackendHealthy,
@@ -917,7 +917,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		initial := []Backend{{ID: "github-mcp", Name: "Original Name"}}
 		registry := NewDynamicRegistry(initial)
 
-		updated := &Backend{ID: "github-mcp", Name: "Updated Name"}
+		updated := Backend{ID: "github-mcp", Name: "Updated Name"}
 		err := registry.Upsert(updated)
 
 		require.NoError(t, err)
@@ -933,7 +933,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := &Backend{ID: "test", Name: "Test"}
+		backend := Backend{ID: "test", Name: "Test"}
 
 		err := registry.Upsert(backend)
 		require.NoError(t, err)
@@ -950,23 +950,11 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		assert.Equal(t, 1, registry.Count())
 	})
 
-	t.Run("nil backend returns error", func(t *testing.T) {
-		t.Parallel()
-
-		registry := NewDynamicRegistry(nil)
-
-		err := registry.Upsert(nil)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "backend cannot be nil")
-		assert.Equal(t, uint64(0), registry.Version())
-	})
-
 	t.Run("empty ID returns error", func(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := &Backend{ID: "", Name: "No ID"}
+		backend := Backend{ID: "", Name: "No ID"}
 
 		err := registry.Upsert(backend)
 
@@ -979,7 +967,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := &Backend{ID: "test", Name: "Original"}
+		backend := Backend{ID: "test", Name: "Original"}
 
 		err := registry.Upsert(backend)
 		require.NoError(t, err)
@@ -987,7 +975,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		// Modify the original backend
 		backend.Name = "External Modification"
 
-		// Registry should be unchanged
+		// Registry should be unchanged (because Upsert received a copy)
 		retrieved := registry.Get(ctx, "test")
 		require.NotNil(t, retrieved)
 		assert.Equal(t, "Original", retrieved.Name)
@@ -1076,13 +1064,13 @@ func TestDynamicRegistry_Version(t *testing.T) {
 
 		registry := NewDynamicRegistry(nil)
 
-		_ = registry.Upsert(&Backend{ID: "b1", Name: "Backend 1"})
+		_ = registry.Upsert(Backend{ID: "b1", Name: "Backend 1"})
 		assert.Equal(t, uint64(1), registry.Version())
 
-		_ = registry.Upsert(&Backend{ID: "b2", Name: "Backend 2"})
+		_ = registry.Upsert(Backend{ID: "b2", Name: "Backend 2"})
 		assert.Equal(t, uint64(2), registry.Version())
 
-		_ = registry.Upsert(&Backend{ID: "b1", Name: "Backend 1 Updated"})
+		_ = registry.Upsert(Backend{ID: "b1", Name: "Backend 1 Updated"})
 		assert.Equal(t, uint64(3), registry.Version())
 	})
 
@@ -1106,16 +1094,16 @@ func TestDynamicRegistry_Version(t *testing.T) {
 		versions := []uint64{}
 
 		// Perform mixed operations
-		_ = registry.Upsert(&Backend{ID: "b1"})
+		_ = registry.Upsert(Backend{ID: "b1"})
 		versions = append(versions, registry.Version())
 
-		_ = registry.Upsert(&Backend{ID: "b2"})
+		_ = registry.Upsert(Backend{ID: "b2"})
 		versions = append(versions, registry.Version())
 
 		_ = registry.Remove("b1")
 		versions = append(versions, registry.Version())
 
-		_ = registry.Upsert(&Backend{ID: "b3"})
+		_ = registry.Upsert(Backend{ID: "b3"})
 		versions = append(versions, registry.Version())
 
 		_ = registry.Remove("b2")
@@ -1166,7 +1154,7 @@ func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			go func(id int) {
 				backendID := fmt.Sprintf("backend-%d", id)
-				_ = registry.Upsert(&Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
+				_ = registry.Upsert(Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
 				done <- true
 			}(i)
 		}
@@ -1204,7 +1192,7 @@ func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
 		for i := 0; i < 25; i++ {
 			go func(id int) {
 				backendID := fmt.Sprintf("backend-%d", id)
-				_ = registry.Upsert(&Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
+				_ = registry.Upsert(Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
 				_ = registry.Remove(backendID)
 				done <- true
 			}(i)
@@ -1228,7 +1216,7 @@ func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(&Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
 
 		backend1 := registry.Get(ctx, "test")
 		backend2 := registry.Get(ctx, "test")
@@ -1247,7 +1235,7 @@ func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(&Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
 
 		list1 := registry.List(ctx)
 		list1[0].Name = testModifiedName
@@ -1260,7 +1248,7 @@ func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(&Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
 
 		backend := registry.Get(ctx, "test")
 		backend.Name = testModifiedName

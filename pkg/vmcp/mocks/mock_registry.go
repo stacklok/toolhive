@@ -164,7 +164,7 @@ func (mr *MockDynamicRegistryMockRecorder) Remove(backendID any) *gomock.Call {
 }
 
 // Upsert mocks base method.
-func (m *MockDynamicRegistry) Upsert(backend *vmcp.Backend) error {
+func (m *MockDynamicRegistry) Upsert(backend vmcp.Backend) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Upsert", backend)
 	ret0, _ := ret[0].(error)

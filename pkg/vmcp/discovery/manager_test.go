@@ -662,7 +662,7 @@ func TestDefaultManager_VersionBasedCacheInvalidation(t *testing.T) {
 		assert.Equal(t, uint64(0), registry.Version())
 
 		// Mutate registry - increments version
-		err = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		err = registry.Upsert(vmcp.Backend{ID: "backend2", Name: "Backend 2"})
 		require.NoError(t, err)
 		assert.Equal(t, uint64(1), registry.Version())
 
@@ -739,7 +739,7 @@ func TestDefaultManager_VersionBasedCacheInvalidation(t *testing.T) {
 		assert.Equal(t, uint64(0), registry.Version())
 
 		// Mutation 1
-		_ = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		_ = registry.Upsert(vmcp.Backend{ID: "backend2", Name: "Backend 2"})
 		assert.Equal(t, uint64(1), registry.Version())
 
 		// Call 2 - cache invalidated
@@ -872,8 +872,8 @@ func TestDefaultManager_VersionBasedCacheInvalidation(t *testing.T) {
 		assert.True(t, exists)
 
 		// Mutate registry multiple times - stale entry should remain in cache
-		_ = registry.Upsert(&vmcp.Backend{ID: "backend2", Name: "Backend 2"})
-		_ = registry.Upsert(&vmcp.Backend{ID: "backend3", Name: "Backend 3"})
+		_ = registry.Upsert(vmcp.Backend{ID: "backend2", Name: "Backend 2"})
+		_ = registry.Upsert(vmcp.Backend{ID: "backend3", Name: "Backend 3"})
 		_ = registry.Remove("backend2")
 
 		// Stale entry still exists (lazy invalidation)

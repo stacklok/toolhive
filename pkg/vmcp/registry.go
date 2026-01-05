@@ -136,15 +136,15 @@ type DynamicRegistry interface {
 	//   - backend: The backend to add or update
 	//
 	// Returns:
-	//   - error: Returns error if backend is nil or has empty ID
+	//   - error: Returns error if backend has empty ID
 	//
 	// Example:
-	//   err := registry.Upsert(&vmcp.Backend{
+	//   err := registry.Upsert(vmcp.Backend{
 	//       ID: "github-mcp",
 	//       Name: "GitHub MCP",
 	//       BaseURL: "http://github-mcp.default.svc.cluster.local:8080",
 	//   })
-	Upsert(backend *Backend) error
+	Upsert(backend Backend) error
 
 	// Remove deletes a backend by ID.
 	// Idempotent - removing non-existent backends returns nil.
@@ -179,7 +179,7 @@ type DynamicRegistry interface {
 // Use NewDynamicRegistry() to create instances.
 type dynamicRegistry struct {
 	mu       sync.RWMutex
-	backends map[string]*Backend
+	backends map[string]Backend
 	version  uint64
 }
 
@@ -210,17 +210,15 @@ type dynamicRegistry struct {
 //	// Start with 2 backends, version = 0
 //	registry := vmcp.NewDynamicRegistry([]Backend{backend1, backend2})
 //	// Add a third backend, version = 1 (triggers cache invalidation)
-//	err := registry.Upsert(&backend3)
+//	err := registry.Upsert(backend3)
 func NewDynamicRegistry(backends []Backend) DynamicRegistry {
 	reg := &dynamicRegistry{
-		backends: make(map[string]*Backend),
+		backends: make(map[string]Backend),
 		version:  0, // Initial state is version 0, regardless of backend count
 	}
-	for i := range backends {
-		// Store a pointer to a copy to protect against external modifications
-		// while enabling efficient internal storage (nil values, no re-assignment)
-		b := backends[i]
-		reg.backends[b.ID] = &b
+	for _, b := range backends {
+		// Store by value - Go will automatically make a copy when storing in the map
+		reg.backends[b.ID] = b
 	}
 	return reg
 }
@@ -233,9 +231,8 @@ func (r *dynamicRegistry) Get(_ context.Context, backendID string) *Backend {
 	defer r.mu.RUnlock()
 
 	if b, exists := r.backends[backendID]; exists {
-		// Return a copy to prevent external modifications
-		bcopy := *b
-		return &bcopy
+		// Go automatically makes a copy when retrieving from map of values
+		return &b
 	}
 	return nil
 }
@@ -249,7 +246,8 @@ func (r *dynamicRegistry) List(_ context.Context) []Backend {
 
 	backends := make([]Backend, 0, len(r.backends))
 	for _, b := range r.backends {
-		backends = append(backends, *b)
+		// Go automatically makes a copy when iterating over map of values
+		backends = append(backends, b)
 	}
 	return backends
 }
@@ -288,10 +286,7 @@ func (r *dynamicRegistry) Count() int {
 //
 //	registry.Upsert(backend1)  // version = 1
 //	registry.Upsert(backend1)  // identical data, but version = 2 (cache invalidated)
-func (r *dynamicRegistry) Upsert(backend *Backend) error {
-	if backend == nil {
-		return fmt.Errorf("backend cannot be nil")
-	}
+func (r *dynamicRegistry) Upsert(backend Backend) error {
 	if backend.ID == "" {
 		return fmt.Errorf("backend ID cannot be empty")
 	}
@@ -299,9 +294,8 @@ func (r *dynamicRegistry) Upsert(backend *Backend) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Make a copy to prevent external modifications
-	bcopy := *backend
-	r.backends[backend.ID] = &bcopy
+	// Go automatically makes a copy when passing by value and storing in the map
+	r.backends[backend.ID] = backend
 	r.version++ // Always increment - see design trade-off in godoc
 
 	return nil

@@ -186,6 +186,40 @@ func TestStoreSecretInManagerWithProvider(t *testing.T) {
 	}
 }
 
+// TestProcessSecret tests the public ProcessSecret function for each token type
+// These tests verify that ProcessSecret works correctly without requiring secrets setup
+func TestProcessSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OAuth client secret - empty returns early", func(t *testing.T) {
+		t.Parallel()
+		// This test verifies that when secretValue is empty, ProcessSecret
+		// returns early without attempting to access the secrets manager.
+		// If it tried to access the secrets manager, it would fail because
+		// no secrets provider is configured in the test environment.
+		result, err := ProcessSecret("test-workload", "", TokenTypeOAuthClientSecret)
+		assert.NoError(t, err, "Should not error when secret is empty")
+		assert.Equal(t, "", result, "Should return empty string when input is empty")
+	})
+
+	t.Run("Bearer token - empty returns early", func(t *testing.T) {
+		t.Parallel()
+		// This test verifies that when secretValue is empty, ProcessSecret
+		// returns early without attempting to access the secrets manager.
+		result, err := ProcessSecret("test-workload", "", TokenTypeBearerToken)
+		assert.NoError(t, err, "Should not error when token is empty")
+		assert.Equal(t, "", result, "Should return empty string when input is empty")
+	})
+
+	t.Run("unknown token type returns error", func(t *testing.T) {
+		t.Parallel()
+		result, err := ProcessSecret("test-workload", "some-secret", TokenType("unknown"))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown token type")
+		assert.Equal(t, "", result)
+	})
+}
+
 func TestProcessSecretWithProvider(t *testing.T) {
 	t.Parallel()
 
@@ -193,32 +227,26 @@ func TestProcessSecretWithProvider(t *testing.T) {
 		name           string
 		workloadName   string
 		secretValue    string
-		prefix         string
-		target         string
-		errorContext   string
+		tokenType      TokenType
 		mockSetup      func(*mocks.MockProvider)
 		expectedResult string
 		expectError    bool
 		errorContains  string
 	}{
 		{
-			name:           "empty secret",
+			name:           "empty secret (OAuth)",
 			workloadName:   "test-workload",
 			secretValue:    "",
-			prefix:         "OAUTH_CLIENT_SECRET_",
-			target:         "oauth_secret",
-			errorContext:   "OAuth client secret",
+			tokenType:      TokenTypeOAuthClientSecret,
 			mockSetup:      func(_ *mocks.MockProvider) {},
 			expectedResult: "",
 			expectError:    false,
 		},
 		{
-			name:           "already in CLI format",
+			name:           "already in CLI format (OAuth)",
 			workloadName:   "test-workload",
 			secretValue:    "EXISTING_SECRET,target=oauth_secret",
-			prefix:         "OAUTH_CLIENT_SECRET_",
-			target:         "oauth_secret",
-			errorContext:   "OAuth client secret",
+			tokenType:      TokenTypeOAuthClientSecret,
 			mockSetup:      func(_ *mocks.MockProvider) {},
 			expectedResult: "EXISTING_SECRET,target=oauth_secret",
 			expectError:    false,
@@ -227,9 +255,7 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			name:         "plain text secret - successful conversion (OAuth)",
 			workloadName: "test-workload",
 			secretValue:  "plain-text-secret",
-			prefix:       "OAUTH_CLIENT_SECRET_",
-			target:       "oauth_secret",
-			errorContext: "OAuth client secret",
+			tokenType:    TokenTypeOAuthClientSecret,
 			mockSetup: func(mock *mocks.MockProvider) {
 				mock.EXPECT().
 					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
@@ -246,9 +272,7 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			name:         "plain text secret - successful conversion (Bearer)",
 			workloadName: "test-workload",
 			secretValue:  "my-secret-token",
-			prefix:       "BEARER_TOKEN_",
-			target:       "bearer_token",
-			errorContext: "bearer token",
+			tokenType:    TokenTypeBearerToken,
 			mockSetup: func(mock *mocks.MockProvider) {
 				mock.EXPECT().
 					GetSecret(gomock.Any(), "BEARER_TOKEN_test-workload").
@@ -262,12 +286,10 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name:         "plain text secret - storage fails",
+			name:         "plain text secret - storage fails (OAuth)",
 			workloadName: "test-workload",
 			secretValue:  "plain-text-secret",
-			prefix:       "OAUTH_CLIENT_SECRET_",
-			target:       "oauth_secret",
-			errorContext: "OAuth client secret",
+			tokenType:    TokenTypeOAuthClientSecret,
 			mockSetup: func(mock *mocks.MockProvider) {
 				mock.EXPECT().
 					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
@@ -281,12 +303,10 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			errorContains: "failed to store OAuth client secret in manager",
 		},
 		{
-			name:         "provider without write capability returns error",
+			name:         "provider without write capability returns error (Bearer)",
 			workloadName: "test-workload",
 			secretValue:  "my-secret-token",
-			prefix:       "BEARER_TOKEN_",
-			target:       "bearer_token",
-			errorContext: "bearer token",
+			tokenType:    TokenTypeBearerToken,
 			mockSetup: func(mock *mocks.MockProvider) {
 				mock.EXPECT().
 					GetSecret(gomock.Any(), "BEARER_TOKEN_test-workload").
@@ -297,12 +317,10 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			errorContains: "does not support writing secrets",
 		},
 		{
-			name:         "set secret error propagates",
+			name:         "set secret error propagates (Bearer)",
 			workloadName: "test-workload",
 			secretValue:  "my-secret-token",
-			prefix:       "BEARER_TOKEN_",
-			target:       "bearer_token",
-			errorContext: "bearer token",
+			tokenType:    TokenTypeBearerToken,
 			mockSetup: func(mock *mocks.MockProvider) {
 				mock.EXPECT().
 					GetSecret(gomock.Any(), "BEARER_TOKEN_test-workload").
@@ -313,7 +331,73 @@ func TestProcessSecretWithProvider(t *testing.T) {
 					Return(errors.New("storage error"))
 			},
 			expectError:   true,
-			errorContains: "storage error",
+			errorContains: "failed to store bearer token in manager",
+		},
+		{
+			name:          "unknown token type returns error",
+			workloadName:  "test-workload",
+			secretValue:   "my-secret-token",
+			tokenType:     TokenType("unknown"),
+			mockSetup:     func(_ *mocks.MockProvider) {},
+			expectError:   true,
+			errorContains: "unknown token type",
+		},
+		{
+			name:           "already in CLI format (Bearer)",
+			workloadName:   "test-workload",
+			secretValue:    "EXISTING_SECRET,target=bearer_token",
+			tokenType:      TokenTypeBearerToken,
+			mockSetup:      func(_ *mocks.MockProvider) {},
+			expectedResult: "EXISTING_SECRET,target=bearer_token",
+			expectError:    false,
+		},
+		{
+			name:         "plain text secret - storage fails (Bearer)",
+			workloadName: "test-workload",
+			secretValue:  "plain-text-token",
+			tokenType:    TokenTypeBearerToken,
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "BEARER_TOKEN_test-workload").
+					Return("", errors.New("secret not found"))
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "BEARER_TOKEN_test-workload", "plain-text-token").
+					Return(errors.New("storage failed"))
+			},
+			expectError:   true,
+			errorContains: "failed to store bearer token in manager",
+		},
+		{
+			name:         "provider without write capability returns error (OAuth)",
+			workloadName: "test-workload",
+			secretValue:  "my-client-secret",
+			tokenType:    TokenTypeOAuthClientSecret,
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("", errors.New("secret not found"))
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: false})
+			},
+			expectError:   true,
+			errorContains: "does not support writing secrets",
+		},
+		{
+			name:         "set secret error propagates (OAuth)",
+			workloadName: "test-workload",
+			secretValue:  "my-client-secret",
+			tokenType:    TokenTypeOAuthClientSecret,
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("", errors.New("secret not found"))
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload", "my-client-secret").
+					Return(errors.New("storage error"))
+			},
+			expectError:   true,
+			errorContains: "failed to store OAuth client secret in manager",
 		},
 	}
 
@@ -328,7 +412,7 @@ func TestProcessSecretWithProvider(t *testing.T) {
 			mockProvider := mocks.NewMockProvider(ctrl)
 			tc.mockSetup(mockProvider)
 
-			result, err := ProcessSecretWithProvider(tc.workloadName, tc.secretValue, mockProvider, tc.prefix, tc.target, tc.errorContext)
+			result, err := ProcessSecretWithProvider(tc.workloadName, tc.secretValue, mockProvider, tc.tokenType)
 
 			if tc.expectError {
 				assert.Error(t, err)

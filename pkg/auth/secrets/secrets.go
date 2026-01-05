@@ -13,24 +13,90 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// ProcessSecretWithProvider processes a secret, converting plain text to CLI format if needed.
+// TokenType represents the type of authentication token/secret being processed
+type TokenType string
+
+const (
+	// TokenTypeOAuthClientSecret represents an OAuth client secret
+	TokenTypeOAuthClientSecret TokenType = "oauth_client_secret"
+	// TokenTypeBearerToken represents a bearer token
+	TokenTypeBearerToken TokenType = "bearer_token"
+)
+
+// tokenTypeConfig holds configuration for each token type
+type tokenTypeConfig struct {
+	prefix       string
+	target       string
+	errorContext string
+}
+
+var tokenTypeConfigs = map[TokenType]tokenTypeConfig{
+	TokenTypeOAuthClientSecret: {
+		prefix:       "OAUTH_CLIENT_SECRET_",
+		target:       "oauth_secret",
+		errorContext: "OAuth client secret",
+	},
+	TokenTypeBearerToken: {
+		prefix:       "BEARER_TOKEN_",
+		target:       "bearer_token",
+		errorContext: "bearer token",
+	},
+}
+
+// ProcessSecret processes a secret, converting plain text to CLI format if needed.
 // This is a generic function that can be used for any secret type.
 // Parameters:
 //   - workloadName: Name of the workload (used for secret naming)
 //   - secretValue: The secret value (plain text or already in CLI format)
-//   - secretManager: The secrets provider to use
-//   - prefix: Prefix for the secret name (e.g., "OAUTH_CLIENT_SECRET_", "BEARER_TOKEN_")
-//   - target: Target identifier for CLI format (e.g., "oauth_secret", "bearer_token")
-//   - errorContext: Context for error messages (e.g., "OAuth client secret", "bearer token")
+//   - tokenType: The type of token/secret (determines prefix, target, and error context)
 //
 // Returns the secret in CLI format: "secret-name,target=target_value"
+func ProcessSecret(workloadName, secretValue string, tokenType TokenType) (string, error) {
+	// Early return if no secret is provided - no need to access secrets manager
+	if secretValue == "" {
+		return "", nil
+	}
+
+	// Get the configuration for this token type
+	config, ok := tokenTypeConfigs[tokenType]
+	if !ok {
+		return "", fmt.Errorf("unknown token type: %s", tokenType)
+	}
+
+	// Get the secrets manager
+	secretManager, err := GetSecretsManager()
+	if err != nil {
+		return "", fmt.Errorf("failed to get secrets manager: %w", err)
+	}
+
+	// Process the secret using the provider
+	return processSecretWithProvider(workloadName, secretValue, secretManager, config)
+}
+
+// ProcessSecretWithProvider processes a secret using the provided secret manager
+// This version is testable with dependency injection and is used for testing
 func ProcessSecretWithProvider(
 	workloadName,
 	secretValue string,
 	secretManager secrets.Provider,
-	prefix,
-	target,
-	errorContext string,
+	tokenType TokenType,
+) (string, error) {
+	// Get the configuration for this token type
+	config, ok := tokenTypeConfigs[tokenType]
+	if !ok {
+		return "", fmt.Errorf("unknown token type: %s", tokenType)
+	}
+
+	return processSecretWithProvider(workloadName, secretValue, secretManager, config)
+}
+
+// processSecretWithProvider processes a secret using the provided secret manager
+// This is the internal implementation
+func processSecretWithProvider(
+	workloadName,
+	secretValue string,
+	secretManager secrets.Provider,
+	config tokenTypeConfig,
 ) (string, error) {
 	if secretValue == "" {
 		return "", nil
@@ -42,18 +108,18 @@ func ProcessSecretWithProvider(
 	}
 
 	// It's plain text - convert to CLI format
-	secretName, err := GenerateUniqueSecretNameWithPrefix(workloadName, prefix, secretManager)
+	secretName, err := GenerateUniqueSecretNameWithPrefix(workloadName, config.prefix, secretManager)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate unique secret name: %w", err)
 	}
 
 	// Store the secret in the secret manager
 	if err := StoreSecretInManagerWithProvider(context.Background(), secretName, secretValue, secretManager); err != nil {
-		return "", fmt.Errorf("failed to store %s in manager: %w", errorContext, err)
+		return "", fmt.Errorf("failed to store %s in manager: %w", config.errorContext, err)
 	}
 
 	// Return CLI format reference
-	return secrets.SecretParameter{Name: secretName, Target: target}.ToCLIString(), nil
+	return secrets.SecretParameter{Name: secretName, Target: config.target}.ToCLIString(), nil
 }
 
 // GenerateUniqueSecretNameWithPrefix generates a unique secret name with a custom prefix

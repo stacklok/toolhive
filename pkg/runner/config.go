@@ -9,8 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -224,8 +224,8 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
 // This handles the transition from storing plain text secrets to CLI format references
 func migrateOAuthClientSecret(config *RunConfig) error {
-	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
-		return nil // No OAuth config or no client secret to migrate
+	if config.RemoteAuthConfig == nil {
+		return nil // No OAuth config to migrate
 	}
 
 	// Check if the client secret is already in CLI format
@@ -234,7 +234,7 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	cliFormatSecret, err := authsecrets.ProcessSecret(config.Name, config.RemoteAuthConfig.ClientSecret, authsecrets.TokenTypeOAuthClientSecret)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
@@ -255,8 +255,8 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 // migrateBearerToken migrates plain text bearer tokens to CLI format
 // This handles the transition from storing plain text tokens to CLI format references
 func migrateBearerToken(config *RunConfig) error {
-	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.BearerToken == "" {
-		return nil // No remote auth config or no bearer token to migrate
+	if config.RemoteAuthConfig == nil {
+		return nil // No remote auth config to migrate
 	}
 
 	// Check if the bearer token is already in CLI format
@@ -265,7 +265,7 @@ func migrateBearerToken(config *RunConfig) error {
 	}
 
 	// The bearer token is in plain text format - migrate it
-	cliFormatToken, err := remote.ProcessBearerToken(config.Name, config.RemoteAuthConfig.BearerToken)
+	cliFormatToken, err := authsecrets.ProcessSecret(config.Name, config.RemoteAuthConfig.BearerToken, authsecrets.TokenTypeBearerToken)
 	if err != nil {
 		return fmt.Errorf("failed to process bearer token: %w", err)
 	}

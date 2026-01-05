@@ -135,16 +135,15 @@ tasks:
       Registry API image is pulled from ghcr.io/stacklok/thv-registry-api:latest
       Example: task operator-deploy-local ENABLE_EXPERIMENTAL_FEATURES=true
     platforms: [linux, darwin]
-    dir: "{{.ROOT_DIR}}/../.."
     vars:
       ENABLE_EXPERIMENTAL_FEATURES: '{{.ENABLE_EXPERIMENTAL_FEATURES | default "false"}}'
       REGISTRY_API_IMAGE: '{{.REGISTRY_API_IMAGE | default "ghcr.io/stacklok/thv-registry-api:latest"}}'
       OPERATOR_IMAGE:
-        sh: cd {{.ROOT_DIR}}/../.. && KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
-        sh: cd {{.ROOT_DIR}}/../.. && KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
       VMCP_IMAGE:
-        sh: cd {{.ROOT_DIR}}/../.. && KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
@@ -270,13 +269,12 @@ tasks:
       - kconfig.yaml exists in project root
       Use this to re-run tests without recreating the cluster.
     platforms: [linux, darwin]
-    dir: "{{.ROOT_DIR}}/../.."
     cmds:
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |
-        KUBECONFIG="{{.ROOT_DIR}}/../../kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
-          {{.CLI_ARGS}} {{.ROOT_DIR}}/../../test/e2e/thv-operator/...
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
+          {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:
     desc: Run the operator controller locally

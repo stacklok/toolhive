@@ -436,7 +436,10 @@ func runFromConfigFile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to open configuration file '%s': %w", runFlags.FromConfig, err)
 	}
-	defer configFile.Close()
+	defer func() {
+		// Non-fatal: file cleanup failure after reading
+		_ = configFile.Close()
+	}()
 
 	// Deserialize the configuration
 	runConfig, err := runner.ReadJSON(configFile)

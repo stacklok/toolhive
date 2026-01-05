@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -53,7 +54,11 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if the response status code is OK
 	if resp.StatusCode != http.StatusOK {

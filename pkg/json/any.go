@@ -12,93 +12,158 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// Any stores arbitrary JSON-compatible data. It supports both JSON and YAML
+// Data stores JSON-compatible data of type T. It supports both JSON and YAML
 // marshaling/unmarshaling, making it suitable for use in both Kubernetes CRDs
 // and CLI YAML configurations.
 //
-// The Data field stores the Go value directly, which simplifies usage in tests
+// The Value field stores the Go value directly, which simplifies usage in tests
 // and when working with the data programmatically.
+//
+// Common instantiations:
+//   - Data[any] (aliased as Any) for arbitrary JSON values
+//   - Data[map[string]any] (aliased as Map) for JSON objects
 //
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
-type Any struct {
-	// Data holds the Go value (maps, slices, strings, numbers, bools, nil).
-	Data any `json:"-" yaml:"-"`
+type Data[T any] struct {
+	// Value holds the typed Go value.
+	Value T `json:"-" yaml:"-"`
 }
 
 // MarshalJSON implements json.Marshaler.
-func (a Any) MarshalJSON() ([]byte, error) {
-	if a.Data == nil {
+func (d Data[T]) MarshalJSON() ([]byte, error) {
+	var zero T
+	if any(d.Value) == any(zero) {
 		return []byte("null"), nil
 	}
-	return stdjson.Marshal(a.Data)
+	return stdjson.Marshal(d.Value)
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
-func (a *Any) UnmarshalJSON(data []byte) error {
+func (d *Data[T]) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
-		a.Data = nil
+		var zero T
+		d.Value = zero
 		return nil
 	}
-	var v any
+	var v T
 	if err := stdjson.Unmarshal(data, &v); err != nil {
 		return err
 	}
-	a.Data = v
+	d.Value = v
 	return nil
 }
 
 // MarshalYAML implements yaml.Marshaler.
-func (a Any) MarshalYAML() (interface{}, error) {
-	return a.Data, nil
+func (d Data[T]) MarshalYAML() (interface{}, error) {
+	return d.Value, nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
-func (a *Any) UnmarshalYAML(node *yaml.Node) error {
+func (d *Data[T]) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
-		a.Data = nil
+		var zero T
+		d.Value = zero
 		return nil
 	}
 
-	var value any
+	var value T
 	if err := node.Decode(&value); err != nil {
 		return err
 	}
-	a.Data = value
+	d.Value = value
 	return nil
 }
 
-// ToMap returns the data as a map[string]any.
-// Returns nil if there is no data or if the data is not a map.
-func (a Any) ToMap() (map[string]any, error) {
-	if a.Data == nil {
-		return nil, nil
+// Get returns the stored value.
+func (d Data[T]) Get() T {
+	return d.Value
+}
+
+// IsEmpty returns true if the value is nil or empty.
+// For maps and slices, it checks if the length is 0.
+func (d Data[T]) IsEmpty() bool {
+	v := any(d.Value)
+	if v == nil {
+		return true
 	}
-	if m, ok := a.Data.(map[string]any); ok {
-		return m, nil
+	// Check for empty maps and slices
+	switch val := v.(type) {
+	case map[string]any:
+		return len(val) == 0
+	case []any:
+		return len(val) == 0
 	}
-	// Data is set but not a map - marshal and unmarshal to convert
-	raw, err := stdjson.Marshal(a.Data)
+	return false
+}
+
+// DeepCopyInto copies the receiver into out. Required for controller-gen.
+func (d *Data[T]) DeepCopyInto(out *Data[T]) {
+	if any(d.Value) != nil {
+		// Deep copy Value by marshaling and unmarshaling
+		raw, err := stdjson.Marshal(d.Value)
+		if err == nil {
+			var v T
+			if stdjson.Unmarshal(raw, &v) == nil {
+				out.Value = v
+			}
+		}
+	} else {
+		var zero T
+		out.Value = zero
+	}
+}
+
+// DeepCopy creates a deep copy. Required for controller-gen.
+func (d *Data[T]) DeepCopy() *Data[T] {
+	if d == nil {
+		return nil
+	}
+	out := new(Data[T])
+	d.DeepCopyInto(out)
+	return out
+}
+
+// ToRawExtension converts to runtime.RawExtension for K8s compatibility.
+func (d Data[T]) ToRawExtension() runtime.RawExtension {
+	if any(d.Value) == nil {
+		return runtime.RawExtension{}
+	}
+	raw, err := stdjson.Marshal(d.Value)
 	if err != nil {
-		return nil, err
+		return runtime.RawExtension{}
 	}
-	var m map[string]any
-	if err := stdjson.Unmarshal(raw, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
+	return runtime.RawExtension{Raw: raw}
 }
 
-// ToAny returns the data as any type.
-// Returns nil if there is no data.
-func (a Any) ToAny() (any, error) {
-	return a.Data, nil
+// Any is a type alias for Data[any], storing arbitrary JSON values.
+// This is the most flexible type, suitable when the JSON structure is unknown.
+//
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=object
+type Any = Data[any]
+
+// Map is a type alias for Data[map[string]any], storing JSON objects.
+// Use this when you know the data will always be a JSON object (not array, string, etc.).
+//
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=object
+type Map = Data[map[string]any]
+
+// NewData creates a Data[T] from a value.
+func NewData[T any](v T) Data[T] {
+	return Data[T]{Value: v}
 }
 
-// NewAny creates an Any directly from a value.
+// NewAny creates an Any (Data[any]) from a value.
 // This is a convenience function for tests and programmatic use.
 func NewAny(v any) Any {
-	return Any{Data: v}
+	return Any{Value: v}
+}
+
+// NewMap creates a Map (Data[map[string]any]) from a map.
+func NewMap(m map[string]any) Map {
+	return Map{Value: m}
 }
 
 // MustParse parses a JSON string into an Any.
@@ -108,50 +173,17 @@ func MustParse(jsonStr string) Any {
 	if err := stdjson.Unmarshal([]byte(jsonStr), &v); err != nil {
 		panic(fmt.Sprintf("json.MustParse: failed to parse JSON: %v", err))
 	}
-	return Any{Data: v}
+	return Any{Value: v}
 }
 
-// IsEmpty returns true if there is no data.
-func (a Any) IsEmpty() bool {
-	return a.Data == nil
-}
-
-// DeepCopyInto copies the receiver into out. Required for controller-gen.
-func (a *Any) DeepCopyInto(out *Any) {
-	if a.Data != nil {
-		// Deep copy Data by marshaling and unmarshaling
-		raw, err := stdjson.Marshal(a.Data)
-		if err == nil {
-			var v any
-			if stdjson.Unmarshal(raw, &v) == nil {
-				out.Data = v
-			}
-		}
-	} else {
-		out.Data = nil
+// MustParseMap parses a JSON string into a Map.
+// This is a convenience function for tests. Panics if parsing fails.
+func MustParseMap(jsonStr string) Map {
+	var v map[string]any
+	if err := stdjson.Unmarshal([]byte(jsonStr), &v); err != nil {
+		panic(fmt.Sprintf("json.MustParseMap: failed to parse JSON: %v", err))
 	}
-}
-
-// DeepCopy creates a deep copy of Any. Required for controller-gen.
-func (a *Any) DeepCopy() *Any {
-	if a == nil {
-		return nil
-	}
-	out := new(Any)
-	a.DeepCopyInto(out)
-	return out
-}
-
-// ToRawExtension converts Any to runtime.RawExtension for K8s compatibility.
-func (a Any) ToRawExtension() runtime.RawExtension {
-	if a.Data == nil {
-		return runtime.RawExtension{}
-	}
-	raw, err := stdjson.Marshal(a.Data)
-	if err != nil {
-		return runtime.RawExtension{}
-	}
-	return runtime.RawExtension{Raw: raw}
+	return Map{Value: v}
 }
 
 // FromRawExtension creates an Any from runtime.RawExtension.
@@ -163,5 +195,45 @@ func FromRawExtension(ext runtime.RawExtension) Any {
 	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
 		return Any{}
 	}
-	return Any{Data: v}
+	return Any{Value: v}
+}
+
+// MapFromRawExtension creates a Map from runtime.RawExtension.
+func MapFromRawExtension(ext runtime.RawExtension) Map {
+	if len(ext.Raw) == 0 {
+		return Map{}
+	}
+	var v map[string]any
+	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
+		return Map{}
+	}
+	return Map{Value: v}
+}
+
+// ToMap returns the data as a map[string]any.
+// This is a convenience method for Any types.
+// Returns nil if there is no data or if the data is not a map.
+func (d Data[T]) ToMap() (map[string]any, error) {
+	if any(d.Value) == nil {
+		return nil, nil
+	}
+	if m, ok := any(d.Value).(map[string]any); ok {
+		return m, nil
+	}
+	// Data is set but not a map - marshal and unmarshal to convert
+	raw, err := stdjson.Marshal(d.Value)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := stdjson.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ToAny returns the data as any type.
+// This is useful when you need to pass the value to functions expecting any.
+func (d Data[T]) ToAny() (any, error) {
+	return d.Value, nil
 }

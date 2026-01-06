@@ -503,7 +503,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 							ID:        "fetch",
 							Type:      "tool", // Type would be inferred by loader from tool field
 							Tool:      "fetch_fetch",
-							Arguments: thvjson.MustParse(`{"url":"https://example.com"}`),
+							Arguments: thvjson.MustParseMap(`{"url":"https://example.com"}`),
 						},
 					},
 				},
@@ -539,7 +539,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 						{
 							ID:      "confirm",
 							Message: "Proceed?", // Elicitation field present
-							Schema:  thvjson.MustParse(`{"type":"object"}`),
+							Schema:  thvjson.MustParseMap(`{"type":"object"}`),
 							// Type is missing - should fail
 						},
 					},

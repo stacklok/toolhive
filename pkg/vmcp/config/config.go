@@ -319,13 +319,13 @@ type CompositeToolConfig struct {
 	//     "required": ["param2"]
 	//   }
 	//
-	// We use json.Any rather than a typed struct because JSON Schema is highly
+	// We use json.Map rather than a typed struct because JSON Schema is highly
 	// flexible with many optional fields (default, enum, minimum, maximum, pattern,
-	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Any
+	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map
 	// allows full JSON Schema compatibility without needing to define every possible
 	// field, and matches how the MCP SDK handles inputSchema.
 	// +optional
-	Parameters thvjson.Any `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	Parameters thvjson.Map `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
@@ -354,7 +354,7 @@ type WorkflowStepConfig struct {
 
 	// Arguments are the tool arguments (supports template expansion).
 	// +optional
-	Arguments thvjson.Any `json:"arguments,omitempty" yaml:"arguments,omitempty"`
+	Arguments thvjson.Map `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 
 	// Condition is an optional execution condition (template syntax).
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
@@ -368,7 +368,7 @@ type WorkflowStepConfig struct {
 	// Elicitation config (for elicitation steps).
 	Message string `json:"message,omitempty" yaml:"message,omitempty"`
 	// +optional
-	Schema  thvjson.Any `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Schema  thvjson.Map `json:"schema,omitempty" yaml:"schema,omitempty"`
 	Timeout Duration    `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Elicitation response handlers.
@@ -379,7 +379,7 @@ type WorkflowStepConfig struct {
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
 	// +optional
-	DefaultResults thvjson.Any `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
+	DefaultResults thvjson.Map `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.

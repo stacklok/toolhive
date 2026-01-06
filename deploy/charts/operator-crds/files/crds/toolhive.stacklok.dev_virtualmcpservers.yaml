@@ -594,9 +594,9 @@ spec:
                                 "required": ["param2"]
                               }
 
-                            We use json.Any rather than a typed struct because JSON Schema is highly
+                            We use json.Map rather than a typed struct because JSON Schema is highly
                             flexible with many optional fields (default, enum, minimum, maximum, pattern,
-                            items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Any
+                            items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map
                             allows full JSON Schema compatibility without needing to define every possible
                             field, and matches how the MCP SDK handles inputSchema.
                           type: object

@@ -650,9 +650,9 @@ func (c *Converter) convertCompositeToolSpec(
 		}
 	}
 
-	// Convert parameters from runtime.RawExtension to json.Any
+	// Convert parameters from runtime.RawExtension to json.Map
 	if parameters != nil && len(parameters.Raw) > 0 {
-		tool.Parameters = thvjson.FromRawExtension(*parameters)
+		tool.Parameters = thvjson.MapFromRawExtension(*parameters)
 	}
 
 	// Convert steps
@@ -692,9 +692,9 @@ func (*Converter) convertWorkflowSteps(
 			DependsOn: crdStep.DependsOn,
 		}
 
-		// Convert Schema from runtime.RawExtension to json.Any (for elicitation steps)
+		// Convert Schema from runtime.RawExtension to json.Map (for elicitation steps)
 		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			step.Schema = thvjson.FromRawExtension(*crdStep.Schema)
+			step.Schema = thvjson.MapFromRawExtension(*crdStep.Schema)
 		}
 
 		// Parse timeout
@@ -753,7 +753,7 @@ func (*Converter) convertWorkflowSteps(
 					defaultResults[key] = value
 				}
 			}
-			step.DefaultResults = thvjson.NewAny(defaultResults)
+			step.DefaultResults = thvjson.NewMap(defaultResults)
 		}
 
 		workflowSteps = append(workflowSteps, step)
@@ -774,14 +774,14 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 	return nil
 }
 
-// convertArguments converts arguments from runtime.RawExtension to json.Any.
+// convertArguments converts arguments from runtime.RawExtension to json.Map.
 // This preserves the original types (integers, booleans, arrays, objects) from the CRD.
-// Returns an empty json.Any if no arguments are specified.
-func convertArguments(args *runtime.RawExtension) thvjson.Any {
+// Returns an empty json.Map if no arguments are specified.
+func convertArguments(args *runtime.RawExtension) thvjson.Map {
 	if args == nil || len(args.Raw) == 0 {
-		return thvjson.Any{}
+		return thvjson.Map{}
 	}
-	return thvjson.FromRawExtension(*args)
+	return thvjson.MapFromRawExtension(*args)
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig

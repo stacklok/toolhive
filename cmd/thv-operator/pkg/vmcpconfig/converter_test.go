@@ -313,7 +313,7 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 				assert.True(t, result[0].Parameters.IsEmpty(), tt.description)
 			} else {
 				require.False(t, result[0].Parameters.IsEmpty(), tt.description)
-				assert.Equal(t, tt.expectedParams, result[0].Parameters.Data, tt.description)
+				assert.Equal(t, tt.expectedParams, result[0].Parameters.Value, tt.description)
 			}
 		})
 	}
@@ -830,7 +830,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 
 			stepArgs := result[0].Steps[0].Arguments
 			require.False(t, stepArgs.IsEmpty(), tt.description)
-			assert.Equal(t, expectedArgs, stepArgs.Data, tt.description)
+			assert.Equal(t, expectedArgs, stepArgs.Value, tt.description)
 		})
 	}
 

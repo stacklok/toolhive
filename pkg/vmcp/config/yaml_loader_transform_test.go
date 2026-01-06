@@ -220,7 +220,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter missing type field returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: thvjson.MustParse(`{"properties":{"input":{"type":"string"}}}`),
+				Parameters: thvjson.MustParseMap(`{"properties":{"input":{"type":"string"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -230,7 +230,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter type not string returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: thvjson.MustParse(`{"type":123,"properties":{"param1":{"type":"string"}}}`),
+				Parameters: thvjson.MustParseMap(`{"type":123,"properties":{"param1":{"type":"string"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -240,7 +240,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter type must be object returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: thvjson.MustParse(`{"type":"string"}`),
+				Parameters: thvjson.MustParseMap(`{"type":"string"}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -250,7 +250,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter with default value works",
 			tool: &CompositeToolConfig{
 				Name:       "test",
-				Parameters: thvjson.MustParse(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`),
+				Parameters: thvjson.MustParseMap(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			verify: func(t *testing.T, tool *CompositeToolConfig) {

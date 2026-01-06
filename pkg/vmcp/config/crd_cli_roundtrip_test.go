@@ -473,7 +473,7 @@ func TestConfigRoundtrip(t *testing.T) {
 			{
 				Name:        "test-tool",
 				Description: "A test composite tool",
-				Parameters:  thvjson.MustParse(`{"type":"object","properties":{"input":{"type":"string"}}}`),
+				Parameters:  thvjson.MustParseMap(`{"type":"object","properties":{"input":{"type":"string"}}}`),
 				Steps: []*WorkflowStepConfig{
 					{
 						ID:   "step1",

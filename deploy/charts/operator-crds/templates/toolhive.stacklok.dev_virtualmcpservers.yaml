@@ -155,18 +155,6 @@ spec:
                       type: object
                     type: array
                 type: object
-              audit:
-                description: |-
-                  Audit configures audit logging for the Virtual MCP server
-                  When enabled, audit logs include MCP protocol operations
-                properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled controls whether audit logging is enabled
-                      When true, enables audit logging with default configuration
-                    type: boolean
-                type: object
               compositeToolRefs:
                 description: |-
                   CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -476,12 +464,21 @@ spec:
                     - conflictResolution
                     type: object
                   audit:
-                    description: Audit configures audit logging settings.
+                    description: |-
+                      Audit configures audit logging for the Virtual MCP server.
+                      When present, audit logs include MCP protocol operations.
+                      See audit.Config for available configuration options.
                     properties:
                       component:
                         description: Component is the component name to use in audit
-                          events
+                          events.
                         type: string
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled controls whether audit logging is enabled.
+                          When true, enables audit logging with the configured options.
+                        type: boolean
                       eventTypes:
                         description: EventTypes specifies which event types to audit.
                           If empty, all events are audited.
@@ -496,20 +493,23 @@ spec:
                           type: string
                         type: array
                       includeRequestData:
+                        default: false
                         description: IncludeRequestData determines whether to include
-                          request data in audit logs
+                          request data in audit logs.
                         type: boolean
                       includeResponseData:
+                        default: false
                         description: IncludeResponseData determines whether to include
-                          response data in audit logs
+                          response data in audit logs.
                         type: boolean
                       logFile:
                         description: LogFile specifies the file path for audit logs.
                           If empty, logs to stdout.
                         type: string
                       maxDataSize:
+                        default: 1024
                         description: MaxDataSize limits the size of request/response
-                          data included in audit logs (in bytes)
+                          data included in audit logs (in bytes).
                         type: integer
                     type: object
                   compositeTools:

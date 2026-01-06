@@ -60,12 +60,6 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Audit configures audit logging for the Virtual MCP server
-	// When enabled, audit logs include MCP protocol operations
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Audit *AuditConfig `json:"audit,omitempty"`
-
 	// Config is the Virtual MCP server configuration
 	// NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
 	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.

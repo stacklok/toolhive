@@ -219,9 +219,13 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter missing type field returns error",
 			tool: &CompositeToolConfig{
-				Name:       "bad",
-				Parameters: thvjson.MustParseMap(`{"properties":{"input":{"type":"string"}}}`),
-				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
+				Name: "bad",
+				Parameters: thvjson.NewMap(map[string]any{
+					"properties": map[string]any{
+						"input": map[string]any{"type": "string"},
+					},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "parameters must have 'type' field",
@@ -229,9 +233,14 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter type not string returns error",
 			tool: &CompositeToolConfig{
-				Name:       "bad",
-				Parameters: thvjson.MustParseMap(`{"type":123,"properties":{"param1":{"type":"string"}}}`),
-				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
+				Name: "bad",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": 123,
+					"properties": map[string]any{
+						"param1": map[string]any{"type": "string"},
+					},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "'type' field must be a string",
@@ -240,7 +249,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter type must be object returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: thvjson.MustParseMap(`{"type":"string"}`),
+				Parameters: thvjson.NewMap(map[string]any{"type": "string"}),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -249,9 +258,14 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter with default value works",
 			tool: &CompositeToolConfig{
-				Name:       "test",
-				Parameters: thvjson.MustParseMap(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`),
-				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
+				Name: "test",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"version": map[string]any{"type": "string", "default": "latest"},
+					},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			verify: func(t *testing.T, tool *CompositeToolConfig) {
 				t.Helper()

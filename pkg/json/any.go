@@ -176,38 +176,30 @@ func MustParse(jsonStr string) Any {
 	return Any{Value: v}
 }
 
-// MustParseMap parses a JSON string into a Map.
-// This is a convenience function for tests. Panics if parsing fails.
-func MustParseMap(jsonStr string) Map {
-	var v map[string]any
-	if err := stdjson.Unmarshal([]byte(jsonStr), &v); err != nil {
-		panic(fmt.Sprintf("json.MustParseMap: failed to parse JSON: %v", err))
-	}
-	return Map{Value: v}
-}
-
 // FromRawExtension creates an Any from runtime.RawExtension.
-func FromRawExtension(ext runtime.RawExtension) Any {
+// Returns an error if the JSON cannot be unmarshaled.
+func FromRawExtension(ext runtime.RawExtension) (Any, error) {
 	if len(ext.Raw) == 0 {
-		return Any{}
+		return Any{}, nil
 	}
 	var v any
 	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
-		return Any{}
+		return Any{}, fmt.Errorf("failed to unmarshal RawExtension: %w", err)
 	}
-	return Any{Value: v}
+	return Any{Value: v}, nil
 }
 
 // MapFromRawExtension creates a Map from runtime.RawExtension.
-func MapFromRawExtension(ext runtime.RawExtension) Map {
+// Returns an error if the JSON cannot be unmarshaled.
+func MapFromRawExtension(ext runtime.RawExtension) (Map, error) {
 	if len(ext.Raw) == 0 {
-		return Map{}
+		return Map{}, nil
 	}
 	var v map[string]any
 	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
-		return Map{}
+		return Map{}, fmt.Errorf("failed to unmarshal RawExtension as map: %w", err)
 	}
-	return Map{Value: v}
+	return Map{Value: v}, nil
 }
 
 // ToMap returns the data as a map[string]any.

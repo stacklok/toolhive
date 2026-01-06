@@ -652,7 +652,13 @@ func (c *Converter) convertCompositeToolSpec(
 
 	// Convert parameters from runtime.RawExtension to json.Map
 	if parameters != nil && len(parameters.Raw) > 0 {
-		tool.Parameters = thvjson.MapFromRawExtension(*parameters)
+		params, err := thvjson.MapFromRawExtension(*parameters)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to convert parameters", "tool", toolNameForLogging)
+		} else {
+			tool.Parameters = params
+		}
 	}
 
 	// Convert steps
@@ -680,7 +686,11 @@ func (*Converter) convertWorkflowSteps(
 	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
 
 	for _, crdStep := range steps {
-		args := convertArguments(crdStep.Arguments)
+		args, err := convertArguments(crdStep.Arguments)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to convert arguments", "tool", toolNameForLogging, "step", crdStep.ID)
+		}
 
 		step := &vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
@@ -694,7 +704,13 @@ func (*Converter) convertWorkflowSteps(
 
 		// Convert Schema from runtime.RawExtension to json.Map (for elicitation steps)
 		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			step.Schema = thvjson.MapFromRawExtension(*crdStep.Schema)
+			schema, err := thvjson.MapFromRawExtension(*crdStep.Schema)
+			if err != nil {
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "failed to convert schema", "tool", toolNameForLogging, "step", crdStep.ID)
+			} else {
+				step.Schema = schema
+			}
 		}
 
 		// Parse timeout
@@ -741,7 +757,7 @@ func (*Converter) convertWorkflowSteps(
 			}
 		}
 
-		// Convert default results from map[string]runtime.RawExtension to RawJSON
+		// Convert default results from map[string]runtime.RawExtension to thvjson.Map
 		if len(crdStep.DefaultResults) > 0 {
 			defaultResults := make(map[string]any, len(crdStep.DefaultResults))
 			for key, rawExt := range crdStep.DefaultResults {
@@ -777,9 +793,9 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 // convertArguments converts arguments from runtime.RawExtension to json.Map.
 // This preserves the original types (integers, booleans, arrays, objects) from the CRD.
 // Returns an empty json.Map if no arguments are specified.
-func convertArguments(args *runtime.RawExtension) thvjson.Map {
+func convertArguments(args *runtime.RawExtension) (thvjson.Map, error) {
 	if args == nil || len(args.Raw) == 0 {
-		return thvjson.Map{}
+		return thvjson.Map{}, nil
 	}
 	return thvjson.MapFromRawExtension(*args)
 }
@@ -823,7 +839,12 @@ func convertOutputProperty(
 
 	// Convert default value from runtime.RawExtension to json.Any
 	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
-		prop.Default = thvjson.FromRawExtension(*crdProp.Default)
+		defaultVal, err := thvjson.FromRawExtension(*crdProp.Default)
+		if err != nil {
+			log.Log.Error(err, "failed to convert default value", "property", propName)
+		} else {
+			prop.Default = defaultVal
+		}
 	}
 
 	return prop

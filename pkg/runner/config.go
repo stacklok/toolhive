@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
@@ -103,6 +104,9 @@ type RunConfig struct {
 
 	// TokenExchangeConfig contains token exchange configuration for external authentication
 	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
+
+	// AWSStsConfig contains AWS STS token exchange configuration for SigV4 signing
+	AWSStsConfig *awssts.Config `json:"aws_sts_config,omitempty" yaml:"aws_sts_config,omitempty"`
 
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`

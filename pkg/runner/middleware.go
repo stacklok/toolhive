@@ -5,6 +5,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -20,6 +21,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	return map[string]types.MiddlewareFactory{
 		auth.MiddlewareType:              auth.CreateMiddleware,
 		tokenexchange.MiddlewareType:     tokenexchange.CreateMiddleware,
+		awssts.MiddlewareType:            awssts.CreateMiddleware,
 		mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
@@ -51,6 +53,13 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Token exchange middleware (if configured)
 	middlewareConfigs, err = addTokenExchangeMiddleware(middlewareConfigs, config.TokenExchangeConfig)
+	if err != nil {
+		return err
+	}
+
+	// AWS STS middleware (if configured)
+	// Note: This must be positioned so SigV4 signing happens last before the request is sent
+	middlewareConfigs, err = addAWSStsMiddleware(middlewareConfigs, config.AWSStsConfig, config.RemoteURL)
 	if err != nil {
 		return err
 	}
@@ -193,4 +202,30 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 		return nil, fmt.Errorf("failed to create usage metrics middleware config: %w", err)
 	}
 	return append(middlewares, *usageMetricsConfig), nil
+}
+
+// addAWSStsMiddleware adds AWS STS middleware if configured.
+// AWS STS middleware exchanges identity tokens for AWS credentials and signs requests with SigV4.
+// remoteURL is the target MCP server URL, required for SigV4 signing with the correct host.
+func addAWSStsMiddleware(
+	middlewares []types.MiddlewareConfig,
+	awsStsConfig *awssts.Config,
+	remoteURL string,
+) ([]types.MiddlewareConfig, error) {
+	if awsStsConfig == nil {
+		return middlewares, nil
+	}
+
+	awsStsParams := awssts.MiddlewareParams{
+		AWSStsConfig: awsStsConfig,
+		TargetURL:    remoteURL,
+	}
+	awsStsMwConfig, err := types.NewMiddlewareConfig(
+		awssts.MiddlewareType,
+		awsStsParams,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AWS STS middleware config: %w", err)
+	}
+	return append(middlewares, *awsStsMwConfig), nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -381,6 +382,14 @@ func WithOIDCConfig(
 func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.TokenExchangeConfig = config
+		return nil
+	}
+}
+
+// WithAWSStsConfig sets the AWS STS configuration
+func WithAWSStsConfig(config *awssts.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AWSStsConfig = config
 		return nil
 	}
 }

@@ -553,6 +553,7 @@ spec:
                                       Properties defines nested properties for object types.
                                       Each nested property has full metadata (type, description, value/properties).
                                     type: object
+                                    x-kubernetes-preserve-unknown-fields: true
                                   type:
                                     description: 'Type is the JSON Schema type: "string",
                                       "integer", "number", "boolean", "object", "array".'

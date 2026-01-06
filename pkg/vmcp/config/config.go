@@ -436,6 +436,8 @@ type OutputProperty struct {
 	// Properties defines nested properties for object types.
 	// Each nested property has full metadata (type, description, value/properties).
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
 	Properties map[string]OutputProperty `json:"properties,omitempty" yaml:"properties,omitempty"`
 
 	// Default is the fallback value if template expansion fails.

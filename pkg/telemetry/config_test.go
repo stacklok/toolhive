@@ -183,7 +183,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, "toolhive-mcp-proxy", config.ServiceName)
 	assert.NotEmpty(t, config.ServiceVersion)
-	assert.Equal(t, 0.05, config.SamplingRate)
+	assert.Equal(t, "0.05", config.SamplingRate)
 	assert.NotNil(t, config.Headers)
 	assert.Empty(t, config.Headers)
 	assert.False(t, config.Insecure)

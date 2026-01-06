@@ -66,6 +66,8 @@ func (c *Config) GetLogWriter() (io.Writer, error) {
 // DefaultConfig returns a default audit configuration.
 func DefaultConfig() *Config {
 	return &Config{
+		// Note, these defaults are also present on the kubebuilder annotations above.
+		// If you change these defaults, you must also change the kubebuilder annotations.
 		IncludeRequestData:  false, // Disabled by default for privacy
 		IncludeResponseData: false, // Disabled by default for privacy
 		MaxDataSize:         1024,  // 1KB default limit

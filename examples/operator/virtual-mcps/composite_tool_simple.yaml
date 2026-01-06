@@ -146,8 +146,8 @@ metadata:
   name: vmcp-simple-composite
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   incomingAuth:
     type: anonymous

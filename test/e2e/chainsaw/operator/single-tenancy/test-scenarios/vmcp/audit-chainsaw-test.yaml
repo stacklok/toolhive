@@ -40,8 +40,8 @@ spec:
                 name: test-vmcp-audit-enabled
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
                 incomingAuth:
                   type: anonymous
                 audit:
@@ -88,8 +88,8 @@ spec:
                 name: test-vmcp-no-audit
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
                 incomingAuth:
                   type: anonymous
         - assert:
@@ -145,8 +145,8 @@ spec:
                 name: test-vmcp-audit-disabled
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
                 incomingAuth:
                   type: anonymous
                 audit:

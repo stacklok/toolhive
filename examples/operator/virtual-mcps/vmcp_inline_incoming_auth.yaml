@@ -120,8 +120,8 @@ metadata:
   name: inline-auth-vmcp
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   # Incoming authentication - inline OIDC configuration
   incomingAuth:

@@ -288,8 +288,8 @@ metadata:
   name: vmcp-data-processor
   namespace: default
 spec:
-  groupRef:
-    name: data-processing-services
+  config:
+    groupRef: data-processing-services
 
   incomingAuth:
     type: anonymous

@@ -1106,7 +1106,6 @@ spec:
                     type: object
                 required:
                 - groupRef
-                - name
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               incomingAuth:

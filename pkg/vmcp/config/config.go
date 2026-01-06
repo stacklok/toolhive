@@ -69,7 +69,8 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // +kubebuilder:validation:Type=object
 type Config struct {
 	// Name is the virtual MCP server name.
-	Name string `json:"name" yaml:"name"`
+	// +optional
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
 	// Group references an existing MCPGroup that defines backend workloads.
 	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.

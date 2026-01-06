@@ -438,6 +438,7 @@ type OutputProperty struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:Schemaless
 	Properties map[string]OutputProperty `json:"properties,omitempty" yaml:"properties,omitempty"`
 
 	// Default is the fallback value if template expansion fails.

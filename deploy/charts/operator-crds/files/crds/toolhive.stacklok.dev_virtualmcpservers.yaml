@@ -548,7 +548,6 @@ spec:
                                       exposed to clients and models.
                                     type: string
                                   properties:
-                                    additionalProperties: {}
                                     description: |-
                                       Properties defines nested properties for object types.
                                       Each nested property has full metadata (type, description, value/properties).

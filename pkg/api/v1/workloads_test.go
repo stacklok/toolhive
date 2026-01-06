@@ -435,6 +435,154 @@ func TestUpdateWorkload(t *testing.T) {
 	}
 }
 
+// TestUpdateWorkload_PortReuse tests the port reuse logic when editing workloads
+func TestUpdateWorkload_PortReuse(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	tests := []struct {
+		name           string
+		workloadName   string
+		requestBody    string
+		existingPort   int
+		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		expectedStatus int
+		expectedBody   string
+		description    string
+	}{
+		{
+			name:         "Edit with port=0 should reuse existing port",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 0}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should be reused from existing workload")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When proxy_port is 0, the existing port should be reused",
+		},
+		{
+			name:         "Edit with explicit port should use that port",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 9090}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 9090, runConfig.Port, "Port should be set to explicitly requested port")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When an explicit port is provided, it should be used instead of reusing",
+		},
+		{
+			name:         "Edit with same port should skip validation",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 8080}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should remain the same")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When reusing the same port, validation should be skipped",
+		},
+		{
+			name:         "Edit with no port specified should default to existing",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should default to existing port")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When no port is specified in request, existing port should be reused",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+
+			mockRetriever := makeMockRetriever(t,
+				"test-image",
+				"test-image",
+				&regtypes.ImageMetadata{Image: "test-image"},
+				nil,
+			)
+
+			routes := &WorkloadRoutes{
+				workloadManager:  mockWorkloadManager,
+				containerRuntime: mockRuntime,
+				groupManager:     mockGroupManager,
+				debugMode:        false,
+				workloadService: &WorkloadService{
+					groupManager:     mockGroupManager,
+					workloadManager:  mockWorkloadManager,
+					containerRuntime: mockRuntime,
+					imageRetriever:   mockRetriever,
+					appConfig:        &config.Config{},
+				},
+			}
+
+			req := httptest.NewRequest("POST", "/api/v1beta/workloads/"+tt.workloadName+"/edit",
+				strings.NewReader(tt.requestBody))
+			req.Header.Set("Content-Type", "application/json")
+
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("name", tt.workloadName)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			w := httptest.NewRecorder()
+			routes.updateWorkload(w, req)
+
+			assert.Equal(t, tt.expectedStatus, w.Code, tt.description)
+			assert.Contains(t, w.Body.String(), tt.expectedBody, tt.description)
+		})
+	}
+}
+
 func makeMockRetriever(
 	t *testing.T,
 	expectedServerOrImage string,

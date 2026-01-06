@@ -131,7 +131,7 @@ func (c *Converter) Convert(
 		vmcp.Name,
 	)
 	config.Audit = vmcp.Spec.Config.Audit
-	if config.Audit.Component == "" {
+	if config.Audit != nil && config.Audit.Component == "" {
 		config.Audit.Component = vmcp.Name
 	}
 

@@ -318,23 +318,52 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
+// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 errors to 413
+// after MaxBytesReader hits the limit
+type bodySizeResponseWriter struct {
+	http.ResponseWriter
+	written bool
+}
+
+func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
+	// If handler is returning 400 and we haven't written yet,
+	// it's likely from MaxBytesReader - change to 413
+	if statusCode == http.StatusBadRequest && !w.written {
+		statusCode = http.StatusRequestEntityTooLarge
+	}
+	w.written = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *bodySizeResponseWriter) Write(b []byte) (int, error) {
+	if !w.written {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
 func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check Content-Length header first for early rejection
 			if r.ContentLength > maxSize {
-				// Set Content-Type for API endpoints to match headersMiddleware behavior
-				if strings.HasPrefix(r.URL.Path, "/api/") {
-					w.Header().Set("Content-Type", "application/json")
-				}
+				logger.Warnf("Request body size %d exceeds limit %d for %s %s",
+					r.ContentLength, maxSize, r.Method, r.URL.Path)
 				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
 
-			// Also set MaxBytesReader as a safety net for requests without Content-Length
-			r.Body = http.MaxBytesReader(w, r.Body, maxSize)
-			next.ServeHTTP(w, r)
+			// Wrap ResponseWriter to intercept MaxBytesReader errors and return 413
+			wrapped := &bodySizeResponseWriter{
+				ResponseWriter: w,
+				written:        false,
+			}
+
+			// Set MaxBytesReader as a safety net for requests without Content-Length
+			r.Body = http.MaxBytesReader(wrapped, r.Body, maxSize)
+
+			next.ServeHTTP(wrapped, r)
 		})
 	}
 }

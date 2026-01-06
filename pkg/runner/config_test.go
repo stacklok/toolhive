@@ -1541,7 +1541,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 		assert.Equal(t, "file-based-service", config.TelemetryConfig.ServiceName)
 		assert.True(t, config.TelemetryConfig.TracingEnabled)
 		assert.False(t, config.TelemetryConfig.MetricsEnabled)
-		assert.Equal(t, 0.5, config.TelemetryConfig.SamplingRate)
+		assert.Equal(t, "0.5", config.TelemetryConfig.SamplingRate)
 		require.Len(t, config.TelemetryConfig.EnvironmentVariables, 3)
 		assert.Contains(t, config.TelemetryConfig.EnvironmentVariables, "NODE_ENV")
 		assert.Contains(t, config.TelemetryConfig.EnvironmentVariables, "DEPLOYMENT_ENV")

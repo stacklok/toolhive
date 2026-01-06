@@ -61,8 +61,8 @@ func NewWorkloadService(
 
 // CreateWorkloadFromRequest creates a workload from a request
 func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	// Build the full run config (no existing port, so pass 0)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +83,15 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 }
 
 // UpdateWorkloadFromRequest updates a workload from a request
-func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest) (*runner.RunConfig, error) { //nolint:lll
+func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest, existingPort int) (*runner.RunConfig, error) { //nolint:lll
+	// If ProxyPort is 0, reuse the existing port
+	if req.ProxyPort == 0 && existingPort > 0 {
+		req.ProxyPort = existingPort
+		logger.Debugf("Reusing existing port %d for workload %s", existingPort, name)
+	}
+
 	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, existingPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
@@ -101,7 +107,9 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 // BuildFullRunConfig builds a complete RunConfig
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
-func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+func (s *WorkloadService) BuildFullRunConfig(
+	ctx context.Context, req *createRequest, existingPort int,
+) (*runner.RunConfig, error) {
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -246,6 +254,11 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
+	}
+
+	// Add existing port if provided (for update operations)
+	if existingPort > 0 {
+		options = append(options, runner.WithExistingPort(existingPort))
 	}
 
 	// Determine transport type

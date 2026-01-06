@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -78,25 +79,25 @@ func TestRequestBodySizeLimitMiddleware(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), "Request Entity Too Large")
 	})
 
-	t.Run("MaxBytesReader enforces limit when Content-Length is misleading", func(t *testing.T) {
+	t.Run("MaxBytesReader converts handler 400 to 413", func(t *testing.T) {
 		t.Parallel()
-		// Create a request where Content-Length is set incorrectly to test the MaxBytesReader safety net
+		// Create oversized body
 		oversizedBody := make([]byte, maxBodySize+100)
 		body := bytes.NewBuffer(oversizedBody)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1beta/test", body)
 
-		// Manually set Content-Length to be within limit to bypass early check
+		// Lie about Content-Length to bypass early check
 		req.ContentLength = maxBodySize - 1
 
 		rec := httptest.NewRecorder()
 
+		// Simulate a REAL handler that tries to decode JSON and returns 400 on error
 		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Try to read the entire body - MaxBytesReader should return an error
-			buf := new(bytes.Buffer)
-			_, err := buf.ReadFrom(r.Body)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			var data map[string]interface{}
+			// This will fail because MaxBytesReader limits the read
+			if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+				// Real handlers return 400 Bad Request on decode errors
+				http.Error(w, "Failed to decode request", http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
@@ -105,6 +106,23 @@ func TestRequestBodySizeLimitMiddleware(t *testing.T) {
 		handler := createHandler(nextHandler)
 		handler.ServeHTTP(rec, req)
 
+		// bodySizeResponseWriter should have converted 400 to 413
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	})
+
+	t.Run("Empty request body succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer([]byte{}))
+		rec := httptest.NewRecorder()
+
+		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := createHandler(nextHandler)
+		handler.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
 	})
 }

@@ -71,7 +71,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "only one of header_value or header_value_env must be set",
+			errMsg:  "only one of headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when neither value nor env set",
@@ -82,7 +82,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "either header_value or header_value_env must be set",
+			errMsg:  "either headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when env var not set",
@@ -117,7 +117,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
-			errMsg:  "header_injection configuration is required",
+			errMsg:  "headerInjection configuration is required",
 		},
 		{
 			name: "token_exchange validates env var is set",
@@ -158,7 +158,7 @@ func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 				Type: "token_exchange",
 			},
 			wantErr: true,
-			errMsg:  "token_exchange configuration is required",
+			errMsg:  "tokenExchange configuration is required",
 		},
 		{
 			name: "unauthenticated strategy requires no extra config",
@@ -395,17 +395,17 @@ func TestYAMLLoader_Load_TelemetryConfig(t *testing.T) {
 name: telemetry-test
 telemetry:
   endpoint: "localhost:4318"
-  servicename: "test-service"
-  serviceversion: "1.2.3"
-  tracingenabled: true
-  metricsenabled: true
-  samplingrate: 0.75
+  serviceName: "test-service"
+  serviceVersion: "1.2.3"
+  tracingEnabled: true
+  metricsEnabled: true
+  samplingRate: 0.75
   insecure: true
-  enableprometheusmetricspath: true
+  enablePrometheusMetricsPath: true
   headers:
     Authorization: "Bearer token123"
     X-Custom-Header: "custom-value"
-  environmentvariables:
+  environmentVariables:
     - "NODE_ENV"
     - "DEPLOYMENT_ENV"
 `

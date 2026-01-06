@@ -61,14 +61,14 @@ func (l *YAMLLoader) postProcess(cfg *Config) error {
 	// Process outgoing auth - resolve env vars
 	if cfg.OutgoingAuth != nil {
 		if err := l.processOutgoingAuth(cfg.OutgoingAuth); err != nil {
-			return fmt.Errorf("outgoing_auth: %w", err)
+			return fmt.Errorf("outgoingAuth: %w", err)
 		}
 	}
 
 	// Process composite tools - type inference, defaults, validation
 	for i, tool := range cfg.CompositeTools {
 		if err := l.processCompositeTool(tool); err != nil {
-			return fmt.Errorf("composite_tools[%d]: %w", i, err)
+			return fmt.Errorf("compositeTools[%d]: %w", i, err)
 		}
 	}
 
@@ -102,7 +102,7 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 	switch strategy.Type {
 	case authtypes.StrategyTypeHeaderInjection:
 		if strategy.HeaderInjection == nil {
-			return fmt.Errorf("backend %s: header_injection configuration is required", name)
+			return fmt.Errorf("backend %s: headerInjection configuration is required", name)
 		}
 
 		hi := strategy.HeaderInjection
@@ -110,10 +110,10 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 		hasValueEnv := hi.HeaderValueEnv != ""
 
 		if hasValue && hasValueEnv {
-			return fmt.Errorf("backend %s: only one of header_value or header_value_env must be set", name)
+			return fmt.Errorf("backend %s: only one of headerValue or headerValueEnv must be set", name)
 		}
 		if !hasValue && !hasValueEnv {
-			return fmt.Errorf("backend %s: either header_value or header_value_env must be set", name)
+			return fmt.Errorf("backend %s: either headerValue or headerValueEnv must be set", name)
 		}
 
 		// Resolve header value from environment if env var name is provided
@@ -126,7 +126,7 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 
 	case authtypes.StrategyTypeTokenExchange:
 		if strategy.TokenExchange == nil {
-			return fmt.Errorf("backend %s: token_exchange configuration is required", name)
+			return fmt.Errorf("backend %s: tokenExchange configuration is required", name)
 		}
 
 		te := strategy.TokenExchange

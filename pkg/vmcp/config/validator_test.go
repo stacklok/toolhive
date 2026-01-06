@@ -499,12 +499,10 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 					Timeout:     Duration(5 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
-							ID:   "fetch",
-							Type: "tool", // Type would be inferred by loader from tool field
-							Tool: "fetch_fetch",
-							Arguments: map[string]any{
-								"url": "https://example.com",
-							},
+							ID:        "fetch",
+							Type:      "tool", // Type would be inferred by loader from tool field
+							Tool:      "fetch_fetch",
+							Arguments: RawJSON{Raw: []byte(`{"url":"https://example.com"}`)},
 						},
 					},
 				},
@@ -540,7 +538,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 						{
 							ID:      "confirm",
 							Message: "Proceed?", // Elicitation field present
-							Schema:  map[string]any{"type": "object"},
+							Schema:  RawJSON{Raw: []byte(`{"type":"object"}`)},
 							// Type is missing - should fail
 						},
 					},

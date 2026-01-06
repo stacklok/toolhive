@@ -254,19 +254,19 @@ func TestCompositeToolWithOutputConfig_DefaultValues(t *testing.T) {
 					Type:        "string",
 					Description: "Status",
 					Value:       "{{.steps.fetch.output.status}}",
-					Default:     "unknown",
+					Default:     config.RawJSON{Raw: []byte(`"unknown"`)},
 				},
 				"priority": {
 					Type:        "integer",
 					Description: "Priority level",
 					Value:       "{{.steps.fetch.output.priority}}",
-					Default:     1,
+					Default:     config.RawJSON{Raw: []byte(`1`)},
 				},
 				"enabled": {
 					Type:        "boolean",
 					Description: "Enabled flag",
 					Value:       "{{.steps.fetch.output.enabled}}",
-					Default:     false,
+					Default:     config.RawJSON{Raw: []byte(`false`)},
 				},
 			},
 		},
@@ -467,7 +467,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				Type:        "integer",
 				Description: "Count",
 				Value:       "{{.steps.fetch.output.count}}",
-				Default:     99,
+				Default:     config.RawJSON{Raw: []byte(`99`)},
 			},
 			stepOutput: map[string]any{
 				"count": "not_a_number",
@@ -504,7 +504,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				Type:        "object",
 				Description: "Data",
 				Value:       "{{.steps.fetch.output.data}}",
-				Default:     map[string]any{"fallback": true},
+				Default:     config.RawJSON{Raw: []byte(`{"fallback": true}`)},
 			},
 			stepOutput: map[string]any{
 				"data": "not valid json",
@@ -545,7 +545,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, WorkflowStatusCompleted, result.Status)
 				// Verify default value was used
-				if tt.propDef.Default != nil {
+				if !tt.propDef.Default.IsEmpty() {
 					assert.NotNil(t, result.Output["value"])
 				}
 			}
@@ -583,7 +583,7 @@ func TestCompositeToolWithOutputConfig_ConditionalStepsWithOutput(t *testing.T) 
 					Type:        "string",
 					Description: "Processed data",
 					Value:       "{{.steps.conditional.output.result}}",
-					Default:     "not_processed",
+					Default:     config.RawJSON{Raw: []byte(`"not_processed"`)},
 				},
 			},
 		},

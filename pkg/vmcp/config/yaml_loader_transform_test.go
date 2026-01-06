@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -218,16 +219,9 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter missing type field returns error",
 			tool: &CompositeToolConfig{
-				Name: "bad",
-				Parameters: map[string]any{
-					"properties": map[string]any{
-						"param1": map[string]any{
-							"type": "string",
-						},
-					},
-					// Missing "type" at root level
-				},
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Name:       "bad",
+				Parameters: RawJSON{Raw: []byte(`{"properties":{"input":{"type":"string"}}}`)},
+				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "parameters must have 'type' field",
@@ -235,16 +229,9 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter type not string returns error",
 			tool: &CompositeToolConfig{
-				Name: "bad",
-				Parameters: map[string]any{
-					"type": 123, // type must be string
-					"properties": map[string]any{
-						"param1": map[string]any{
-							"type": "string",
-						},
-					},
-				},
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Name:       "bad",
+				Parameters: RawJSON{Raw: []byte(`{"type":123,"properties":{"param1":{"type":"string"}}}`)},
+				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "'type' field must be a string",
@@ -252,36 +239,29 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 		{
 			name: "parameter type must be object returns error",
 			tool: &CompositeToolConfig{
-				Name: "bad",
-				Parameters: map[string]any{
-					"type": "string", // must be "object" for parameter schemas
-				},
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Name:       "bad",
+				Parameters: RawJSON{Raw: []byte(`{"type":"string"}`)},
+				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
-			errMsg:  "'type' must be 'object'",
+			errMsg:  "parameters must have 'type' field",
 		},
 		{
 			name: "parameter with default value works",
 			tool: &CompositeToolConfig{
-				Name: "test",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"version": map[string]any{
-							"type":    "string",
-							"default": "latest",
-						},
-					},
-				},
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Name:       "test",
+				Parameters: RawJSON{Raw: []byte(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`)},
+				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			verify: func(t *testing.T, tool *CompositeToolConfig) {
 				t.Helper()
 				// Parameters is now map[string]any with JSON Schema format
 				params := tool.Parameters
-				assert.Equal(t, "object", params["type"])
-				properties, ok := params["properties"].(map[string]any)
+				var paramsMap map[string]any
+				err := json.Unmarshal(params.Raw, &paramsMap)
+				require.NoError(t, err)
+				assert.Equal(t, "object", paramsMap["type"])
+				properties, ok := paramsMap["properties"].(map[string]any)
 				require.True(t, ok, "properties should be a map")
 				version, ok := properties["version"].(map[string]any)
 				require.True(t, ok, "version property should be a map")
@@ -437,7 +417,7 @@ telemetry:
 		ServiceVersion:              "1.2.3",
 		TracingEnabled:              true,
 		MetricsEnabled:              true,
-		SamplingRate:                0.75,
+		SamplingRate:                "0.75",
 		Insecure:                    true,
 		EnablePrometheusMetricsPath: true,
 		Headers:                     map[string]string{"Authorization": "Bearer token123", "X-Custom-Header": "custom-value"},

@@ -539,7 +539,7 @@ func TestVMCPServer_DefaultResults_ConditionalSkip(t *testing.T) {
 						Type:        "string",
 						Description: "Result from optional step",
 						Value:       "{{.steps.optional_step.output.text}}",
-						Default:     "fallback_not_used", // Shouldn't be used since defaultResults provides value
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`"fallback_not_used"`)}, // Shouldn't be used since defaultResults provides value
 					},
 				},
 			},
@@ -661,7 +661,7 @@ func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
 						Type:        "string",
 						Description: "Result from step",
 						Value:       "{{.steps.maybe_failing_step.output.text}}",
-						Default:     "fallback_not_used", // Shouldn't be used since defaultResults provides value
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`"fallback_not_used"`)}, // Shouldn't be used since defaultResults provides value
 					},
 				},
 			},

@@ -1530,7 +1530,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 				ServiceName:          "file-based-service",
 				TracingEnabled:       true,
 				MetricsEnabled:       false,
-				SamplingRate:         0.5,
+				SamplingRate:         "0.5",
 				EnvironmentVariables: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"},
 			},
 		}

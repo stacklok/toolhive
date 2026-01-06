@@ -171,6 +171,9 @@ tasks:
   # Kubebuilder tasks
   operator-generate:
     desc: Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations
+    vars:
+      PROJECT_ROOT:
+        sh: git rev-parse --show-toplevel || pwd
     cmds:
       - cmd: mkdir -p bin
         platforms: [linux, darwin]
@@ -178,7 +181,7 @@ tasks:
         platforms: [windows]
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
-      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..."
+      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..." paths="./pkg/vmcp/config/..." paths="./pkg/vmcp/auth/types/..." paths="./pkg/telemetry/..." paths="./pkg/audit/..."
 
   operator-manifests:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects

@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"time"
 
+	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -19,6 +22,160 @@ import (
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
 type Duration time.Duration
+
+// RawJSON stores arbitrary JSON data. It supports both JSON and YAML marshaling/unmarshaling,
+// making it suitable for use in both Kubernetes CRDs and CLI YAML configurations.
+// Unlike runtime.RawExtension, it has native YAML support.
+//
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=object
+type RawJSON struct {
+	// Raw holds the raw JSON bytes.
+	Raw []byte `json:"-" yaml:"-"`
+}
+
+// MarshalJSON implements json.Marshaler.
+func (r RawJSON) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) == 0 {
+		return []byte("null"), nil
+	}
+	return r.Raw, nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (r *RawJSON) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		r.Raw = nil
+		return nil
+	}
+	r.Raw = make([]byte, len(data))
+	copy(r.Raw, data)
+	return nil
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (r RawJSON) MarshalYAML() (interface{}, error) {
+	if len(r.Raw) == 0 {
+		return nil, nil
+	}
+	var value any
+	if err := json.Unmarshal(r.Raw, &value); err != nil {
+		return nil, fmt.Errorf("failed to convert JSON to YAML: %w", err)
+	}
+	return value, nil
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (r *RawJSON) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		r.Raw = nil
+		return nil
+	}
+
+	// Decode YAML to a generic value
+	var value any
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+
+	if value == nil {
+		r.Raw = nil
+		return nil
+	}
+
+	// Convert to JSON bytes
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("failed to convert YAML to JSON: %w", err)
+	}
+	r.Raw = raw
+	return nil
+}
+
+// ToMap unmarshals the raw JSON to a map[string]any.
+// Returns nil if there is no data.
+func (r RawJSON) ToMap() (map[string]any, error) {
+	if len(r.Raw) == 0 {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(r.Raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ToAny unmarshals the raw JSON to any type.
+// Returns nil if there is no data.
+func (r RawJSON) ToAny() (any, error) {
+	if len(r.Raw) == 0 {
+		return nil, nil
+	}
+	var v any
+	if err := json.Unmarshal(r.Raw, &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// FromMap creates a RawJSON from a map[string]any.
+func FromMap(m map[string]any) (RawJSON, error) {
+	if m == nil {
+		return RawJSON{}, nil
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return RawJSON{}, err
+	}
+	return RawJSON{Raw: raw}, nil
+}
+
+// FromAny creates a RawJSON from any value.
+func FromAny(v any) (RawJSON, error) {
+	if v == nil {
+		return RawJSON{}, nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return RawJSON{}, err
+	}
+	return RawJSON{Raw: raw}, nil
+}
+
+// IsEmpty returns true if there is no data.
+func (r RawJSON) IsEmpty() bool {
+	return len(r.Raw) == 0
+}
+
+// DeepCopyInto copies the receiver into out. Required for controller-gen.
+func (r *RawJSON) DeepCopyInto(out *RawJSON) {
+	if r.Raw != nil {
+		out.Raw = make([]byte, len(r.Raw))
+		copy(out.Raw, r.Raw)
+	} else {
+		out.Raw = nil
+	}
+}
+
+// DeepCopy creates a deep copy of RawJSON. Required for controller-gen.
+func (r *RawJSON) DeepCopy() *RawJSON {
+	if r == nil {
+		return nil
+	}
+	out := new(RawJSON)
+	r.DeepCopyInto(out)
+	return out
+}
+
+// ToRawExtension converts RawJSON to runtime.RawExtension for K8s compatibility.
+func (r RawJSON) ToRawExtension() runtime.RawExtension {
+	return runtime.RawExtension{Raw: r.Raw}
+}
+
+// FromRawExtension creates a RawJSON from runtime.RawExtension.
+func FromRawExtension(ext runtime.RawExtension) RawJSON {
+	return RawJSON{Raw: ext.Raw}
+}
 
 // MarshalJSON implements json.Marshaler.
 func (d Duration) MarshalJSON() ([]byte, error) {
@@ -63,6 +220,9 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 //
 // Platform-specific adapters (CLI YAML loader, Kubernetes CRD converter)
 // transform their native formats into this model.
+// +kubebuilder:object:generate=true
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=object
 type Config struct {
 	// Name is the virtual MCP server name.
 	Name string `json:"name" yaml:"name"`
@@ -98,6 +258,7 @@ type Config struct {
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
+// +kubebuilder:object:generate=true
 type IncomingAuthConfig struct {
 	// Type is the auth type: "oidc", "local", "anonymous"
 	Type string `json:"type" yaml:"type"`
@@ -110,6 +271,7 @@ type IncomingAuthConfig struct {
 }
 
 // OIDCConfig configures OpenID Connect authentication.
+// +kubebuilder:object:generate=true
 type OIDCConfig struct {
 	// Issuer is the OIDC issuer URL.
 	Issuer string `json:"issuer" yaml:"issuer"`
@@ -144,6 +306,7 @@ type OIDCConfig struct {
 }
 
 // AuthzConfig configures authorization.
+// +kubebuilder:object:generate=true
 type AuthzConfig struct {
 	// Type is the authz type: "cedar", "none"
 	Type string `json:"type" yaml:"type"`
@@ -153,6 +316,7 @@ type AuthzConfig struct {
 }
 
 // OutgoingAuthConfig configures backend authentication.
+// +kubebuilder:object:generate=true
 type OutgoingAuthConfig struct {
 	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
@@ -189,6 +353,7 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 }
 
 // AggregationConfig configures capability aggregation.
+// +kubebuilder:object:generate=true
 type AggregationConfig struct {
 	// ConflictResolution is the strategy: "prefix", "priority", "manual"
 	ConflictResolution vmcp.ConflictResolutionStrategy `json:"conflictResolution" yaml:"conflictResolution"`
@@ -203,6 +368,7 @@ type AggregationConfig struct {
 }
 
 // ConflictResolutionConfig contains conflict resolution settings.
+// +kubebuilder:object:generate=true
 type ConflictResolutionConfig struct {
 	// PrefixFormat is the prefix format (for prefix strategy).
 	// Options: "{workload}", "{workload}_", "{workload}.", custom string
@@ -213,6 +379,7 @@ type ConflictResolutionConfig struct {
 }
 
 // WorkloadToolConfig configures tool filtering/overrides for a workload.
+// +kubebuilder:object:generate=true
 type WorkloadToolConfig struct {
 	// Workload is the workload name/ID.
 	Workload string `json:"workload" yaml:"workload"`
@@ -227,6 +394,7 @@ type WorkloadToolConfig struct {
 }
 
 // ToolOverride defines tool name/description overrides.
+// +kubebuilder:object:generate=true
 type ToolOverride struct {
 	// Name is the new tool name (for renaming).
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
@@ -236,6 +404,7 @@ type ToolOverride struct {
 }
 
 // OperationalConfig contains operational settings.
+// +kubebuilder:object:generate=true
 type OperationalConfig struct {
 	// Timeouts configures request timeouts.
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty" yaml:"timeouts,omitempty"`
@@ -245,6 +414,7 @@ type OperationalConfig struct {
 }
 
 // TimeoutConfig configures timeouts.
+// +kubebuilder:object:generate=true
 type TimeoutConfig struct {
 	// Default is the default timeout for backend requests.
 	Default Duration `json:"default" yaml:"default"`
@@ -254,6 +424,7 @@ type TimeoutConfig struct {
 }
 
 // FailureHandlingConfig configures failure handling.
+// +kubebuilder:object:generate=true
 type FailureHandlingConfig struct {
 	// HealthCheckInterval is how often to check backend health.
 	HealthCheckInterval Duration `json:"healthCheckInterval" yaml:"healthCheckInterval"`
@@ -270,6 +441,7 @@ type FailureHandlingConfig struct {
 }
 
 // CircuitBreakerConfig configures circuit breaker.
+// +kubebuilder:object:generate=true
 type CircuitBreakerConfig struct {
 	// Enabled indicates if circuit breaker is enabled.
 	Enabled bool `json:"enabled" yaml:"enabled"`
@@ -283,6 +455,7 @@ type CircuitBreakerConfig struct {
 
 // CompositeToolConfig defines a composite tool workflow.
 // This matches the YAML structure from the proposal (lines 173-255).
+// +kubebuilder:object:generate=true
 type CompositeToolConfig struct {
 	// Name is the workflow name (unique identifier).
 	Name string `json:"name" yaml:"name"`
@@ -302,12 +475,13 @@ type CompositeToolConfig struct {
 	//     "required": ["param2"]
 	//   }
 	//
-	// We use map[string]any rather than a typed struct because JSON Schema is highly
+	// We use RawJSON rather than a typed struct because JSON Schema is highly
 	// flexible with many optional fields (default, enum, minimum, maximum, pattern,
-	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using map[string]any
+	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using RawJSON
 	// allows full JSON Schema compatibility without needing to define every possible
 	// field, and matches how the MCP SDK handles inputSchema.
-	Parameters map[string]any `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	// +optional
+	Parameters RawJSON `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
@@ -323,6 +497,7 @@ type CompositeToolConfig struct {
 
 // WorkflowStepConfig defines a single workflow step.
 // This matches the proposal's step configuration (lines 180-255).
+// +kubebuilder:object:generate=true
 type WorkflowStepConfig struct {
 	// ID uniquely identifies this step.
 	ID string `json:"id" yaml:"id"`
@@ -334,7 +509,8 @@ type WorkflowStepConfig struct {
 	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
 
 	// Arguments are the tool arguments (supports template expansion).
-	Arguments map[string]any `json:"arguments,omitempty" yaml:"arguments,omitempty"`
+	// +optional
+	Arguments RawJSON `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 
 	// Condition is an optional execution condition (template syntax).
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
@@ -346,9 +522,10 @@ type WorkflowStepConfig struct {
 	OnError *StepErrorHandling `json:"onError,omitempty" yaml:"onError,omitempty"`
 
 	// Elicitation config (for elicitation steps).
-	Message string         `json:"message,omitempty" yaml:"message,omitempty"`
-	Schema  map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
-	Timeout Duration       `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Message string `json:"message,omitempty" yaml:"message,omitempty"`
+	// +optional
+	Schema  RawJSON  `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Elicitation response handlers.
 	OnDecline *ElicitationResponseConfig `json:"onDecline,omitempty" yaml:"onDecline,omitempty"`
@@ -357,10 +534,12 @@ type WorkflowStepConfig struct {
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
-	DefaultResults map[string]any `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
+	// +optional
+	DefaultResults RawJSON `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.
+// +kubebuilder:object:generate=true
 type StepErrorHandling struct {
 	// Action: "abort", "continue", "retry"
 	Action string `json:"action" yaml:"action"`
@@ -373,6 +552,7 @@ type StepErrorHandling struct {
 }
 
 // ElicitationResponseConfig defines how to handle elicitation responses.
+// +kubebuilder:object:generate=true
 type ElicitationResponseConfig struct {
 	// Action: "skip_remaining", "abort", "continue"
 	Action string `json:"action" yaml:"action"`
@@ -381,6 +561,7 @@ type ElicitationResponseConfig struct {
 // OutputConfig defines the structured output schema for a composite tool workflow.
 // This follows the same pattern as the Parameters field, defining both the
 // MCP output schema (type, description) and runtime value construction (value, default).
+// +kubebuilder:object:generate=true
 type OutputConfig struct {
 	// Properties defines the output properties.
 	// Map key is the property name, value is the property definition.
@@ -394,6 +575,7 @@ type OutputConfig struct {
 // OutputProperty defines a single output property.
 // For non-object types, Value is required.
 // For object types, either Value or Properties must be specified (but not both).
+// +kubebuilder:object:generate=true
 type OutputProperty struct {
 	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array".
 	Type string `json:"type" yaml:"type"`
@@ -415,7 +597,7 @@ type OutputProperty struct {
 	// Default is the fallback value if template expansion fails.
 	// Type coercion is applied to match the declared Type.
 	// +optional
-	Default any `json:"default,omitempty" yaml:"default,omitempty"`
+	Default RawJSON `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // Validator validates configuration.

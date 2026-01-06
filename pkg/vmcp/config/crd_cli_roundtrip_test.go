@@ -472,12 +472,7 @@ func TestConfigRoundtrip(t *testing.T) {
 			{
 				Name:        "test-tool",
 				Description: "A test composite tool",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input": map[string]any{"type": "string"},
-					},
-				},
+				Parameters:  RawJSON{Raw: []byte(`{"type":"object","properties":{"input":{"type":"string"}}}`)},
 				Steps: []*WorkflowStepConfig{
 					{
 						ID:   "step1",

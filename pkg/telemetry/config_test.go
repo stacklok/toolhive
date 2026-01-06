@@ -199,7 +199,7 @@ func TestProvider_Middleware(t *testing.T) {
 	config := Config{
 		ServiceName:                 "test-service",
 		ServiceVersion:              "1.0.0",
-		SamplingRate:                0.1,
+		SamplingRate:                "0.1",
 		Headers:                     make(map[string]string),
 		EnablePrometheusMetricsPath: true,
 	}
@@ -231,7 +231,7 @@ func TestProvider_ShutdownTimeout(t *testing.T) {
 		ServiceVersion:              "1.0.0",
 		TracingEnabled:              true,
 		MetricsEnabled:              true,
-		SamplingRate:                0.1,
+		SamplingRate:                "0.1",
 		Headers:                     make(map[string]string),
 		Endpoint:                    "localhost:4318",
 		Insecure:                    true,

@@ -649,17 +649,9 @@ func (c *Converter) convertCompositeToolSpec(
 		}
 	}
 
-	// Convert parameters from runtime.RawExtension to map[string]any
+	// Convert parameters from runtime.RawExtension to RawJSON
 	if parameters != nil && len(parameters.Raw) > 0 {
-		var params map[string]any
-		if err := json.Unmarshal(parameters.Raw, &params); err != nil {
-			// Log warning but continue - validation should have caught this at admission time
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to unmarshal composite tool parameters",
-				"tool", toolNameForLogging, "raw", string(parameters.Raw))
-		} else {
-			tool.Parameters = params
-		}
+		tool.Parameters = vmcpconfig.FromRawExtension(*parameters)
 	}
 
 	// Convert steps
@@ -671,7 +663,7 @@ func (c *Converter) convertCompositeToolSpec(
 
 	// Convert output configuration
 	if output != nil {
-		tool.Output = convertOutputSpec(ctx, output)
+		tool.Output = convertOutputSpec(output)
 	}
 
 	return tool, nil
@@ -687,10 +679,7 @@ func (*Converter) convertWorkflowSteps(
 	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
 
 	for _, crdStep := range steps {
-		args, err := convertArguments(crdStep.Arguments)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
-		}
+		args := convertArguments(crdStep.Arguments)
 
 		step := &vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
@@ -702,17 +691,9 @@ func (*Converter) convertWorkflowSteps(
 			DependsOn: crdStep.DependsOn,
 		}
 
-		// Convert Schema from runtime.RawExtension to map[string]any (for elicitation steps)
+		// Convert Schema from runtime.RawExtension to RawJSON (for elicitation steps)
 		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			var schema map[string]any
-			if err := json.Unmarshal(crdStep.Schema.Raw, &schema); err != nil {
-				// Log warning but continue - validation should have caught this at admission time
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "failed to unmarshal step schema",
-					"tool", toolNameForLogging, "step", crdStep.ID, "raw", string(crdStep.Schema.Raw))
-			} else {
-				step.Schema = schema
-			}
+			step.Schema = vmcpconfig.FromRawExtension(*crdStep.Schema)
 		}
 
 		// Parse timeout
@@ -759,18 +740,23 @@ func (*Converter) convertWorkflowSteps(
 			}
 		}
 
-		// Convert default results from map[string]runtime.RawExtension to map[string]any
+		// Convert default results from map[string]runtime.RawExtension to RawJSON
 		if len(crdStep.DefaultResults) > 0 {
-			step.DefaultResults = make(map[string]any, len(crdStep.DefaultResults))
+			defaultResults := make(map[string]any, len(crdStep.DefaultResults))
 			for key, rawExt := range crdStep.DefaultResults {
 				if len(rawExt.Raw) > 0 {
 					var value any
 					if err := json.Unmarshal(rawExt.Raw, &value); err != nil {
 						return nil, fmt.Errorf("failed to unmarshal default result %q: %w", key, err)
 					}
-					step.DefaultResults[key] = value
+					defaultResults[key] = value
 				}
 			}
+			rawJSON, err := vmcpconfig.FromMap(defaultResults)
+			if err != nil {
+				return nil, fmt.Errorf("step %q: failed to convert default results: %w", crdStep.ID, err)
+			}
+			step.DefaultResults = rawJSON
 		}
 
 		workflowSteps = append(workflowSteps, step)
@@ -791,23 +777,18 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 	return nil
 }
 
-// convertArguments converts arguments from runtime.RawExtension to map[string]any.
+// convertArguments converts arguments from runtime.RawExtension to RawJSON.
 // This preserves the original types (integers, booleans, arrays, objects) from the CRD.
-// Returns an empty map if no arguments are specified.
-// Returns an error if the JSON fails to unmarshal.
-func convertArguments(args *runtime.RawExtension) (map[string]any, error) {
+// Returns an empty RawJSON if no arguments are specified.
+func convertArguments(args *runtime.RawExtension) vmcpconfig.RawJSON {
 	if args == nil || len(args.Raw) == 0 {
-		return make(map[string]any), nil
+		return vmcpconfig.RawJSON{}
 	}
-	var result map[string]any
-	if err := json.Unmarshal(args.Raw, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
-	}
-	return result, nil
+	return vmcpconfig.FromRawExtension(*args)
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
-func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
+func convertOutputSpec(crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
 	if crdOutput == nil {
 		return nil
 	}
@@ -819,7 +800,7 @@ func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *
 
 	// Convert properties
 	for propName, propSpec := range crdOutput.Properties {
-		output.Properties[propName] = convertOutputProperty(ctx, propName, propSpec)
+		output.Properties[propName] = convertOutputProperty(propName, propSpec)
 	}
 
 	return output
@@ -827,7 +808,7 @@ func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *
 
 // convertOutputProperty converts OutputPropertySpec from CRD to vmcp config OutputProperty
 func convertOutputProperty(
-	ctx context.Context, propName string, crdProp mcpv1alpha1.OutputPropertySpec,
+	propName string, crdProp mcpv1alpha1.OutputPropertySpec,
 ) vmcpconfig.OutputProperty {
 	prop := vmcpconfig.OutputProperty{
 		Type:        crdProp.Type,
@@ -839,27 +820,13 @@ func convertOutputProperty(
 	if len(crdProp.Properties) > 0 {
 		prop.Properties = make(map[string]vmcpconfig.OutputProperty, len(crdProp.Properties))
 		for nestedName, nestedSpec := range crdProp.Properties {
-			prop.Properties[nestedName] = convertOutputProperty(ctx, propName+"."+nestedName, nestedSpec)
+			prop.Properties[nestedName] = convertOutputProperty(propName+"."+nestedName, nestedSpec)
 		}
 	}
 
-	// Convert default value from runtime.RawExtension to any
-	// RawExtension.Raw contains JSON bytes. json.Unmarshal correctly handles:
-	// - JSON strings: "hello" -> Go string "hello"
-	// - JSON numbers: 42 -> Go float64(42)
-	// - JSON booleans: true -> Go bool true
-	// - JSON objects: {"key":"value"} -> Go map[string]any
-	// - JSON arrays: [1,2,3] -> Go []any
+	// Convert default value from runtime.RawExtension to RawJSON
 	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
-		var defaultVal any
-		if err := json.Unmarshal(crdProp.Default.Raw, &defaultVal); err != nil {
-			// Log warning but continue - invalid defaults will be caught at runtime
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to unmarshal output property default value",
-				"property", propName, "raw", string(crdProp.Default.Raw))
-		} else {
-			prop.Default = defaultVal
-		}
+		prop.Default = vmcpconfig.FromRawExtension(*crdProp.Default)
 	}
 
 	return prop

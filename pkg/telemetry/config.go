@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -18,6 +19,7 @@ import (
 )
 
 // Config holds the configuration for OpenTelemetry instrumentation.
+// +kubebuilder:object:generate=true
 type Config struct {
 	// Endpoint is the OTLP endpoint URL
 	Endpoint string `json:"endpoint" yaml:"endpoint"`
@@ -37,9 +39,10 @@ type Config struct {
 	// This is independent of EnablePrometheusMetricsPath
 	MetricsEnabled bool `json:"metricsEnabled" yaml:"metricsEnabled"`
 
-	// SamplingRate is the trace sampling rate (0.0-1.0)
-	// Only used when TracingEnabled is true
-	SamplingRate float64 `json:"samplingRate" yaml:"samplingRate"`
+	// SamplingRate is the trace sampling rate (0.0-1.0) as a string.
+	// Only used when TracingEnabled is true.
+	// Example: "0.05" for 5% sampling.
+	SamplingRate string `json:"samplingRate" yaml:"samplingRate"`
 
 	// Headers contains authentication headers for the OTLP endpoint
 	Headers map[string]string `json:"headers" yaml:"headers"`
@@ -66,15 +69,33 @@ type Config struct {
 	CustomAttributes map[string]string `json:"customAttributes,omitempty" yaml:"customAttributes,omitempty"`
 }
 
+// GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
+// Returns 0.0 if the string is empty or cannot be parsed.
+func (c *Config) GetSamplingRateFloat() float64 {
+	if c.SamplingRate == "" {
+		return 0.0
+	}
+	rate, err := strconv.ParseFloat(c.SamplingRate, 64)
+	if err != nil {
+		return 0.0
+	}
+	return rate
+}
+
+// SetSamplingRateFromFloat sets the SamplingRate from a float64 value.
+func (c *Config) SetSamplingRateFromFloat(rate float64) {
+	c.SamplingRate = strconv.FormatFloat(rate, 'f', -1, 64)
+}
+
 // DefaultConfig returns a default telemetry configuration.
 func DefaultConfig() Config {
 	versionInfo := versions.GetVersionInfo()
 	return Config{
 		ServiceName:                 "toolhive-mcp-proxy",
 		ServiceVersion:              versionInfo.Version,
-		TracingEnabled:              true, // Enable tracing by default if endpoint is configured
-		MetricsEnabled:              true, // Enable metrics by default if endpoint is configured
-		SamplingRate:                0.05, // 5% sampling by default
+		TracingEnabled:              true,   // Enable tracing by default if endpoint is configured
+		MetricsEnabled:              true,   // Enable metrics by default if endpoint is configured
+		SamplingRate:                "0.05", // 5% sampling by default
 		Headers:                     make(map[string]string),
 		Insecure:                    false,
 		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
@@ -131,7 +152,7 @@ func MaybeMakeConfig(
 		ServiceVersion:              DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
+		SamplingRate:                strconv.FormatFloat(otelSamplingRate, 'f', -1, 64),
 		Headers:                     headers,
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
@@ -163,7 +184,7 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		providers.WithInsecure(config.Insecure),
 		providers.WithTracingEnabled(config.TracingEnabled),
 		providers.WithMetricsEnabled(config.MetricsEnabled),
-		providers.WithSamplingRate(config.SamplingRate),
+		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
 		providers.WithCustomAttributes(config.CustomAttributes),
 	}

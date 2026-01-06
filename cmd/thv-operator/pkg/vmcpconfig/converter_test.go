@@ -1005,19 +1005,19 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 						Type:        "string",
 						Description: "Status of the operation",
 						Value:       "{{.steps.step1.output.status}}",
-						Default:     "pending",
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`"pending"`)},
 					},
 					"count": {
 						Type:        "integer",
 						Description: "Number of items processed",
 						Value:       "{{.steps.step1.output.count}}",
-						Default:     float64(0), // JSON numbers unmarshal as float64
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`0`)},
 					},
 					"enabled": {
 						Type:        "boolean",
 						Description: "Whether the feature is enabled",
 						Value:       "{{.steps.step1.output.enabled}}",
-						Default:     true,
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`true`)},
 					},
 				},
 				Required: []string{"status"},
@@ -1048,17 +1048,13 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 						Type:        "object",
 						Description: "Configuration object",
 						Value:       "{{.steps.step1.output.config}}",
-						Default: map[string]any{
-							"timeout": float64(30),
-							"retries": float64(3),
-							"enabled": true,
-						},
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`{"timeout": 30, "retries": 3, "enabled": true}`)},
 					},
 					"tags": {
 						Type:        "array",
 						Description: "List of tags",
 						Value:       "{{.steps.step1.output.tags}}",
-						Default:     []any{"default", "prod"},
+						Default:     vmcpconfig.RawJSON{Raw: []byte(`["default", "prod"]`)},
 					},
 				},
 			},
@@ -1102,7 +1098,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 								Type:        "integer",
 								Description: "Version of the result format",
 								Value:       "{{.steps.step1.output.version}}",
-								Default:     float64(1),
+								Default:     vmcpconfig.RawJSON{Raw: []byte(`1`)},
 							},
 						},
 					},
@@ -1181,13 +1177,13 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 												Type:        "string",
 												Description: "Fourth level actual value",
 												Value:       "{{.steps.step1.output.deep.value}}",
-												Default:     "default_value",
+												Default:     vmcpconfig.RawJSON{Raw: []byte(`"default_value"`)},
 											},
 											"count": {
 												Type:        "integer",
 												Description: "Fourth level count",
 												Value:       "{{.steps.step1.output.deep.count}}",
-												Default:     float64(0),
+												Default:     vmcpconfig.RawJSON{Raw: []byte(`0`)},
 											},
 										},
 									},
@@ -1208,7 +1204,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 								Type:        "string",
 								Description: "Second level status",
 								Value:       "{{.steps.step1.output.status}}",
-								Default:     "success",
+								Default:     vmcpconfig.RawJSON{Raw: []byte(`"success"`)},
 							},
 						},
 					},
@@ -1711,7 +1707,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				assert.Equal(t, "referenced-tool", tool.Name)
 				assert.Equal(t, vmcpconfig.Duration(5*time.Minute), tool.Timeout)
 				require.NotNil(t, tool.Parameters)
-				params := tool.Parameters
+				params, err := tool.Parameters.ToMap()
+				require.NoError(t, err)
 				assert.Equal(t, "object", params["type"])
 			},
 		},

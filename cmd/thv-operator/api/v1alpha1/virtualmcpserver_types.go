@@ -3,6 +3,8 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
@@ -64,6 +66,14 @@ type VirtualMCPServerSpec struct {
 	// When enabled, audit logs include MCP protocol operations
 	// +optional
 	Audit *AuditConfig `json:"audit,omitempty"`
+
+	// Config is the Virtual MCP server configuration
+	// NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
+	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Config config.Config `json:"config,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource

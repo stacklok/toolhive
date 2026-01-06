@@ -164,6 +164,10 @@ type Proxy interface {
 // This allows the transport to notify the runner/status manager when remote servers become unhealthy.
 type HealthCheckFailedCallback func()
 
+// UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
+// This allows the transport to notify the runner/status manager when bearer tokens become invalid.
+type UnauthorizedResponseCallback func()
+
 // Config contains configuration options for a transport.
 type Config struct {
 	// Type is the type of transport to use.

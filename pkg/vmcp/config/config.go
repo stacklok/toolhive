@@ -68,13 +68,13 @@ type Config struct {
 	Name string `json:"name" yaml:"name"`
 
 	// Group references the ToolHive group containing backend workloads.
-	Group string `json:"group_ref" yaml:"group"`
+	Group string `json:"groupRef" yaml:"groupRef"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
-	IncomingAuth *IncomingAuthConfig `json:"incoming_auth,omitempty" yaml:"incoming_auth,omitempty"`
+	IncomingAuth *IncomingAuthConfig `json:"incomingAuth,omitempty" yaml:"incomingAuth,omitempty"`
 
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
-	OutgoingAuth *OutgoingAuthConfig `json:"outgoing_auth,omitempty" yaml:"outgoing_auth,omitempty"`
+	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
 	// Aggregation configures capability aggregation and conflict resolution.
 	Aggregation *AggregationConfig `json:"aggregation,omitempty" yaml:"aggregation,omitempty"`
@@ -82,7 +82,7 @@ type Config struct {
 	// CompositeTools defines inline composite tool workflows.
 	// Full workflow definitions are embedded in the configuration.
 	// For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
-	CompositeTools []*CompositeToolConfig `json:"composite_tools,omitempty" yaml:"composite_tools,omitempty"`
+	CompositeTools []*CompositeToolConfig `json:"compositeTools,omitempty" yaml:"compositeTools,omitempty"`
 
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
@@ -115,13 +115,13 @@ type OIDCConfig struct {
 	Issuer string `json:"issuer" yaml:"issuer"`
 
 	// ClientID is the OAuth client ID.
-	ClientID string `json:"client_id" yaml:"client_id"`
+	ClientID string `json:"clientId" yaml:"clientId"`
 
 	// ClientSecretEnv is the name of the environment variable containing the client secret.
 	// This is the secure way to reference secrets - the actual secret value is never stored
 	// in configuration files, only the environment variable name.
 	// The secret value will be resolved from this environment variable at runtime.
-	ClientSecretEnv string `json:"client_secret_env,omitempty" yaml:"client_secret_env,omitempty"`
+	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
 
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`
@@ -136,11 +136,11 @@ type OIDCConfig struct {
 
 	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
 	// Use with caution - only enable for trusted internal IDPs or testing
-	ProtectedResourceAllowPrivateIP bool `json:"protected_resource_allow_private_ip,omitempty" yaml:"protected_resource_allow_private_ip,omitempty"` //nolint:lll
+	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIp,omitempty" yaml:"protectedResourceAllowPrivateIp,omitempty"` //nolint:lll
 
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
-	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
+	InsecureAllowHTTP bool `json:"insecureAllowHttp,omitempty" yaml:"insecureAllowHttp,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -191,10 +191,10 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 // AggregationConfig configures capability aggregation.
 type AggregationConfig struct {
 	// ConflictResolution is the strategy: "prefix", "priority", "manual"
-	ConflictResolution vmcp.ConflictResolutionStrategy `json:"conflict_resolution" yaml:"conflict_resolution"`
+	ConflictResolution vmcp.ConflictResolutionStrategy `json:"conflictResolution" yaml:"conflictResolution"`
 
 	// ConflictResolutionConfig contains strategy-specific configuration.
-	ConflictResolutionConfig *ConflictResolutionConfig `json:"conflict_resolution_config,omitempty" yaml:"conflict_resolution_config,omitempty"` //nolint:lll
+	ConflictResolutionConfig *ConflictResolutionConfig `json:"conflictResolutionConfig,omitempty" yaml:"conflictResolutionConfig,omitempty"` //nolint:lll
 
 	// Tools contains per-workload tool configuration.
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
@@ -206,10 +206,10 @@ type AggregationConfig struct {
 type ConflictResolutionConfig struct {
 	// PrefixFormat is the prefix format (for prefix strategy).
 	// Options: "{workload}", "{workload}_", "{workload}.", custom string
-	PrefixFormat string `json:"prefix_format,omitempty" yaml:"prefix_format,omitempty"`
+	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
 	// PriorityOrder is the explicit priority ordering (for priority strategy).
-	PriorityOrder []string `json:"priority_order,omitempty" yaml:"priority_order,omitempty"`
+	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }
 
 // WorkloadToolConfig configures tool filtering/overrides for a workload.
@@ -241,7 +241,7 @@ type OperationalConfig struct {
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty" yaml:"timeouts,omitempty"`
 
 	// FailureHandling configures failure handling.
-	FailureHandling *FailureHandlingConfig `json:"failure_handling,omitempty" yaml:"failure_handling,omitempty"`
+	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
 }
 
 // TimeoutConfig configures timeouts.
@@ -250,23 +250,23 @@ type TimeoutConfig struct {
 	Default Duration `json:"default" yaml:"default"`
 
 	// PerWorkload contains per-workload timeout overrides.
-	PerWorkload map[string]Duration `json:"per_workload,omitempty" yaml:"per_workload,omitempty"`
+	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling.
 type FailureHandlingConfig struct {
 	// HealthCheckInterval is how often to check backend health.
-	HealthCheckInterval Duration `json:"health_check_interval" yaml:"health_check_interval"`
+	HealthCheckInterval Duration `json:"healthCheckInterval" yaml:"healthCheckInterval"`
 
 	// UnhealthyThreshold is how many failures before marking unhealthy.
-	UnhealthyThreshold int `json:"unhealthy_threshold" yaml:"unhealthy_threshold"`
+	UnhealthyThreshold int `json:"unhealthyThreshold" yaml:"unhealthyThreshold"`
 
 	// PartialFailureMode defines behavior when some backends fail.
 	// Options: "fail" (fail entire request), "best_effort" (return partial results)
-	PartialFailureMode string `json:"partial_failure_mode" yaml:"partial_failure_mode"`
+	PartialFailureMode string `json:"partialFailureMode" yaml:"partialFailureMode"`
 
 	// CircuitBreaker configures circuit breaker settings.
-	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty" yaml:"circuitBreaker,omitempty"`
 }
 
 // CircuitBreakerConfig configures circuit breaker.
@@ -275,7 +275,7 @@ type CircuitBreakerConfig struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
 
 	// FailureThreshold is how many failures trigger open circuit.
-	FailureThreshold int `json:"failure_threshold" yaml:"failure_threshold"`
+	FailureThreshold int `json:"failureThreshold" yaml:"failureThreshold"`
 
 	// Timeout is how long to keep circuit open.
 	Timeout Duration `json:"timeout" yaml:"timeout"`
@@ -340,10 +340,10 @@ type WorkflowStepConfig struct {
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
 
 	// DependsOn lists step IDs that must complete first (for DAG execution).
-	DependsOn []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 
 	// OnError defines error handling for this step.
-	OnError *StepErrorHandling `json:"on_error,omitempty" yaml:"on_error,omitempty"`
+	OnError *StepErrorHandling `json:"onError,omitempty" yaml:"onError,omitempty"`
 
 	// Elicitation config (for elicitation steps).
 	Message string         `json:"message,omitempty" yaml:"message,omitempty"`
@@ -351,13 +351,13 @@ type WorkflowStepConfig struct {
 	Timeout Duration       `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Elicitation response handlers.
-	OnDecline *ElicitationResponseConfig `json:"on_decline,omitempty" yaml:"on_decline,omitempty"`
-	OnCancel  *ElicitationResponseConfig `json:"on_cancel,omitempty" yaml:"on_cancel,omitempty"`
+	OnDecline *ElicitationResponseConfig `json:"onDecline,omitempty" yaml:"onDecline,omitempty"`
+	OnCancel  *ElicitationResponseConfig `json:"onCancel,omitempty" yaml:"onCancel,omitempty"`
 
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
-	DefaultResults map[string]any `json:"default_results,omitempty" yaml:"default_results,omitempty"`
+	DefaultResults map[string]any `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.
@@ -366,10 +366,10 @@ type StepErrorHandling struct {
 	Action string `json:"action" yaml:"action"`
 
 	// RetryCount is the number of retry attempts (for retry action).
-	RetryCount int `json:"retry_count,omitempty" yaml:"retry_count,omitempty"`
+	RetryCount int `json:"retryCount,omitempty" yaml:"retryCount,omitempty"`
 
 	// RetryDelay is the initial delay between retries.
-	RetryDelay Duration `json:"retry_delay,omitempty" yaml:"retry_delay,omitempty"`
+	RetryDelay Duration `json:"retryDelay,omitempty" yaml:"retryDelay,omitempty"`
 }
 
 // ElicitationResponseConfig defines how to handle elicitation responses.

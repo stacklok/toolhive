@@ -668,14 +668,16 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 
 	// Make a defensive copy to prevent aliasing issues
 	pendingCopy := &PendingAuthorization{
-		ClientID:      pending.ClientID,
-		RedirectURI:   pending.RedirectURI,
-		State:         pending.State,
-		PKCEChallenge: pending.PKCEChallenge,
-		PKCEMethod:    pending.PKCEMethod,
-		Scopes:        append([]string(nil), pending.Scopes...),
-		InternalState: pending.InternalState,
-		CreatedAt:     pending.CreatedAt,
+		ClientID:             pending.ClientID,
+		RedirectURI:          pending.RedirectURI,
+		State:                pending.State,
+		PKCEChallenge:        pending.PKCEChallenge,
+		PKCEMethod:           pending.PKCEMethod,
+		Scopes:               append([]string(nil), pending.Scopes...),
+		InternalState:        pending.InternalState,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		CreatedAt:            pending.CreatedAt,
 	}
 
 	s.pendingAuthorizations[state] = &timedEntry[*PendingAuthorization]{
@@ -710,14 +712,16 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		return nil, nil
 	}
 	return &PendingAuthorization{
-		ClientID:      pending.ClientID,
-		RedirectURI:   pending.RedirectURI,
-		State:         pending.State,
-		PKCEChallenge: pending.PKCEChallenge,
-		PKCEMethod:    pending.PKCEMethod,
-		Scopes:        append([]string(nil), pending.Scopes...),
-		InternalState: pending.InternalState,
-		CreatedAt:     pending.CreatedAt,
+		ClientID:             pending.ClientID,
+		RedirectURI:          pending.RedirectURI,
+		State:                pending.State,
+		PKCEChallenge:        pending.PKCEChallenge,
+		PKCEMethod:           pending.PKCEMethod,
+		Scopes:               append([]string(nil), pending.Scopes...),
+		InternalState:        pending.InternalState,
+		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
+		UpstreamNonce:        pending.UpstreamNonce,
+		CreatedAt:            pending.CreatedAt,
 	}, nil
 }
 

@@ -122,26 +122,28 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		slog.Any("parsed_scopes", scopes),
 	)
 
-	// Generate internal state for correlating upstream callback
-	internalState, err := generateRandomState()
+	// Generate internal state, upstream PKCE verifier/challenge, and nonce
+	internalState, upstreamPKCEVerifier, upstreamPKCEChallenge, upstreamNonce, err := generateAuthorizationSecrets()
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to generate internal state",
+		r.logger.ErrorContext(ctx, "failed to generate authorization secrets",
 			slog.String("error", err.Error()),
 		)
-		r.redirectWithError(w, redirectURI, state, "server_error", "failed to generate state")
+		r.redirectWithError(w, redirectURI, state, "server_error", "failed to generate authorization secrets")
 		return
 	}
 
 	// Create and store pending authorization
 	pending := &storage.PendingAuthorization{
-		ClientID:      clientID,
-		RedirectURI:   redirectURI,
-		State:         state,
-		PKCEChallenge: codeChallenge,
-		PKCEMethod:    codeChallengeMethod,
-		Scopes:        scopes,
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		State:                state,
+		PKCEChallenge:        codeChallenge,
+		PKCEMethod:           codeChallengeMethod,
+		Scopes:               scopes,
+		InternalState:        internalState,
+		UpstreamPKCEVerifier: upstreamPKCEVerifier,
+		UpstreamNonce:        upstreamNonce,
+		CreatedAt:            time.Now(),
 	}
 
 	if err := r.storage.StorePendingAuthorization(ctx, internalState, pending); err != nil {
@@ -152,9 +154,8 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Build upstream authorization URL
-	// We don't send PKCE to upstream because we're the client to the upstream IDP
-	upstreamURL, err := r.upstream.AuthorizationURL(internalState, "", scopes)
+	// Build upstream authorization URL with PKCE challenge and nonce
+	upstreamURL, err := r.upstream.AuthorizationURL(internalState, upstreamPKCEChallenge, upstreamNonce)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "failed to build upstream authorization URL",
 			slog.String("error", err.Error()),
@@ -257,8 +258,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Exchange code with upstream IDP
-	idpTokens, err := r.upstream.ExchangeCode(ctx, code, "")
+	// Exchange code with upstream IDP using the stored PKCE verifier
+	idpTokens, err := r.upstream.ExchangeCode(ctx, code, pending.UpstreamPKCEVerifier)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "failed to exchange code with upstream IDP",
 			slog.String("error", err.Error()),
@@ -267,15 +268,11 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Get user info from upstream IDP (optional but useful for claims)
-	var userInfo *idp.UserInfo
-	userInfo, err = r.upstream.UserInfo(ctx, idpTokens.AccessToken)
-	if err != nil {
-		r.logger.WarnContext(ctx, "failed to get user info from upstream IDP",
-			slog.String("error", err.Error()),
-		)
-		// Continue without user info - we can still issue tokens
-	}
+	// Validate ID token nonce and extract subject for UserInfo validation.
+	idTokenSubject := r.validateIDTokenAndExtractSubject(ctx, idpTokens, pending)
+
+	// Get user info from upstream IDP with subject validation per OIDC Core Section 5.3.4.
+	userInfo := r.fetchUserInfoWithValidation(ctx, idpTokens.AccessToken, idTokenSubject)
 
 	// Generate session ID and store IDP tokens
 	sessionID, err := generateRandomState()
@@ -442,6 +439,27 @@ func generateRandomState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// generateAuthorizationSecrets generates the internal state for callback correlation,
+// the PKCE verifier/challenge pair for upstream IDP authorization (RFC 7636),
+// and the nonce for ID Token replay protection (OIDC Core Section 3.1.2.1).
+func generateAuthorizationSecrets() (internalState, pkceVerifier, pkceChallenge, nonce string, err error) {
+	internalState, err = generateRandomState()
+	if err != nil {
+		return "", "", "", "", err
+	}
+	pkceVerifier, err = GeneratePKCEVerifier()
+	if err != nil {
+		return "", "", "", "", err
+	}
+	pkceChallenge = ComputePKCEChallenge(pkceVerifier)
+	// Generate nonce for OIDC ID Token replay protection
+	nonce, err = generateRandomState()
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return internalState, pkceVerifier, pkceChallenge, nonce, nil
+}
+
 // isValidRedirectURI checks if the redirect URI matches one of the client's registered URIs.
 // For LoopbackClient instances, uses RFC 8252 Section 7.3 compliant loopback matching.
 func isValidRedirectURI(client fosite.Client, redirectURI string) bool {
@@ -475,4 +493,80 @@ func buildCallbackURL(redirectURI, code, state string) string {
 	u.RawQuery = q.Encode()
 
 	return u.String()
+}
+
+// validateIDTokenAndExtractSubject validates the ID token nonce if present and extracts
+// the subject claim for UserInfo validation per OIDC Core Section 5.3.4.
+// Returns the subject from the ID token, or empty string if validation fails or no ID token.
+func (r *Router) validateIDTokenAndExtractSubject(
+	ctx context.Context,
+	idpTokens *idp.Tokens,
+	pending *storage.PendingAuthorization,
+) string {
+	// Skip if no ID token or nonce
+	if idpTokens.IDToken == "" || pending.UpstreamNonce == "" {
+		return ""
+	}
+
+	// Check if upstream provider supports nonce validation
+	oidcProvider, ok := r.upstream.(idp.IDTokenNonceValidator)
+	if !ok {
+		return ""
+	}
+
+	// Validate ID token nonce per OIDC Core Section 3.1.3.7 step 11
+	claims, err := oidcProvider.ValidateIDTokenWithNonce(idpTokens.IDToken, pending.UpstreamNonce)
+	if err != nil {
+		r.logger.WarnContext(ctx, "ID token nonce validation failed",
+			slog.String("error", err.Error()),
+		)
+		// Log warning but don't fail - signature verification not yet implemented
+		// Once signature verification is added, this should be a hard failure
+		return ""
+	}
+
+	if claims == nil {
+		return ""
+	}
+
+	return claims.Subject
+}
+
+// fetchUserInfoWithValidation fetches user info from the upstream IDP with optional
+// subject validation per OIDC Core Section 5.3.4.
+// If idTokenSubject is provided and the provider supports validation, validates that
+// the UserInfo subject matches the ID token subject to prevent user impersonation.
+// Returns nil if fetching fails (logged as warning, not fatal).
+func (r *Router) fetchUserInfoWithValidation(
+	ctx context.Context,
+	accessToken string,
+	idTokenSubject string,
+) *idp.UserInfo {
+	var userInfo *idp.UserInfo
+	var err error
+
+	if idTokenSubject != "" {
+		// Use subject validation if provider supports it
+		if validator, ok := r.upstream.(idp.UserInfoSubjectValidator); ok {
+			userInfo, err = validator.UserInfoWithSubjectValidation(ctx, accessToken, idTokenSubject)
+			if err != nil {
+				r.logger.WarnContext(ctx, "failed to get user info with subject validation",
+					slog.String("error", err.Error()),
+				)
+				return nil
+			}
+			return userInfo
+		}
+	}
+
+	// Fall back to regular UserInfo without validation
+	userInfo, err = r.upstream.UserInfo(ctx, accessToken)
+	if err != nil {
+		r.logger.WarnContext(ctx, "failed to get user info from upstream IDP",
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+
+	return userInfo
 }

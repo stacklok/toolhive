@@ -16,6 +16,8 @@ package runconfig
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -26,11 +28,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+// MinClientSecretLength is the minimum required length for client secrets.
+// OAuth 2.0 best practice recommends at least 256 bits (32 bytes) of entropy.
+const MinClientSecretLength = 32
+
 // BuildConfig converts ToolHive's RunConfig to generic authserver.Config.
 // Handles:
 //   - Loading signing key from SigningKeyPath
 //   - Loading HMAC secret from HMACSecretPath
-//   - Resolving client secret (file -> env -> direct)
+//   - Resolving client secret (file -> env)
 //   - Port substitution in issuer URL (:0 -> actual port)
 func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	if cfg == nil {
@@ -42,7 +48,10 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	}
 
 	// Resolve issuer URL - replace :0 with actual port if needed
-	issuer := resolveIssuer(cfg.Issuer, proxyPort)
+	issuer, err := resolveIssuer(cfg.Issuer, proxyPort)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve issuer URL: %w", err)
+	}
 
 	// Load signing key from file
 	rsaKey, err := oauth.LoadSigningKey(cfg.SigningKeyPath)
@@ -63,8 +72,8 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	genericCfg := &authserver.Config{
 		Issuer: issuer,
 		SigningKey: authserver.SigningKey{
-			KeyID:     "key-1",
-			Algorithm: "RS256",
+			KeyID:     cfg.SigningKeyID,
+			Algorithm: cfg.SigningKeyAlgorithm,
 			Key:       rsaKey,
 		},
 		HMACSecret:           hmacSecret,
@@ -73,7 +82,11 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	}
 
 	// Convert client configs
-	genericCfg.Clients = buildClientConfigs(cfg.Clients)
+	clients, err := buildClientConfigs(cfg.Clients)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build client configs: %w", err)
+	}
+	genericCfg.Clients = clients
 
 	// Convert upstream config if present
 	if cfg.Upstream != nil && cfg.Upstream.Issuer != "" {
@@ -95,32 +108,83 @@ func BuildStorageConfig(cfg *StorageConfig) *storage.RunConfig {
 	return &storage.RunConfig{
 		Type:              cfg.Type,
 		RedisURL:          cfg.RedisURL,
-		RedisPassword:     cfg.RedisPassword,
 		RedisPasswordFile: cfg.RedisPasswordFile,
 		KeyPrefix:         cfg.KeyPrefix,
 	}
 }
 
-// resolveIssuer replaces :0 in issuer with actual port.
-func resolveIssuer(issuer string, proxyPort int) string {
-	if proxyPort > 0 && strings.Contains(issuer, ":0") {
-		return strings.Replace(issuer, ":0", fmt.Sprintf(":%d", proxyPort), 1)
+// resolveIssuer replaces port 0 in the issuer URL with the actual proxy port.
+// Only replaces the port if it's exactly "0" in the URL's host portion.
+func resolveIssuer(issuer string, proxyPort int) (string, error) {
+	if proxyPort <= 0 {
+		return issuer, nil
 	}
-	return issuer
+
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return "", fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
+	// If there's no port in the URL, nothing to replace
+	if parsed.Port() == "" {
+		return issuer, nil
+	}
+
+	// Only replace if the port is exactly "0"
+	if parsed.Port() != "0" {
+		return issuer, nil
+	}
+
+	// Extract the host (without port) and reconstruct with actual port
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse host:port from issuer URL: %w", err)
+	}
+
+	parsed.Host = net.JoinHostPort(host, fmt.Sprintf("%d", proxyPort))
+	return parsed.String(), nil
 }
 
 // buildClientConfigs converts RunConfig clients to generic ClientConfig.
-func buildClientConfigs(clients []ClientConfig) []authserver.ClientConfig {
+func buildClientConfigs(clients []ClientConfig) ([]authserver.ClientConfig, error) {
 	result := make([]authserver.ClientConfig, len(clients))
 	for i, c := range clients {
+		secret, err := resolveClientSecretFromFile(c.SecretFile, c.Public)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve secret for client %s: %w", c.ID, err)
+		}
 		result[i] = authserver.ClientConfig{
 			ID:           c.ID,
-			Secret:       c.Secret,
+			Secret:       secret,
 			RedirectURIs: c.RedirectURIs,
 			Public:       c.Public,
 		}
 	}
-	return result
+	return result, nil
+}
+
+// resolveClientSecretFromFile reads the client secret from a file.
+// For public clients, returns empty string without error.
+func resolveClientSecretFromFile(secretFile string, isPublic bool) (string, error) {
+	if isPublic {
+		return "", nil
+	}
+
+	if secretFile == "" {
+		return "", fmt.Errorf("secret_file is required for confidential clients")
+	}
+
+	data, err := os.ReadFile(secretFile) // #nosec G304 - file path is provided by user via config
+	if err != nil {
+		return "", fmt.Errorf("failed to read client secret file: %w", err)
+	}
+
+	secret := strings.TrimSpace(string(data))
+	if len(secret) < MinClientSecretLength {
+		return "", fmt.Errorf("client secret must be at least %d characters, got %d", MinClientSecretLength, len(secret))
+	}
+
+	return secret, nil
 }
 
 // buildUpstreamConfig converts RunConfig upstream to generic UpstreamConfig.
@@ -140,29 +204,30 @@ func buildUpstreamConfig(upstream *UpstreamConfig, issuer string) (*idp.Upstream
 }
 
 // resolveClientSecret returns the client secret using the following order of precedence:
-// 1. ClientSecret (direct config value)
-// 2. ClientSecretFile (read from file)
-// 3. UpstreamClientSecretEnvVar environment variable (fallback)
+// 1. ClientSecretFile (read from file)
+// 2. UpstreamClientSecretEnvVar environment variable (fallback)
 func resolveClientSecret(c *UpstreamConfig) (string, error) {
-	// 1. Direct config value takes precedence
-	if c.ClientSecret != "" {
-		return c.ClientSecret, nil
-	}
+	var secret string
 
-	// 2. Read from file if specified
+	// 1. Read from file if specified
 	if c.ClientSecretFile != "" {
 		data, err := os.ReadFile(c.ClientSecretFile) // #nosec G304 - file path is provided by user via config
 		if err != nil {
 			return "", fmt.Errorf("failed to read client secret file: %w", err)
 		}
-		return strings.TrimSpace(string(data)), nil
-	}
-
-	// 3. Fallback to environment variable
-	if envSecret := os.Getenv(UpstreamClientSecretEnvVar); envSecret != "" {
+		secret = strings.TrimSpace(string(data))
+	} else if envSecret := os.Getenv(UpstreamClientSecretEnvVar); envSecret != "" {
+		// 2. Fallback to environment variable
 		logger.Debug("Using upstream client secret from environment variable")
-		return envSecret, nil
+		secret = envSecret
+	} else {
+		return "", fmt.Errorf("no client secret found: set client_secret_file or %s env var", UpstreamClientSecretEnvVar)
 	}
 
-	return "", nil
+	// Validate minimum length
+	if len(secret) < MinClientSecretLength {
+		return "", fmt.Errorf("upstream client secret must be at least %d characters, got %d", MinClientSecretLength, len(secret))
+	}
+
+	return secret, nil
 }

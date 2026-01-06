@@ -85,6 +85,16 @@ type PendingAuthorization struct {
 	// InternalState is our randomly generated state for correlating upstream callback.
 	InternalState string
 
+	// UpstreamPKCEVerifier is the PKCE code_verifier for the upstream IDP authorization.
+	// This is generated when redirecting to the upstream IDP and used when exchanging
+	// the authorization code. See RFC 7636.
+	UpstreamPKCEVerifier string
+
+	// UpstreamNonce is the OIDC nonce parameter sent to the upstream IDP for ID Token
+	// replay protection. This is validated against the nonce claim in the returned
+	// ID Token. See OIDC Core Section 3.1.2.1.
+	UpstreamNonce string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }

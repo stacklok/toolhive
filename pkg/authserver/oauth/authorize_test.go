@@ -30,35 +30,39 @@ const (
 
 // mockIDPProvider implements idp.Provider for testing.
 type mockIDPProvider struct {
-	name             string
-	authorizationURL string
-	authURLErr       error
-	exchangeTokens   *idp.Tokens
-	exchangeErr      error
-	userInfo         *idp.UserInfo
-	userInfoErr      error
-	refreshTokens    *idp.Tokens
-	refreshErr       error
-	capturedState    string
-	capturedCode     string
-	capturedScopes   []string
+	name                  string
+	authorizationURL      string
+	authURLErr            error
+	exchangeTokens        *idp.Tokens
+	exchangeErr           error
+	userInfo              *idp.UserInfo
+	userInfoErr           error
+	refreshTokens         *idp.Tokens
+	refreshErr            error
+	capturedState         string
+	capturedCode          string
+	capturedCodeChallenge string
+	capturedCodeVerifier  string
+	capturedNonce         string
 }
 
 func (m *mockIDPProvider) Name() string {
 	return m.name
 }
 
-func (m *mockIDPProvider) AuthorizationURL(state, _ string, scopes []string) (string, error) {
+func (m *mockIDPProvider) AuthorizationURL(state, codeChallenge, nonce string) (string, error) {
 	m.capturedState = state
-	m.capturedScopes = scopes
+	m.capturedCodeChallenge = codeChallenge
+	m.capturedNonce = nonce
 	if m.authURLErr != nil {
 		return "", m.authURLErr
 	}
 	return m.authorizationURL + "?state=" + state, nil
 }
 
-func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, _ string) (*idp.Tokens, error) {
+func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, codeVerifier string) (*idp.Tokens, error) {
 	m.capturedCode = code
+	m.capturedCodeVerifier = codeVerifier
 	if m.exchangeErr != nil {
 		return nil, m.exchangeErr
 	}
@@ -334,6 +338,12 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	// Should have captured the internal state
 	assert.NotEmpty(t, mockUpstream.capturedState)
 
+	// Should have sent PKCE challenge to upstream IDP
+	assert.NotEmpty(t, mockUpstream.capturedCodeChallenge, "upstream PKCE challenge should be set")
+
+	// Should have sent nonce to upstream IDP
+	assert.NotEmpty(t, mockUpstream.capturedNonce, "upstream nonce should be set")
+
 	// Should have stored pending authorization
 	pending, err := stor.LoadPendingAuthorization(context.Background(), mockUpstream.capturedState)
 	require.NoError(t, err)
@@ -344,6 +354,16 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	assert.Equal(t, "S256", pending.PKCEMethod)
 	assert.Contains(t, pending.Scopes, "openid")
 	assert.Contains(t, pending.Scopes, "profile")
+
+	// Should have stored upstream PKCE verifier
+	assert.NotEmpty(t, pending.UpstreamPKCEVerifier, "upstream PKCE verifier should be stored")
+
+	// Should have stored upstream nonce
+	assert.NotEmpty(t, pending.UpstreamNonce, "upstream nonce should be stored")
+	assert.Equal(t, mockUpstream.capturedNonce, pending.UpstreamNonce, "stored nonce should match sent nonce")
+
+	// Verify the challenge matches the stored verifier
+	assert.Equal(t, ComputePKCEChallenge(pending.UpstreamPKCEVerifier), mockUpstream.capturedCodeChallenge)
 }
 
 func TestCallbackHandler_MissingState(t *testing.T) {
@@ -459,17 +479,19 @@ func TestCallbackHandler_Success(t *testing.T) {
 	t.Parallel()
 	router, stor, mockUpstream := authorizeTestSetup(t)
 
-	// Store a pending authorization
+	// Store a pending authorization with upstream PKCE verifier
 	internalState := testInternalState
+	upstreamVerifier := "test-upstream-pkce-verifier-12345678901234567890"
 	pending := &storage.PendingAuthorization{
-		ClientID:      testAuthClientID,
-		RedirectURI:   testAuthRedirectURI,
-		State:         "client-state",
-		PKCEChallenge: "challenge123",
-		PKCEMethod:    "S256",
-		Scopes:        []string{"openid", "profile"},
-		InternalState: internalState,
-		CreatedAt:     time.Now(),
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge123",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        internalState,
+		UpstreamPKCEVerifier: upstreamVerifier,
+		CreatedAt:            time.Now(),
 	}
 	err := stor.StorePendingAuthorization(context.Background(), internalState, pending)
 	require.NoError(t, err)
@@ -487,8 +509,9 @@ func TestCallbackHandler_Success(t *testing.T) {
 	assert.Contains(t, location, "state=client-state")
 	assert.NotContains(t, location, "error=")
 
-	// Verify upstream code was exchanged
+	// Verify upstream code was exchanged with PKCE verifier
 	assert.Equal(t, "upstream-code", mockUpstream.capturedCode)
+	assert.Equal(t, upstreamVerifier, mockUpstream.capturedCodeVerifier, "PKCE verifier should be passed to upstream")
 
 	// Pending authorization should be deleted
 	_, err = stor.LoadPendingAuthorization(context.Background(), internalState)

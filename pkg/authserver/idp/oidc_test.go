@@ -3,6 +3,7 @@ package idp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -110,7 +111,7 @@ func TestNewOIDCProvider(t *testing.T) {
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -155,15 +156,19 @@ func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		config Config
+		config *UpstreamConfig
 	}{
 		{
+			name:   "nil config",
+			config: nil,
+		},
+		{
 			name:   "empty config",
-			config: Config{},
+			config: &UpstreamConfig{},
 		},
 		{
 			name: "missing client id",
-			config: Config{
+			config: &UpstreamConfig{
 				Issuer:       "https://example.com",
 				ClientSecret: "secret",
 				RedirectURI:  "http://localhost:8080/callback",
@@ -171,7 +176,7 @@ func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 		},
 		{
 			name: "missing client secret",
-			config: Config{
+			config: &UpstreamConfig{
 				Issuer:      "https://example.com",
 				ClientID:    "client",
 				RedirectURI: "http://localhost:8080/callback",
@@ -179,7 +184,7 @@ func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 		},
 		{
 			name: "missing redirect uri",
-			config: Config{
+			config: &UpstreamConfig{
 				Issuer:       "https://example.com",
 				ClientID:     "client",
 				ClientSecret: "secret",
@@ -207,7 +212,7 @@ func TestNewOIDCProvider_DiscoveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       server.URL,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -238,7 +243,7 @@ func TestNewOIDCProvider_IssuerMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       server.URL,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -262,7 +267,7 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -278,7 +283,7 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 
 	t.Run("basic authorization URL", func(t *testing.T) {
 		t.Parallel()
-		authURL, err := provider.AuthorizationURL("test-state", "", nil)
+		authURL, err := provider.AuthorizationURL("test-state", "", "")
 		if err != nil {
 			t.Fatalf("failed to build authorization URL: %v", err)
 		}
@@ -309,11 +314,16 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 		if query.Get("scope") != "openid profile" {
 			t.Errorf("expected scope='openid profile', got %q", query.Get("scope"))
 		}
+
+		// Should not have nonce when not provided
+		if query.Get("nonce") != "" {
+			t.Errorf("expected nonce to be empty, got %q", query.Get("nonce"))
+		}
 	})
 
 	t.Run("authorization URL with PKCE", func(t *testing.T) {
 		t.Parallel()
-		authURL, err := provider.AuthorizationURL("test-state", "test-challenge", nil)
+		authURL, err := provider.AuthorizationURL("test-state", "test-challenge", "")
 		if err != nil {
 			t.Fatalf("failed to build authorization URL: %v", err)
 		}
@@ -333,11 +343,28 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 		}
 	})
 
-	t.Run("authorization URL ignores client scopes and uses config scopes", func(t *testing.T) {
+	t.Run("authorization URL with nonce", func(t *testing.T) {
 		t.Parallel()
-		// Client-requested scopes should be ignored; config scopes should always be used
-		// because config scopes represent what the upstream integration requires
-		authURL, err := provider.AuthorizationURL("test-state", "", []string{"custom", "scopes"})
+		authURL, err := provider.AuthorizationURL("test-state", "", "test-nonce-12345")
+		if err != nil {
+			t.Fatalf("failed to build authorization URL: %v", err)
+		}
+
+		parsed, err := url.Parse(authURL)
+		if err != nil {
+			t.Fatalf("failed to parse authorization URL: %v", err)
+		}
+
+		query := parsed.Query()
+		if query.Get("nonce") != "test-nonce-12345" {
+			t.Errorf("expected nonce=test-nonce-12345, got %q", query.Get("nonce"))
+		}
+	})
+
+	t.Run("authorization URL uses config scopes", func(t *testing.T) {
+		t.Parallel()
+		// Config scopes should always be used because they represent what the upstream integration requires
+		authURL, err := provider.AuthorizationURL("test-state", "", "")
 		if err != nil {
 			t.Fatalf("failed to build authorization URL: %v", err)
 		}
@@ -356,7 +383,7 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 
 	t.Run("authorization URL without state fails", func(t *testing.T) {
 		t.Parallel()
-		_, err := provider.AuthorizationURL("", "", nil)
+		_, err := provider.AuthorizationURL("", "", "")
 		if err == nil {
 			t.Error("expected error for empty state")
 		}
@@ -370,7 +397,7 @@ func TestOIDCIDPProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	// Config with NO scopes - should fall back to defaults
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -384,8 +411,8 @@ func TestOIDCIDPProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
 		t.Fatalf("failed to create provider: %v", err)
 	}
 
-	// Even though we pass client scopes, they should be ignored and defaults used
-	authURL, err := provider.AuthorizationURL("test-state", "", []string{"client", "requested", "scopes"})
+	// Since config has no scopes, default scopes should be used
+	authURL, err := provider.AuthorizationURL("test-state", "", "")
 	if err != nil {
 		t.Fatalf("failed to build authorization URL: %v", err)
 	}
@@ -408,7 +435,7 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -444,7 +471,7 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := Config{
+		localConfig := &UpstreamConfig{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -518,12 +545,12 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			receivedParams = r.PostForm
 
 			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(tokenResponse{AccessToken: "token"}); err != nil {
+			if err := json.NewEncoder(w).Encode(tokenResponse{AccessToken: "token", TokenType: "Bearer"}); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 		}
 
-		localConfig := Config{
+		localConfig := &UpstreamConfig{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -576,7 +603,7 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := Config{
+		localConfig := &UpstreamConfig{
 			Issuer:       localMock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -630,7 +657,7 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			}
 		}
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -672,7 +699,7 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -700,7 +727,7 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -748,7 +775,7 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			}
 		}
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -799,7 +826,7 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -828,7 +855,7 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			_, _ = w.Write([]byte("invalid token"))
 		}
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -857,7 +884,7 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock.discoveryDoc.UserInfoEndpoint = "" // Remove userinfo endpoint
 		defer mock.Close()
 
-		config := Config{
+		config := &UpstreamConfig{
 			Issuer:       mock.issuer,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
@@ -880,13 +907,230 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 	})
 }
 
+func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("successful validation with matching subject", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer()
+		defer mock.Close()
+
+		mock.userHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			userInfo := map[string]any{
+				"sub":   "user-123",
+				"email": "test@example.com",
+				"name":  "Test User",
+			}
+			if err := json.NewEncoder(w).Encode(userInfo); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &UpstreamConfig{
+			Issuer:       mock.issuer,
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		if err != nil {
+			t.Fatalf("failed to create provider: %v", err)
+		}
+
+		userInfo, err := provider.UserInfoWithSubjectValidation(ctx, "test-access-token", "user-123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if userInfo.Subject != "user-123" {
+			t.Errorf("expected subject 'user-123', got %q", userInfo.Subject)
+		}
+
+		if userInfo.Email != "test@example.com" {
+			t.Errorf("expected email 'test@example.com', got %q", userInfo.Email)
+		}
+	})
+
+	t.Run("subject mismatch returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer()
+		defer mock.Close()
+
+		mock.userHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			userInfo := map[string]any{
+				"sub":   "attacker-user-456",
+				"email": "attacker@example.com",
+				"name":  "Attacker User",
+			}
+			if err := json.NewEncoder(w).Encode(userInfo); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &UpstreamConfig{
+			Issuer:       mock.issuer,
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		if err != nil {
+			t.Fatalf("failed to create provider: %v", err)
+		}
+
+		_, err = provider.UserInfoWithSubjectValidation(ctx, "test-access-token", "expected-user-123")
+		if err == nil {
+			t.Fatal("expected error for subject mismatch")
+		}
+
+		if !errors.Is(err, ErrUserInfoSubjectMismatch) {
+			t.Errorf("expected ErrUserInfoSubjectMismatch, got: %v", err)
+		}
+
+		if !strings.Contains(err.Error(), "expected-user-123") {
+			t.Errorf("expected error to contain expected subject, got: %v", err)
+		}
+
+		if !strings.Contains(err.Error(), "attacker-user-456") {
+			t.Errorf("expected error to contain actual subject, got: %v", err)
+		}
+	})
+
+	t.Run("empty subject in userinfo returns mismatch error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer()
+		defer mock.Close()
+
+		mock.userHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Response without 'sub' claim
+			userInfo := map[string]any{
+				"email": "test@example.com",
+				"name":  "Test User",
+			}
+			if err := json.NewEncoder(w).Encode(userInfo); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &UpstreamConfig{
+			Issuer:       mock.issuer,
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		if err != nil {
+			t.Fatalf("failed to create provider: %v", err)
+		}
+
+		_, err = provider.UserInfoWithSubjectValidation(ctx, "test-access-token", "expected-user-123")
+		if err == nil {
+			t.Fatal("expected error when userinfo response has no subject")
+		}
+
+		if !errors.Is(err, ErrUserInfoSubjectMismatch) {
+			t.Errorf("expected ErrUserInfoSubjectMismatch, got: %v", err)
+		}
+	})
+
+	t.Run("userinfo fetch error propagates", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer()
+		defer mock.Close()
+
+		mock.userHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("invalid token"))
+		}
+
+		config := &UpstreamConfig{
+			Issuer:       mock.issuer,
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		if err != nil {
+			t.Fatalf("failed to create provider: %v", err)
+		}
+
+		_, err = provider.UserInfoWithSubjectValidation(ctx, "invalid-token", "user-123")
+		if err == nil {
+			t.Fatal("expected error for unauthorized response")
+		}
+
+		// Should not be a subject mismatch error - should be the underlying fetch error
+		if errors.Is(err, ErrUserInfoSubjectMismatch) {
+			t.Error("expected underlying fetch error, not subject mismatch")
+		}
+
+		if !strings.Contains(err.Error(), "401") {
+			t.Errorf("expected error to contain '401', got: %v", err)
+		}
+	})
+
+	t.Run("empty expected subject with valid userinfo subject returns mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer()
+		defer mock.Close()
+
+		mock.userHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			userInfo := map[string]any{
+				"sub":   "user-123",
+				"email": "test@example.com",
+			}
+			if err := json.NewEncoder(w).Encode(userInfo); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &UpstreamConfig{
+			Issuer:       mock.issuer,
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		if err != nil {
+			t.Fatalf("failed to create provider: %v", err)
+		}
+
+		// Per OIDC spec, we should always validate - if expected is empty but response has subject,
+		// that's a mismatch
+		_, err = provider.UserInfoWithSubjectValidation(ctx, "test-access-token", "")
+		if err == nil {
+			t.Fatal("expected error when expected subject is empty but response has subject")
+		}
+
+		if !errors.Is(err, ErrUserInfoSubjectMismatch) {
+			t.Errorf("expected ErrUserInfoSubjectMismatch, got: %v", err)
+		}
+	})
+}
+
 func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -907,6 +1151,48 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 	_, err = NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 	if err != nil {
 		t.Fatalf("failed to create provider with custom HTTP client: %v", err)
+	}
+
+	// Test with force consent screen enabled
+	provider, err := NewOIDCProvider(ctx, config, WithForceConsentScreen(true))
+	if err != nil {
+		t.Fatalf("failed to create provider with force consent screen: %v", err)
+	}
+
+	authURL, err := provider.AuthorizationURL("test-state", "", "")
+	if err != nil {
+		t.Fatalf("failed to build authorization URL: %v", err)
+	}
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("failed to parse authorization URL: %v", err)
+	}
+
+	query := parsed.Query()
+	if query.Get("prompt") != "consent" {
+		t.Errorf("expected prompt=consent when force consent screen is enabled, got %q", query.Get("prompt"))
+	}
+
+	// Test with force consent screen disabled
+	provider, err = NewOIDCProvider(ctx, config, WithForceConsentScreen(false))
+	if err != nil {
+		t.Fatalf("failed to create provider with force consent screen disabled: %v", err)
+	}
+
+	authURL, err = provider.AuthorizationURL("test-state", "", "")
+	if err != nil {
+		t.Fatalf("failed to build authorization URL: %v", err)
+	}
+
+	parsed, err = url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("failed to parse authorization URL: %v", err)
+	}
+
+	query = parsed.Query()
+	if query.Get("prompt") != "" {
+		t.Errorf("expected prompt to be absent when force consent screen is disabled, got %q", query.Get("prompt"))
 	}
 }
 
@@ -980,78 +1266,77 @@ func Test_validateDiscoveryDocument(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		doc         *OIDCEndpoints
-		issuer      string
-		expectError bool
-		errorMsg    string
+		name, issuer, errorMsg string
+		doc                    *OIDCEndpoints
 	}{
-		{
-			name: "valid document",
-			doc: &OIDCEndpoints{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/authorize",
-				TokenEndpoint:         "https://example.com/token",
-			},
-			issuer: "https://example.com",
-		},
-		{
-			name: "missing issuer",
-			doc: &OIDCEndpoints{
-				AuthorizationEndpoint: "https://example.com/authorize",
-				TokenEndpoint:         "https://example.com/token",
-			},
-			issuer:      "https://example.com",
-			expectError: true,
-			errorMsg:    "missing issuer",
-		},
-		{
-			name: "issuer mismatch",
-			doc: &OIDCEndpoints{
-				Issuer:                "https://wrong.com",
-				AuthorizationEndpoint: "https://example.com/authorize",
-				TokenEndpoint:         "https://example.com/token",
-			},
-			issuer:      "https://example.com",
-			expectError: true,
-			errorMsg:    "issuer mismatch",
-		},
-		{
-			name: "missing authorization endpoint",
-			doc: &OIDCEndpoints{
-				Issuer:        "https://example.com",
-				TokenEndpoint: "https://example.com/token",
-			},
-			issuer:      "https://example.com",
-			expectError: true,
-			errorMsg:    "missing authorization_endpoint",
-		},
-		{
-			name: "missing token endpoint",
-			doc: &OIDCEndpoints{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/authorize",
-			},
-			issuer:      "https://example.com",
-			expectError: true,
-			errorMsg:    "missing token_endpoint",
-		},
+		{"valid document", "https://example.com", "", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
+		{"valid with optional endpoints", "https://example.com", "", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
+			UserInfoEndpoint: "https://example.com/userinfo", JWKSEndpoint: "https://example.com/.well-known/jwks.json"}},
+		{"missing issuer", "https://example.com", "missing issuer", &OIDCEndpoints{
+			AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
+		{"issuer mismatch", "https://example.com", "issuer mismatch", &OIDCEndpoints{
+			Issuer: "https://wrong.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
+		{"missing authorization endpoint", "https://example.com", "missing authorization_endpoint", &OIDCEndpoints{
+			Issuer: "https://example.com", TokenEndpoint: "https://example.com/token"}},
+		{"missing token endpoint", "https://example.com", "missing token_endpoint", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize"}},
+		{"auth endpoint different host", "https://example.com", "authorization_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://attacker.com/authorize", TokenEndpoint: "https://example.com/token"}},
+		{"token endpoint different host", "https://example.com", "token_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://attacker.com/token"}},
+		{"userinfo endpoint different host", "https://example.com", "userinfo_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
+			UserInfoEndpoint: "https://attacker.com/userinfo"}},
+		{"jwks_uri different host", "https://example.com", "jwks_uri origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
+			JWKSEndpoint: "https://attacker.com/.well-known/jwks.json"}},
+		{"auth endpoint different scheme", "https://example.com", "authorization_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "http://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := validateDiscoveryDocument(tt.doc, tt.issuer)
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error")
-				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+			if tt.errorMsg != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errorMsg) {
 					t.Errorf("expected error containing %q, got: %v", tt.errorMsg, err)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func Test_validateEndpointOrigin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, endpoint, issuer, errorMsg string
+	}{
+		{"same origin HTTPS", "https://example.com/authorize", "https://example.com", ""},
+		{"same origin with port", "https://example.com:8443/authorize", "https://example.com:8443", ""},
+		{"same origin localhost", "http://localhost:8080/authorize", "http://localhost:8080", ""},
+		{"different host", "https://attacker.com/authorize", "https://example.com", "host mismatch"},
+		{"different port", "https://example.com:9443/authorize", "https://example.com:8443", "host mismatch"},
+		{"different scheme", "http://example.com/authorize", "https://example.com", "scheme mismatch"},
+		{"localhost to non-localhost", "http://attacker.com/authorize", "http://localhost:8080", "host mismatch"},
+		{"subdomain attack", "https://auth.example.com/authorize", "https://example.com", "host mismatch"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateEndpointOrigin(tt.endpoint, tt.issuer)
+			if tt.errorMsg != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got: %v", tt.errorMsg, err)
 				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -1115,7 +1400,7 @@ func TestOIDCIDPProvider_DefaultExpiryWhenNotSpecified(t *testing.T) {
 		}
 	}
 
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       mock.issuer,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
@@ -1141,11 +1426,46 @@ func TestOIDCIDPProvider_DefaultExpiryWhenNotSpecified(t *testing.T) {
 	}
 }
 
+func TestOIDCIDPProvider_TokenTypeValidation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tests := []struct {
+		tokenType, errorMsg string
+	}{
+		{"Bearer", ""}, {"bearer", ""}, {"BEARER", ""}, // case-insensitive valid
+		{"", "unexpected token_type"}, {"MAC", "unexpected token_type"}, // invalid
+	}
+
+	for _, tt := range tests {
+		t.Run("token_type_"+tt.tokenType, func(t *testing.T) {
+			t.Parallel()
+			mock := newMockOIDCServer()
+			defer mock.Close()
+			mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test", TokenType: tt.tokenType, ExpiresIn: 3600})
+			}
+			provider, _ := NewOIDCProvider(ctx, &UpstreamConfig{
+				Issuer: mock.issuer, ClientID: "c", ClientSecret: "s", RedirectURI: "http://localhost/cb",
+			})
+			_, err := provider.ExchangeCode(ctx, "code", "")
+			if tt.errorMsg != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got: %v", tt.errorMsg, err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestOIDCIDPProvider_NetworkError(t *testing.T) {
 	t.Parallel()
 
 	// Use an invalid URL to simulate network error
-	config := Config{
+	config := &UpstreamConfig{
 		Issuer:       "http://localhost:1", // Invalid port, should fail to connect
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",

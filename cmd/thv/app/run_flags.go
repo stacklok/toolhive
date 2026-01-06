@@ -124,10 +124,11 @@ type RunFlags struct {
 	AuthServer                         bool
 	AuthServerIssuer                   string
 	AuthServerSigningKey               string
+	AuthServerSigningKeyID             string
+	AuthServerSigningKeyAlgorithm      string
 	AuthServerHMACSecretPath           string
 	AuthServerUpstreamIssuer           string
 	AuthServerUpstreamClientID         string
-	AuthServerUpstreamClientSecret     string
 	AuthServerUpstreamClientSecretFile string
 	AuthServerUpstreamScopes           []string
 }
@@ -262,14 +263,16 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Issuer URL for the auth server (default: http://localhost:{port})")
 	cmd.Flags().StringVar(&config.AuthServerSigningKey, "auth-server-signing-key", "",
 		"Path to RSA private key (PEM) for signing tokens")
+	cmd.Flags().StringVar(&config.AuthServerSigningKeyID, "auth-server-signing-key-id", "",
+		"Key ID (kid) to include in JWT headers")
+	cmd.Flags().StringVar(&config.AuthServerSigningKeyAlgorithm, "auth-server-signing-key-algorithm", "",
+		"Signing algorithm to use (e.g., RS256, RS384, RS512)")
 	cmd.Flags().StringVar(&config.AuthServerHMACSecretPath, "auth-server-hmac-secret", "",
 		"Path to file containing HMAC secret (32+ bytes) for token validation")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamIssuer, "auth-server-upstream-issuer", "",
 		"Upstream IDP issuer URL (e.g., https://accounts.google.com)")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamClientID, "auth-server-upstream-client-id", "",
 		"Upstream IDP client ID")
-	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecret, "auth-server-upstream-client-secret", "",
-		"Upstream IDP client secret")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecretFile, "auth-server-upstream-client-secret-file", "",
 		"Path to file containing the upstream OAuth client secret")
 	cmd.Flags().StringSliceVar(&config.AuthServerUpstreamScopes, "auth-server-upstream-scopes",
@@ -956,7 +959,6 @@ func buildAuthServerConfig(runFlags *RunFlags) (*runconfig.RunConfig, error) {
 		upstream = &runconfig.UpstreamConfig{
 			Issuer:           runFlags.AuthServerUpstreamIssuer,
 			ClientID:         runFlags.AuthServerUpstreamClientID,
-			ClientSecret:     runFlags.AuthServerUpstreamClientSecret,
 			ClientSecretFile: runFlags.AuthServerUpstreamClientSecretFile,
 			Scopes:           runFlags.AuthServerUpstreamScopes,
 		}
@@ -964,11 +966,13 @@ func buildAuthServerConfig(runFlags *RunFlags) (*runconfig.RunConfig, error) {
 
 	// Build the config
 	authServerCfg := &runconfig.RunConfig{
-		Enabled:        true,
-		Issuer:         runFlags.AuthServerIssuer,
-		SigningKeyPath: runFlags.AuthServerSigningKey,
-		HMACSecretPath: runFlags.AuthServerHMACSecretPath,
-		Upstream:       upstream,
+		Enabled:             true,
+		Issuer:              runFlags.AuthServerIssuer,
+		SigningKeyPath:      runFlags.AuthServerSigningKey,
+		SigningKeyID:        runFlags.AuthServerSigningKeyID,
+		SigningKeyAlgorithm: runFlags.AuthServerSigningKeyAlgorithm,
+		HMACSecretPath:      runFlags.AuthServerHMACSecretPath,
+		Upstream:            upstream,
 		// Register a default test client
 		Clients: []runconfig.ClientConfig{{
 			ID:           "test",
@@ -980,6 +984,16 @@ func buildAuthServerConfig(runFlags *RunFlags) (*runconfig.RunConfig, error) {
 	// Validate signing key is provided
 	if authServerCfg.SigningKeyPath == "" {
 		return nil, fmt.Errorf("--auth-server-signing-key is required when --auth-server is enabled")
+	}
+
+	// Validate signing key ID is provided
+	if authServerCfg.SigningKeyID == "" {
+		return nil, fmt.Errorf("--auth-server-signing-key-id is required when --auth-server is enabled")
+	}
+
+	// Validate signing key algorithm is provided
+	if authServerCfg.SigningKeyAlgorithm == "" {
+		return nil, fmt.Errorf("--auth-server-signing-key-algorithm is required when --auth-server is enabled")
 	}
 
 	// Validate HMAC secret path is provided

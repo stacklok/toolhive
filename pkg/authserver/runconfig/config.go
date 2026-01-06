@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // UpstreamClientSecretEnvVar is the environment variable name for the upstream OAuth client secret.
@@ -30,10 +28,6 @@ import (
 //
 //nolint:gosec // G101: This is an environment variable name, not a credential
 const UpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
-
-// RedisPasswordEnvVar is re-exported from storage for convenience.
-// The authoritative definition is in pkg/authserver/storage.
-const RedisPasswordEnvVar = storage.RedisPasswordEnvVar
 
 // RunConfig is the serializable configuration for the embedded OAuth authorization server.
 // This is embedded in runner.RunConfig and serialized to JSON for proxyrunner.
@@ -48,6 +42,15 @@ type RunConfig struct {
 
 	// SigningKeyPath is the path to the RSA private key file used for signing JWT tokens.
 	SigningKeyPath string `json:"signing_key_path" yaml:"signing_key_path"`
+
+	// SigningKeyID is the key ID (kid) to include in JWT headers.
+	// Required when auth server is enabled.
+	SigningKeyID string `json:"signing_key_id" yaml:"signing_key_id"`
+
+	// SigningKeyAlgorithm is the signing algorithm to use (e.g., "RS256", "RS384", "RS512").
+	// Required when auth server is enabled.
+	// TODO: Auto-derivation from key type could be added later.
+	SigningKeyAlgorithm string `json:"signing_key_algorithm" yaml:"signing_key_algorithm"`
 
 	// HMACSecretPath is the path to a file containing the HMAC secret (32+ bytes).
 	// Required for multi-replica deployments to ensure consistent token validation.
@@ -84,9 +87,6 @@ type StorageConfig struct {
 	// Required when Type is "redis".
 	RedisURL string `json:"redis_url,omitempty" yaml:"redis_url,omitempty"`
 
-	// RedisPassword is the Redis password.
-	RedisPassword string `json:"redis_password,omitempty" yaml:"redis_password,omitempty"`
-
 	// RedisPasswordFile is the path to a file containing the Redis password.
 	RedisPasswordFile string `json:"redis_password_file,omitempty" yaml:"redis_password_file,omitempty"`
 
@@ -102,12 +102,8 @@ type UpstreamConfig struct {
 	// ClientID is the OAuth client ID registered with the upstream IDP.
 	ClientID string `json:"client_id" yaml:"client_id"`
 
-	// ClientSecret is the OAuth client secret registered with the upstream IDP.
-	// Either ClientSecret or ClientSecretFile must be set.
-	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
-
 	// ClientSecretFile is the path to a file containing the OAuth client secret.
-	// Either ClientSecret or ClientSecretFile must be set.
+	// Either ClientSecretFile or the UpstreamClientSecretEnvVar environment variable must be set.
 	ClientSecretFile string `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -119,9 +115,9 @@ type ClientConfig struct {
 	// ID is the unique identifier for this client.
 	ID string `json:"id" yaml:"id"`
 
-	// Secret is the client secret. Required for confidential clients.
-	// For public clients, this should be empty.
-	Secret string `json:"secret,omitempty" yaml:"secret,omitempty"`
+	// SecretFile is the path to a file containing the client secret.
+	// Required for confidential clients. For public clients, this should be empty.
+	SecretFile string `json:"secret_file,omitempty" yaml:"secret_file,omitempty"`
 
 	// RedirectURIs is the list of allowed redirect URIs for this client.
 	RedirectURIs []string `json:"redirect_uris" yaml:"redirect_uris"`
@@ -146,6 +142,18 @@ func (c *RunConfig) Validate() error {
 		return fmt.Errorf("signing_key_path is required when auth server is enabled")
 	}
 
+	if c.SigningKeyID == "" {
+		return fmt.Errorf("signing_key_id is required when auth server is enabled")
+	}
+
+	if c.SigningKeyAlgorithm == "" {
+		return fmt.Errorf("signing_key_algorithm is required when auth server is enabled")
+	}
+
+	if c.HMACSecretPath == "" {
+		return fmt.Errorf("hmac_secret_path is required when auth server is enabled")
+	}
+
 	if c.Upstream != nil {
 		if err := c.Upstream.Validate(); err != nil {
 			return fmt.Errorf("upstream config: %w", err)
@@ -155,6 +163,12 @@ func (c *RunConfig) Validate() error {
 	for i, client := range c.Clients {
 		if err := client.Validate(); err != nil {
 			return fmt.Errorf("client %d: %w", i, err)
+		}
+	}
+
+	if c.Storage != nil {
+		if err := c.Storage.Validate(); err != nil {
+			return fmt.Errorf("storage config: %w", err)
 		}
 	}
 
@@ -172,18 +186,12 @@ func (c *UpstreamConfig) Validate() error {
 	}
 
 	// Check if client secret is available from any source:
-	// 1. Direct config value (ClientSecret)
-	// 2. File path (ClientSecretFile)
-	// 3. Environment variable (UpstreamClientSecretEnvVar)
+	// 1. File path (ClientSecretFile)
+	// 2. Environment variable (UpstreamClientSecretEnvVar)
 	hasEnvSecret := os.Getenv(UpstreamClientSecretEnvVar) != ""
-	if c.ClientSecret == "" && c.ClientSecretFile == "" && !hasEnvSecret {
-		return fmt.Errorf("either upstream client_secret, client_secret_file, or %s environment variable is required",
+	if c.ClientSecretFile == "" && !hasEnvSecret {
+		return fmt.Errorf("either upstream client_secret_file or %s environment variable is required",
 			UpstreamClientSecretEnvVar)
-	}
-
-	// Only check for conflicts between config fields (not env var, since env var is a fallback)
-	if c.ClientSecret != "" && c.ClientSecretFile != "" {
-		return fmt.Errorf("only one of upstream client_secret or client_secret_file can be set")
 	}
 
 	return nil
@@ -199,9 +207,28 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("at least one redirect_uri is required")
 	}
 
-	if !c.Public && c.Secret == "" {
-		return fmt.Errorf("secret is required for confidential clients")
+	if !c.Public && c.SecretFile == "" {
+		return fmt.Errorf("secret_file is required for confidential clients")
 	}
 
 	return nil
+}
+
+// Validate checks that the StorageConfig is valid.
+func (c *StorageConfig) Validate() error {
+	switch c.Type {
+	case "", "memory":
+		// Valid, no additional requirements
+		return nil
+	case "redis":
+		if c.RedisURL == "" {
+			return fmt.Errorf("redis_url is required when storage type is redis")
+		}
+		if c.RedisPasswordFile == "" {
+			return fmt.Errorf("redis_password_file is required when storage type is redis")
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid storage type %q: must be empty, \"memory\", or \"redis\"", c.Type)
+	}
 }

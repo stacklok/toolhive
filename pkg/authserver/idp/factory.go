@@ -25,13 +25,5 @@ func NewFromConfig(ctx context.Context, upstream *UpstreamConfig) (Provider, err
 		return nil, nil
 	}
 
-	cfg := Config{
-		Issuer:       upstream.Issuer,
-		ClientID:     upstream.ClientID,
-		ClientSecret: upstream.ClientSecret,
-		Scopes:       upstream.Scopes,
-		RedirectURI:  upstream.RedirectURI,
-	}
-
-	return NewOIDCProvider(ctx, cfg)
+	return NewOIDCProvider(ctx, upstream)
 }

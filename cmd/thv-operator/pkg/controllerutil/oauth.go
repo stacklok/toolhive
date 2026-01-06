@@ -278,13 +278,15 @@ func validateOAuthSecrets(
 	return nil
 }
 
-// buildAuthServerClients builds the auth server clients configuration from the spec
+// buildAuthServerClients builds the auth server clients configuration from the spec.
+// Note: For confidential clients, the secret must be provided via file mount.
+// Currently only public clients are fully supported via this configuration.
 func buildAuthServerClients(clientSpecs []mcpv1alpha1.OAuthClientConfig) []runconfig.ClientConfig {
 	clients := make([]runconfig.ClientConfig, 0, len(clientSpecs))
 	for _, clientSpec := range clientSpecs {
 		clients = append(clients, runconfig.ClientConfig{
 			ID:           clientSpec.ID,
-			Secret:       clientSpec.Secret,
+			SecretFile:   "", // Secret files are mounted at runtime if needed
 			RedirectURIs: clientSpec.RedirectURIs,
 			Public:       clientSpec.Public,
 		})

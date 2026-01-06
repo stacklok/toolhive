@@ -980,7 +980,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 
 	// 8. Create upstream provider
 	ctx := context.Background()
-	idpConfig := idp.Config{
+	idpConfig := &idp.UpstreamConfig{
 		Issuer:       upstreamCfg.Issuer,
 		ClientID:     upstreamCfg.ClientID,
 		ClientSecret: upstreamCfg.ClientSecret,

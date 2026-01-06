@@ -27,12 +27,17 @@ import (
 	"time"
 )
 
+// maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
+const maxResponseSize = 1024 * 1024 // 1MB
+
 // OIDCProvider implements Provider for OIDC-compliant identity providers.
 type OIDCProvider struct {
-	config    Config
-	endpoints *OIDCEndpoints
-	client    HTTPClient
-	logger    *slog.Logger
+	config             *UpstreamConfig
+	endpoints          *OIDCEndpoints
+	client             HTTPClient
+	logger             *slog.Logger
+	forceConsentScreen bool
+	idTokenValidator   *IDTokenValidator
 }
 
 // OIDCProviderOption configures an OIDCProvider.
@@ -52,13 +57,32 @@ func WithLogger(logger *slog.Logger) OIDCProviderOption {
 	}
 }
 
+// WithForceConsentScreen configures the provider to always request the consent screen
+// from the identity provider. When enabled, the "prompt=consent" parameter is added
+// to authorization requests, forcing the user to re-consent even if they have
+// previously authorized the application.
+//
+// This is useful for:
+//   - Testing OAuth flows to verify consent screen behavior
+//   - Obtaining a new refresh token when the original has been lost or revoked
+//   - Ensuring the user explicitly confirms permissions after scope changes
+//   - Applications that require explicit user consent on every authentication
+func WithForceConsentScreen(force bool) OIDCProviderOption {
+	return func(p *OIDCProvider) {
+		p.forceConsentScreen = force
+	}
+}
+
 // NewOIDCProvider creates a new OIDC provider.
 // It performs OIDC discovery to fetch endpoints.
 func NewOIDCProvider(
 	ctx context.Context,
-	config Config,
+	config *UpstreamConfig,
 	opts ...OIDCProviderOption,
 ) (*OIDCProvider, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -83,6 +107,17 @@ func NewOIDCProvider(
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}
 
+	// Initialize ID token validator for validating tokens from the upstream IDP.
+	// Uses the discovered issuer and our client_id as expected audience.
+	validator, err := NewIDTokenValidator(IDTokenValidatorConfig{
+		ExpectedIssuer:   p.endpoints.Issuer,
+		ExpectedAudience: config.ClientID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ID token validator: %w", err)
+	}
+	p.idTokenValidator = validator
+
 	return p, nil
 }
 
@@ -92,7 +127,7 @@ func (*OIDCProvider) Name() string {
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
-func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, _ []string) (string, error) {
+func (p *OIDCProvider) AuthorizationURL(state, codeChallenge, nonce string) (string, error) {
 	if p.endpoints == nil {
 		return "", errors.New("OIDC endpoints not discovered")
 	}
@@ -118,7 +153,16 @@ func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, _ []string)
 		"redirect_uri":  {p.config.RedirectURI},
 		"scope":         {strings.Join(upstreamScopes, " ")},
 		"state":         {state},
-		"prompt":        {"consent"}, // NOSUBMIT: Force consent screen for testing
+	}
+
+	// Add nonce for OIDC ID Token replay protection (OIDC Core Section 3.1.2.1)
+	if nonce != "" {
+		params.Set("nonce", nonce)
+	}
+
+	// Add prompt=consent if configured to force the consent screen
+	if p.forceConsentScreen {
+		params.Set("prompt", "consent")
 	}
 
 	// Add PKCE challenge if provided and supported
@@ -212,15 +256,22 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("userinfo request returned status %d: %s", resp.StatusCode, string(body))
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		p.logger.Debug("userinfo request failed",
+			"status", resp.StatusCode,
+			"body", string(body))
+		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
 	}
 
-	// Limit response size to prevent DoS
-	const maxResponseSize = 1024 * 1024 // 1MB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read userinfo response: %w", err)
 	}
+
+	// TODO: Per OIDC Core Section 5.3.4, the UserInfo response may be returned as a signed JWT
+	// (application/jwt content type) instead of JSON. Currently we only support JSON responses.
+	// To support JWT responses: check Content-Type header, parse JWT, validate signature using
+	// the IDP's JWKS, then extract claims from the JWT payload.
 
 	// Parse all claims into a map
 	var claims map[string]any
@@ -246,9 +297,65 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 	return userInfo, nil
 }
 
+// UserInfoWithSubjectValidation fetches user information from the upstream IDP and validates
+// that the returned subject claim matches the expected subject from the ID Token.
+// This validation is required per OIDC Core Section 5.3.4 to prevent user impersonation attacks.
+//
+// Per the specification: "The sub (subject) Claim MUST always be returned in the UserInfo Response."
+// and "The sub Claim in the UserInfo Response MUST be verified to exactly match the sub Claim in
+// the ID Token; if they do not match, the UserInfo Response values MUST NOT be used."
+func (p *OIDCProvider) UserInfoWithSubjectValidation(
+	ctx context.Context,
+	accessToken string,
+	expectedSubject string,
+) (*UserInfo, error) {
+	// Fetch user info from the upstream IDP
+	userInfo, err := p.UserInfo(ctx, accessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate subject matches the ID Token's subject per OIDC Core Section 5.3.4
+	if userInfo.Subject != expectedSubject {
+		p.logger.Warn("userinfo subject mismatch",
+			slog.String("expected_subject", expectedSubject),
+			slog.String("actual_subject", userInfo.Subject),
+		)
+		return nil, fmt.Errorf("%w: expected %q, got %q",
+			ErrUserInfoSubjectMismatch, expectedSubject, userInfo.Subject)
+	}
+
+	return userInfo, nil
+}
+
 // Endpoints returns the discovered OIDC endpoints.
 func (p *OIDCProvider) Endpoints() *OIDCEndpoints {
 	return p.endpoints
+}
+
+// ValidateIDToken validates an ID token received from the upstream IDP.
+// This performs basic claim validation (iss, aud, exp) without signature verification.
+// See OIDC Core Section 3.1.3.7 for validation requirements.
+//
+// Note: This is a minimal implementation. For production use, signature verification
+// should be enabled once JWKS fetching is implemented.
+func (p *OIDCProvider) ValidateIDToken(idToken string) (*IDTokenClaims, error) {
+	if p.idTokenValidator == nil {
+		return nil, errors.New("ID token validator not initialized")
+	}
+	return p.idTokenValidator.ValidateIDToken(idToken)
+}
+
+// ValidateIDTokenWithNonce validates an ID token with nonce verification.
+// This performs all validations from ValidateIDToken plus validates that the
+// nonce claim in the ID token matches the expected nonce that was sent in
+// the authorization request.
+// See OIDC Core Section 3.1.3.7 step 11 for nonce validation requirements.
+func (p *OIDCProvider) ValidateIDTokenWithNonce(idToken, expectedNonce string) (*IDTokenClaims, error) {
+	if p.idTokenValidator == nil {
+		return nil, errors.New("ID token validator not initialized")
+	}
+	return p.idTokenValidator.ValidateIDTokenWithNonce(idToken, expectedNonce)
 }
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
@@ -275,7 +382,11 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("discovery request returned status %d: %s", resp.StatusCode, string(body))
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		p.logger.Debug("discovery request failed",
+			"status", resp.StatusCode,
+			"body", string(body))
+		return fmt.Errorf("discovery request failed with status %d", resp.StatusCode)
 	}
 
 	// Validate content type
@@ -284,8 +395,6 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 		return fmt.Errorf("unexpected content type: %s", contentType)
 	}
 
-	// Limit response size to prevent DoS
-	const maxResponseSize = 1024 * 1024 // 1MB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return fmt.Errorf("failed to read discovery response: %w", err)
@@ -332,8 +441,6 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 	}
 	defer resp.Body.Close()
 
-	// Limit response size to prevent DoS
-	const maxResponseSize = 1024 * 1024 // 1MB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
@@ -342,9 +449,14 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 	if resp.StatusCode != http.StatusOK {
 		var tokenError tokenErrorResponse
 		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
+			// OAuth error responses with error/error_description are standardized and safe to return
 			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
 		}
-		return nil, fmt.Errorf("token request returned status %d: %s", resp.StatusCode, string(body))
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		p.logger.Debug("token request failed",
+			"status", resp.StatusCode,
+			"body", string(body))
+		return nil, fmt.Errorf("token request failed with status %d", resp.StatusCode)
 	}
 
 	var tokenResp tokenResponse
@@ -356,11 +468,28 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 		return nil, errors.New("token response missing access_token")
 	}
 
+	// Validate token_type per RFC 6749 Section 5.1
+	// The comparison is case-insensitive per the spec
+	if !strings.EqualFold(tokenResp.TokenType, "bearer") {
+		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", tokenResp.TokenType)
+	}
+
 	// Calculate expiration time
 	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	if tokenResp.ExpiresIn == 0 {
 		// Default to 1 hour if not specified
 		expiresAt = time.Now().Add(time.Hour)
+	}
+
+	// Validate ID token if present (OIDC Core Section 3.1.3.7).
+	// Currently logs warnings on validation failure rather than rejecting,
+	// since signature verification is not yet implemented.
+	if tokenResp.IDToken != "" && p.idTokenValidator != nil {
+		if _, err := p.idTokenValidator.ValidateIDToken(tokenResp.IDToken); err != nil {
+			// Log warning but don't fail - signature verification not yet implemented
+			p.logger.Warn("ID token validation warning (claims only, no signature verification)",
+				"error", err.Error())
+		}
 	}
 
 	return &Tokens{
@@ -441,6 +570,66 @@ func validateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error 
 
 	if doc.TokenEndpoint == "" {
 		return errors.New("missing token_endpoint")
+	}
+
+	// Validate that discovered endpoints are under the same origin as the issuer.
+	// This prevents a malicious discovery document from redirecting requests to attacker-controlled servers.
+	if err := validateEndpointOrigin(doc.AuthorizationEndpoint, expectedIssuer); err != nil {
+		return fmt.Errorf("authorization_endpoint origin mismatch: %w", err)
+	}
+
+	if err := validateEndpointOrigin(doc.TokenEndpoint, expectedIssuer); err != nil {
+		return fmt.Errorf("token_endpoint origin mismatch: %w", err)
+	}
+
+	// Optional endpoints - only validate if present
+	if doc.UserInfoEndpoint != "" {
+		if err := validateEndpointOrigin(doc.UserInfoEndpoint, expectedIssuer); err != nil {
+			return fmt.Errorf("userinfo_endpoint origin mismatch: %w", err)
+		}
+	}
+
+	if doc.JWKSEndpoint != "" {
+		if err := validateEndpointOrigin(doc.JWKSEndpoint, expectedIssuer); err != nil {
+			return fmt.Errorf("jwks_uri origin mismatch: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateEndpointOrigin validates that an endpoint URL has the same origin as the issuer.
+// This ensures the scheme and host match, preventing redirect attacks.
+func validateEndpointOrigin(endpoint, issuer string) error {
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid endpoint URL: %w", err)
+	}
+
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
+	// Validate scheme matches
+	// For localhost, both HTTP and HTTPS are acceptable (for testing)
+	// For non-localhost, both must use the same scheme
+	if !isLocalhost(issuerURL.Host) {
+		if endpointURL.Scheme != issuerURL.Scheme {
+			return fmt.Errorf("scheme mismatch: issuer uses %q but endpoint uses %q",
+				issuerURL.Scheme, endpointURL.Scheme)
+		}
+	} else {
+		// For localhost, allow HTTP or HTTPS but must be consistent or both localhost
+		if !isLocalhost(endpointURL.Host) {
+			return fmt.Errorf("host mismatch: issuer is localhost but endpoint host is %q", endpointURL.Host)
+		}
+	}
+
+	// Validate host matches (including port)
+	if endpointURL.Host != issuerURL.Host {
+		return fmt.Errorf("host mismatch: issuer host is %q but endpoint host is %q",
+			issuerURL.Host, endpointURL.Host)
 	}
 
 	return nil

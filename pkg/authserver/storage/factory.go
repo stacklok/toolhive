@@ -103,13 +103,8 @@ func NewFromRunConfig(cfg *RunConfig, opts ...RedisOption) (Storage, error) {
 }
 
 // resolveRedisPassword resolves the Redis password from the RunConfig.
-// Priority: direct value > file > environment variable
+// Priority: file > environment variable
 func resolveRedisPassword(cfg *RunConfig) (string, error) {
-	// Direct value takes precedence
-	if cfg.RedisPassword != "" {
-		return cfg.RedisPassword, nil
-	}
-
 	// Read from file if specified
 	if cfg.RedisPasswordFile != "" {
 		data, err := os.ReadFile(cfg.RedisPasswordFile) // #nosec G304 - file path is provided by user via config

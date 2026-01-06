@@ -86,11 +86,7 @@ type RunConfig struct {
 	// RedisURL is the Redis connection URL.
 	RedisURL string `json:"redis_url,omitempty" yaml:"redis_url,omitempty"`
 
-	// RedisPassword is the Redis password (direct value, for non-sensitive environments).
-	RedisPassword string `json:"redis_password,omitempty" yaml:"redis_password,omitempty"`
-
 	// RedisPasswordFile is the path to a file containing the Redis password.
-	// Takes precedence over RedisPassword.
 	RedisPasswordFile string `json:"redis_password_file,omitempty" yaml:"redis_password_file,omitempty"`
 
 	// KeyPrefix is the prefix for all Redis keys.

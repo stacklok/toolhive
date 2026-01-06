@@ -60,12 +60,6 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
-
 	// Audit configures audit logging for the Virtual MCP server
 	// When enabled, audit logs include MCP protocol operations
 	// TODO(jerm-dro): migrate to the Config field.

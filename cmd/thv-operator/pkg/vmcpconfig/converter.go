@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -124,7 +125,11 @@ func (c *Converter) Convert(
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
 
-	config.Telemetry = spectoconfig.ConvertTelemetryConfig(ctx, vmcp.Spec.Telemetry, vmcp.Name)
+	config.Telemetry = spectoconfig.ConvertTelemetryConfig(
+		ctx,
+		telemetryConfigFromEmbedded(vmcp.Spec.Config.Telemetry),
+		vmcp.Name,
+	)
 	config.Audit = spectoconfig.ConvertAuditConfig(ctx, vmcp.Spec.Audit, vmcp.Name)
 
 	// Apply operational defaults (fills missing values)
@@ -909,4 +914,62 @@ func (*Converter) convertOperational(
 	}
 
 	return operational
+}
+
+// telemetryConfigFromEmbedded constructs a v1alpha1.TelemetryConfig from the embedded telemetry.Config.
+// This allows reusing ConvertTelemetryConfig which applies all the normalization and defaults.
+func telemetryConfigFromEmbedded(cfg *telemetry.Config) *mcpv1alpha1.TelemetryConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	// Check if telemetry is actually configured
+	if cfg.Endpoint == "" && !cfg.EnablePrometheusMetricsPath {
+		return nil
+	}
+
+	telemetryCfg := &mcpv1alpha1.TelemetryConfig{}
+
+	// Build OpenTelemetry config if endpoint is configured
+	if cfg.Endpoint != "" || cfg.TracingEnabled || cfg.MetricsEnabled {
+		telemetryCfg.OpenTelemetry = &mcpv1alpha1.OpenTelemetryConfig{
+			Enabled:     cfg.Endpoint != "" || cfg.TracingEnabled || cfg.MetricsEnabled,
+			Endpoint:    cfg.Endpoint,
+			ServiceName: cfg.ServiceName,
+			Insecure:    cfg.Insecure,
+		}
+
+		// Build tracing config
+		if cfg.TracingEnabled || cfg.SamplingRate != "" {
+			telemetryCfg.OpenTelemetry.Tracing = &mcpv1alpha1.OpenTelemetryTracingConfig{
+				Enabled:      cfg.TracingEnabled,
+				SamplingRate: cfg.SamplingRate,
+			}
+		}
+
+		// Build metrics config
+		if cfg.MetricsEnabled {
+			telemetryCfg.OpenTelemetry.Metrics = &mcpv1alpha1.OpenTelemetryMetricsConfig{
+				Enabled: cfg.MetricsEnabled,
+			}
+		}
+
+		// Convert headers from map to slice
+		if len(cfg.Headers) > 0 {
+			headers := make([]string, 0, len(cfg.Headers))
+			for k, v := range cfg.Headers {
+				headers = append(headers, k+"="+v)
+			}
+			telemetryCfg.OpenTelemetry.Headers = headers
+		}
+	}
+
+	// Build Prometheus config
+	if cfg.EnablePrometheusMetricsPath {
+		telemetryCfg.Prometheus = &mcpv1alpha1.PrometheusConfig{
+			Enabled: cfg.EnablePrometheusMetricsPath,
+		}
+	}
+
+	return telemetryCfg
 }

@@ -1029,7 +1029,9 @@ spec:
                     - source
                     type: object
                   telemetry:
-                    description: Telemetry configures telemetry settings.
+                    description: |-
+                      Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+                      including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
                     properties:
                       customAttributes:
                         additionalProperties:
@@ -1490,73 +1492,6 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
-              telemetry:
-                description: |-
-                  Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-                  including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-                properties:
-                  openTelemetry:
-                    description: OpenTelemetry defines OpenTelemetry configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether OpenTelemetry is enabled
-                        type: boolean
-                      endpoint:
-                        description: Endpoint is the OTLP endpoint URL for tracing
-                          and metrics
-                        type: string
-                      headers:
-                        description: |-
-                          Headers contains authentication headers for the OTLP endpoint
-                          Specified as key=value pairs
-                        items:
-                          type: string
-                        type: array
-                      insecure:
-                        default: false
-                        description: Insecure indicates whether to use HTTP instead
-                          of HTTPS for the OTLP endpoint
-                        type: boolean
-                      metrics:
-                        description: Metrics defines OpenTelemetry metrics-specific
-                          configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP metrics are
-                              sent
-                            type: boolean
-                        type: object
-                      serviceName:
-                        description: |-
-                          ServiceName is the service name for telemetry
-                          If not specified, defaults to the MCPServer name
-                        type: string
-                      tracing:
-                        description: Tracing defines OpenTelemetry tracing configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP tracing is
-                              sent
-                            type: boolean
-                          samplingRate:
-                            default: "0.05"
-                            description: SamplingRate is the trace sampling rate (0.0-1.0)
-                            type: string
-                        type: object
-                    type: object
-                  prometheus:
-                    description: Prometheus defines Prometheus-specific configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether Prometheus metrics endpoint
-                          is exposed
-                        type: boolean
-                    type: object
-                type: object
             required:
             - incomingAuth
             type: object

@@ -11,37 +11,45 @@ import (
 type VirtualMCPServerSpec struct {
 	// GroupRef references an existing MCPGroup that defines backend workloads
 	// The referenced MCPGroup must exist in the same namespace
+	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Required
 	GroupRef GroupRef `json:"groupRef"`
 
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
 	// Must be explicitly set - use "anonymous" type when no authentication is required
+	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
 	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
 	// Aggregation defines tool aggregation and conflict resolution strategies
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Aggregation *AggregationConfig `json:"aggregation,omitempty"`
 
 	// CompositeTools defines inline composite tool definitions
 	// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	CompositeTools []CompositeToolSpec `json:"compositeTools,omitempty"`
 
 	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
 	// for complex, reusable workflows
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
 	// Operational defines operational settings like timeouts and health checks
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
+	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default=ClusterIP
 	// +optional
@@ -52,6 +60,7 @@ type VirtualMCPServerSpec struct {
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify
 	// the 'vmcp' container name in the PodTemplateSpec.
 	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
@@ -59,11 +68,13 @@ type VirtualMCPServerSpec struct {
 
 	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
 	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
 	// Audit configures audit logging for the Virtual MCP server
 	// When enabled, audit logs include MCP protocol operations
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Audit *AuditConfig `json:"audit,omitempty"`
 

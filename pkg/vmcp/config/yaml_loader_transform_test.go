@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -220,7 +220,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter missing type field returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: RawJSON{Raw: []byte(`{"properties":{"input":{"type":"string"}}}`)},
+				Parameters: thvjson.MustParse(`{"properties":{"input":{"type":"string"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -230,7 +230,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter type not string returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: RawJSON{Raw: []byte(`{"type":123,"properties":{"param1":{"type":"string"}}}`)},
+				Parameters: thvjson.MustParse(`{"type":123,"properties":{"param1":{"type":"string"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
@@ -240,25 +240,23 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			name: "parameter type must be object returns error",
 			tool: &CompositeToolConfig{
 				Name:       "bad",
-				Parameters: RawJSON{Raw: []byte(`{"type":"string"}`)},
+				Parameters: thvjson.MustParse(`{"type":"string"}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
-			errMsg:  "parameters must have 'type' field",
+			errMsg:  "parameters 'type' must be 'object'",
 		},
 		{
 			name: "parameter with default value works",
 			tool: &CompositeToolConfig{
 				Name:       "test",
-				Parameters: RawJSON{Raw: []byte(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`)},
+				Parameters: thvjson.MustParse(`{"type":"object","properties":{"version":{"type":"string","default":"latest"}}}`),
 				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			verify: func(t *testing.T, tool *CompositeToolConfig) {
 				t.Helper()
 				// Parameters is now map[string]any with JSON Schema format
-				params := tool.Parameters
-				var paramsMap map[string]any
-				err := json.Unmarshal(params.Raw, &paramsMap)
+				paramsMap, err := tool.Parameters.ToMap()
 				require.NoError(t, err)
 				assert.Equal(t, "object", paramsMap["type"])
 				properties, ok := paramsMap["properties"].(map[string]any)

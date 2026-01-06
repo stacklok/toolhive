@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -502,7 +503,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 							ID:        "fetch",
 							Type:      "tool", // Type would be inferred by loader from tool field
 							Tool:      "fetch_fetch",
-							Arguments: RawJSON{Raw: []byte(`{"url":"https://example.com"}`)},
+							Arguments: thvjson.MustParse(`{"url":"https://example.com"}`),
 						},
 					},
 				},
@@ -538,7 +539,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 						{
 							ID:      "confirm",
 							Message: "Proceed?", // Elicitation field present
-							Schema:  RawJSON{Raw: []byte(`{"type":"object"}`)},
+							Schema:  thvjson.MustParse(`{"type":"object"}`),
 							// Type is missing - should fail
 						},
 					},

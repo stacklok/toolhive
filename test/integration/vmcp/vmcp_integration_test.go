@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -539,7 +540,7 @@ func TestVMCPServer_DefaultResults_ConditionalSkip(t *testing.T) {
 						Type:        "string",
 						Description: "Result from optional step",
 						Value:       "{{.steps.optional_step.output.text}}",
-						Default:     vmcpconfig.RawJSON{Raw: []byte(`"fallback_not_used"`)}, // Shouldn't be used since defaultResults provides value
+						Default:     thvjson.NewAny("fallback_not_used"), // Shouldn't be used since defaultResults provides value
 					},
 				},
 			},
@@ -661,7 +662,7 @@ func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
 						Type:        "string",
 						Description: "Result from step",
 						Value:       "{{.steps.maybe_failing_step.output.text}}",
-						Default:     vmcpconfig.RawJSON{Raw: []byte(`"fallback_not_used"`)}, // Shouldn't be used since defaultResults provides value
+						Default:     thvjson.NewAny("fallback_not_used"), // Shouldn't be used since defaultResults provides value
 					},
 				},
 			},

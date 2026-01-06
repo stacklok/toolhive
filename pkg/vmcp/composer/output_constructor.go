@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -222,8 +223,8 @@ func (*workflowEngine) coerceStringToType(value string, targetType string) (any,
 	}
 }
 
-// coerceRawJSONDefaultValue extracts value from RawJSON and coerces it to the target type.
-func (e *workflowEngine) coerceRawJSONDefaultValue(defaultVal config.RawJSON, targetType string) (any, error) {
+// coerceRawJSONDefaultValue extracts value from json.Any and coerces it to the target type.
+func (e *workflowEngine) coerceRawJSONDefaultValue(defaultVal thvjson.Any, targetType string) (any, error) {
 	value, err := defaultVal.ToAny()
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract default value: %w", err)

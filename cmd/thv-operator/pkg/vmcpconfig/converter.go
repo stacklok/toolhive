@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -649,9 +650,9 @@ func (c *Converter) convertCompositeToolSpec(
 		}
 	}
 
-	// Convert parameters from runtime.RawExtension to RawJSON
+	// Convert parameters from runtime.RawExtension to json.Any
 	if parameters != nil && len(parameters.Raw) > 0 {
-		tool.Parameters = vmcpconfig.FromRawExtension(*parameters)
+		tool.Parameters = thvjson.FromRawExtension(*parameters)
 	}
 
 	// Convert steps
@@ -691,9 +692,9 @@ func (*Converter) convertWorkflowSteps(
 			DependsOn: crdStep.DependsOn,
 		}
 
-		// Convert Schema from runtime.RawExtension to RawJSON (for elicitation steps)
+		// Convert Schema from runtime.RawExtension to json.Any (for elicitation steps)
 		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			step.Schema = vmcpconfig.FromRawExtension(*crdStep.Schema)
+			step.Schema = thvjson.FromRawExtension(*crdStep.Schema)
 		}
 
 		// Parse timeout
@@ -752,11 +753,7 @@ func (*Converter) convertWorkflowSteps(
 					defaultResults[key] = value
 				}
 			}
-			rawJSON, err := vmcpconfig.FromMap(defaultResults)
-			if err != nil {
-				return nil, fmt.Errorf("step %q: failed to convert default results: %w", crdStep.ID, err)
-			}
-			step.DefaultResults = rawJSON
+			step.DefaultResults = thvjson.NewAny(defaultResults)
 		}
 
 		workflowSteps = append(workflowSteps, step)
@@ -777,14 +774,14 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 	return nil
 }
 
-// convertArguments converts arguments from runtime.RawExtension to RawJSON.
+// convertArguments converts arguments from runtime.RawExtension to json.Any.
 // This preserves the original types (integers, booleans, arrays, objects) from the CRD.
-// Returns an empty RawJSON if no arguments are specified.
-func convertArguments(args *runtime.RawExtension) vmcpconfig.RawJSON {
+// Returns an empty json.Any if no arguments are specified.
+func convertArguments(args *runtime.RawExtension) thvjson.Any {
 	if args == nil || len(args.Raw) == 0 {
-		return vmcpconfig.RawJSON{}
+		return thvjson.Any{}
 	}
-	return vmcpconfig.FromRawExtension(*args)
+	return thvjson.FromRawExtension(*args)
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
@@ -824,9 +821,9 @@ func convertOutputProperty(
 		}
 	}
 
-	// Convert default value from runtime.RawExtension to RawJSON
+	// Convert default value from runtime.RawExtension to json.Any
 	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
-		prop.Default = vmcpconfig.FromRawExtension(*crdProp.Default)
+		prop.Default = thvjson.FromRawExtension(*crdProp.Default)
 	}
 
 	return prop

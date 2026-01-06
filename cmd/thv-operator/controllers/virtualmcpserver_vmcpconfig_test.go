@@ -16,7 +16,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -791,9 +790,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Verify parameters were converted
 	require.NotNil(t, config.CompositeTools[0].Parameters)
-	params := config.CompositeTools[0].Parameters
-	var paramsMap map[string]any
-	err = json.Unmarshal(params.Raw, &paramsMap)
+	paramsMap, err := config.CompositeTools[0].Parameters.ToMap()
 	require.NoError(t, err)
 	assert.Equal(t, "object", paramsMap["type"])
 }

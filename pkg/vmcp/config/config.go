@@ -71,7 +71,9 @@ type Config struct {
 	// Name is the virtual MCP server name.
 	Name string `json:"name" yaml:"name"`
 
-	// Group references the ToolHive group containing backend workloads.
+	// Group references an existing MCPGroup that defines backend workloads.
+	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+	// +kubebuilder:validation:Required
 	Group string `json:"groupRef" yaml:"groupRef"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.

@@ -710,8 +710,9 @@ spec:
                       type: object
                     type: array
                   groupRef:
-                    description: Group references the ToolHive group containing backend
-                      workloads.
+                    description: |-
+                      Group references an existing MCPGroup that defines backend workloads.
+                      In Kubernetes, the referenced MCPGroup must exist in the same namespace.
                     type: string
                   incomingAuth:
                     description: IncomingAuth configures how clients authenticate
@@ -1108,18 +1109,6 @@ spec:
                 - name
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
-              groupRef:
-                description: |-
-                  GroupRef references an existing MCPGroup that defines backend workloads
-                  The referenced MCPGroup must exist in the same namespace
-                properties:
-                  name:
-                    description: Name is the name of the MCPGroup resource in the
-                      same namespace
-                    type: string
-                required:
-                - name
-                type: object
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server
@@ -1570,7 +1559,6 @@ spec:
                     type: object
                 type: object
             required:
-            - groupRef
             - incomingAuth
             type: object
           status:

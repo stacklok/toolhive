@@ -873,7 +873,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 		assert.True(t, stepArgs.IsEmpty(), "Should be empty json.Any")
 	})
 
-	t.Run("invalid JSON is silently handled", func(t *testing.T) {
+	t.Run("invalid JSON returns error", func(t *testing.T) {
 		t.Parallel()
 
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -903,14 +903,9 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 		converter := newTestConverter(t, newNoOpMockResolver(t))
 		ctx := log.IntoContext(context.Background(), logr.Discard())
 
-		// Invalid JSON in json.FromRawExtension returns empty json.Any, not an error
-		result, err := converter.convertCompositeTools(ctx, vmcpServer)
-		require.NoError(t, err)
-		require.Len(t, result, 1)
-		require.Len(t, result[0].Steps, 1)
-
-		stepArgs := result[0].Steps[0].Arguments
-		assert.True(t, stepArgs.IsEmpty(), "Invalid JSON should result in empty json.Any")
+		_, err := converter.convertCompositeTools(ctx, vmcpServer)
+		require.Error(t, err, "Should return error for invalid JSON")
+		assert.Contains(t, err.Error(), "failed to convert steps")
 	})
 }
 

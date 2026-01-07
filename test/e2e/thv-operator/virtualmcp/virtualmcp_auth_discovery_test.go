@@ -1095,6 +1095,16 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		var vmcpNodePort int32
 
 		BeforeAll(func() {
+			By("Verifying VirtualMCPServer is still ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			By("Verifying vMCP pods are still running and ready")
+			vmcpLabels := map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout, pollingInterval)
+
 			By("Getting NodePort for VirtualMCPServer")
 			Eventually(func() error {
 				service := &corev1.Service{}

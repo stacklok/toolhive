@@ -4,11 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -18,10 +16,10 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// generateUniqueServerName creates a unique server name for SSE rewrite tests
-func generateUniqueServerName(prefix string) string {
-	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
-}
+const (
+	// sseEndpoint is the SSE endpoint path
+	sseEndpoint = "/sse"
+)
 
 var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
@@ -41,13 +39,12 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 			var sseEndpointHit bool
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("sse-rewrite-explicit")
+				serverName = e2e.GenerateUniqueServerName("sse-rewrite-explicit")
 				sseEndpointHit = false
 
 				// Create a mock SSE server that mimics MCP SSE behavior
 				mockSSEServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-					if r.URL.Path == "/sse" {
+					if r.URL.Path == sseEndpoint {
 						sseEndpointHit = true
 						w.Header().Set("Content-Type", "text/event-stream")
 						w.Header().Set("Cache-Control", "no-cache")
@@ -184,12 +181,12 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 			var forwardedPrefix string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("sse-rewrite-header")
+				serverName = e2e.GenerateUniqueServerName("sse-rewrite-header")
 				forwardedPrefix = "/ingress-path"
 
 				// Create a mock SSE server
 				mockSSEServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/sse" {
+					if r.URL.Path == sseEndpoint {
 						w.Header().Set("Content-Type", "text/event-stream")
 						w.WriteHeader(http.StatusOK)
 
@@ -227,7 +224,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"--remote-url", mockSSEServer.URL,
 				).ExpectSuccess()
 
-				Expect(stdout+stderr).To(ContainSubstring(serverName))
+				Expect(stdout + stderr).To(ContainSubstring(serverName))
 
 				By("Waiting for the proxy to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -294,10 +291,10 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 			var mockSSEServer *httptest.Server
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("sse-rewrite-priority")
+				serverName = e2e.GenerateUniqueServerName("sse-rewrite-priority")
 
 				mockSSEServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/sse" {
+					if r.URL.Path == sseEndpoint {
 						w.Header().Set("Content-Type", "text/event-stream")
 						w.WriteHeader(http.StatusOK)
 
@@ -337,7 +334,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"--remote-url", mockSSEServer.URL,
 				).ExpectSuccess()
 
-				Expect(stdout+stderr).To(ContainSubstring(serverName))
+				Expect(stdout + stderr).To(ContainSubstring(serverName))
 
 				By("Waiting for the proxy to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -404,7 +401,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("sse-rewrite-real")
+				serverName = e2e.GenerateUniqueServerName("sse-rewrite-real")
 			})
 
 			AfterEach(func() {
@@ -431,7 +428,7 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 					"osv",
 				).ExpectSuccess()
 
-				Expect(stdout+stderr).To(ContainSubstring(serverName))
+				Expect(stdout + stderr).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
@@ -515,34 +512,3 @@ var _ = Describe("SSE Endpoint URL Rewriting", Label("sse", "endpoint-rewrite", 
 		})
 	})
 })
-
-// readSSEStream reads an SSE stream and returns all lines
-func readSSEStream(body io.Reader, timeout time.Duration) ([]string, error) {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
-
-	var lines []string
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for scanner.Scan() && ctx.Err() == nil {
-			lines = append(lines, scanner.Text())
-			if len(lines) > 50 { // Limit lines to prevent excessive memory usage
-				break
-			}
-		}
-	}()
-
-	select {
-	case <-done:
-		if err := scanner.Err(); err != nil {
-			return lines, fmt.Errorf("error scanning SSE stream: %w", err)
-		}
-		return lines, nil
-	case <-ctx.Done():
-		return lines, fmt.Errorf("timeout reading SSE stream")
-	}
-}

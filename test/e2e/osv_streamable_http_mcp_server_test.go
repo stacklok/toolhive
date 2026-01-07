@@ -27,7 +27,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-registry-test")
+				serverName = e2e.GenerateUniqueServerName("osv-registry-test")
 			})
 
 			AfterEach(func() {
@@ -165,7 +165,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			BeforeAll(func() {
 				// Generate unique server name for this context
-				serverName = generateUniqueServerName("osv-functionality-test")
+				serverName = e2e.GenerateUniqueServerName("osv-functionality-test")
 
 				// Start ONE server for ALL OSV-specific tests
 				e2e.NewTHVCommand(config, "run",
@@ -311,7 +311,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			BeforeEach(func() {
 				// Generate unique server name for each lifecycle test
-				serverName = generateUniqueServerName("osv-lifecycle-test")
+				serverName = e2e.GenerateUniqueServerName("osv-lifecycle-test")
 
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
@@ -374,7 +374,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-error-test")
+				serverName = e2e.GenerateUniqueServerName("osv-error-test")
 			})
 
 			AfterEach(func() {

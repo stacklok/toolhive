@@ -855,6 +855,249 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 		})
 	})
 
+	Context("Dynamic Backend Discovery Lifecycle", func() {
+		var (
+			dynamicBackend1Name = "dynamic-backend-1"
+			dynamicBackend2Name = "dynamic-backend-2"
+		)
+
+		AfterEach(func() {
+			// Cleanup any dynamic backends created in tests
+			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dynamicBackend1Name,
+					Namespace: testNamespace,
+				},
+			})
+			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dynamicBackend2Name,
+					Namespace: testNamespace,
+				},
+			})
+		})
+
+		It("should discover new backends added to the group", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting initial backend count")
+			resp, err := http.Get(vmcpURL + "/status")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			var initialStatus map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&initialStatus)
+			Expect(err).NotTo(HaveOccurred())
+
+			initialBackends := initialStatus["backends"].([]interface{})
+			initialCount := len(initialBackends)
+
+			By("Creating a new backend MCPServer in the same group")
+			newBackend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dynamicBackend1Name,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					GroupRef:  mcpGroupName,
+					Image:     images.GofetchServerImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+				},
+			}
+			Expect(k8sClient.Create(ctx, newBackend)).To(Succeed())
+
+			By("Waiting for new backend to be running")
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      dynamicBackend1Name,
+					Namespace: testNamespace,
+				}, server)
+				if err != nil {
+					return err
+				}
+				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+					return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
+				}
+				return nil
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Verifying new backend appears in vMCP status")
+			Eventually(func() bool {
+				resp, err := http.Get(vmcpURL + "/status")
+				if err != nil {
+					return false
+				}
+				defer resp.Body.Close()
+
+				var status map[string]interface{}
+				if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+					return false
+				}
+
+				backends := status["backends"].([]interface{})
+				if len(backends) != initialCount+1 {
+					return false
+				}
+
+				// Check that the new backend is in the list
+				for _, b := range backends {
+					backend := b.(map[string]interface{})
+					if strings.Contains(backend["name"].(string), dynamicBackend1Name) {
+						return true
+					}
+				}
+				return false
+			}, timeout, pollingInterval).Should(BeTrue(), "New backend should be discovered")
+		})
+
+		It("should remove backends deleted from the group", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Creating a backend to be deleted")
+			tempBackend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dynamicBackend2Name,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					GroupRef:  mcpGroupName,
+					Image:     images.GofetchServerImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+				},
+			}
+			Expect(k8sClient.Create(ctx, tempBackend)).To(Succeed())
+
+			By("Waiting for backend to be running and discovered")
+			Eventually(func() bool {
+				resp, err := http.Get(vmcpURL + "/status")
+				if err != nil {
+					return false
+				}
+				defer resp.Body.Close()
+
+				var status map[string]interface{}
+				if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+					return false
+				}
+
+				backends := status["backends"].([]interface{})
+				for _, b := range backends {
+					backend := b.(map[string]interface{})
+					if strings.Contains(backend["name"].(string), dynamicBackend2Name) {
+						return true
+					}
+				}
+				return false
+			}, timeout, pollingInterval).Should(BeTrue(), "Backend should be discovered")
+
+			By("Deleting the backend")
+			Expect(k8sClient.Delete(ctx, tempBackend)).To(Succeed())
+
+			By("Verifying backend is removed from vMCP status")
+			Eventually(func() bool {
+				resp, err := http.Get(vmcpURL + "/status")
+				if err != nil {
+					return false
+				}
+				defer resp.Body.Close()
+
+				var status map[string]interface{}
+				if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+					return false
+				}
+
+				backends := status["backends"].([]interface{})
+				for _, b := range backends {
+					backend := b.(map[string]interface{})
+					if strings.Contains(backend["name"].(string), dynamicBackend2Name) {
+						return false // Backend still present
+					}
+				}
+				return true // Backend not found (removed)
+			}, timeout, pollingInterval).Should(BeTrue(), "Deleted backend should be removed from status")
+		})
+
+		It("should not discover backends from different groups", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+			differentGroup := "different-group"
+
+			By("Creating a group with a different name")
+			CreateMCPGroupAndWait(ctx, k8sClient, differentGroup, testNamespace,
+				"Different group for isolation testing", timeout, pollingInterval)
+			defer func() {
+				_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      differentGroup,
+						Namespace: testNamespace,
+					},
+				})
+			}()
+
+			By("Creating a backend in the different group")
+			otherGroupBackend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "other-group-backend",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					GroupRef:  differentGroup, // Different group
+					Image:     images.GofetchServerImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+				},
+			}
+			Expect(k8sClient.Create(ctx, otherGroupBackend)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, otherGroupBackend)
+			}()
+
+			By("Waiting for backend to be running")
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "other-group-backend",
+					Namespace: testNamespace,
+				}, server)
+				if err != nil {
+					return err
+				}
+				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+					return fmt.Errorf("backend not running yet")
+				}
+				return nil
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Verifying backend from different group is NOT discovered")
+			Consistently(func() bool {
+				resp, err := http.Get(vmcpURL + "/status")
+				if err != nil {
+					return true // Continue checking
+				}
+				defer resp.Body.Close()
+
+				var status map[string]interface{}
+				if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+					return true
+				}
+
+				backends := status["backends"].([]interface{})
+				for _, b := range backends {
+					backend := b.(map[string]interface{})
+					if strings.Contains(backend["name"].(string), "other-group-backend") {
+						return false // Backend found - test should fail
+					}
+				}
+				return true // Backend not found - correct
+			}, 10*time.Second, pollingInterval).Should(BeTrue(), "Backend from different group should not be discovered")
+		})
+	})
+
 	Context("Health Endpoints", func() {
 		It("should expose /health endpoint that always returns 200", func() {
 			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)

@@ -21,6 +21,7 @@ import (
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
@@ -473,6 +474,9 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
+		// Add recovery middleware (always present, added last to be outermost wrapper)
+		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
+
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
 		return nil
@@ -647,6 +651,16 @@ func addAuditMiddleware(
 		middlewareConfigs = append(middlewareConfigs, *auditConfig)
 	}
 
+	return middlewareConfigs
+}
+
+// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
+// Middleware is applied in reverse order, so adding last means it executes first
+// and catches panics from all other middleware and handlers.
+func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
+	if recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
+	}
 	return middlewareConfigs
 }
 

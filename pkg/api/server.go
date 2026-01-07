@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -136,6 +137,9 @@ func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder 
 // Build creates and configures the HTTP router
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
+
+	// Apply recovery middleware first to catch panics from all other middleware and handlers
+	r.Use(recovery.RecoveryMiddleware)
 
 	// Apply default middleware
 	r.Use(

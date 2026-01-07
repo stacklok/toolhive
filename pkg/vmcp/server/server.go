@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -516,6 +517,10 @@ func (s *Server) Start(ctx context.Context) error {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
 		logger.Info("Authentication middleware enabled for MCP endpoints")
 	}
+
+	// Apply recovery middleware last (so it executes first and catches panics from all other middleware)
+	mcpHandler = recovery.RecoveryMiddleware(mcpHandler)
+	logger.Info("Recovery middleware enabled for MCP endpoints")
 
 	mux.Handle("/", mcpHandler)
 

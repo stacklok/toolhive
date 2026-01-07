@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -359,6 +360,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Create logging status reporter for CLI mode
+	// Logging is disabled (false) for production CLI usage (no persistent status)
+	statusReporter := vmcpstatus.NewLoggingReporter(false)
+
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,
 		Version:             getVersion(),
@@ -369,6 +374,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		TelemetryProvider:   telemetryProvider,
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
+		StatusReporter:      statusReporter,
 	}
 
 	// Convert composite tool configurations to workflow definitions

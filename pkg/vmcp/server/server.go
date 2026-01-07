@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -102,6 +103,12 @@ type Config struct {
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
+
+	// StatusReporter enables vMCP runtime to report operational status.
+	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
+	// In CLI mode: NoOpReporter (no persistent status)
+	// If nil, status reporting is disabled.
+	StatusReporter vmcpstatus.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -170,6 +177,14 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// statusReporter enables vMCP to report operational status to control plane.
+	// Nil if status reporting is disabled.
+	statusReporter vmcpstatus.Reporter
+
+	// statusReporterShutdown is the cleanup function returned by statusReporter.Start().
+	// Nil if status reporting is disabled or not yet started.
+	statusReporterShutdown func(context.Context) error
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -324,6 +339,7 @@ func New(
 		workflowExecutors: workflowExecutors,
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
+		statusReporter:    cfg.StatusReporter,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -560,6 +576,17 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start status reporter if configured
+	if s.statusReporter != nil {
+		shutdown, err := s.statusReporter.Start(ctx)
+		if err != nil {
+			logger.Warnw("failed to start status reporter (continuing anyway)",
+				"error", err)
+		} else {
+			s.statusReporterShutdown = shutdown
+		}
+	}
+
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
@@ -607,6 +634,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	if healthMon != nil {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
+		}
+	}
+
+	// Stop status reporter (flush any pending status updates)
+	if s.statusReporterShutdown != nil {
+		if err := s.statusReporterShutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop status reporter: %w", err))
 		}
 	}
 

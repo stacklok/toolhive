@@ -655,9 +655,7 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},

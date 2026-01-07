@@ -30,6 +30,13 @@ import (
 // maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
 const maxResponseSize = 1024 * 1024 // 1MB
 
+// Compile-time interface compliance checks.
+var (
+	_ Provider                 = (*OIDCProvider)(nil)
+	_ IDTokenNonceValidator    = (*OIDCProvider)(nil)
+	_ UserInfoSubjectValidator = (*OIDCProvider)(nil)
+)
+
 // OIDCProvider implements Provider for OIDC-compliant identity providers.
 type OIDCProvider struct {
 	config             *UpstreamConfig
@@ -37,7 +44,7 @@ type OIDCProvider struct {
 	client             HTTPClient
 	logger             *slog.Logger
 	forceConsentScreen bool
-	idTokenValidator   *IDTokenValidator
+	idTokenValidator   *idTokenValidator
 }
 
 // OIDCProviderOption configures an OIDCProvider.
@@ -109,9 +116,9 @@ func NewOIDCProvider(
 
 	// Initialize ID token validator for validating tokens from the upstream IDP.
 	// Uses the discovered issuer and our client_id as expected audience.
-	validator, err := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   p.endpoints.Issuer,
-		ExpectedAudience: config.ClientID,
+	validator, err := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   p.endpoints.Issuer,
+		expectedAudience: config.ClientID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID token validator: %w", err)
@@ -329,6 +336,9 @@ func (p *OIDCProvider) UserInfoWithSubjectValidation(
 }
 
 // Endpoints returns the discovered OIDC endpoints.
+// This method is exported to allow inspection of discovered endpoints for debugging,
+// testing, and advanced use cases where callers need to access endpoint URLs directly.
+// Currently only used internally in tests, but kept exported for API stability.
 func (p *OIDCProvider) Endpoints() *OIDCEndpoints {
 	return p.endpoints
 }
@@ -343,7 +353,7 @@ func (p *OIDCProvider) ValidateIDToken(idToken string) (*IDTokenClaims, error) {
 	if p.idTokenValidator == nil {
 		return nil, errors.New("ID token validator not initialized")
 	}
-	return p.idTokenValidator.ValidateIDToken(idToken)
+	return p.idTokenValidator.validateIDToken(idToken)
 }
 
 // ValidateIDTokenWithNonce validates an ID token with nonce verification.
@@ -355,7 +365,7 @@ func (p *OIDCProvider) ValidateIDTokenWithNonce(idToken, expectedNonce string) (
 	if p.idTokenValidator == nil {
 		return nil, errors.New("ID token validator not initialized")
 	}
-	return p.idTokenValidator.ValidateIDTokenWithNonce(idToken, expectedNonce)
+	return p.idTokenValidator.validateIDTokenWithNonce(idToken, expectedNonce)
 }
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
@@ -485,7 +495,7 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 	// Currently logs warnings on validation failure rather than rejecting,
 	// since signature verification is not yet implemented.
 	if tokenResp.IDToken != "" && p.idTokenValidator != nil {
-		if _, err := p.idTokenValidator.ValidateIDToken(tokenResp.IDToken); err != nil {
+		if _, err := p.idTokenValidator.validateIDToken(tokenResp.IDToken); err != nil {
 			// Log warning but don't fail - signature verification not yet implemented
 			p.logger.Warn("ID token validation warning (claims only, no signature verification)",
 				"error", err.Error())

@@ -62,21 +62,21 @@ type IDTokenClaims struct {
 	RawClaims jwt.MapClaims
 }
 
-// IDTokenValidatorConfig configures the ID Token validator.
-type IDTokenValidatorConfig struct {
-	// ExpectedIssuer is the expected value for the iss claim.
-	ExpectedIssuer string
+// idTokenValidatorConfig configures the ID Token validator.
+type idTokenValidatorConfig struct {
+	// expectedIssuer is the expected value for the iss claim.
+	expectedIssuer string
 
-	// ExpectedAudience is the expected value for the aud claim (typically the client_id).
-	ExpectedAudience string
+	// expectedAudience is the expected value for the aud claim (typically the client_id).
+	expectedAudience string
 
-	// ClockSkew is the allowed clock skew for time-based validations.
+	// clockSkew is the allowed clock skew for time-based validations.
 	// Default is 0 (no skew allowed).
-	ClockSkew time.Duration
+	clockSkew time.Duration
 
-	// SkipExpiryValidation skips the exp claim validation.
+	// skipExpiryValidation skips the exp claim validation.
 	// Should only be used for testing.
-	SkipExpiryValidation bool
+	skipExpiryValidation bool
 }
 
 // ID Token validation errors.
@@ -92,7 +92,7 @@ var (
 	ErrIDTokenNonceMismatch  = errors.New("id token nonce mismatch")
 )
 
-// IDTokenValidator validates OIDC ID Tokens.
+// idTokenValidator validates OIDC ID Tokens.
 // This is a minimal implementation that parses and validates basic claims
 // without signature verification.
 //
@@ -101,22 +101,22 @@ var (
 // TODO: Validate iat claim is within acceptable range
 // TODO: Validate nonce if present (requires state tracking)
 // TODO: Support at_hash validation (requires access token)
-type IDTokenValidator struct {
-	config IDTokenValidatorConfig
+type idTokenValidator struct {
+	config idTokenValidatorConfig
 }
 
-// NewIDTokenValidator creates a new ID Token validator.
-func NewIDTokenValidator(config IDTokenValidatorConfig) (*IDTokenValidator, error) {
-	if config.ExpectedIssuer == "" {
+// newIDTokenValidator creates a new ID Token validator.
+func newIDTokenValidator(config idTokenValidatorConfig) (*idTokenValidator, error) {
+	if config.expectedIssuer == "" {
 		return nil, errors.New("expected issuer is required")
 	}
-	if config.ExpectedAudience == "" {
+	if config.expectedAudience == "" {
 		return nil, errors.New("expected audience is required")
 	}
-	return &IDTokenValidator{config: config}, nil
+	return &idTokenValidator{config: config}, nil
 }
 
-// ValidateIDToken validates an ID Token and returns the parsed claims.
+// validateIDToken validates an ID Token and returns the parsed claims.
 // This performs the following validations per OIDC Core Section 3.1.3.7:
 //   - Parses the JWT payload (without signature verification)
 //   - Validates the iss claim matches the expected issuer
@@ -125,7 +125,7 @@ func NewIDTokenValidator(config IDTokenValidatorConfig) (*IDTokenValidator, erro
 //
 // Note: This is a minimal implementation. Signature verification should be
 // added before using in production.
-func (v *IDTokenValidator) ValidateIDToken(idToken string) (*IDTokenClaims, error) {
+func (v *idTokenValidator) validateIDToken(idToken string) (*IDTokenClaims, error) {
 	if idToken == "" {
 		return nil, ErrIDTokenRequired
 	}
@@ -148,7 +148,7 @@ func (v *IDTokenValidator) ValidateIDToken(idToken string) (*IDTokenClaims, erro
 	}
 
 	// Validate expiration (REQUIRED per OIDC Core 3.1.3.7 step 9)
-	if !v.config.SkipExpiryValidation {
+	if !v.config.skipExpiryValidation {
 		if err := v.validateExpiration(claims); err != nil {
 			return nil, err
 		}
@@ -157,16 +157,16 @@ func (v *IDTokenValidator) ValidateIDToken(idToken string) (*IDTokenClaims, erro
 	return claims, nil
 }
 
-// ValidateIDTokenWithNonce validates an ID Token with nonce verification.
-// This performs all validations from ValidateIDToken plus:
+// validateIDTokenWithNonce validates an ID Token with nonce verification.
+// This performs all validations from validateIDToken plus:
 //   - Validates the nonce claim matches the expected nonce (OIDC Core Section 3.1.3.7 step 11)
 //
 // The expectedNonce should match the nonce that was sent in the authorization request.
 // Per OIDC Core Section 3.1.2.1, when a nonce is sent in the authorization request,
 // the ID Token MUST contain a nonce claim with the exact same value.
-func (v *IDTokenValidator) ValidateIDTokenWithNonce(idToken, expectedNonce string) (*IDTokenClaims, error) {
+func (v *idTokenValidator) validateIDTokenWithNonce(idToken, expectedNonce string) (*IDTokenClaims, error) {
 	// First perform standard validation
-	claims, err := v.ValidateIDToken(idToken)
+	claims, err := v.validateIDToken(idToken)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func validateNonce(claims *IDTokenClaims, expectedNonce string) error {
 // parseIDToken parses a JWT ID Token without signature verification.
 // Uses jwt.ParseUnverified which is the standard Go pattern for extracting
 // claims when signature verification is not needed or will be done separately.
-func (*IDTokenValidator) parseIDToken(idToken string) (*IDTokenClaims, error) {
+func (*idTokenValidator) parseIDToken(idToken string) (*IDTokenClaims, error) {
 	// Parse without verification to extract claims
 	// This is the same pattern used in pkg/auth/oauth/flow.go
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
@@ -260,41 +260,41 @@ func extractUnixTime(claims jwt.MapClaims, key string) time.Time {
 }
 
 // validateIssuer validates the iss claim matches the expected issuer.
-func (v *IDTokenValidator) validateIssuer(claims *IDTokenClaims) error {
+func (v *idTokenValidator) validateIssuer(claims *IDTokenClaims) error {
 	if claims.Issuer == "" {
 		return ErrIDTokenMissingIssuer
 	}
-	if claims.Issuer != v.config.ExpectedIssuer {
+	if claims.Issuer != v.config.expectedIssuer {
 		return fmt.Errorf("%w: expected %q, got %q",
-			ErrIDTokenIssuerMismatch, v.config.ExpectedIssuer, claims.Issuer)
+			ErrIDTokenIssuerMismatch, v.config.expectedIssuer, claims.Issuer)
 	}
 	return nil
 }
 
 // validateAudience validates the aud claim contains the expected audience.
-func (v *IDTokenValidator) validateAudience(claims *IDTokenClaims) error {
+func (v *idTokenValidator) validateAudience(claims *IDTokenClaims) error {
 	if len(claims.Audience) == 0 {
 		return ErrIDTokenMissingAud
 	}
 
 	for _, aud := range claims.Audience {
-		if aud == v.config.ExpectedAudience {
+		if aud == v.config.expectedAudience {
 			return nil
 		}
 	}
 
 	return fmt.Errorf("%w: expected %q in audience",
-		ErrIDTokenAudMismatch, v.config.ExpectedAudience)
+		ErrIDTokenAudMismatch, v.config.expectedAudience)
 }
 
 // validateExpiration validates the exp claim is not expired.
-func (v *IDTokenValidator) validateExpiration(claims *IDTokenClaims) error {
+func (v *idTokenValidator) validateExpiration(claims *IDTokenClaims) error {
 	if claims.ExpiresAt.IsZero() {
 		return ErrIDTokenMissingExp
 	}
 
 	now := time.Now()
-	expiryWithSkew := claims.ExpiresAt.Add(v.config.ClockSkew)
+	expiryWithSkew := claims.ExpiresAt.Add(v.config.clockSkew)
 
 	if now.After(expiryWithSkew) {
 		return fmt.Errorf("%w: expired at %s", ErrIDTokenExpired, claims.ExpiresAt.Format(time.RFC3339))

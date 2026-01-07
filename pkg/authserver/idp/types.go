@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package idp provides types and implementations for upstream Identity Provider
-// communication in the OAuth authorization server.
 package idp
 
 import (

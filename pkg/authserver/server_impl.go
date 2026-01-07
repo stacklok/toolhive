@@ -82,7 +82,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	}
 
 	// Create upstream IDP provider from config
-	upstreamIDP, err := idp.NewFromConfig(ctx, cfg.Upstream)
+	upstreamIDP, err := idp.NewOIDCProvider(ctx, cfg.Upstream)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}

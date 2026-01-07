@@ -32,20 +32,20 @@ func createTestIDToken(claims jwt.MapClaims) string {
 func TestNewIDTokenValidator(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   "https://example.com",
-		ExpectedAudience: "client-id",
+	_, err := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   "https://example.com",
+		expectedAudience: "client-id",
 	})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	_, err = NewIDTokenValidator(IDTokenValidatorConfig{ExpectedAudience: "client-id"})
+	_, err = newIDTokenValidator(idTokenValidatorConfig{expectedAudience: "client-id"})
 	if err == nil {
 		t.Error("expected error for missing issuer")
 	}
 
-	_, err = NewIDTokenValidator(IDTokenValidatorConfig{ExpectedIssuer: "https://example.com"})
+	_, err = newIDTokenValidator(idTokenValidatorConfig{expectedIssuer: "https://example.com"})
 	if err == nil {
 		t.Error("expected error for missing audience")
 	}
@@ -54,9 +54,9 @@ func TestNewIDTokenValidator(t *testing.T) {
 func TestIDTokenValidator_ValidToken(t *testing.T) {
 	t.Parallel()
 
-	validator, _ := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   "https://example.com",
-		ExpectedAudience: "client-id",
+	validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   "https://example.com",
+		expectedAudience: "client-id",
 	})
 
 	token := createTestIDToken(jwt.MapClaims{
@@ -67,7 +67,7 @@ func TestIDTokenValidator_ValidToken(t *testing.T) {
 		"email": "user@example.com",
 	})
 
-	claims, err := validator.ValidateIDToken(token)
+	claims, err := validator.validateIDToken(token)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,9 +82,9 @@ func TestIDTokenValidator_ValidToken(t *testing.T) {
 func TestIDTokenValidator_ValidationErrors(t *testing.T) {
 	t.Parallel()
 
-	validator, _ := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   "https://example.com",
-		ExpectedAudience: "client-id",
+	validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   "https://example.com",
+		expectedAudience: "client-id",
 	})
 
 	tests := []struct {
@@ -117,7 +117,7 @@ func TestIDTokenValidator_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := validator.ValidateIDToken(tt.token)
+			_, err := validator.validateIDToken(tt.token)
 			if err == nil {
 				t.Error("expected error")
 				return
@@ -132,10 +132,10 @@ func TestIDTokenValidator_ValidationErrors(t *testing.T) {
 func TestIDTokenValidator_ClockSkew(t *testing.T) {
 	t.Parallel()
 
-	validator, _ := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   "https://example.com",
-		ExpectedAudience: "client-id",
-		ClockSkew:        5 * time.Minute,
+	validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   "https://example.com",
+		expectedAudience: "client-id",
+		clockSkew:        5 * time.Minute,
 	})
 
 	// Token expired 2 minutes ago, but we allow 5 minute skew
@@ -146,7 +146,7 @@ func TestIDTokenValidator_ClockSkew(t *testing.T) {
 		"exp": time.Now().Add(-2 * time.Minute).Unix(),
 	})
 
-	_, err := validator.ValidateIDToken(token)
+	_, err := validator.validateIDToken(token)
 	if err != nil {
 		t.Errorf("expected token to be valid within clock skew: %v", err)
 	}
@@ -155,9 +155,9 @@ func TestIDTokenValidator_ClockSkew(t *testing.T) {
 func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 	t.Parallel()
 
-	validator, _ := NewIDTokenValidator(IDTokenValidatorConfig{
-		ExpectedIssuer:   "https://example.com",
-		ExpectedAudience: "client-id",
+	validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:   "https://example.com",
+		expectedAudience: "client-id",
 	})
 
 	t.Run("valid token with matching nonce", func(t *testing.T) {
@@ -170,7 +170,7 @@ func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 			"nonce": "test-nonce-12345",
 		})
 
-		claims, err := validator.ValidateIDTokenWithNonce(token, "test-nonce-12345")
+		claims, err := validator.validateIDTokenWithNonce(token, "test-nonce-12345")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -189,7 +189,7 @@ func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 			// no nonce claim
 		})
 
-		_, err := validator.ValidateIDTokenWithNonce(token, "expected-nonce")
+		_, err := validator.validateIDTokenWithNonce(token, "expected-nonce")
 		if err == nil {
 			t.Error("expected error for missing nonce")
 		}
@@ -208,7 +208,7 @@ func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 			"nonce": "wrong-nonce",
 		})
 
-		_, err := validator.ValidateIDTokenWithNonce(token, "expected-nonce")
+		_, err := validator.validateIDTokenWithNonce(token, "expected-nonce")
 		if err == nil {
 			t.Error("expected error for nonce mismatch")
 		}
@@ -228,7 +228,7 @@ func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 		})
 
 		// Empty expected nonce should skip nonce validation
-		_, err := validator.ValidateIDTokenWithNonce(token, "")
+		_, err := validator.validateIDTokenWithNonce(token, "")
 		if err != nil {
 			t.Errorf("expected no error when expected nonce is empty: %v", err)
 		}
@@ -245,7 +245,7 @@ func TestIDTokenValidator_ValidateWithNonce(t *testing.T) {
 			"nonce": "test-nonce",
 		})
 
-		_, err := validator.ValidateIDTokenWithNonce(token, "test-nonce")
+		_, err := validator.validateIDTokenWithNonce(token, "test-nonce")
 		if err == nil {
 			t.Error("expected error for issuer mismatch")
 		}

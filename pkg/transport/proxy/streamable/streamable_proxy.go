@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/common"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -92,19 +93,16 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	mux.Handle(StreamableHTTPEndpoint, p.applyMiddlewares(http.HandlerFunc(p.handleStreamableRequest)))
 
 	// Add health check endpoint (no middlewares)
-	if p.healthChecker != nil {
-		mux.Handle("/health", p.healthChecker)
-	}
+	common.MountHealthCheck(mux, p.healthChecker)
 
-	if p.prometheusHandler != nil {
-		mux.Handle("/metrics", p.prometheusHandler)
-	}
+	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
+	common.MountMetrics(mux, p.prometheusHandler)
 
-	p.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	p.server = common.NewHTTPServer(common.ServerConfig{
+		Host:    p.host,
+		Port:    p.port,
+		Handler: mux,
+	})
 
 	// Route container responses to matching waiter channels
 	go p.dispatchResponses()
@@ -359,14 +357,12 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 	defer cancel()
 
 	// Prepare SSE response headers
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	flusher, err := common.GetFlusher(w)
+	if err != nil {
 		writeHTTPError(w, http.StatusInternalServerError, "Streaming not supported")
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	common.SetSSEHeaders(w)
 	if setSessionHeader {
 		w.Header().Set("Mcp-Session-Id", sessID)
 	}
@@ -560,10 +556,7 @@ func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.
 // ------------------------- Helpers: middleware, parsing, correlation -------------------------
 
 func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
-	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		handler = p.middlewares[i].Function(handler)
-	}
-	return handler
+	return common.ApplyMiddlewares(handler, p.middlewares...)
 }
 
 func (p *HTTPProxy) ensureSession(id string) error {

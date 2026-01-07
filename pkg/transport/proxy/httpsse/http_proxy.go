@@ -20,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/common"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -118,15 +119,6 @@ func NewHTTPSSEProxy(
 	return proxy
 }
 
-// applyMiddlewares applies a chain of middlewares to a handler
-func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware) http.Handler {
-	// Apply middleware chain in reverse order (last middleware is applied first)
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i].Function(handler)
-	}
-	return handler
-}
-
 // Start starts the HTTP SSE proxy.
 func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Create a new HTTP server
@@ -135,7 +127,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add handlers for SSE and JSON-RPC with middlewares
 	// At some point we should add support for Streamable HTTP transport here
 	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
-	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
+	mux.Handle(ssecommon.HTTPSSEEndpoint, common.ApplyMiddlewares(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -146,16 +138,13 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		p.middlewares...,
 	))
 
-	mux.Handle(ssecommon.HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
+	mux.Handle(ssecommon.HTTPMessagesEndpoint, common.ApplyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
 	// Add health check endpoint with MCP status (no middlewares)
-	mux.Handle("/health", p.healthChecker)
+	common.MountHealthCheck(mux, p.healthChecker)
 
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
-	if p.prometheusHandler != nil {
-		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Info("Prometheus metrics endpoint enabled at /metrics")
-	}
+	common.MountMetrics(mux, p.prometheusHandler)
 
 	// Create a listener to get the actual port when using port 0
 	addr := fmt.Sprintf("%s:%d", p.host, p.port)
@@ -276,9 +265,7 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.
 // handleSSEConnection handles an SSE connection.
 func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Request) {
 	// Set headers for SSE
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	common.SetSSEHeaders(w)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Create a unique client ID
@@ -305,8 +292,8 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	p.processPendingMessages(clientID, messageCh)
 
 	// Create a flusher for SSE
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	flusher, err := common.GetFlusher(w)
+	if err != nil {
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
@@ -523,31 +510,26 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 // buildEndpointURL constructs the endpoint URL from request headers and proxy configuration.
 func (p *HTTPSSEProxy) buildEndpointURL(r *http.Request, clientID string) string {
 	host := r.Host
-	prefix := ""
 
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-		scheme = forwardedProto
+
+	// Extract X-Forwarded headers
+	fwdHeaders := common.ExtractForwardedHeaders(r, p.trustProxyHeaders)
+
+	// Use forwarded scheme if available
+	if fwdHeaders.Proto != "" {
+		scheme = fwdHeaders.Proto
 	}
 
-	// Handle X-Forwarded headers from reverse proxies only if trusted
-	if p.trustProxyHeaders {
-		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
-			host = forwardedHost
-			if forwardedPort := r.Header.Get("X-Forwarded-Port"); forwardedPort != "" {
-				// Strip any existing port from host before adding the forwarded port
-				if hostOnly, _, err := net.SplitHostPort(host); err == nil {
-					host = hostOnly
-				}
-				host = net.JoinHostPort(host, forwardedPort)
-			}
-		}
-
-		prefix = r.Header.Get("X-Forwarded-Prefix")
+	// Use forwarded host and port if trusted
+	if fwdHeaders.Host != "" {
+		host = common.JoinHostPort(fwdHeaders.Host, fwdHeaders.Port)
 	}
+
+	prefix := fwdHeaders.Prefix
 
 	// Strip the SSE endpoint suffix from prefix if present, since we'll add the full messages path
 	prefix = stripSSEEndpointSuffix(prefix)

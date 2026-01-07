@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/common"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -349,11 +350,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Create a mux to handle both proxy and health endpoints
 	mux := http.NewServeMux()
 
-	// Apply middleware chain in reverse order (last middleware is applied first)
-	var finalHandler http.Handler = handler
-	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		finalHandler = p.middlewares[i].Function(finalHandler)
-		logger.Infof("Applied middleware: %s", p.middlewares[i].Name)
+	// Apply middleware chain using common utility
+	finalHandler := common.ApplyMiddlewares(handler, p.middlewares...)
+	for _, mw := range p.middlewares {
+		logger.Infof("Applied middleware: %s", mw.Name)
 	}
 
 	// Add the proxy handler for all paths except /health
@@ -367,15 +367,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	})
 
 	// Add health check endpoint (no middlewares) only if health checker is enabled
-	if p.healthChecker != nil {
-		mux.Handle("/health", p.healthChecker)
-	}
+	common.MountHealthCheck(mux, p.healthChecker)
 
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
-	if p.prometheusHandler != nil {
-		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Info("Prometheus metrics endpoint enabled at /metrics")
-	}
+	common.MountMetrics(mux, p.prometheusHandler)
 
 	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
@@ -391,11 +386,11 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.listener = ln
 
 	// Create the server
-	p.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
-	}
+	p.server = common.NewHTTPServer(common.ServerConfig{
+		Host:    p.host,
+		Port:    p.port,
+		Handler: mux,
+	})
 
 	// Capture server in local variable to avoid race with Stop()
 	server := p.server

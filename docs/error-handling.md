@@ -23,10 +23,51 @@ There are two acceptable ways to construct errors in ToolHive:
 
 ToolHive provides a typed error system for common error scenarios. Each error type has an associated HTTP status code for API responses.
 
-Error types are defined in:
-- `pkg/errors/errors.go` - Core application errors (CLI, proxy, etc.)
+### Creating Errors with HTTP Status Codes
+
+Use `errors.WithCode()` to associate HTTP status codes with errors:
+
+```go
+import (
+    "errors"
+    "net/http"
+    
+    thverrors "github.com/stacklok/toolhive/pkg/errors"
+)
+
+// Define an error with a status code
+var ErrWorkloadNotFound = thverrors.WithCode(
+    errors.New("workload not found"),
+    http.StatusNotFound,
+)
+
+// Create a new error inline with a status code
+return thverrors.WithCode(
+    fmt.Errorf("invalid request: %w", err),
+    http.StatusBadRequest,
+)
+```
+
+### Extracting Status Codes
+
+Use `errors.Code()` to extract the HTTP status code from an error:
+
+```go
+code := thverrors.Code(err)  // Returns 500 if no code is found
+```
+
+### Error Definitions
+
+Error types with HTTP status codes are defined in:
+- `pkg/errors/errors.go` - Core error utilities (`WithCode`, `Code`, `CodedError`)
+- `pkg/groups/errors.go` - Group-related errors
+- `pkg/container/runtime/types.go` - Runtime errors (`ErrWorkloadNotFound`)
+- `pkg/workloads/types/validate.go` - Workload validation errors
+- `pkg/secrets/factory.go` - Secrets provider errors
+- `pkg/transport/session/errors.go` - Transport session errors
 - `pkg/vmcp/errors.go` - Virtual MCP Server domain errors
 
+In general, define errors near the code that produces the error.
 
 ## Error Wrapping Guidelines
 
@@ -54,23 +95,41 @@ which particular step is failing. Consider using `errors.WithStack` or `errors.W
 
 ## API Error Handling
 
-### Response Format
+### Handler Pattern
 
-API errors are returned as plain text using `http.Error()`:
+API handlers return errors instead of calling `http.Error()` directly. The `ErrorHandler` decorator in `pkg/api/errors/handler.go` converts errors to HTTP responses:
 
-Response codes are derived from unwrapping the error and this happens in a common middleware layer.
+```go
+// Define a handler that returns an error
+func (s *Routes) getWorkload(w http.ResponseWriter, r *http.Request) error {
+    workload, err := s.manager.GetWorkload(ctx, name)
+    if err != nil {
+        return err  // ErrWorkloadNotFound already has 404 status code
+    }
+    
+    // For errors without a status code, wrap with WithCode
+    if someCondition {
+        return thverrors.WithCode(
+            fmt.Errorf("invalid input"),
+            http.StatusBadRequest,
+        )
+    }
+    
+    // Success case - write response
+    return json.NewEncoder(w).Encode(workload)
+}
 
-See pkg/api/errors/ for more details. 
-TODO: implement common middleware for error and panic handling.
-TODO: integrate handler into setupDefaultRoutes.
-TODO: update documentation on APIs.
-
+// Wire up with the ErrorHandler decorator
+r.Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
+```
 
 ### Error Response Behavior
 
-1. **First matching error code wins** - Check specific errors first, then fall back to generic internal server error.
-2. **Hide internal details** - For 500 errors, log the full error but return a generic message to the user
-3. **Include context for client errors** - For 400/404 errors, include helpful context in the message
+1. **Status codes from errors** - The `ErrorHandler` extracts status codes using `errors.Code()`. Errors without codes default to 500.
+2. **Hide internal details** - For 5xx errors, the full error is logged but only a generic message is returned to the user.
+3. **Include context for client errors** - For 4xx errors, the error message is returned to the client.
+
+See `pkg/api/errors/handler.go` for implementation details.
 
 
 ## CLI Error Handling

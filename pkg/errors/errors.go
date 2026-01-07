@@ -55,12 +55,6 @@ func Code(err error) int {
 	return http.StatusInternalServerError
 }
 
-// HasCode returns true if the error chain contains a CodedError.
-func HasCode(err error) bool {
-	var coded *CodedError
-	return errors.As(err, &coded)
-}
-
 // New creates a new error with the given message and HTTP status code.
 // This is a convenience function equivalent to WithCode(errors.New(message), code).
 func New(message string, code int) error {

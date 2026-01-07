@@ -14,7 +14,11 @@ import (
 )
 
 func TestErrorHandler(t *testing.T) {
+	t.Parallel()
+
 	t.Run("passes through successful response", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(w http.ResponseWriter, _ *http.Request) error {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("success"))
@@ -31,6 +35,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("converts 400 error to HTTP response with message", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
 			return thverrors.WithCode(
 				fmt.Errorf("invalid input"),
@@ -48,6 +54,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("converts 404 error to HTTP response with message", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
 			return thverrors.WithCode(
 				fmt.Errorf("resource not found"),
@@ -65,6 +73,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("converts 409 error to HTTP response with message", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
 			return thverrors.WithCode(
 				fmt.Errorf("resource already exists"),
@@ -82,6 +92,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("converts 500 error to generic HTTP response", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
 			return thverrors.WithCode(
 				fmt.Errorf("sensitive database error details"),
@@ -102,6 +114,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("error without code defaults to 500 with generic message", func(t *testing.T) {
+		t.Parallel()
+
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
 			return errors.New("plain error without code")
 		})
@@ -119,6 +133,8 @@ func TestErrorHandler(t *testing.T) {
 	})
 
 	t.Run("handles wrapped error with code", func(t *testing.T) {
+		t.Parallel()
+
 		sentinelErr := thverrors.WithCode(
 			errors.New("not found"),
 			http.StatusNotFound,
@@ -139,6 +155,8 @@ func TestErrorHandler(t *testing.T) {
 }
 
 func TestHandlerWithError_Type(t *testing.T) {
+	t.Parallel()
+
 	// Ensure HandlerWithError can be used as expected
 	var handler HandlerWithError = func(w http.ResponseWriter, _ *http.Request) error {
 		w.WriteHeader(http.StatusOK)

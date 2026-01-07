@@ -38,6 +38,8 @@ type server struct {
 
 // newServer creates a new OAuth authorization server.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, error) {
+	logger.Debug("initializing OAuth authorization server")
+
 	// Apply defaults to config
 	cfg.applyDefaults()
 
@@ -50,6 +52,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	if stor == nil {
 		return nil, fmt.Errorf("storage is required")
 	}
+
+	logger.Debug("creating OAuth2 configuration")
 
 	// Create OAuth2 config from authserver.Config
 	oauthCfg := &oauth.AuthServerConfig{
@@ -67,12 +71,19 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
+	logger.Debugw("OAuth2 configuration created",
+		"accessTokenLifespan", cfg.AccessTokenLifespan,
+		"refreshTokenLifespan", cfg.RefreshTokenLifespan,
+		"authCodeLifespan", cfg.AuthCodeLifespan,
+	)
+
 	// Register clients
 	if err := registerClients(ctx, stor, cfg.Clients); err != nil {
 		return nil, fmt.Errorf("failed to register clients: %w", err)
 	}
 
 	// Create fosite provider
+	logger.Debug("creating fosite OAuth2 provider")
 	provider := createProvider(oauth2Config, stor)
 
 	// Validate upstream config is provided
@@ -81,10 +92,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	}
 
 	// Create upstream IDP provider from config
+	logger.Debugw("creating upstream IDP provider", "upstreamIssuer", cfg.Upstream.Issuer)
 	upstreamIDP, err := idp.NewOIDCProvider(ctx, cfg.Upstream)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
+	logger.Infow("upstream IDP provider configured", "upstreamIssuer", cfg.Upstream.Issuer)
 
 	router := oauth.NewRouter(provider, oauth2Config, stor, upstreamIDP)
 
@@ -92,7 +105,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 	mux := http.NewServeMux()
 	router.Routes(mux)
 
-	logger.Infof("OAuth authorization server configured with issuer: %s", cfg.Issuer)
+	logger.Infow("OAuth authorization server initialized",
+		"issuer", cfg.Issuer,
+		"clientCount", len(cfg.Clients),
+	)
 
 	return &server{
 		handler:     mux,
@@ -113,13 +129,17 @@ func (s *server) IDPTokenStorage() storage.IDPTokenStorage {
 
 // Close releases resources held by the server.
 func (*server) Close() error {
+	logger.Debug("closing OAuth authorization server")
 	// Currently no resources to clean up
 	return nil
 }
 
 // registerClients adds clients from config to storage.
 func registerClients(ctx context.Context, stor storage.Storage, clients []ClientConfig) error {
+	logger.Debugw("registering OAuth clients", "count", len(clients))
+
 	for _, c := range clients {
+		logger.Debugw("registering client", "clientID", c.ID, "public", c.Public)
 		client := oauth.NewClient(oauth.ClientConfig{
 			ID:           c.ID,
 			Secret:       c.Secret,
@@ -129,7 +149,10 @@ func registerClients(ctx context.Context, stor storage.Storage, clients []Client
 		if err := stor.RegisterClient(ctx, client); err != nil {
 			return fmt.Errorf("failed to register client %s: %w", c.ID, err)
 		}
+		logger.Infow("OAuth client registered", "clientID", c.ID, "public", c.Public)
 	}
+
+	logger.Debugw("all OAuth clients registered successfully", "count", len(clients))
 	return nil
 }
 
@@ -146,6 +169,11 @@ func registerClients(ctx context.Context, stor storage.Storage, clients []Client
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
 func createProvider(oauth2Config *oauth.OAuth2Config, stor storage.Storage) fosite.OAuth2Provider {
+	logger.Debugw("configuring fosite OAuth2 provider",
+		"keyID", oauth2Config.SigningKey.KeyID,
+		"algorithm", oauth2Config.SigningKey.Algorithm,
+	)
+
 	// Convert go-jose/v4 JWK to go-jose/v3 JWK for fosite compatibility.
 	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
 	// This ensures the "kid" (key ID) is included in JWT headers so resource

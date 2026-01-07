@@ -88,6 +88,11 @@ func NewOIDCProvider(
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	logger.Infow("creating OIDC provider",
+		"issuer", config.Issuer,
+		"client_id", config.ClientID,
+	)
+
 	// Build HTTP client using the standard networking builder.
 	// Allow HTTP and private IPs for localhost issuers to support local development/testing.
 	issuerURL, _ := url.Parse(config.Issuer) // Error already validated in config.Validate()
@@ -126,6 +131,11 @@ func NewOIDCProvider(
 	}
 	p.idTokenValidator = validator
 
+	logger.Infow("OIDC provider created successfully",
+		"issuer", p.endpoints.Issuer,
+		"pkce_supported", p.supportsPKCE(),
+	)
+
 	return p, nil
 }
 
@@ -143,6 +153,12 @@ func (p *OIDCProvider) AuthorizationURL(state, codeChallenge, nonce string) (str
 	if state == "" {
 		return "", errors.New("state parameter is required")
 	}
+
+	logger.Debugw("building authorization URL",
+		"authorization_endpoint", p.endpoints.AuthorizationEndpoint,
+		"has_pkce", codeChallenge != "",
+		"has_nonce", nonce != "",
+	)
 
 	// For upstream requests, always use configured scopes if available.
 	// Config scopes represent what the upstream integration requires (e.g., Drive API access).
@@ -198,6 +214,11 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 		return nil, errors.New("authorization code is required")
 	}
 
+	logger.Infow("exchanging authorization code for tokens",
+		"token_endpoint", p.endpoints.TokenEndpoint,
+		"has_pkce_verifier", codeVerifier != "",
+	)
+
 	params := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -211,7 +232,18 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 		params.Set("code_verifier", codeVerifier)
 	}
 
-	return p.tokenRequest(ctx, params)
+	tokens, err := p.tokenRequest(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infow("authorization code exchange successful",
+		"has_refresh_token", tokens.RefreshToken != "",
+		"has_id_token", tokens.IDToken != "",
+		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return tokens, nil
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
@@ -224,6 +256,10 @@ func (p *OIDCProvider) RefreshTokens(ctx context.Context, refreshToken string) (
 		return nil, errors.New("refresh token is required")
 	}
 
+	logger.Infow("refreshing tokens",
+		"token_endpoint", p.endpoints.TokenEndpoint,
+	)
+
 	params := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
@@ -231,7 +267,17 @@ func (p *OIDCProvider) RefreshTokens(ctx context.Context, refreshToken string) (
 		"client_secret": {p.config.ClientSecret},
 	}
 
-	return p.tokenRequest(ctx, params)
+	tokens, err := p.tokenRequest(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infow("token refresh successful",
+		"has_new_refresh_token", tokens.RefreshToken != "",
+		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return tokens, nil
 }
 
 // UserInfo fetches user information from the upstream IDP.
@@ -247,6 +293,10 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 	if accessToken == "" {
 		return nil, errors.New("access token is required")
 	}
+
+	logger.Debugw("fetching user info",
+		"userinfo_endpoint", p.endpoints.UserInfoEndpoint,
+	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.endpoints.UserInfoEndpoint, nil)
 	if err != nil {
@@ -302,6 +352,11 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 		userInfo.Name = name
 	}
 
+	logger.Debugw("user info retrieved",
+		"subject", userInfo.Subject,
+		"has_email", userInfo.Email != "",
+	)
+
 	return userInfo, nil
 }
 
@@ -354,7 +409,25 @@ func (p *OIDCProvider) ValidateIDToken(idToken string) (*IDTokenClaims, error) {
 	if p.idTokenValidator == nil {
 		return nil, errors.New("ID token validator not initialized")
 	}
-	return p.idTokenValidator.validateIDToken(idToken)
+
+	logger.Debugw("validating ID token",
+		"issuer", p.endpoints.Issuer,
+	)
+
+	claims, err := p.idTokenValidator.validateIDToken(idToken)
+	if err != nil {
+		logger.Debugw("ID token validation failed",
+			"error", err.Error(),
+		)
+		return nil, err
+	}
+
+	logger.Debugw("ID token validated successfully",
+		"subject", claims.Subject,
+		"expires_at", claims.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return claims, nil
 }
 
 // ValidateIDTokenWithNonce validates an ID token with nonce verification.
@@ -366,7 +439,25 @@ func (p *OIDCProvider) ValidateIDTokenWithNonce(idToken, expectedNonce string) (
 	if p.idTokenValidator == nil {
 		return nil, errors.New("ID token validator not initialized")
 	}
-	return p.idTokenValidator.validateIDTokenWithNonce(idToken, expectedNonce)
+
+	logger.Debugw("validating ID token with nonce",
+		"issuer", p.endpoints.Issuer,
+	)
+
+	claims, err := p.idTokenValidator.validateIDTokenWithNonce(idToken, expectedNonce)
+	if err != nil {
+		logger.Debugw("ID token validation with nonce failed",
+			"error", err.Error(),
+		)
+		return nil, err
+	}
+
+	logger.Debugw("ID token validated successfully with nonce",
+		"subject", claims.Subject,
+		"expires_at", claims.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return claims, nil
 }
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
@@ -433,6 +524,11 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 
 // tokenRequest performs a token request to the upstream IDP.
 func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*Tokens, error) {
+	logger.Debugw("sending token request",
+		"token_endpoint", p.endpoints.TokenEndpoint,
+		"grant_type", params.Get("grant_type"),
+	)
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,

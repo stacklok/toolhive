@@ -23,6 +23,8 @@ import (
 	"github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // IDTokenClaims contains the standard OIDC ID Token claims.
@@ -143,6 +145,12 @@ func newIDTokenValidator(config idTokenValidatorConfig) (*idTokenValidator, erro
 		return nil, errors.New("expected audience is required")
 	}
 
+	logger.Debugw("creating ID token validator",
+		"expected_issuer", config.expectedIssuer,
+		"expected_audience", config.expectedAudience,
+		"has_jwks_uri", config.jwksURI != "",
+	)
+
 	v := &idTokenValidator{config: config}
 
 	// Initialize JWKS fetcher if JWKS URI is provided
@@ -169,6 +177,11 @@ func (v *idTokenValidator) validateIDTokenWithContext(ctx context.Context, idTok
 		return nil, ErrIDTokenRequired
 	}
 
+	logger.Debugw("validating ID token claims",
+		"expected_issuer", v.config.expectedIssuer,
+		"expected_audience", v.config.expectedAudience,
+	)
+
 	// Verify signature and extract claims
 	claims, err := v.verifyAndParseIDToken(ctx, idToken)
 	if err != nil {
@@ -177,20 +190,36 @@ func (v *idTokenValidator) validateIDTokenWithContext(ctx context.Context, idTok
 
 	// Validate issuer (REQUIRED per OIDC Core 3.1.3.7 step 1)
 	if err := v.validateIssuer(claims); err != nil {
+		logger.Debugw("issuer validation failed",
+			"expected", v.config.expectedIssuer,
+			"actual", claims.Issuer,
+		)
 		return nil, err
 	}
 
 	// Validate audience (REQUIRED per OIDC Core 3.1.3.7 step 2)
 	if err := v.validateAudience(claims); err != nil {
+		logger.Debugw("audience validation failed",
+			"expected", v.config.expectedAudience,
+			"actual", claims.Audience,
+		)
 		return nil, err
 	}
 
 	// Validate expiration (REQUIRED per OIDC Core 3.1.3.7 step 9)
 	if !v.config.skipExpiryValidation {
 		if err := v.validateExpiration(claims); err != nil {
+			logger.Debugw("expiration validation failed",
+				"expires_at", claims.ExpiresAt.Format(time.RFC3339),
+			)
 			return nil, err
 		}
 	}
+
+	logger.Debugw("ID token claims validated",
+		"subject", claims.Subject,
+		"issuer", claims.Issuer,
+	)
 
 	return claims, nil
 }
@@ -260,6 +289,7 @@ func (v *idTokenValidator) verifyAndParseIDToken(ctx context.Context, idToken st
 
 	// Skip signature verification if configured (for testing only)
 	if v.config.skipSignatureVerification {
+		logger.Debugw("skipping signature verification (test mode)")
 		return extractIDTokenClaims(rawClaims), nil
 	}
 
@@ -270,6 +300,10 @@ func (v *idTokenValidator) verifyAndParseIDToken(ctx context.Context, idToken st
 		}
 		return nil, fmt.Errorf("JWKS fetcher not initialized")
 	}
+
+	logger.Debugw("verifying ID token signature",
+		"jwks_uri", v.config.jwksURI,
+	)
 
 	// Get the key to use for verification
 	key, err := v.getVerificationKey(ctx, parsedJWT)
@@ -283,17 +317,27 @@ func (v *idTokenValidator) verifyAndParseIDToken(ctx context.Context, idToken st
 		return nil, fmt.Errorf("%w: %v", ErrIDTokenSignatureInvalid, err)
 	}
 
+	logger.Debugw("ID token signature verified successfully")
+
 	return extractIDTokenClaims(verifiedClaims), nil
 }
 
 // getVerificationKey fetches the JWKS and finds the appropriate key for verification.
 // It handles key rotation by matching the kid (key ID) from the JWT header.
 func (v *idTokenValidator) getVerificationKey(ctx context.Context, parsedJWT *jwt.JSONWebToken) (any, error) {
+	logger.Debugw("fetching JWKS for signature verification",
+		"jwks_uri", v.config.jwksURI,
+	)
+
 	// Fetch JWKS from the upstream IDP
 	jwks, err := v.jwksFetcher.Resolve(ctx, v.config.jwksURI, false)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrIDTokenJWKSFetchFailed, err)
 	}
+
+	logger.Debugw("JWKS fetched successfully",
+		"key_count", len(jwks.Keys),
+	)
 
 	// Get the key ID from JWT header
 	if len(parsedJWT.Headers) == 0 {
@@ -323,16 +367,27 @@ func (v *idTokenValidator) getVerificationKey(ctx context.Context, parsedJWT *jw
 	// Look up the key by kid
 	keys := jwks.Key(kid)
 	if len(keys) == 0 {
+		logger.Debugw("key not found in JWKS, refreshing",
+			"kid", kid,
+		)
 		// Key not found - try refreshing the JWKS in case of key rotation
 		jwks, err = v.jwksFetcher.Resolve(ctx, v.config.jwksURI, true) // Force refresh
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrIDTokenJWKSFetchFailed, err)
 		}
+		logger.Debugw("JWKS refreshed",
+			"key_count", len(jwks.Keys),
+		)
 		keys = jwks.Key(kid)
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("%w: kid=%s", ErrIDTokenKeyNotFound, kid)
 		}
 	}
+
+	logger.Debugw("verification key found",
+		"kid", kid,
+		"algorithm", header.Algorithm,
+	)
 
 	// Use the first matching key
 	return keys[0].Key, nil

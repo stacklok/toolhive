@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/idp"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MinRSAKeyBits is the minimum required size for RSA keys in bits.
@@ -102,6 +103,8 @@ const MinSecretLength = 32
 
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
+	logger.Debugw("validating authserver config", "issuer", c.Issuer)
+
 	if c.Issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}
@@ -126,11 +129,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	logger.Debugw("authserver config validation passed",
+		"issuer", c.Issuer,
+		"clientCount", len(c.Clients),
+		"hasUpstream", c.Upstream != nil,
+	)
 	return nil
 }
 
 // Validate checks that the SigningKey configuration is valid.
 func (k *SigningKey) Validate() error {
+	logger.Debugw("validating signing key", "keyID", k.KeyID, "algorithm", k.Algorithm)
+
 	if k.KeyID == "" {
 		return fmt.Errorf("key ID is required")
 	}
@@ -150,6 +160,7 @@ func (k *SigningKey) Validate() error {
 		if rsaKey.N.BitLen() < MinRSAKeyBits {
 			return fmt.Errorf("RSA key must be at least %d bits, got %d", MinRSAKeyBits, rsaKey.N.BitLen())
 		}
+		logger.Debugw("RSA signing key validated", "keyID", k.KeyID, "keyBits", rsaKey.N.BitLen())
 	case "ES256", "ES384", "ES512":
 		ecdsaKey, ok := k.Key.(*ecdsa.PrivateKey)
 		if !ok {
@@ -165,6 +176,7 @@ func (k *SigningKey) Validate() error {
 			return fmt.Errorf("algorithm %s requires curve %s, got %s",
 				k.Algorithm, expectedCurve, ecdsaKey.Curve.Params().Name)
 		}
+		logger.Debugw("ECDSA signing key validated", "keyID", k.KeyID, "curve", ecdsaKey.Curve.Params().Name)
 	default:
 		return fmt.Errorf("unsupported algorithm: %s", k.Algorithm)
 	}
@@ -174,6 +186,8 @@ func (k *SigningKey) Validate() error {
 
 // Validate checks that the ClientConfig is valid.
 func (c *ClientConfig) Validate() error {
+	logger.Debugw("validating client config", "clientID", c.ID, "public", c.Public)
+
 	if c.ID == "" {
 		return fmt.Errorf("client id is required")
 	}
@@ -186,18 +200,24 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("secret is required for confidential clients")
 	}
 
+	logger.Debugw("client config validated", "clientID", c.ID, "redirectURICount", len(c.RedirectURIs))
 	return nil
 }
 
 // applyDefaults applies default values to the config where not set.
 func (c *Config) applyDefaults() {
+	logger.Debug("applying default values to authserver config")
+
 	if c.AccessTokenLifespan == 0 {
 		c.AccessTokenLifespan = time.Hour
+		logger.Debugw("applied default access token lifespan", "duration", c.AccessTokenLifespan)
 	}
 	if c.RefreshTokenLifespan == 0 {
 		c.RefreshTokenLifespan = 24 * time.Hour * 7 // 7 days
+		logger.Debugw("applied default refresh token lifespan", "duration", c.RefreshTokenLifespan)
 	}
 	if c.AuthCodeLifespan == 0 {
 		c.AuthCodeLifespan = 10 * time.Minute
+		logger.Debugw("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
 	}
 }

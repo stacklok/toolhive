@@ -56,6 +56,17 @@ const (
 	defaultSessionTTL = 30 * time.Minute
 )
 
+//go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
+
+// Watcher is the interface for Kubernetes backend watcher integration.
+// Used in dynamic mode (outgoingAuth.source: discovered) to gate readiness
+// on controller-runtime cache sync before serving requests.
+type Watcher interface {
+	// WaitForCacheSync waits for the Kubernetes informer caches to sync.
+	// Returns true if caches synced successfully, false on timeout or error.
+	WaitForCacheSync(ctx context.Context) bool
+}
+
 // Config holds the Virtual MCP Server configuration.
 type Config struct {
 	// Name is the server name exposed in MCP protocol
@@ -102,6 +113,11 @@ type Config struct {
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
+
+	// Watcher is the optional Kubernetes backend watcher for dynamic mode.
+	// Only set when running in K8s with outgoingAuth.source: discovered.
+	// Used for /readyz endpoint to gate readiness on cache sync.
+	Watcher Watcher
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -437,6 +453,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Unauthenticated health endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleReadiness)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/api/backends/health", s.handleBackendHealth)
 
@@ -659,6 +676,76 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	// the 200 OK status has already been sent above.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode health response: %v", err)
+	}
+}
+
+// handleReadiness handles /readyz HTTP requests for Kubernetes readiness probes.
+//
+// In dynamic mode (K8s with outgoingAuth.source: discovered), this endpoint gates
+// readiness on the controller-runtime manager's cache sync status. The pod will
+// not be marked ready until the manager has populated its cache with current
+// backend information from the MCPGroup.
+//
+// In static mode (CLI or K8s with inline backends), this always returns 200 OK
+// since there's no cache to sync.
+//
+// Design Pattern:
+// This follows the same readiness gating pattern used by cert-manager and ArgoCD:
+// - /health: Always returns 200 if server is responding (liveness probe)
+// - /readyz: Returns 503 until caches synced, then 200 (readiness probe)
+//
+// K8s Configuration:
+//
+//	readinessProbe:
+//	  httpGet:
+//	    path: /readyz
+//	    port: 4483
+//	  initialDelaySeconds: 5
+//	  periodSeconds: 5
+//	  timeoutSeconds: 5
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	// Static mode: always ready (no watcher, no cache to sync)
+	if s.config.Watcher == nil {
+		response := map[string]string{
+			"status": "ready",
+			"mode":   "static",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Errorf("Failed to encode readiness response: %v", err)
+		}
+		return
+	}
+
+	// Dynamic mode: gate readiness on cache sync
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if !s.config.Watcher.WaitForCacheSync(ctx) {
+		// Cache not synced yet - return 503 Service Unavailable
+		response := map[string]string{
+			"status": "not_ready",
+			"mode":   "dynamic",
+			"reason": "cache_sync_pending",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Errorf("Failed to encode readiness response: %v", err)
+		}
+		return
+	}
+
+	// Cache synced - ready to serve requests
+	response := map[string]string{
+		"status": "ready",
+		"mode":   "dynamic",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode readiness response: %v", err)
 	}
 }
 

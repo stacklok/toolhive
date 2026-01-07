@@ -90,7 +90,7 @@ func NewHTTPProxy(
 // Start starts the HTTPProxy server.
 func (p *HTTPProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
-	mux.Handle(StreamableHTTPEndpoint, p.applyMiddlewares(http.HandlerFunc(p.handleStreamableRequest)))
+	mux.Handle(StreamableHTTPEndpoint, common.ApplyMiddlewares(http.HandlerFunc(p.handleStreamableRequest), p.middlewares...))
 
 	// Add health check endpoint (no middlewares)
 	common.MountHealthCheck(mux, p.healthChecker)
@@ -554,10 +554,6 @@ func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.
 }
 
 // ------------------------- Helpers: middleware, parsing, correlation -------------------------
-
-func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
-	return common.ApplyMiddlewares(handler, p.middlewares...)
-}
 
 func (p *HTTPProxy) ensureSession(id string) error {
 	if _, ok := p.sessionManager.Get(id); ok {

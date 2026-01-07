@@ -18,16 +18,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
+	serverMocks "github.com/stacklok/toolhive/pkg/vmcp/server/mocks"
 )
-
-// mockK8sManager is a mock implementation of the K8sManager interface
-type mockK8sManager struct {
-	cacheSynced bool
-}
-
-func (m *mockK8sManager) WaitForCacheSync(_ context.Context) bool {
-	return m.cacheSynced
-}
 
 // ReadinessResponse mirrors the server's readiness response structure for test deserialization.
 type ReadinessResponse struct {
@@ -67,13 +59,13 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 
-	// Create server without K8sManager (static mode)
+	// Create server without Watcher (static mode)
 	srv, err := server.New(ctx, &server.Config{
-		Name:       "test-vmcp",
-		Version:    "1.0.0",
-		Host:       "127.0.0.1",
-		Port:       port,
-		K8sManager: nil, // Static mode
+		Name:    "test-vmcp",
+		Version: "1.0.0",
+		Host:    "127.0.0.1",
+		Port:    port,
+		Watcher: nil, // Static mode
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -139,15 +131,16 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 
-	// Create mock K8s manager with cache synced
-	mockMgr := &mockK8sManager{cacheSynced: true}
+	// Create mock watcher with cache synced
+	mockWatcher := serverMocks.NewMockWatcher(ctrl)
+	mockWatcher.EXPECT().WaitForCacheSync(gomock.Any()).Return(true).AnyTimes()
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:       "test-vmcp",
-		Version:    "1.0.0",
-		Host:       "127.0.0.1",
-		Port:       port,
-		K8sManager: mockMgr, // Dynamic mode with synced cache
+		Name:    "test-vmcp",
+		Version: "1.0.0",
+		Host:    "127.0.0.1",
+		Port:    port,
+		Watcher: mockWatcher, // Dynamic mode with synced cache
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -213,15 +206,16 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 
-	// Create mock K8s manager with cache NOT synced
-	mockMgr := &mockK8sManager{cacheSynced: false}
+	// Create mock watcher with cache NOT synced
+	mockWatcher := serverMocks.NewMockWatcher(ctrl)
+	mockWatcher.EXPECT().WaitForCacheSync(gomock.Any()).Return(false).AnyTimes()
 
 	srv, err := server.New(ctx, &server.Config{
-		Name:       "test-vmcp",
-		Version:    "1.0.0",
-		Host:       "127.0.0.1",
-		Port:       port,
-		K8sManager: mockMgr, // Dynamic mode with unsynced cache
+		Name:    "test-vmcp",
+		Version: "1.0.0",
+		Host:    "127.0.0.1",
+		Port:    port,
+		Watcher: mockWatcher, // Dynamic mode with unsynced cache
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 

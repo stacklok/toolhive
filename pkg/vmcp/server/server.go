@@ -56,6 +56,17 @@ const (
 	defaultSessionTTL = 30 * time.Minute
 )
 
+//go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
+
+// Watcher is the interface for Kubernetes backend watcher integration.
+// Used in dynamic mode (outgoingAuth.source: discovered) to gate readiness
+// on controller-runtime cache sync before serving requests.
+type Watcher interface {
+	// WaitForCacheSync waits for the Kubernetes informer caches to sync.
+	// Returns true if caches synced successfully, false on timeout or error.
+	WaitForCacheSync(ctx context.Context) bool
+}
+
 // Config holds the Virtual MCP Server configuration.
 type Config struct {
 	// Name is the server name exposed in MCP protocol
@@ -103,12 +114,10 @@ type Config struct {
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
 
-	// K8sManager is the optional Kubernetes manager for dynamic mode.
+	// Watcher is the optional Kubernetes backend watcher for dynamic mode.
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
-	K8sManager interface {
-		WaitForCacheSync(ctx context.Context) bool
-	}
+	Watcher Watcher
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -694,8 +703,8 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 //	  periodSeconds: 5
 //	  timeoutSeconds: 5
 func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
-	// Static mode: always ready (no K8s manager, no cache to sync)
-	if s.config.K8sManager == nil {
+	// Static mode: always ready (no watcher, no cache to sync)
+	if s.config.Watcher == nil {
 		response := map[string]string{
 			"status": "ready",
 			"mode":   "static",
@@ -712,7 +721,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	if !s.config.K8sManager.WaitForCacheSync(ctx) {
+	if !s.config.Watcher.WaitForCacheSync(ctx) {
 		// Cache not synced yet - return 503 Service Unavailable
 		response := map[string]string{
 			"status": "not_ready",

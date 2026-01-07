@@ -413,7 +413,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		TelemetryProvider:   telemetryProvider,
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
-		K8sManager:          backendWatcher,
+		Watcher:             backendWatcher,
 	}
 
 	// Convert composite tool configurations to workflow definitions

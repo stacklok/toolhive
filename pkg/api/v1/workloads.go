@@ -338,8 +338,8 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check if workload exists
-	_, err := s.workloadManager.GetWorkload(ctx, name)
+	// Check if workload exists and get its current port
+	existingWorkload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
 		logger.Errorf("Failed to get workload: %v", err)
 		http.Error(w, "Workload not found", http.StatusNotFound)
@@ -352,7 +352,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq)
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		// Error messages already logged in UpdateWorkloadFromRequest
 		if errors.Is(err, retriever.ErrImageNotFound) {

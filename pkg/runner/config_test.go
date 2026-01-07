@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -1697,4 +1698,111 @@ func TestConfigFileLoading(t *testing.T) {
 		assert.Error(t, err, "Should error when file does not exist")
 		assert.Nil(t, file, "File handle should be nil when file does not exist")
 	})
+}
+
+// TestRunConfig_WithPorts_PortReuse tests the port reuse logic when updating workloads
+//
+//nolint:tparallel,paralleltest // Subtests intentionally run sequentially to share the same listener
+func TestRunConfig_WithPorts_PortReuse(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	// Create a listener to occupy a port for the entire test
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Should be able to create listener")
+	defer listener.Close()
+
+	usedPort := listener.Addr().(*net.TCPAddr).Port
+
+	t.Run("Reuse same port during update - should skip validation", func(t *testing.T) {
+		config := &RunConfig{
+			Transport:    types.TransportTypeStdio,
+			existingPort: usedPort,
+		}
+		result, err := config.WithPorts(usedPort, 0)
+
+		assert.NoError(t, err, "When updating a workload and reusing the same port, validation should be skipped")
+		assert.Equal(t, config, result, "WithPorts should return the same config instance")
+		assert.Equal(t, usedPort, config.Port, "Port should be set to requested port")
+	})
+
+	t.Run("Different port during update - should validate", func(t *testing.T) {
+		config := &RunConfig{
+			Transport:    types.TransportTypeStdio,
+			existingPort: 8888, // Different from the port we're requesting
+		}
+		result, err := config.WithPorts(usedPort, 0)
+
+		assert.Error(t, err, "When updating with a different port, validation should still occur and fail if port is in use")
+		assert.Contains(t, err.Error(), "not available", "Error should indicate port is not available")
+		assert.Equal(t, config, result, "WithPorts returns config even on error")
+	})
+
+	t.Run("No existing port - should validate normally", func(t *testing.T) {
+		config := &RunConfig{
+			Transport:    types.TransportTypeStdio,
+			existingPort: 0,
+		}
+		result, err := config.WithPorts(usedPort, 0)
+
+		assert.Error(t, err, "When creating new workload (no existing port), validation should occur normally")
+		assert.Contains(t, err.Error(), "not available", "Error should indicate port is not available")
+		assert.Equal(t, config, result, "WithPorts returns config even on error")
+	})
+
+	t.Run("Reuse existing port with value 0 should still work", func(t *testing.T) {
+		config := &RunConfig{
+			Transport:    types.TransportTypeStdio,
+			existingPort: 0,
+		}
+		result, err := config.WithPorts(0, 0)
+
+		assert.NoError(t, err, "Port 0 should still auto-select a port")
+		assert.Equal(t, config, result, "WithPorts should return the same config instance")
+		assert.Greater(t, config.Port, 0, "Port should be auto-selected")
+	})
+}
+
+// TestWithExistingPort tests the WithExistingPort builder option
+func TestWithExistingPort(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		existingPort int
+		expected     int
+	}{
+		{
+			name:         "Set existing port to valid value",
+			existingPort: 8080,
+			expected:     8080,
+		},
+		{
+			name:         "Set existing port to 0",
+			existingPort: 0,
+			expected:     0,
+		},
+		{
+			name:         "Set existing port to high port",
+			existingPort: 65535,
+			expected:     65535,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{
+				config: &RunConfig{},
+			}
+
+			option := WithExistingPort(tc.existingPort)
+			err := option(builder)
+
+			assert.NoError(t, err, "WithExistingPort should not return an error")
+			assert.Equal(t, tc.expected, builder.config.existingPort, "existingPort should be set correctly")
+		})
+	}
 }

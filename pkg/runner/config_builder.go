@@ -300,6 +300,15 @@ func WithTransportAndPorts(mcpTransport string, port, targetPort int) RunConfigB
 	}
 }
 
+// WithExistingPort sets the existing port for update operations
+// This allows port reuse during workload updates by skipping validation for the same port
+func WithExistingPort(port int) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.existingPort = port
+		return nil
+	}
+}
+
 // WithAuditEnabled configures audit settings
 func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

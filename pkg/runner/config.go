@@ -164,6 +164,10 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// existingPort is the port from an existing workload being updated (not serialized)
+	// Used during port validation to allow reusing the same port
+	existingPort int
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -344,11 +348,16 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	// If not available - treat as an error, since picking a random port here
 	// is going to lead to confusion.
 	if proxyPort != 0 {
-		if !networking.IsAvailable(proxyPort) {
+		// Skip validation if reusing the same port from existing workload (during update)
+		if proxyPort == c.existingPort && c.existingPort > 0 {
+			logger.Debugf("Reusing existing port: %d", proxyPort)
+			selectedPort = proxyPort
+		} else if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		} else {
+			logger.Debugf("Using requested port: %d", proxyPort)
+			selectedPort = proxyPort
 		}
-		logger.Debugf("Using requested port: %d", proxyPort)
-		selectedPort = proxyPort
 	} else {
 		// Otherwise - pick a random available port.
 		selectedPort, err = networking.FindOrUsePort(proxyPort)

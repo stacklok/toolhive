@@ -705,6 +705,18 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	resolvedBearerToken, err := resolveSecret(
+		f.RemoteAuthBearerToken,
+		f.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	authCfg.BearerToken = resolvedBearerToken
+	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
+
 	return authCfg, nil
 }
 
@@ -727,6 +739,23 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	// This follows the same priority as resolveSecret: flag → file → environment variable
+	resolvedBearerToken, err := resolveSecret(
+		runFlags.RemoteAuthFlags.RemoteAuthBearerToken,
+		runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+
+	// Process the resolved bearer token (convert plain text to secret reference if needed)
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
+	}
+
 	// Derive the resource parameter (RFC 8707)
 	resource := runFlags.RemoteAuthFlags.RemoteAuthResource
 	if resource == "" && runFlags.ResourceURL != "" {
@@ -734,17 +763,19 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	return &remote.Config{
-		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-		ClientSecret: clientSecret,
-		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
-		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-		CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
-		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
-		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
-		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
-		Resource:     resource,
-		OAuthParams:  runFlags.OAuthParams,
+		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
+		ClientSecret:    clientSecret,
+		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
+		Issuer:          runFlags.RemoteAuthFlags.RemoteAuthIssuer,
+		AuthorizeURL:    runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
+		TokenURL:        runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:        resource,
+		OAuthParams:     runFlags.OAuthParams,
+		BearerToken:     bearerToken,
+		BearerTokenFile: runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
 	}, nil
 }
 

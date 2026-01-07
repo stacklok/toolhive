@@ -210,6 +210,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 				if req.OAuthConfig.ClientSecret != nil {
 					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
 				}
+
+				// Store the bearer token in CLI format if provided
+				if req.OAuthConfig.BearerToken != nil {
+					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
+				}
 			}
 		}
 		// Handle server metadata - API only supports container servers
@@ -325,6 +330,11 @@ func createRequestToRemoteAuthConfig(
 	// Store the client secret in CLI format if provided
 	if req.OAuthConfig.ClientSecret != nil {
 		remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+
+	// Store the bearer token in CLI format if provided
+	if req.OAuthConfig.BearerToken != nil {
+		remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
 	}
 
 	return remoteAuthConfig

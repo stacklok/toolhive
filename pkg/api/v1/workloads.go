@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
-	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -139,7 +138,10 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) err
 	// Load the workload configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		return fmt.Errorf("workload configuration not found: %w", werr.ErrRunConfigNotFound)
+		return thverrors.WithCode(
+			fmt.Errorf("workload configuration not found: %w", err),
+			http.StatusNotFound,
+		)
 	}
 
 	config := runConfigToCreateRequest(runConfig)

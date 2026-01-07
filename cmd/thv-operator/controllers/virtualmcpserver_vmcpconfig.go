@@ -41,17 +41,15 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
-	// If OutgoingAuth source is "discovered", we need to discover and include
-	// ExternalAuthConfig from MCPServers in the ConfigMap
-	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "discovered" {
-		// Build discovered OutgoingAuthConfig using the provided workload infos
+	// For dynamic mode (source: "discovered"), preserve the Source field so the vMCP pod
+	// can start BackendWatcher for runtime backend discovery.
+	// For inline mode, discover backends at reconcile time and include in ConfigMap.
+	if config.OutgoingAuth != nil && config.OutgoingAuth.Source != "discovered" {
 		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to build discovered auth config, using spec-only config",
 				"error", err)
 		} else if discoveredAuthConfig != nil {
-			// Merge discovered config into the config
-			// The discovered config already includes inline overrides, so we can replace it
 			config.OutgoingAuth = discoveredAuthConfig
 		}
 	}

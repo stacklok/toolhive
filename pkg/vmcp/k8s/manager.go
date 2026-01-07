@@ -11,10 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -104,10 +107,19 @@ func NewBackendWatcher(
 		return nil, fmt.Errorf("registry cannot be nil")
 	}
 
-	// Create runtime scheme and register ToolHive CRDs
+	// Initialize controller-runtime logger to enable reconciler logging
+	// This bridges ToolHive's logger with controller-runtime's logr interface
+	log.SetLogger(logr.New(logger.NewLogrAdapter()))
+
+	// Create runtime scheme and register ToolHive CRDs + core Kubernetes types
 	scheme := runtime.NewScheme()
 	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to register ToolHive CRDs to scheme: %w", err)
+	}
+
+	// Register core Kubernetes types (Secrets, ConfigMaps, etc.) needed by discoverer
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to register core Kubernetes types to scheme: %w", err)
 	}
 
 	// Create controller-runtime manager with namespace-scoped cache

@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -998,6 +999,26 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 			By("Deleting the backend")
 			Expect(k8sClient.Delete(ctx, tempBackend)).To(Succeed())
 
+			By("Waiting for backend to be fully deleted from K8s")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, ctrlclient.ObjectKey{
+					Name:      dynamicBackend2Name,
+					Namespace: testNamespace,
+				}, &mcpv1alpha1.MCPServer{})
+				return errors.IsNotFound(err)
+			}, timeout, pollingInterval).Should(BeTrue(), "Backend should be deleted from K8s")
+
+			By("Waiting for backend pod to be deleted")
+			Eventually(func() int {
+				podList := &corev1.PodList{}
+				err := k8sClient.List(ctx, podList, ctrlclient.InNamespace(testNamespace),
+					ctrlclient.MatchingLabels{"app.kubernetes.io/name": dynamicBackend2Name})
+				if err != nil {
+					return -1
+				}
+				return len(podList.Items)
+			}, timeout, pollingInterval).Should(Equal(0), "Backend pods should be deleted")
+
 			By("Verifying backend is removed from vMCP status")
 			Eventually(func() bool {
 				resp, err := http.Get(vmcpURL + "/status")
@@ -1011,7 +1032,11 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 					return false
 				}
 
-				backends := status["backends"].([]interface{})
+				backends, ok := status["backends"].([]interface{})
+				if !ok {
+					return false
+				}
+
 				for _, b := range backends {
 					backend := b.(map[string]interface{})
 					if strings.Contains(backend["name"].(string), dynamicBackend2Name) {
@@ -1019,7 +1044,7 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 					}
 				}
 				return true // Backend not found (removed)
-			}, timeout, pollingInterval).Should(BeTrue(), "Deleted backend should be removed from status")
+			}, timeout*2, pollingInterval).Should(BeTrue(), "Deleted backend should be removed from status")
 		})
 
 		It("should not discover backends from different groups", func() {

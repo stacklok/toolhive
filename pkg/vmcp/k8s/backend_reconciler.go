@@ -3,7 +3,6 @@ package k8s
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -96,7 +95,8 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		currentGroupRef = mcpRemoteProxy.Spec.GroupRef
 	} else if errors.IsNotFound(errServer) && errors.IsNotFound(errProxy) {
 		// Resource deleted - remove from registry
-		backendID := fmt.Sprintf("%s/%s", req.Namespace, req.Name)
+		// Use name only (not namespace/name) to match how discoverer stores it
+		backendID := req.Name
 		ctxLogger.Info("Resource deleted, removing from registry", "backendID", backendID)
 
 		if err := r.Registry.Remove(backendID); err != nil {
@@ -119,7 +119,8 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// This provides security isolation between vMCP servers
 	if currentGroupRef != r.GroupRef {
 		// Backend no longer belongs to this group - remove from registry
-		backendID := fmt.Sprintf("%s/%s", req.Namespace, req.Name)
+		// Use name only (not namespace/name) to match how discoverer stores it
+		backendID := req.Name
 		ctxLogger.V(1).Info(
 			"Resource does not match groupRef, removing from registry",
 			"backendID", backendID,
@@ -154,7 +155,8 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		ctxLogger.Error(err, "Failed to convert workload to backend", "workload", workload.Name)
 		// Remove from registry if conversion fails (could be auth failure)
-		backendID := fmt.Sprintf("%s/%s", req.Namespace, req.Name)
+		// Use name only (not namespace/name) to match how discoverer stores it
+		backendID := req.Name
 		if removeErr := r.Registry.Remove(backendID); removeErr != nil {
 			ctxLogger.Error(removeErr, "Failed to remove backend after conversion error")
 		}
@@ -164,7 +166,8 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// backend is nil if auth resolution failed or workload not accessible
 	// This is a security-critical check - we MUST NOT add backends without valid auth
 	if backend == nil {
-		backendID := fmt.Sprintf("%s/%s", req.Namespace, req.Name)
+		// Use name only (not namespace/name) to match how discoverer stores it
+		backendID := req.Name
 		ctxLogger.Info(
 			"Backend conversion returned nil (auth failure or no URL), removing from registry",
 			"backendID", backendID,
@@ -299,8 +302,9 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	controllerName := "backend-reconciler-" + r.GroupRef
 	return ctrl.NewControllerManagedBy(mgr).
-		Named("backend-reconciler").
+		Named(controllerName).
 		For(&mcpv1alpha1.MCPServer{}).                                            // Primary watch on MCPServer
 		Watches(&mcpv1alpha1.MCPRemoteProxy{}, proxyHandler).                     // Secondary watch on MCPRemoteProxy
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler). // Watch auth configs

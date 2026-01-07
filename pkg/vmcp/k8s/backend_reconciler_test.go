@@ -120,7 +120,7 @@ func TestReconcile_MCPServer_Success(t *testing.T) {
 
 	// Create mock backend to be returned by discoverer
 	mockBackend := &vmcp.Backend{
-		ID:      "default/test-server",
+		ID:      "test-server",
 		Name:    "test-server",
 		BaseURL: "http://test-server:8080",
 	}
@@ -146,7 +146,7 @@ func TestReconcile_MCPServer_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 1, "Backend should be upserted to registry")
-	assert.Equal(t, "default/test-server", mockReg.upsertedBackends[0].ID)
+	assert.Equal(t, "test-server", mockReg.upsertedBackends[0].ID)
 	assert.Len(t, mockReg.removedIDs, 0, "No backends should be removed")
 	assert.Equal(t, uint64(1), mockReg.Version(), "Registry version should be incremented")
 }
@@ -193,7 +193,7 @@ func TestReconcile_GroupRefMismatch(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 0, "Backend should NOT be upserted")
 	assert.Len(t, mockReg.removedIDs, 1, "Backend should be removed from registry")
-	assert.Equal(t, "default/test-server", mockReg.removedIDs[0])
+	assert.Equal(t, "test-server", mockReg.removedIDs[0])
 }
 
 // TestReconcile_Deleted tests that deleted resources are removed from registry
@@ -228,7 +228,7 @@ func TestReconcile_Deleted(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 0, "Backend should NOT be upserted")
 	assert.Len(t, mockReg.removedIDs, 1, "Backend should be removed from registry")
-	assert.Equal(t, "default/deleted-server", mockReg.removedIDs[0])
+	assert.Equal(t, "deleted-server", mockReg.removedIDs[0])
 }
 
 // TestReconcile_AuthFailure tests that nil backend (auth failed) removes from registry
@@ -273,7 +273,7 @@ func TestReconcile_AuthFailure(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 0, "Backend should NOT be upserted (auth failed)")
 	assert.Len(t, mockReg.removedIDs, 1, "Backend should be removed from registry")
-	assert.Equal(t, "default/test-server", mockReg.removedIDs[0])
+	assert.Equal(t, "test-server", mockReg.removedIDs[0])
 }
 
 // TestReconcile_MCPRemoteProxy_Success tests successful MCPRemoteProxy reconciliation
@@ -300,7 +300,7 @@ func TestReconcile_MCPRemoteProxy_Success(t *testing.T) {
 		Build()
 
 	mockBackend := &vmcp.Backend{
-		ID:      "default/test-proxy",
+		ID:      "test-proxy",
 		Name:    "test-proxy",
 		BaseURL: "http://test-proxy:8080",
 	}
@@ -323,7 +323,7 @@ func TestReconcile_MCPRemoteProxy_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 1, "Backend should be upserted to registry")
-	assert.Equal(t, "default/test-proxy", mockReg.upsertedBackends[0].ID)
+	assert.Equal(t, "test-proxy", mockReg.upsertedBackends[0].ID)
 }
 
 // TestReconcile_ConversionError tests that conversion errors remove backend from registry
@@ -369,7 +369,7 @@ func TestReconcile_ConversionError(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 	assert.Len(t, mockReg.upsertedBackends, 0, "Backend should NOT be upserted")
 	assert.Len(t, mockReg.removedIDs, 1, "Backend should be removed from registry")
-	assert.Equal(t, "default/test-server", mockReg.removedIDs[0])
+	assert.Equal(t, "test-server", mockReg.removedIDs[0])
 }
 
 // TestSetupWithManager_RegistersWatches tests that the reconciler has SetupWithManager method

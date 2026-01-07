@@ -80,7 +80,10 @@ func (s *streamableJSONClient) ToolsList() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -98,7 +101,10 @@ func (s *streamableJSONClient) ToolsCall(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -120,7 +126,10 @@ func (s *streamableEventStreamClient) ToolsList() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(NewSplitSSE(LFSep))
@@ -153,7 +162,10 @@ func (s *streamableEventStreamClient) ToolsCall(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(NewSplitSSE(LFSep))

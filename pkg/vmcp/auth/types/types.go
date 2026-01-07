@@ -30,50 +30,53 @@ const (
 //
 // This struct provides type-safe configuration for different authentication strategies
 // using HeaderInjection or TokenExchange fields based on the Type field.
+// +kubebuilder:object:generate=true
 type BackendAuthStrategy struct {
 	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
 	// Used when Type = "header_injection".
-	HeaderInjection *HeaderInjectionConfig `json:"header_injection,omitempty" yaml:"header_injection,omitempty"`
+	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty" yaml:"headerInjection,omitempty"`
 
 	// TokenExchange contains configuration for token exchange auth strategy.
 	// Used when Type = "token_exchange".
-	TokenExchange *TokenExchangeConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+	TokenExchange *TokenExchangeConfig `json:"tokenExchange,omitempty" yaml:"tokenExchange,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
 // This strategy injects a static or environment-sourced header value into requests.
+// +kubebuilder:object:generate=true
 type HeaderInjectionConfig struct {
 	// HeaderName is the name of the header to inject (e.g., "Authorization").
-	HeaderName string `json:"header_name" yaml:"header_name"`
+	HeaderName string `json:"headerName" yaml:"headerName"`
 
 	// HeaderValue is the static header value to inject.
 	// Either HeaderValue or HeaderValueEnv should be set, not both.
-	HeaderValue string `json:"header_value,omitempty" yaml:"header_value,omitempty"`
+	HeaderValue string `json:"headerValue,omitempty" yaml:"headerValue,omitempty"`
 
 	// HeaderValueEnv is the environment variable name containing the header value.
 	// The value will be resolved at runtime from this environment variable.
 	// Either HeaderValue or HeaderValueEnv should be set, not both.
-	HeaderValueEnv string `json:"header_value_env,omitempty" yaml:"header_value_env,omitempty"`
+	HeaderValueEnv string `json:"headerValueEnv,omitempty" yaml:"headerValueEnv,omitempty"`
 }
 
 // TokenExchangeConfig configures the OAuth 2.0 token exchange auth strategy.
 // This strategy exchanges incoming tokens for backend-specific tokens using RFC 8693.
+// +kubebuilder:object:generate=true
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth token endpoint URL for token exchange.
-	TokenURL string `json:"token_url" yaml:"token_url"`
+	TokenURL string `json:"tokenUrl" yaml:"tokenUrl"`
 
 	// ClientID is the OAuth client ID for the token exchange request.
-	ClientID string `json:"client_id,omitempty" yaml:"client_id,omitempty"`
+	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 
 	// ClientSecret is the OAuth client secret (use ClientSecretEnv for security).
-	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty" yaml:"clientSecret,omitempty"`
 
 	// ClientSecretEnv is the environment variable name containing the client secret.
 	// The value will be resolved at runtime from this environment variable.
-	ClientSecretEnv string `json:"client_secret_env,omitempty" yaml:"client_secret_env,omitempty"`
+	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
 
 	// Audience is the target audience for the exchanged token.
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
@@ -83,5 +86,5 @@ type TokenExchangeConfig struct {
 
 	// SubjectTokenType is the token type of the incoming subject token.
 	// Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified.
-	SubjectTokenType string `json:"subject_token_type,omitempty" yaml:"subject_token_type,omitempty"`
+	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`
 }

@@ -12,6 +12,7 @@ import (
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -95,7 +96,11 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch server %s: %w", name, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -186,7 +191,11 @@ func (c *mcpRegistryClient) fetchServersPage(
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to fetch servers: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -227,7 +236,11 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("failed to search servers: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -263,7 +276,11 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch /openapi.yaml: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("/openapi.yaml not found (status %d) - not a valid MCP Registry API", resp.StatusCode)

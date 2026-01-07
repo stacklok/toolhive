@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/workloads"
+	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
 var runCmd *cobra.Command
@@ -135,7 +135,12 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("found config file at %s but failed to open: %w", path, err)
 		}
-		defer file.Close()
+		defer func() {
+			if err := file.Close(); err != nil {
+				// Non-fatal: file cleanup failure after successful read
+				logger.Warnf("Failed to close config file: %v", err)
+			}
+		}()
 
 		// Use existing runner.ReadJSON function for consistency
 		runConfig, err := runner.ReadJSON(file)
@@ -197,9 +202,8 @@ func runWithFileBasedConfig(
 		config.Name = imageMetadata.Name
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
-	}
-	return workloadManager.RunWorkload(ctx, config)
+	// statusManager is only needed for the local use case, use a stub here.
+	statusManager := statuses.NewNoopStatusManager()
+	mcpRunner := runner.NewRunner(config, statusManager)
+	return mcpRunner.Run(ctx)
 }

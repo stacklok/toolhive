@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -621,7 +621,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	if config == nil {
 		return "", 0.0, nil
 	}
-	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
+	return config.Endpoint, config.GetSamplingRateFloat(), config.EnvironmentVariables
 }
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
@@ -656,13 +656,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	authCfg := &remote.Config{
@@ -709,6 +705,18 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	resolvedBearerToken, err := resolveSecret(
+		f.RemoteAuthBearerToken,
+		f.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	authCfg.BearerToken = resolvedBearerToken
+	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
+
 	return authCfg, nil
 }
 
@@ -726,13 +734,26 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	// This follows the same priority as resolveSecret: flag → file → environment variable
+	resolvedBearerToken, err := resolveSecret(
+		runFlags.RemoteAuthFlags.RemoteAuthBearerToken,
+		runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+
+	// Process the resolved bearer token (convert plain text to secret reference if needed)
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
 	}
 
 	// Derive the resource parameter (RFC 8707)
@@ -742,17 +763,19 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	return &remote.Config{
-		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-		ClientSecret: clientSecret,
-		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
-		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-		CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
-		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
-		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
-		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
-		Resource:     resource,
-		OAuthParams:  runFlags.OAuthParams,
+		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
+		ClientSecret:    clientSecret,
+		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
+		Issuer:          runFlags.RemoteAuthFlags.RemoteAuthIssuer,
+		AuthorizeURL:    runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
+		TokenURL:        runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:        resource,
+		OAuthParams:     runFlags.OAuthParams,
+		BearerToken:     bearerToken,
+		BearerTokenFile: runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
 	}, nil
 }
 
@@ -867,22 +890,18 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		customAttrs = nil
 	}
 
-	return &telemetry.Config{
+	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 	}
-}
-
-// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
-func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
+	return telemetryCfg
 }

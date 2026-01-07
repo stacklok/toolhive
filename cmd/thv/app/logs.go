@@ -270,7 +270,12 @@ func followProxyLogFile(logFilePath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open proxy log %s: %w", cleanLogFilePath, err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			// Non-fatal: file cleanup failure after reading
+			logger.Warnf("Failed to close log file: %v", err)
+		}
+	}()
 
 	// Read existing content first
 	content, err := os.ReadFile(cleanLogFilePath)

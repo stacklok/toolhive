@@ -83,6 +83,9 @@ type TransparentProxy struct {
 
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Callback when 401 Unauthorized response is received (for bearer token authentication)
+	onUnauthorizedResponse types.UnauthorizedResponseCallback
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -96,20 +99,22 @@ func NewTransparentProxy(
 	isRemote bool,
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:                host,
-		port:                port,
-		targetURI:           targetURI,
-		middlewares:         middlewares,
-		shutdownCh:          make(chan struct{}),
-		prometheusHandler:   prometheusHandler,
-		authInfoHandler:     authInfoHandler,
-		sessionManager:      session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:            isRemote,
-		transportType:       transportType,
-		onHealthCheckFailed: onHealthCheckFailed,
+		host:                   host,
+		port:                   port,
+		targetURI:              targetURI,
+		middlewares:            middlewares,
+		shutdownCh:             make(chan struct{}),
+		prometheusHandler:      prometheusHandler,
+		authInfoHandler:        authInfoHandler,
+		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:               isRemote,
+		transportType:          transportType,
+		onHealthCheckFailed:    onHealthCheckFailed,
+		onUnauthorizedResponse: onUnauthorizedResponse,
 	}
 
 	// Create health checker always for Kubernetes probes
@@ -177,6 +182,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		logger.Errorf("Failed to forward request: %v", err)
 		return nil, err
 	}
+
+	// Check for 401 Unauthorized response (bearer token authentication failure)
+	if resp.StatusCode == http.StatusUnauthorized {
+		logger.Debugf("Received 401 Unauthorized response from %s, bearer token may be invalid", t.p.targetURI)
+		if t.p.onUnauthorizedResponse != nil {
+			t.p.onUnauthorizedResponse()
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
@@ -244,7 +258,11 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	// NOTE: it would be better to have a proper function instead of a goroutine, as this
 	// makes it harder to debug and test.
 	go func() {
-		defer pw.Close()
+		defer func() {
+			if err := pw.Close(); err != nil {
+				logger.Debugf("Failed to close pipe writer: %v", err)
+			}
+		}()
 		scanner := bufio.NewScanner(originalBody)
 		// NOTE: The following line mitigates the issue of the response body being too large.
 		// By default, the maximum token size of the scanner is 64KB, which is too small in
@@ -383,7 +401,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	server := p.server
 	go func() {
 		err := server.Serve(ln)
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {
 				// Expected when listener is closed—silently return
@@ -462,7 +480,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	// Stop the HTTP server
 	if p.server != nil {
 		err := p.server.Shutdown(ctx)
-		if err != nil && err != http.ErrServerClosed && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}

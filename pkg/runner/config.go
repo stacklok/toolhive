@@ -9,8 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -164,6 +164,10 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// existingPort is the port from an existing workload being updated (not serialized)
+	// Used during port validation to allow reusing the same port
+	existingPort int
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -213,14 +217,19 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		return nil, fmt.Errorf("failed to migrate OAuth client secret: %w", err)
 	}
 
+	// Migrate plain text bearer tokens to CLI format
+	if err := migrateBearerToken(&config); err != nil {
+		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
+	}
+
 	return &config, nil
 }
 
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
 // This handles the transition from storing plain text secrets to CLI format references
 func migrateOAuthClientSecret(config *RunConfig) error {
-	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
-		return nil // No OAuth config or no client secret to migrate
+	if config.RemoteAuthConfig == nil {
+		return nil // No OAuth config to migrate
 	}
 
 	// Check if the client secret is already in CLI format
@@ -229,13 +238,52 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	cliFormatSecret, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.ClientSecret,
+		authsecrets.TokenTypeOAuthClientSecret,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	// Update the RunConfig to use the CLI format reference
 	config.RemoteAuthConfig.ClientSecret = cliFormatSecret
+
+	// Save the migrated RunConfig back to disk so migration only happens once
+	if err := config.SaveState(context.Background()); err != nil {
+		// Log error without potentially sensitive details - only log error type and message
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		// Don't fail the migration - the secret is already stored and the config is updated in memory
+	}
+
+	return nil
+}
+
+// migrateBearerToken migrates plain text bearer tokens to CLI format
+// This handles the transition from storing plain text tokens to CLI format references
+func migrateBearerToken(config *RunConfig) error {
+	if config.RemoteAuthConfig == nil {
+		return nil // No remote auth config to migrate
+	}
+
+	// Check if the bearer token is already in CLI format
+	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.BearerToken); err == nil {
+		return nil // Already in CLI format, no migration needed
+	}
+
+	// The bearer token is in plain text format - migrate it
+	cliFormatToken, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.BearerToken,
+		authsecrets.TokenTypeBearerToken,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to process bearer token: %w", err)
+	}
+
+	// Update the RunConfig to use the CLI format reference
+	config.RemoteAuthConfig.BearerToken = cliFormatToken
 
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
@@ -300,11 +348,16 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	// If not available - treat as an error, since picking a random port here
 	// is going to lead to confusion.
 	if proxyPort != 0 {
-		if !networking.IsAvailable(proxyPort) {
+		// Skip validation if reusing the same port from existing workload (during update)
+		if proxyPort == c.existingPort && c.existingPort > 0 {
+			logger.Debugf("Reusing existing port: %d", proxyPort)
+			selectedPort = proxyPort
+		} else if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		} else {
+			logger.Debugf("Using requested port: %d", proxyPort)
+			selectedPort = proxyPort
 		}
-		logger.Debugf("Using requested port: %d", proxyPort)
-		selectedPort = proxyPort
 	} else {
 		// Otherwise - pick a random available port.
 		selectedPort, err = networking.FindOrUsePort(proxyPort)
@@ -393,6 +446,21 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 			}
 			// Replace the CLI format string with the actual secret value
 			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
+	}
+
+	// Process RemoteAuthConfig.BearerToken if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
+			// It's in CLI format, resolve the actual token value
+			actualToken, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual token value
+			c.RemoteAuthConfig.BearerToken = actualToken
 		}
 		// If it's not in CLI format (plain text), leave it as is
 	}

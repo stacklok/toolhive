@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -40,7 +41,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := s.buildStatusResponse()
+	response := s.buildStatusResponse(r.Context())
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -53,11 +54,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildStatusResponse builds the StatusResponse from server state.
-func (s *Server) buildStatusResponse() StatusResponse {
-	backendStatuses := make([]BackendStatus, 0, len(s.backends))
+// Uses the provided context for request cancellation and tracing propagation.
+func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
+	// Get current backends from registry (supports dynamic backend changes)
+	backends := s.backendRegistry.List(ctx)
+	backendStatuses := make([]BackendStatus, 0, len(backends))
 
 	hasHealthyBackend := false
-	for _, backend := range s.backends {
+	for _, backend := range backends {
 		status := BackendStatus{
 			Name:      backend.Name,
 			Health:    string(backend.HealthStatus),
@@ -72,7 +76,7 @@ func (s *Server) buildStatusResponse() StatusResponse {
 	}
 
 	// Healthy = true if at least one backend is healthy AND there's at least one backend
-	healthy := len(s.backends) > 0 && hasHealthyBackend
+	healthy := len(backends) > 0 && hasHealthyBackend
 
 	return StatusResponse{
 		Backends: backendStatuses,

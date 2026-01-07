@@ -306,12 +306,12 @@ thv run --transport sse --name my-server --audit-config audit.json my-image:late
 ```json
 {
   "component": "my-service",
-  "log_file": "/var/log/audit/audit.log",
-  "event_types": ["mcp_tool_call", "mcp_resource_read"],
-  "exclude_event_types": ["mcp_ping"],
-  "include_request_data": true,
-  "include_response_data": true,
-  "max_data_size": 4096
+  "logFile": "/var/log/audit/audit.log",
+  "eventTypes": ["mcp_tool_call", "mcp_resource_read"],
+  "excludeEventTypes": ["mcp_ping"],
+  "includeRequestData": true,
+  "includeResponseData": true,
+  "maxDataSize": 4096
 }
 ```
 
@@ -320,16 +320,16 @@ thv run --transport sse --name my-server --audit-config audit.json my-image:late
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `component` | string | No | `"toolhive-api"` | Component name to include in audit logs |
-| `log_file` | string | No | stdout | Path to audit log file (file created with 0600 permissions; parent directory must exist) |
-| `event_types` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
-| `exclude_event_types` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
-| `include_request_data` | bool | No | `false` | Include request body in audit logs |
-| `include_response_data` | bool | No | `false` | Include response body in audit logs |
-| `max_data_size` | int | No | `1024` | Maximum bytes to capture for request/response data |
+| `logFile` | string | No | stdout | Path to audit log file (file created with 0600 permissions; parent directory must exist) |
+| `eventTypes` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
+| `excludeEventTypes` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
+| `includeRequestData` | bool | No | `false` | Include request body in audit logs |
+| `includeResponseData` | bool | No | `false` | Include response body in audit logs |
+| `maxDataSize` | int | No | `1024` | Maximum bytes to capture for request/response data |
 
 **Important Notes**:
-- `exclude_event_types` takes precedence over `event_types`
-- When `include_request_data` or `include_response_data` is enabled, **`max_data_size` must be set** (non-zero) for data capture to work
+- `excludeEventTypes` takes precedence over `eventTypes`
+- When `includeRequestData` or `includeResponseData` is enabled, **`maxDataSize` must be set** (non-zero) for data capture to work
 - Log files are created with restrictive permissions (0600) for security
 - Logs are written in newline-delimited JSON format for easy parsing
 
@@ -423,11 +423,11 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 ```json
 {
   "component": "api-gateway",
-  "event_types": ["mcp_tool_call", "mcp_resource_read"],
-  "exclude_event_types": ["mcp_ping"],
-  "include_request_data": true,
-  "include_response_data": true,
-  "max_data_size": 2048
+  "eventTypes": ["mcp_tool_call", "mcp_resource_read"],
+  "excludeEventTypes": ["mcp_ping"],
+  "includeRequestData": true,
+  "includeResponseData": true,
+  "maxDataSize": 2048
 }
 ```
 

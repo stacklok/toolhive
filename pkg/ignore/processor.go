@@ -122,7 +122,11 @@ func (*Processor) loadIgnoreFile(filePath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Warnf("Failed to close ignore file: %v", err)
+		}
+	}()
 
 	var patterns []string
 	scanner := bufio.NewScanner(file)

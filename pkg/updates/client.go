@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -115,7 +116,11 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 	if err != nil {
 		return "", fmt.Errorf("failed to send request to update API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if status code is 200
 	if resp.StatusCode != http.StatusOK {

@@ -92,7 +92,11 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
 	if err != nil {
 		return false, err
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			logger.Warnf("Failed to close reader: %v", err)
+		}
+	}()
 
 	// Read the configuration data
 	data, err := io.ReadAll(reader)
@@ -123,7 +127,11 @@ func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, work
 	if err != nil {
 		return fmt.Errorf("failed to load run config for remote workload %s: %w", workload.Name, err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			logger.Warnf("Failed to close reader: %v", err)
+		}
+	}()
 
 	// Parse only the fields we need
 	var config remoteWorkloadConfig

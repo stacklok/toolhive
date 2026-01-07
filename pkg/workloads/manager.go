@@ -534,13 +534,17 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	if err != nil {
 		logger.Warnf("Warning: Failed to create log file: %v", err)
 	} else {
-		defer logFile.Close()
+		defer func() {
+			if err := logFile.Close(); err != nil {
+				logger.Warnf("Failed to close log file: %v", err)
+			}
+		}()
 		logger.Infof("Logging to: %s", logFilePath)
 	}
 
-	// Use the restart command to start the detached process
-	// The config has already been saved to disk, so restart can load it
-	detachedArgs := []string{"restart", runConfig.BaseName, "--foreground"}
+	// Use the start command to start the detached process
+	// The config has already been saved to disk, so start can load it
+	detachedArgs := []string{"start", runConfig.BaseName, "--foreground"}
 
 	if runConfig.Debug {
 		detachedArgs = append(detachedArgs, "--debug")

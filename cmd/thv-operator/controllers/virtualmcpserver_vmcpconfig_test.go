@@ -666,7 +666,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	// (yaml.v3 should sort map keys alphabetically)
 	firstResult := results[0]
 	assert.Contains(t, firstResult, "name: test-vmcp")
-	assert.Contains(t, firstResult, "group: test-group")
+	assert.Contains(t, firstResult, "groupRef: test-group")
 
 	// Verify the YAML is valid and non-empty
 	assert.NotEmpty(t, firstResult)
@@ -790,8 +790,9 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Verify parameters were converted
 	require.NotNil(t, config.CompositeTools[0].Parameters)
-	params := config.CompositeTools[0].Parameters
-	assert.Equal(t, "object", params["type"])
+	paramsMap, err := config.CompositeTools[0].Parameters.ToMap()
+	require.NoError(t, err)
+	assert.Equal(t, "object", paramsMap["type"])
 }
 
 // TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced tests merging

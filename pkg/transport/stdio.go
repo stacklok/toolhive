@@ -321,6 +321,12 @@ func (*StdioTransport) SetOnHealthCheckFailed(_ types.HealthCheckFailedCallback)
 	// No-op: stdio transport doesn't support health checks
 }
 
+// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
+// This is a no-op for stdio transport as it doesn't handle HTTP responses.
+func (*StdioTransport) SetOnUnauthorizedResponse(_ types.UnauthorizedResponseCallback) {
+	// No-op: stdio transport doesn't handle HTTP responses
+}
+
 // isDockerSocketError checks if an error indicates Docker socket unavailability using typed error detection
 func isDockerSocketError(err error) bool {
 	if err == nil {

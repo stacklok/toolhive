@@ -51,6 +51,13 @@ type HTTPTransport struct {
 	// onHealthCheckFailed is called when a health check fails for remote servers
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
+	// onUnauthorizedResponse is called when a 401 Unauthorized response is received
+	onUnauthorizedResponse types.UnauthorizedResponseCallback
+
+	// isMarkedUnauthorized tracks if we've already marked the workload as unauthenticated
+	// This prevents repeated status updates on every 401 response
+	isMarkedUnauthorized bool
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -119,6 +126,36 @@ func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 // SetOnHealthCheckFailed sets the callback for health check failures
 func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedCallback) {
 	t.onHealthCheckFailed = callback
+}
+
+// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses
+// The callback is wrapped to check the unauthorized flag to prevent repeated status updates
+func (t *HTTPTransport) SetOnUnauthorizedResponse(callback types.UnauthorizedResponseCallback) {
+	if callback == nil {
+		t.onUnauthorizedResponse = nil
+		return
+	}
+	// Wrap the callback to check the flag before calling it
+	t.onUnauthorizedResponse = func() {
+		// Check if we've already marked as unauthenticated (skip if already marked)
+		if t.checkAndMarkUnauthorized() {
+			return // Already marked, skip update
+		}
+		// Call the original callback
+		callback()
+	}
+}
+
+// checkAndMarkUnauthorized checks if we've already marked as unauthenticated and marks it if not
+// Returns true if we should skip the status update (already marked)
+func (t *HTTPTransport) checkAndMarkUnauthorized() bool {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	if t.isMarkedUnauthorized {
+		return true // Already marked, skip update
+	}
+	t.isMarkedUnauthorized = true
+	return false // Not marked yet, proceed with update
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
@@ -217,6 +254,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.remoteURL != "",
 		string(t.transportType),
 		t.onHealthCheckFailed,
+		t.onUnauthorizedResponse,
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

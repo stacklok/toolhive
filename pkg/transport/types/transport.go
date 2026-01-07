@@ -113,6 +113,10 @@ type Transport interface {
 	// SetOnHealthCheckFailed sets the callback for health check failures.
 	// For transports that don't support health checks (e.g., stdio), this is a no-op.
 	SetOnHealthCheckFailed(callback HealthCheckFailedCallback)
+
+	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
+	// For transports that don't support this (e.g., stdio), this is a no-op.
+	SetOnUnauthorizedResponse(callback UnauthorizedResponseCallback)
 }
 
 // TransportType represents the type of transport to use.
@@ -176,6 +180,10 @@ type Proxy interface {
 // HealthCheckFailedCallback is a function that is called when a health check fails.
 // This allows the transport to notify the runner/status manager when remote servers become unhealthy.
 type HealthCheckFailedCallback func()
+
+// UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
+// This allows the transport to notify the runner/status manager when bearer tokens become invalid.
+type UnauthorizedResponseCallback func()
 
 // Config contains configuration options for a transport.
 type Config struct {

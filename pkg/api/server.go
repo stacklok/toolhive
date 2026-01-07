@@ -139,7 +139,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
 	// Apply recovery middleware first to catch panics from all other middleware and handlers
-	r.Use(recovery.RecoveryMiddleware)
+	r.Use(recovery.Middleware)
 
 	// Apply default middleware
 	r.Use(

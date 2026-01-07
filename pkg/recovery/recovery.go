@@ -11,10 +11,10 @@ import (
 // MiddlewareType is the type constant for recovery middleware
 const MiddlewareType = "recovery"
 
-// RecoveryMiddleware is an HTTP middleware that recovers from panics.
+// Middleware is an HTTP middleware that recovers from panics.
 // When a panic occurs, it logs the error and returns
 // a 500 Internal Server Error response to the client.
-func RecoveryMiddleware(next http.Handler) http.Handler {
+func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -26,16 +26,16 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Middleware wraps recovery middleware functionality for the factory pattern.
-type Middleware struct{}
+// FactoryMiddleware wraps recovery middleware functionality for the factory pattern.
+type FactoryMiddleware struct{}
 
 // Handler returns the middleware function used by the proxy.
-func (*Middleware) Handler() types.MiddlewareFunction {
-	return RecoveryMiddleware
+func (FactoryMiddleware) Handler() types.MiddlewareFunction {
+	return Middleware
 }
 
 // Close cleans up any resources used by the middleware.
-func (*Middleware) Close() error {
+func (FactoryMiddleware) Close() error {
 	// Recovery middleware doesn't need cleanup
 	return nil
 }
@@ -43,7 +43,7 @@ func (*Middleware) Close() error {
 // CreateMiddleware is the factory function for recovery middleware.
 // It creates and registers the recovery middleware with the runner.
 func CreateMiddleware(_ *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	recoveryMw := &Middleware{}
+	recoveryMw := &FactoryMiddleware{}
 	runner.AddMiddleware(MiddlewareType, recoveryMw)
 	return nil
 }

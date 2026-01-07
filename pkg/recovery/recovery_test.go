@@ -19,7 +19,7 @@ func TestRecoveryMiddleware_NoPanic(t *testing.T) {
 	})
 
 	// Wrap with recovery middleware
-	wrappedHandler := RecoveryMiddleware(testHandler)
+	wrappedHandler := Middleware(testHandler)
 
 	// Create test request
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -42,7 +42,7 @@ func TestRecoveryMiddleware_RecoverFromPanic(t *testing.T) {
 	})
 
 	// Wrap with recovery middleware
-	wrappedHandler := RecoveryMiddleware(testHandler)
+	wrappedHandler := Middleware(testHandler)
 
 	// Create test request
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -74,7 +74,7 @@ func TestRecoveryMiddleware_PreservesRequestContext(t *testing.T) {
 	})
 
 	// Wrap with recovery middleware
-	wrappedHandler := RecoveryMiddleware(testHandler)
+	wrappedHandler := Middleware(testHandler)
 
 	// Create test request with context value
 	req := httptest.NewRequest("GET", "/test", nil)

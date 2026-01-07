@@ -519,7 +519,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Apply recovery middleware last (so it executes first and catches panics from all other middleware)
-	mcpHandler = recovery.RecoveryMiddleware(mcpHandler)
+	mcpHandler = recovery.Middleware(mcpHandler)
 	logger.Info("Recovery middleware enabled for MCP endpoints")
 
 	mux.Handle("/", mcpHandler)

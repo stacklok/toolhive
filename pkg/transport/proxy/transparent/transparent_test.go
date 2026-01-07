@@ -25,7 +25,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "streamable-http", nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "sse", nil, "", false)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -45,7 +45,7 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
 	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	proxyURL.ModifyResponse = proxy.modifySSEResponse
+	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	// hit the proxy
 	rec := httptest.NewRecorder()
@@ -75,7 +75,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 	}
 	proxy.FlushInterval = -1
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
-	proxy.ModifyResponse = p.modifySSEResponse
+	proxy.ModifyResponse = p.modifyResponse
 	return proxy
 }
 
@@ -604,7 +604,10 @@ func TestGetSSERewriteConfig(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 
-			config := proxy.getSSERewriteConfig(req)
+			// Access the SSE response processor to test configuration
+			sseProcessor, ok := proxy.responseProcessor.(*SSEResponseProcessor)
+			assert.True(t, ok, "expected SSE response processor")
+			config := sseProcessor.getSSERewriteConfig(req)
 
 			assert.Equal(t, tt.expectedPrefix, config.prefix)
 			assert.Equal(t, tt.expectedScheme, config.scheme)
@@ -638,7 +641,7 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
 	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	proxyURL.ModifyResponse = proxy.modifySSEResponse
+	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	// Create request with X-Forwarded-Prefix header
 	rec := httptest.NewRecorder()
@@ -687,7 +690,7 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
 	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	proxyURL.ModifyResponse = proxy.modifySSEResponse
+	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", target.URL, nil)
@@ -735,7 +738,7 @@ func TestSSEMessageEventNotRewritten(t *testing.T) {
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
 	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	proxyURL.ModifyResponse = proxy.modifySSEResponse
+	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", target.URL, nil)

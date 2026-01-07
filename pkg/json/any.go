@@ -102,12 +102,15 @@ func (d *Data[T]) DeepCopyInto(out *Data[T]) {
 	if any(d.Value) != nil {
 		// Deep copy Value by marshaling and unmarshaling
 		raw, err := stdjson.Marshal(d.Value)
-		if err == nil {
-			var v T
-			if stdjson.Unmarshal(raw, &v) == nil {
-				out.Value = v
-			}
+		if err != nil {
+			panic(fmt.Sprintf("failed to marshal Data[%T]: %v", d.Value, err))
 		}
+
+		var v T
+		if err := stdjson.Unmarshal(raw, &v); err != nil {
+			panic(fmt.Sprintf("failed to unmarshal Data[%T]: %v", d.Value, err))
+		}
+		out.Value = v
 	} else {
 		var zero T
 		out.Value = zero
@@ -122,18 +125,6 @@ func (d *Data[T]) DeepCopy() *Data[T] {
 	out := new(Data[T])
 	d.DeepCopyInto(out)
 	return out
-}
-
-// ToRawExtension converts to runtime.RawExtension for K8s compatibility.
-func (d Data[T]) ToRawExtension() runtime.RawExtension {
-	if any(d.Value) == nil {
-		return runtime.RawExtension{}
-	}
-	raw, err := stdjson.Marshal(d.Value)
-	if err != nil {
-		return runtime.RawExtension{}
-	}
-	return runtime.RawExtension{Raw: raw}
 }
 
 // Any is a type alias for Data[any], storing arbitrary JSON values.

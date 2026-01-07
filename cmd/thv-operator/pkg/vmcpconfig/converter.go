@@ -670,7 +670,7 @@ func (c *Converter) convertCompositeToolSpec(
 
 	// Convert output configuration
 	if output != nil {
-		tool.Output = convertOutputSpec(output)
+		tool.Output = convertOutputSpec(ctx, output)
 	}
 
 	return tool, nil
@@ -688,8 +688,7 @@ func (*Converter) convertWorkflowSteps(
 	for _, crdStep := range steps {
 		args, err := convertArguments(crdStep.Arguments)
 		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to convert arguments", "tool", toolNameForLogging, "step", crdStep.ID)
+			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
 		}
 
 		step := &vmcpconfig.WorkflowStepConfig{
@@ -801,7 +800,7 @@ func convertArguments(args *runtime.RawExtension) (thvjson.Map, error) {
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
-func convertOutputSpec(crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
+func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
 	if crdOutput == nil {
 		return nil
 	}
@@ -813,7 +812,7 @@ func convertOutputSpec(crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConf
 
 	// Convert properties
 	for propName, propSpec := range crdOutput.Properties {
-		output.Properties[propName] = convertOutputProperty(propName, propSpec)
+		output.Properties[propName] = convertOutputProperty(ctx, propName, propSpec)
 	}
 
 	return output
@@ -821,7 +820,7 @@ func convertOutputSpec(crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConf
 
 // convertOutputProperty converts OutputPropertySpec from CRD to vmcp config OutputProperty
 func convertOutputProperty(
-	propName string, crdProp mcpv1alpha1.OutputPropertySpec,
+	ctx context.Context, propName string, crdProp mcpv1alpha1.OutputPropertySpec,
 ) vmcpconfig.OutputProperty {
 	prop := vmcpconfig.OutputProperty{
 		Type:        crdProp.Type,
@@ -833,7 +832,7 @@ func convertOutputProperty(
 	if len(crdProp.Properties) > 0 {
 		prop.Properties = make(map[string]vmcpconfig.OutputProperty, len(crdProp.Properties))
 		for nestedName, nestedSpec := range crdProp.Properties {
-			prop.Properties[nestedName] = convertOutputProperty(propName+"."+nestedName, nestedSpec)
+			prop.Properties[nestedName] = convertOutputProperty(ctx, propName+"."+nestedName, nestedSpec)
 		}
 	}
 
@@ -841,7 +840,10 @@ func convertOutputProperty(
 	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
 		defaultVal, err := thvjson.FromRawExtension(*crdProp.Default)
 		if err != nil {
-			log.Log.Error(err, "failed to convert default value", "property", propName)
+			// Log warning but continue - invalid defaults will be caught at runtime
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to unmarshal output property default value",
+				"property", propName, "raw", string(crdProp.Default.Raw))
 		} else {
 			prop.Default = defaultVal
 		}

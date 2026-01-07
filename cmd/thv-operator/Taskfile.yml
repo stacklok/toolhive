@@ -171,9 +171,6 @@ tasks:
   # Kubebuilder tasks
   operator-generate:
     desc: Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations
-    vars:
-      PROJECT_ROOT:
-        sh: git rev-parse --show-toplevel || pwd
     cmds:
       - cmd: mkdir -p bin
         platforms: [linux, darwin]

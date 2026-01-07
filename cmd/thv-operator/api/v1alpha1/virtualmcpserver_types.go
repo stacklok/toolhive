@@ -82,8 +82,6 @@ type VirtualMCPServerSpec struct {
 	// NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
 	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
 	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
 	Config config.Config `json:"config,omitempty"`
 }
 

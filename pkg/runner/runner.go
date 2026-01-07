@@ -283,24 +283,19 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Set the unauthorized response callback for bearer token authentication
-		if httpTransport, ok := transportHandler.(interface {
-			SetOnUnauthorizedResponse(types.UnauthorizedResponseCallback)
-		}); ok {
-			// Build actionable error message based on bearer token source
-			errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
+		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
 
-			httpTransport.SetOnUnauthorizedResponse(func() {
-				logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
-				if err := r.statusManager.SetWorkloadStatus(
-					context.Background(),
-					r.Config.BaseName,
-					rt.WorkloadStatusUnauthenticated,
-					errorMsg,
-				); err != nil {
-					logger.Errorf("Failed to update workload status: %v", err)
-				}
-			})
-		}
+		transportHandler.SetOnUnauthorizedResponse(func() {
+			logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnauthenticated,
+				errorMsg,
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
 	}
 
 	// Start the transport (which also starts the container and monitoring)

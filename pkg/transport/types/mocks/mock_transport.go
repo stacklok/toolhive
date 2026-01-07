@@ -250,6 +250,18 @@ func (mr *MockTransportMockRecorder) ProxyPort() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProxyPort", reflect.TypeOf((*MockTransport)(nil).ProxyPort))
 }
 
+// SetOnUnauthorizedResponse mocks base method.
+func (m *MockTransport) SetOnUnauthorizedResponse(callback types.UnauthorizedResponseCallback) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetOnUnauthorizedResponse", callback)
+}
+
+// SetOnUnauthorizedResponse indicates an expected call of SetOnUnauthorizedResponse.
+func (mr *MockTransportMockRecorder) SetOnUnauthorizedResponse(callback any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOnUnauthorizedResponse", reflect.TypeOf((*MockTransport)(nil).SetOnUnauthorizedResponse), callback)
+}
+
 // Start mocks base method.
 func (m *MockTransport) Start(ctx context.Context) error {
 	m.ctrl.T.Helper()

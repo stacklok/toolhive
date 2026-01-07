@@ -100,6 +100,10 @@ type Transport interface {
 
 	// IsRunning checks if the transport is currently running.
 	IsRunning(ctx context.Context) (bool, error)
+
+	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
+	// For transports that don't support this (e.g., stdio), this is a no-op.
+	SetOnUnauthorizedResponse(callback UnauthorizedResponseCallback)
 }
 
 // TransportType represents the type of transport to use.

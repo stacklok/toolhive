@@ -1261,11 +1261,23 @@ func Test_validateDiscoveryDocument(t *testing.T) {
 		name, issuer, errorMsg string
 		doc                    *OIDCEndpoints
 	}{
+		// Valid cases - same host
 		{"valid document", "https://example.com", "", &OIDCEndpoints{
 			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
 		{"valid with optional endpoints", "https://example.com", "", &OIDCEndpoints{
 			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
 			UserInfoEndpoint: "https://example.com/userinfo", JWKSEndpoint: "https://example.com/.well-known/jwks.json"}},
+
+		// Valid cases - different hosts (like Google: accounts.google.com issuer, oauth2.googleapis.com endpoints)
+		// The discovery document is fetched over HTTPS from the issuer, so different hosts are allowed
+		{"valid with different hosts", "https://example.com", "", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://oauth2.example.com/authorize", TokenEndpoint: "https://api.example.com/token"}},
+		{"google-style config", "https://accounts.google.com", "", &OIDCEndpoints{
+			Issuer: "https://accounts.google.com", AuthorizationEndpoint: "https://accounts.google.com/o/oauth2/auth",
+			TokenEndpoint: "https://oauth2.googleapis.com/token", UserInfoEndpoint: "https://openidconnect.googleapis.com/v1/userinfo",
+			JWKSEndpoint: "https://www.googleapis.com/oauth2/v3/certs"}},
+
+		// Missing required fields
 		{"missing issuer", "https://example.com", "missing issuer", &OIDCEndpoints{
 			AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
 		{"issuer mismatch", "https://example.com", "issuer mismatch", &OIDCEndpoints{
@@ -1274,18 +1286,18 @@ func Test_validateDiscoveryDocument(t *testing.T) {
 			Issuer: "https://example.com", TokenEndpoint: "https://example.com/token"}},
 		{"missing token endpoint", "https://example.com", "missing token_endpoint", &OIDCEndpoints{
 			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize"}},
-		{"auth endpoint different host", "https://example.com", "authorization_endpoint origin mismatch", &OIDCEndpoints{
-			Issuer: "https://example.com", AuthorizationEndpoint: "https://attacker.com/authorize", TokenEndpoint: "https://example.com/token"}},
-		{"token endpoint different host", "https://example.com", "token_endpoint origin mismatch", &OIDCEndpoints{
-			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://attacker.com/token"}},
-		{"userinfo endpoint different host", "https://example.com", "userinfo_endpoint origin mismatch", &OIDCEndpoints{
-			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
-			UserInfoEndpoint: "https://attacker.com/userinfo"}},
-		{"jwks_uri different host", "https://example.com", "jwks_uri origin mismatch", &OIDCEndpoints{
-			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
-			JWKSEndpoint: "https://attacker.com/.well-known/jwks.json"}},
-		{"auth endpoint different scheme", "https://example.com", "authorization_endpoint origin mismatch", &OIDCEndpoints{
+
+		// Scheme downgrade attacks - HTTP endpoints for HTTPS issuer should fail
+		{"auth endpoint HTTP scheme", "https://example.com", "authorization_endpoint origin mismatch", &OIDCEndpoints{
 			Issuer: "https://example.com", AuthorizationEndpoint: "http://example.com/authorize", TokenEndpoint: "https://example.com/token"}},
+		{"token endpoint HTTP scheme", "https://example.com", "token_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "http://example.com/token"}},
+		{"userinfo endpoint HTTP scheme", "https://example.com", "userinfo_endpoint origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
+			UserInfoEndpoint: "http://example.com/userinfo"}},
+		{"jwks_uri HTTP scheme", "https://example.com", "jwks_uri origin mismatch", &OIDCEndpoints{
+			Issuer: "https://example.com", AuthorizationEndpoint: "https://example.com/authorize", TokenEndpoint: "https://example.com/token",
+			JWKSEndpoint: "http://example.com/.well-known/jwks.json"}},
 	}
 
 	for _, tt := range tests {
@@ -1309,14 +1321,30 @@ func Test_validateEndpointOrigin(t *testing.T) {
 	tests := []struct {
 		name, endpoint, issuer, errorMsg string
 	}{
+		// Same origin cases - always valid
 		{"same origin HTTPS", "https://example.com/authorize", "https://example.com", ""},
 		{"same origin with port", "https://example.com:8443/authorize", "https://example.com:8443", ""},
 		{"same origin localhost", "http://localhost:8080/authorize", "http://localhost:8080", ""},
-		{"different host", "https://attacker.com/authorize", "https://example.com", "host mismatch"},
-		{"different port", "https://example.com:9443/authorize", "https://example.com:8443", "host mismatch"},
-		{"different scheme", "http://example.com/authorize", "https://example.com", "scheme mismatch"},
-		{"localhost to non-localhost", "http://attacker.com/authorize", "http://localhost:8080", "host mismatch"},
-		{"subdomain attack", "https://auth.example.com/authorize", "https://example.com", "host mismatch"},
+
+		// Different hosts but HTTPS - valid (major providers use different hosts)
+		// Google: accounts.google.com issuer, oauth2.googleapis.com token endpoint
+		// Microsoft: login.microsoftonline.com issuer, various hosts
+		{"different host same scheme HTTPS", "https://other.example.com/authorize", "https://example.com", ""},
+		{"completely different domain HTTPS", "https://oauth2.googleapis.com/token", "https://accounts.google.com", ""},
+		{"google-style config", "https://oauth2.googleapis.com/token", "https://accounts.google.com", ""},
+
+		// Localhost issuer cases
+		{"localhost different port", "http://localhost:9080/authorize", "http://localhost:8080", ""},
+		{"localhost to 127.0.0.1", "http://127.0.0.1:8080/authorize", "http://localhost:8080", ""},
+		{"localhost HTTPS", "https://localhost:8443/authorize", "http://localhost:8080", ""},
+
+		// Scheme downgrade attack - should fail (HTTP endpoint for HTTPS issuer)
+		{"scheme downgrade HTTP endpoint", "http://example.com/authorize", "https://example.com", "scheme mismatch"},
+		{"scheme downgrade different host", "http://attacker.com/authorize", "https://example.com", "scheme mismatch"},
+
+		// Localhost to non-localhost - should fail
+		{"localhost issuer to internet endpoint", "http://attacker.com/authorize", "http://localhost:8080", "host mismatch"},
+		{"localhost issuer to HTTPS internet", "https://attacker.com/authorize", "http://localhost:8080", "host mismatch"},
 	}
 
 	for _, tt := range tests {

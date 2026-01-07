@@ -705,8 +705,24 @@ func validateDiscoveryDocument(doc *OIDCEndpoints, expectedIssuer string) error 
 	return nil
 }
 
-// validateEndpointOrigin validates that an endpoint URL has the same origin as the issuer.
-// This ensures the scheme and host match, preventing redirect attacks.
+// validateEndpointOrigin validates that an endpoint URL uses a secure scheme relative to the issuer.
+//
+// This function enforces scheme consistency (HTTPS for production, HTTP allowed for localhost testing)
+// but does NOT enforce host matching. Major identity providers like Google, Microsoft, and others
+// commonly use different hosts/domains for their OAuth endpoints:
+//   - Google: issuer=accounts.google.com, token_endpoint=oauth2.googleapis.com
+//   - Microsoft: issuer=login.microsoftonline.com, various endpoint hosts
+//
+// The OIDC Discovery spec (https://openid.net/specs/openid-connect-discovery-1_0.html) and
+// RFC 8414 (OAuth Authorization Server Metadata) do not require endpoints to be on the same
+// host as the issuer. The security model relies on:
+//  1. The discovery document being fetched over HTTPS from the configured issuer
+//  2. TLS certificate validation ensuring we're talking to the real issuer
+//  3. The issuer being a trusted party that controls its own discovery document
+//
+// If an attacker could compromise the HTTPS connection to the issuer or the issuer itself,
+// host validation would provide no additional protection since the attacker controls the
+// discovery document contents.
 func validateEndpointOrigin(endpoint, issuer string) error {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
@@ -718,26 +734,27 @@ func validateEndpointOrigin(endpoint, issuer string) error {
 		return fmt.Errorf("invalid issuer URL: %w", err)
 	}
 
-	// Validate scheme matches
-	// For localhost, both HTTP and HTTPS are acceptable (for testing)
-	// For non-localhost, both must use the same scheme
-	if !networking.IsLocalhost(issuerURL.Host) {
-		if endpointURL.Scheme != issuerURL.Scheme {
-			return fmt.Errorf("scheme mismatch: issuer uses %q but endpoint uses %q",
-				issuerURL.Scheme, endpointURL.Scheme)
-		}
-	} else {
-		// For localhost, allow HTTP or HTTPS but must be consistent or both localhost
+	// For localhost issuers (development/testing), allow HTTP schemes and any localhost endpoint
+	if networking.IsLocalhost(issuerURL.Host) {
+		// Endpoint must also be localhost when issuer is localhost
 		if !networking.IsLocalhost(endpointURL.Host) {
 			return fmt.Errorf("host mismatch: issuer is localhost but endpoint host is %q", endpointURL.Host)
 		}
+		// For localhost, we allow both HTTP and HTTPS, no further validation needed
+		return nil
 	}
 
-	// Validate host matches (including port)
-	if endpointURL.Host != issuerURL.Host {
-		return fmt.Errorf("host mismatch: issuer host is %q but endpoint host is %q",
-			issuerURL.Host, endpointURL.Host)
+	// For production issuers, enforce HTTPS on endpoints
+	// This prevents protocol downgrade attacks where a malicious discovery document
+	// could redirect token requests to an HTTP endpoint, exposing credentials
+	if endpointURL.Scheme != "https" {
+		return fmt.Errorf(
+			"scheme mismatch: issuer uses HTTPS but endpoint uses %q "+
+				"(all endpoints must use HTTPS for non-localhost issuers)",
+			endpointURL.Scheme)
 	}
 
+	// No host validation - the discovery document comes from a trusted HTTPS source
+	// and major providers legitimately use different hosts for different endpoints
 	return nil
 }

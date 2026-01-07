@@ -32,33 +32,40 @@ type Config struct {
 
 	// TracingEnabled controls whether distributed tracing is enabled
 	// When false, no tracer provider is created even if an endpoint is configured
+	// +optional
 	TracingEnabled bool `json:"tracingEnabled" yaml:"tracingEnabled"`
 
 	// MetricsEnabled controls whether OTLP metrics are enabled
 	// When false, OTLP metrics are not sent even if an endpoint is configured
 	// This is independent of EnablePrometheusMetricsPath
+	// +optional
 	MetricsEnabled bool `json:"metricsEnabled" yaml:"metricsEnabled"`
 
 	// SamplingRate is the trace sampling rate (0.0-1.0) as a string.
 	// Only used when TracingEnabled is true.
 	// Example: "0.05" for 5% sampling.
+	// +optional
 	SamplingRate string `json:"samplingRate" yaml:"samplingRate"`
 
 	// Headers contains authentication headers for the OTLP endpoint
+	// +optional
 	Headers map[string]string `json:"headers" yaml:"headers"`
 
 	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
+	// +optional
 	Insecure bool `json:"insecure" yaml:"insecure"`
 
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
 	// The metrics are served on the main transport port at /metrics
 	// This is separate from OTLP metrics which are sent to the Endpoint
+	// +optional
 	EnablePrometheusMetricsPath bool `json:"enablePrometheusMetricsPath" yaml:"enablePrometheusMetricsPath"`
 
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
 	// be read from the host machine and included in spans for observability.
 	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+	// +optional
 	EnvironmentVariables []string `json:"environmentVariables" yaml:"environmentVariables"`
 
 	// CustomAttributes contains custom resource attributes to be added to all telemetry signals.
@@ -66,6 +73,7 @@ type Config struct {
 	// (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
 	// We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
 	// which doesn't marshal/unmarshal correctly.
+	// +optional
 	CustomAttributes map[string]string `json:"customAttributes,omitempty" yaml:"customAttributes,omitempty"`
 }
 

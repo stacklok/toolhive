@@ -1095,16 +1095,9 @@ spec:
                           When false, no tracer provider is created even if an endpoint is configured
                         type: boolean
                     required:
-                    - enablePrometheusMetricsPath
                     - endpoint
-                    - environmentVariables
-                    - headers
-                    - insecure
-                    - metricsEnabled
-                    - samplingRate
                     - serviceName
                     - serviceVersion
-                    - tracingEnabled
                     type: object
                 required:
                 - groupRef

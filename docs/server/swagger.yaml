@@ -935,6 +935,7 @@ components:
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
     secrets.SecretParameter:
+      description: Bearer token for authentication (alternative to OAuth)
       properties:
         name:
           type: string
@@ -1531,6 +1532,8 @@ components:
           description: OAuth authorization endpoint URL (alternative to issuer for
             non-OIDC OAuth)
           type: string
+        bearer_token:
+          $ref: '#/components/schemas/secrets.SecretParameter'
         callback_port:
           description: Specific port for OAuth callback server
           type: integer

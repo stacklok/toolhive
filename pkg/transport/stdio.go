@@ -18,6 +18,7 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/exp/jsonrpc2"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/docker"
@@ -300,6 +301,24 @@ func (t *StdioTransport) IsRunning(_ context.Context) (bool, error) {
 	default:
 		return true, nil
 	}
+}
+
+// SetRemoteURL sets the remote URL for the MCP server.
+// This is a no-op for stdio transport as it doesn't support remote servers.
+func (*StdioTransport) SetRemoteURL(_ string) {
+	// No-op: stdio transport doesn't support remote servers
+}
+
+// SetTokenSource sets the OAuth token source for remote authentication.
+// This is a no-op for stdio transport as it doesn't support remote authentication.
+func (*StdioTransport) SetTokenSource(_ oauth2.TokenSource) {
+	// No-op: stdio transport doesn't support remote authentication
+}
+
+// SetOnHealthCheckFailed sets the callback for health check failures.
+// This is a no-op for stdio transport as it doesn't support health checks.
+func (*StdioTransport) SetOnHealthCheckFailed(_ types.HealthCheckFailedCallback) {
+	// No-op: stdio transport doesn't support health checks
 }
 
 // SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.

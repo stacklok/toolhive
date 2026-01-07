@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"golang.org/x/exp/jsonrpc2"
+	"golang.org/x/oauth2"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
@@ -100,6 +101,18 @@ type Transport interface {
 
 	// IsRunning checks if the transport is currently running.
 	IsRunning(ctx context.Context) (bool, error)
+
+	// SetRemoteURL sets the remote URL for the MCP server.
+	// For transports that don't support remote servers (e.g., stdio), this is a no-op.
+	SetRemoteURL(remoteURL string)
+
+	// SetTokenSource sets the OAuth token source for remote authentication.
+	// For transports that don't support remote authentication (e.g., stdio), this is a no-op.
+	SetTokenSource(tokenSource oauth2.TokenSource)
+
+	// SetOnHealthCheckFailed sets the callback for health check failures.
+	// For transports that don't support health checks (e.g., stdio), this is a no-op.
+	SetOnHealthCheckFailed(callback HealthCheckFailedCallback)
 
 	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
 	// For transports that don't support this (e.g., stdio), this is a no-op.

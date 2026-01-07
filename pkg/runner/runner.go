@@ -239,9 +239,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// For remote MCP servers, set the remote URL on HTTP transports
 	if r.Config.RemoteURL != "" {
-		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
-			httpTransport.SetRemoteURL(r.Config.RemoteURL)
-		}
+		transportHandler.SetRemoteURL(r.Config.RemoteURL)
 
 		// Handle remote authentication if configured
 		tokenSource, err := r.handleRemoteAuthentication(ctx)
@@ -260,31 +258,24 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
 
-		// Set the token source on the HTTP transport
-		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
-			httpTransport.SetTokenSource(tokenSource)
-		}
+		// Set the token source on the transport
+		transportHandler.SetTokenSource(tokenSource)
 
 		// Set the health check failure callback for remote servers
-		if httpTransport, ok := transportHandler.(interface {
-			SetOnHealthCheckFailed(types.HealthCheckFailedCallback)
-		}); ok {
-			httpTransport.SetOnHealthCheckFailed(func() {
-				logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
-				if err := r.statusManager.SetWorkloadStatus(
-					context.Background(),
-					r.Config.BaseName,
-					rt.WorkloadStatusUnhealthy,
-					"Health check failed",
-				); err != nil {
-					logger.Errorf("Failed to update workload status: %v", err)
-				}
-			})
-		}
+		transportHandler.SetOnHealthCheckFailed(func() {
+			logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnhealthy,
+				"Health check failed",
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
 
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
-
 		transportHandler.SetOnUnauthorizedResponse(func() {
 			logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
 			if err := r.statusManager.SetWorkloadStatus(

@@ -658,9 +658,11 @@ func addAuditMiddleware(
 // Middleware is applied in reverse order, so adding last means it executes first
 // and catches panics from all other middleware and handlers.
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
-	if recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil); err == nil {
-		middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create recovery middleware config: %v", err))
 	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
 	return middlewareConfigs
 }
 

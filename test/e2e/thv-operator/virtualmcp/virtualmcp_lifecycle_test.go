@@ -24,13 +24,13 @@ import (
 
 // NOTE: These tests verify DynamicRegistry functionality with full operator integration.
 // The vMCP server now uses DynamicRegistry in Kubernetes mode and supports dynamic
-// backend discovery. New sessions will see updated backends when they are added/removed
-// from the MCPGroup. Existing sessions retain their original capability snapshot.
+// backend discovery via BackendWatcher. New sessions will see updated backends when
+// they are added/removed from the MCPGroup. Existing sessions retain their original
+// capability snapshot.
 //
-// Implementation status: DynamicRegistry is fully integrated. The tests are currently
-// marked as Pending because they require a K8s watcher to actively update the registry
-// when backends change. Without the watcher, backends are only discovered at pod startup.
-var _ = Describe("VirtualMCPServer Lifecycle - DynamicRegistry", Ordered, Pending, func() {
+// Implementation status: DynamicRegistry is fully integrated with BackendReconciler that
+// watches MCPServer/MCPRemoteProxy resources and updates the registry in real-time.
+var _ = Describe("VirtualMCPServer Lifecycle - Dynamic Backend Discovery", Ordered, func() {
 	var (
 		testNamespace   = "default"
 		mcpGroupName    = "test-lifecycle-group"
@@ -597,9 +597,8 @@ type ReadinessResponse struct {
 
 // VirtualMCPServer K8s Manager Infrastructure Tests
 // These tests verify the K8s manager integration that was implemented as part of THV-2884.
-// Unlike the dynamic backend tests above (which are Pending until watcher is implemented),
-// these tests verify the infrastructure is in place: manager creation, readiness probes,
-// and endpoint behavior.
+// This includes BackendWatcher with BackendReconciler for dynamic backend discovery,
+// manager creation, readiness probes, cache sync, and endpoint behavior.
 var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() {
 	var (
 		testNamespace   = "default"

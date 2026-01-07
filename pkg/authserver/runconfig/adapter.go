@@ -15,6 +15,7 @@
 package runconfig
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net"
 	"net/url"
@@ -66,13 +67,20 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 		return nil, fmt.Errorf("failed to derive signing key parameters: %w", err)
 	}
 
-	// Load HMAC secret from file (required)
-	if cfg.HMACSecretPath == "" {
-		return nil, fmt.Errorf("hmac_secret_path is required when auth server is enabled")
+	// Load HMAC secret from file (optional - auto-generate if not provided)
+	var hmacSecret []byte
+	if cfg.HMACSecretPath != "" {
+		hmacSecret, err = oauth.LoadHMACSecret(cfg.HMACSecretPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load HMAC secret: %w", err)
+		}
 	}
-	hmacSecret, err := oauth.LoadHMACSecret(cfg.HMACSecretPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load HMAC secret: %w", err)
+	if hmacSecret == nil {
+		logger.Warnf("No HMAC secret configured - generating random secret (not suitable for multi-replica deployments)")
+		hmacSecret = make([]byte, 32)
+		if _, err := rand.Read(hmacSecret); err != nil {
+			return nil, fmt.Errorf("failed to generate random HMAC secret: %w", err)
+		}
 	}
 
 	// Build generic config

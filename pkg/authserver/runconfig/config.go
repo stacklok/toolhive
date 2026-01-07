@@ -144,9 +144,8 @@ func (c *RunConfig) Validate() error {
 	// Note: SigningKeyID and SigningKeyAlgorithm are optional.
 	// If not set, they will be auto-derived from the key in BuildConfig.
 
-	if c.HMACSecretPath == "" {
-		return fmt.Errorf("hmac_secret_path is required when auth server is enabled")
-	}
+	// Note: HMACSecretPath is optional. If not set, a random secret is generated
+	// in BuildConfig (suitable for single-instance deployments only).
 
 	if c.Upstream != nil {
 		if err := c.Upstream.Validate(); err != nil {

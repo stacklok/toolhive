@@ -25,6 +25,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
@@ -94,15 +96,21 @@ func NewOIDCProvider(
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	// Build HTTP client using the standard networking builder.
+	// Allow HTTP and private IPs for localhost issuers to support local development/testing.
+	issuerURL, _ := url.Parse(config.Issuer) // Error already validated in config.Validate()
+	isLocalhost := networking.IsLocalhost(issuerURL.Host)
+	httpClient, err := networking.NewHttpClientBuilder().
+		WithInsecureAllowHTTP(isLocalhost).
+		WithPrivateIPs(isLocalhost).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
 	p := &OIDCProvider{
 		config: config,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-			},
-		},
+		client: httpClient,
 		logger: slog.Default(),
 	}
 
@@ -116,9 +124,11 @@ func NewOIDCProvider(
 
 	// Initialize ID token validator for validating tokens from the upstream IDP.
 	// Uses the discovered issuer and our client_id as expected audience.
+	// JWKS URI from discovery enables signature verification.
 	validator, err := newIDTokenValidator(idTokenValidatorConfig{
 		expectedIssuer:   p.endpoints.Issuer,
 		expectedAudience: config.ClientID,
+		jwksURI:          p.endpoints.JWKSEndpoint,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID token validator: %w", err)
@@ -553,7 +563,7 @@ func buildDiscoveryURL(issuer string) (string, error) {
 	}
 
 	// Ensure HTTPS (except for localhost for testing)
-	if issuerURL.Scheme != "https" && !isLocalhost(issuerURL.Host) {
+	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) {
 		return "", fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
@@ -624,14 +634,14 @@ func validateEndpointOrigin(endpoint, issuer string) error {
 	// Validate scheme matches
 	// For localhost, both HTTP and HTTPS are acceptable (for testing)
 	// For non-localhost, both must use the same scheme
-	if !isLocalhost(issuerURL.Host) {
+	if !networking.IsLocalhost(issuerURL.Host) {
 		if endpointURL.Scheme != issuerURL.Scheme {
 			return fmt.Errorf("scheme mismatch: issuer uses %q but endpoint uses %q",
 				issuerURL.Scheme, endpointURL.Scheme)
 		}
 	} else {
 		// For localhost, allow HTTP or HTTPS but must be consistent or both localhost
-		if !isLocalhost(endpointURL.Host) {
+		if !networking.IsLocalhost(endpointURL.Host) {
 			return fmt.Errorf("host mismatch: issuer is localhost but endpoint host is %q", endpointURL.Host)
 		}
 	}
@@ -643,13 +653,4 @@ func validateEndpointOrigin(endpoint, issuer string) error {
 	}
 
 	return nil
-}
-
-// isLocalhost checks if the host is localhost.
-func isLocalhost(host string) bool {
-	// Remove port if present
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

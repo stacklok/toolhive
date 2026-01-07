@@ -660,7 +660,7 @@ func addAuditMiddleware(
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
-		panic(fmt.Sprintf("failed to create recovery middleware config: %v", err))
+		logger.Warnf("failed to create recovery middleware: %v", err)
 	}
 	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
 	return middlewareConfigs

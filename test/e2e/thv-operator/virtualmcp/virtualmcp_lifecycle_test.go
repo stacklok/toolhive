@@ -794,7 +794,7 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 				pods := &corev1.PodList{}
 				err := k8sClient.List(ctx, pods,
 					ctrlclient.InNamespace(testNamespace),
-					ctrlclient.MatchingLabels{"app": vmcpServerName})
+					ctrlclient.MatchingLabels{"app.kubernetes.io/instance": vmcpServerName})
 				if err != nil {
 					return fmt.Errorf("failed to list pods: %w", err)
 				}
@@ -827,7 +827,7 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 			pods := &corev1.PodList{}
 			err := k8sClient.List(ctx, pods,
 				ctrlclient.InNamespace(testNamespace),
-				ctrlclient.MatchingLabels{"app": vmcpServerName})
+				ctrlclient.MatchingLabels{"app.kubernetes.io/instance": vmcpServerName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pods.Items).NotTo(BeEmpty(), "Should have at least one pod")
 

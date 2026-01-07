@@ -4,10 +4,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/env"
@@ -295,19 +297,56 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Create backend registry for CLI environment
-	// CLI always uses immutable registry (backends fixed at startup)
-	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	// Use DynamicRegistry for version-based cache invalidation
+	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
+	// In standalone mode: backends from config file, no dynamic updates
+	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher
+	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
+	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
 
-	// Use standard manager (no version-based invalidation needed)
-	discoveryMgr, err := discovery.NewManager(agg)
+	// Use NewManagerWithRegistry to enable version-based cache invalidation
+	discoveryMgr, err := discovery.NewManagerWithRegistry(agg, dynamicRegistry)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
-	logger.Info("Immutable backend registry created for CLI environment")
+	logger.Info("Dynamic backend registry enabled for Kubernetes environment")
 
-	// Backend watcher is not used in CLI mode (always nil)
+	// Backend watcher for dynamic backend discovery
 	var backendWatcher *k8s.BackendWatcher
+
+	// If outgoingAuth.source is "discovered", start K8s backend watcher to watch backend changes
+	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
+		logger.Info("Detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
+
+		// Get in-cluster REST config
+		restConfig, err := rest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get in-cluster config: %w", err)
+		}
+
+		// Get namespace from environment variable set by operator
+		// The operator sets VMCP_NAMESPACE to the VirtualMCPServer's namespace
+		namespace := os.Getenv("VMCP_NAMESPACE")
+		if namespace == "" {
+			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
+		}
+
+		// Create K8s backend watcher to watch backend changes
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, cfg.Group, dynamicRegistry)
+		if err != nil {
+			return fmt.Errorf("failed to create backend watcher: %w", err)
+		}
+
+		// Start K8s backend watcher in background goroutine
+		go func() {
+			logger.Info("Starting Kubernetes backend watcher in background")
+			if err := backendWatcher.Start(ctx); err != nil {
+				logger.Errorf("Backend watcher stopped with error: %v", err)
+			}
+		}()
+
+		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
+	}
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()

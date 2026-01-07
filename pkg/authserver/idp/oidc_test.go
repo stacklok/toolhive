@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1139,16 +1138,9 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test with custom logger
-	customLogger := slog.Default().With("component", "test")
-	_, err := NewOIDCProvider(ctx, config, WithLogger(customLogger))
-	if err != nil {
-		t.Fatalf("failed to create provider with custom logger: %v", err)
-	}
-
 	// Test with custom HTTP client
 	customClient := &http.Client{Timeout: 5 * time.Second}
-	_, err = NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
+	_, err := NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 	if err != nil {
 		t.Fatalf("failed to create provider with custom HTTP client: %v", err)
 	}

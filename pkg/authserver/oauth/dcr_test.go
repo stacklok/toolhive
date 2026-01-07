@@ -17,7 +17,6 @@ package oauth
 import (
 	"bytes"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -392,7 +391,6 @@ func TestRegisterClientHandler(t *testing.T) {
 
 	// Create a router with minimal dependencies
 	router := &Router{
-		logger:  slog.Default(),
 		storage: stor,
 	}
 
@@ -599,7 +597,6 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 
 	// Create router
 	router := &Router{
-		logger:  slog.Default(),
 		storage: stor,
 	}
 
@@ -668,7 +665,6 @@ func TestRegisterClientHandler_UniqueClientIDs(t *testing.T) {
 
 	// Create router
 	router := &Router{
-		logger:  slog.Default(),
 		storage: stor,
 	}
 

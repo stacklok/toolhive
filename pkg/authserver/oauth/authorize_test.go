@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -160,8 +158,7 @@ func authorizeTestSetup(t *testing.T) (*Router, *storage.MemoryStorage, *mockIDP
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, oauth2Config, stor, mockUpstream)
+	router := NewRouter(provider, oauth2Config, stor, mockUpstream)
 
 	return router, stor, mockUpstream
 }

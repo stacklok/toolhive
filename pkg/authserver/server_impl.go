@@ -17,7 +17,6 @@ package authserver
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -87,7 +86,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (*server, 
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
 
-	router := oauth.NewRouter(slog.Default(), provider, oauth2Config, stor, upstreamIDP)
+	router := oauth.NewRouter(provider, oauth2Config, stor, upstreamIDP)
 
 	// Create mux serving all endpoints
 	mux := http.NewServeMux()

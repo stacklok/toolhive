@@ -4,8 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,9 +47,8 @@ func testSetup(t *testing.T) *Router {
 	stor := storage.NewMemoryStorage()
 	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Use nil upstream for basic handler tests that don't need IDP functionality
-	router := NewRouter(logger, provider, oauth2Config, stor, nil)
+	router := NewRouter(provider, oauth2Config, stor, nil)
 
 	return router
 }
@@ -98,8 +95,7 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 
 	stor := storage.NewMemoryStorage()
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(logger, provider, cfg, stor, nil)
+	router := NewRouter(provider, cfg, stor, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rec := httptest.NewRecorder()
@@ -211,20 +207,6 @@ func TestTokenHandler_AuthorizationCodeWithoutCode(t *testing.T) {
 
 	// Should report an error
 	assert.Contains(t, errResp, "error")
-}
-
-func TestNewRouter_NilLogger(t *testing.T) {
-	t.Parallel()
-	cfg := &OAuth2Config{
-		Config: &fosite.Config{},
-	}
-	stor := storage.NewMemoryStorage()
-	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
-
-	// Should not panic with nil logger
-	router := NewRouter(nil, provider, cfg, stor, nil)
-	assert.NotNil(t, router)
-	assert.NotNil(t, router.logger)
 }
 
 func TestRoutes(t *testing.T) {

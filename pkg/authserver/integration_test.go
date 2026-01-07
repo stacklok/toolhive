@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -111,8 +110,7 @@ func integrationTestSetup(t *testing.T) *testServer {
 
 	// 8. Create router and HTTP server
 	// Use nil upstream for basic integration tests that don't need IDP functionality
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, nil)
+	router := oauthpkg.NewRouter(provider, oauth2Config, stor, nil)
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)
@@ -991,8 +989,7 @@ func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testSe
 	require.NoError(t, err)
 
 	// 9. Create router with upstream and HTTP server
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := oauthpkg.NewRouter(logger, provider, oauth2Config, stor, upstream)
+	router := oauthpkg.NewRouter(provider, oauth2Config, stor, upstream)
 	mux := http.NewServeMux()
 	router.Routes(mux)
 	server := httptest.NewServer(mux)

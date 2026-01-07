@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +29,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/idp"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // AuthorizeHandler handles GET /oauth/authorize requests.
@@ -60,9 +60,9 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// Validate client exists
 	client, err := r.storage.GetClient(ctx, clientID)
 	if err != nil {
-		r.logger.WarnContext(ctx, "client not found",
-			slog.String("client_id", clientID),
-			slog.String("error", err.Error()),
+		logger.Warnw("client not found",
+			"client_id", clientID,
+			"error", err.Error(),
 		)
 		r.writeAuthorizeError(w, "invalid_request", "client not found")
 		return
@@ -70,9 +70,9 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Validate redirect_uri matches client's registered URIs
 	if !isValidRedirectURI(client, redirectURI) {
-		r.logger.WarnContext(ctx, "invalid redirect_uri",
-			slog.String("client_id", clientID),
-			slog.String("redirect_uri", redirectURI),
+		logger.Warnw("invalid redirect_uri",
+			"client_id", clientID,
+			"redirect_uri", redirectURI,
 		)
 		r.writeAuthorizeError(w, "invalid_request", "redirect_uri does not match registered URIs")
 		return
@@ -99,14 +99,14 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Validate state is present (recommended by OAuth 2.0 spec)
 	if state == "" {
-		r.logger.WarnContext(ctx, "authorization request missing state parameter",
-			slog.String("client_id", clientID),
+		logger.Warnw("authorization request missing state parameter",
+			"client_id", clientID,
 		)
 	}
 
 	// Check if upstream provider is configured
 	if r.upstream == nil {
-		r.logger.ErrorContext(ctx, "upstream provider not configured")
+		logger.Error("upstream provider not configured")
 		r.redirectWithError(w, redirectURI, state, "server_error", "authorization server not configured")
 		return
 	}
@@ -117,16 +117,16 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		scopes = strings.Split(scope, " ")
 	}
 
-	r.logger.DebugContext(ctx, "parsed client-requested scopes",
-		slog.String("raw_scope_param", scope),
-		slog.Any("parsed_scopes", scopes),
+	logger.Debugw("parsed client-requested scopes",
+		"raw_scope_param", scope,
+		"parsed_scopes", scopes,
 	)
 
 	// Generate internal state, upstream PKCE verifier/challenge, and nonce
 	internalState, upstreamPKCEVerifier, upstreamPKCEChallenge, upstreamNonce, err := generateAuthorizationSecrets()
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to generate authorization secrets",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to generate authorization secrets",
+			"error", err.Error(),
 		)
 		r.redirectWithError(w, redirectURI, state, "server_error", "failed to generate authorization secrets")
 		return
@@ -147,8 +147,8 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.storage.StorePendingAuthorization(ctx, internalState, pending); err != nil {
-		r.logger.ErrorContext(ctx, "failed to store pending authorization",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to store pending authorization",
+			"error", err.Error(),
 		)
 		r.redirectWithError(w, redirectURI, state, "server_error", "failed to store authorization request")
 		return
@@ -157,8 +157,8 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// Build upstream authorization URL with PKCE challenge and nonce
 	upstreamURL, err := r.upstream.AuthorizationURL(internalState, upstreamPKCEChallenge, upstreamNonce)
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to build upstream authorization URL",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to build upstream authorization URL",
+			"error", err.Error(),
 		)
 		// Clean up pending authorization
 		_ = r.storage.DeletePendingAuthorization(ctx, internalState)
@@ -167,19 +167,19 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Log upstream authorization URL for debugging
-	r.logger.DebugContext(ctx, "upstream authorization URL",
-		slog.String("url", upstreamURL),
+	logger.Debugw("upstream authorization URL",
+		"url", upstreamURL,
 	)
 	// Log the redirect_uri separately for clarity (best effort - URL was just constructed so should be valid)
 	parsedUpstreamURL, _ := url.Parse(upstreamURL)
-	r.logger.DebugContext(ctx, "upstream redirect_uri",
-		slog.String("redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri")),
+	logger.Debugw("upstream redirect_uri",
+		"redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri"),
 	)
 
-	r.logger.InfoContext(ctx, "redirecting to upstream IDP",
-		slog.String("client_id", clientID),
-		slog.String("upstream_provider", r.upstream.Name()),
-		slog.String("upstream_redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri")),
+	logger.Infow("redirecting to upstream IDP",
+		"client_id", clientID,
+		"upstream_provider", r.upstream.Name(),
+		"upstream_redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri"),
 	)
 
 	// Redirect user to upstream IDP
@@ -199,9 +199,9 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Handle upstream errors
 	if errorParam != "" {
-		r.logger.WarnContext(ctx, "upstream IDP returned error",
-			slog.String("error", errorParam),
-			slog.String("error_description", errorDescription),
+		logger.Warnw("upstream IDP returned error",
+			"error", errorParam,
+			"error_description", errorDescription,
 		)
 
 		// Try to load pending authorization to redirect to client
@@ -221,13 +221,13 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Validate required parameters
 	if internalState == "" {
-		r.logger.WarnContext(ctx, "callback missing state parameter")
+		logger.Warn("callback missing state parameter")
 		http.Error(w, "missing state parameter", http.StatusBadRequest)
 		return
 	}
 
 	if code == "" {
-		r.logger.WarnContext(ctx, "callback missing code parameter")
+		logger.Warn("callback missing code parameter")
 		http.Error(w, "missing code parameter", http.StatusBadRequest)
 		return
 	}
@@ -235,9 +235,9 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Load and delete pending authorization (single-use)
 	pending, err := r.storage.LoadPendingAuthorization(ctx, internalState)
 	if err != nil {
-		r.logger.WarnContext(ctx, "pending authorization not found",
-			slog.String("state", internalState),
-			slog.String("error", err.Error()),
+		logger.Warnw("pending authorization not found",
+			"state", internalState,
+			"error", err.Error(),
 		)
 		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
 		return
@@ -245,15 +245,15 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Delete pending authorization immediately (single-use)
 	if err := r.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
-		r.logger.WarnContext(ctx, "failed to delete pending authorization",
-			slog.String("state", internalState),
-			slog.String("error", err.Error()),
+		logger.Warnw("failed to delete pending authorization",
+			"state", internalState,
+			"error", err.Error(),
 		)
 	}
 
 	// Check if upstream provider is configured
 	if r.upstream == nil {
-		r.logger.ErrorContext(ctx, "upstream provider not configured")
+		logger.Error("upstream provider not configured")
 		r.redirectWithError(w, pending.RedirectURI, pending.State, "server_error", "authorization server not configured")
 		return
 	}
@@ -261,8 +261,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Exchange code with upstream IDP using the stored PKCE verifier
 	idpTokens, err := r.upstream.ExchangeCode(ctx, code, pending.UpstreamPKCEVerifier)
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to exchange code with upstream IDP",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to exchange code with upstream IDP",
+			"error", err.Error(),
 		)
 		r.redirectWithError(w, pending.RedirectURI, pending.State, "server_error", "failed to exchange authorization code")
 		return
@@ -277,8 +277,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate session ID and store IDP tokens
 	sessionID, err := generateRandomState()
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to generate session ID",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to generate session ID",
+			"error", err.Error(),
 		)
 		r.redirectWithError(w, pending.RedirectURI, pending.State, "server_error", "failed to generate session")
 		return
@@ -297,8 +297,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := r.storage.StoreIDPTokens(ctx, sessionID, storageTokens); err != nil {
-		r.logger.ErrorContext(ctx, "failed to store IDP tokens",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to store IDP tokens",
+			"error", err.Error(),
 		)
 		r.redirectWithError(w, pending.RedirectURI, pending.State, "server_error", "failed to store session")
 		return
@@ -307,8 +307,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Create our authorization code using fosite
 	ourCode, err := r.createAuthorizationCode(ctx, pending, sessionID, userInfo)
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to create authorization code",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to create authorization code",
+			"error", err.Error(),
 		)
 		// Clean up stored IDP tokens
 		_ = r.storage.DeleteIDPTokens(ctx, sessionID)
@@ -316,8 +316,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.logger.InfoContext(ctx, "authorization successful, redirecting to client",
-		slog.String("client_id", pending.ClientID),
+	logger.Infow("authorization successful, redirecting to client",
+		"client_id", pending.ClientID,
 	)
 
 	// Build client callback URL with our code and client's original state
@@ -499,7 +499,7 @@ func buildCallbackURL(redirectURI, code, state string) string {
 // the subject claim for UserInfo validation per OIDC Core Section 5.3.4.
 // Returns the subject from the ID token, or empty string if validation fails or no ID token.
 func (r *Router) validateIDTokenAndExtractSubject(
-	ctx context.Context,
+	_ context.Context,
 	idpTokens *idp.Tokens,
 	pending *storage.PendingAuthorization,
 ) string {
@@ -517,8 +517,8 @@ func (r *Router) validateIDTokenAndExtractSubject(
 	// Validate ID token nonce per OIDC Core Section 3.1.3.7 step 11
 	claims, err := oidcProvider.ValidateIDTokenWithNonce(idpTokens.IDToken, pending.UpstreamNonce)
 	if err != nil {
-		r.logger.WarnContext(ctx, "ID token nonce validation failed",
-			slog.String("error", err.Error()),
+		logger.Warnw("ID token nonce validation failed",
+			"error", err.Error(),
 		)
 		// Log warning but don't fail - signature verification not yet implemented
 		// Once signature verification is added, this should be a hard failure
@@ -550,8 +550,8 @@ func (r *Router) fetchUserInfoWithValidation(
 		if validator, ok := r.upstream.(idp.UserInfoSubjectValidator); ok {
 			userInfo, err = validator.UserInfoWithSubjectValidation(ctx, accessToken, idTokenSubject)
 			if err != nil {
-				r.logger.WarnContext(ctx, "failed to get user info with subject validation",
-					slog.String("error", err.Error()),
+				logger.Warnw("failed to get user info with subject validation",
+					"error", err.Error(),
 				)
 				return nil
 			}
@@ -562,8 +562,8 @@ func (r *Router) fetchUserInfoWithValidation(
 	// Fall back to regular UserInfo without validation
 	userInfo, err = r.upstream.UserInfo(ctx, accessToken)
 	if err != nil {
-		r.logger.WarnContext(ctx, "failed to get user info from upstream IDP",
-			slog.String("error", err.Error()),
+		logger.Warnw("failed to get user info from upstream IDP",
+			"error", err.Error(),
 		)
 		return nil
 	}

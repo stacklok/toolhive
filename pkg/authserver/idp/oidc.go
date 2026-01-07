@@ -20,12 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -44,7 +44,6 @@ type OIDCProvider struct {
 	config             *UpstreamConfig
 	endpoints          *OIDCEndpoints
 	client             HTTPClient
-	logger             *slog.Logger
 	forceConsentScreen bool
 	idTokenValidator   *idTokenValidator
 }
@@ -56,13 +55,6 @@ type OIDCProviderOption func(*OIDCProvider)
 func WithHTTPClient(client HTTPClient) OIDCProviderOption {
 	return func(p *OIDCProvider) {
 		p.client = client
-	}
-}
-
-// WithLogger sets a custom logger for the provider.
-func WithLogger(logger *slog.Logger) OIDCProviderOption {
-	return func(p *OIDCProvider) {
-		p.logger = logger
 	}
 }
 
@@ -111,7 +103,6 @@ func NewOIDCProvider(
 	p := &OIDCProvider{
 		config: config,
 		client: httpClient,
-		logger: slog.Default(),
 	}
 
 	for _, opt := range opts {
@@ -188,7 +179,7 @@ func (p *OIDCProvider) AuthorizationURL(state, codeChallenge, nonce string) (str
 			params.Set("code_challenge", codeChallenge)
 			params.Set("code_challenge_method", pkceChallengeMethodS256)
 		} else {
-			p.logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
+			logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
 			params.Set("code_challenge", codeChallenge)
 			params.Set("code_challenge_method", pkceChallengeMethodS256)
 		}
@@ -274,7 +265,7 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		p.logger.Debug("userinfo request failed",
+		logger.Debugw("userinfo request failed",
 			"status", resp.StatusCode,
 			"body", string(body))
 		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
@@ -334,9 +325,9 @@ func (p *OIDCProvider) UserInfoWithSubjectValidation(
 
 	// Validate subject matches the ID Token's subject per OIDC Core Section 5.3.4
 	if userInfo.Subject != expectedSubject {
-		p.logger.Warn("userinfo subject mismatch",
-			slog.String("expected_subject", expectedSubject),
-			slog.String("actual_subject", userInfo.Subject),
+		logger.Warnw("userinfo subject mismatch",
+			"expected_subject", expectedSubject,
+			"actual_subject", userInfo.Subject,
 		)
 		return nil, fmt.Errorf("%w: expected %q, got %q",
 			ErrUserInfoSubjectMismatch, expectedSubject, userInfo.Subject)
@@ -385,7 +376,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 		return err
 	}
 
-	p.logger.Debug("discovering OIDC endpoints", "url", discoveryURL)
+	logger.Debugw("discovering OIDC endpoints", "url", discoveryURL)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 	if err != nil {
@@ -403,7 +394,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		p.logger.Debug("discovery request failed",
+		logger.Debugw("discovery request failed",
 			"status", resp.StatusCode,
 			"body", string(body))
 		return fmt.Errorf("discovery request failed with status %d", resp.StatusCode)
@@ -430,7 +421,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 	}
 
 	p.endpoints = &endpoints
-	p.logger.Debug("discovered OIDC endpoints",
+	logger.Debugw("discovered OIDC endpoints",
 		"issuer", endpoints.Issuer,
 		"authorization_endpoint", endpoints.AuthorizationEndpoint,
 		"token_endpoint", endpoints.TokenEndpoint,
@@ -473,7 +464,7 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
 		}
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		p.logger.Debug("token request failed",
+		logger.Debugw("token request failed",
 			"status", resp.StatusCode,
 			"body", string(body))
 		return nil, fmt.Errorf("token request failed with status %d", resp.StatusCode)
@@ -507,7 +498,7 @@ func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*To
 	if tokenResp.IDToken != "" && p.idTokenValidator != nil {
 		if _, err := p.idTokenValidator.validateIDToken(tokenResp.IDToken); err != nil {
 			// Log warning but don't fail - signature verification not yet implemented
-			p.logger.Warn("ID token validation warning (claims only, no signature verification)",
+			logger.Warnw("ID token validation warning (claims only, no signature verification)",
 				"error", err.Error())
 		}
 	}

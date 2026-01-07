@@ -16,13 +16,14 @@ package oauth
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // DCR error codes per RFC 7591 Section 3.2.2
@@ -241,8 +242,8 @@ func (r *Router) RegisterClientHandler(w http.ResponseWriter, req *http.Request)
 
 	// Register client
 	if err := r.storage.RegisterClient(ctx, client); err != nil {
-		r.logger.ErrorContext(ctx, "failed to register client",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to register client",
+			"error", err.Error(),
 		)
 		r.writeDCRError(w, http.StatusInternalServerError, &DCRError{
 			Error:            "server_error",
@@ -251,9 +252,9 @@ func (r *Router) RegisterClientHandler(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	r.logger.InfoContext(ctx, "registered new DCR client",
-		slog.String("client_id", clientID),
-		slog.String("client_name", validated.ClientName),
+	logger.Infow("registered new DCR client",
+		"client_id", clientID,
+		"client_name", validated.ClientName,
 	)
 
 	// Build response
@@ -270,8 +271,8 @@ func (r *Router) RegisterClientHandler(w http.ResponseWriter, req *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		r.logger.ErrorContext(ctx, "failed to encode DCR response",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to encode DCR response",
+			"error", err.Error(),
 		)
 	}
 }

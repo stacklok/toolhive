@@ -16,8 +16,9 @@ package oauth
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TokenHandler handles POST /oauth/token requests.
@@ -32,8 +33,8 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Parse and validate the access request
 	accessRequest, err := r.provider.NewAccessRequest(ctx, req, session)
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to create access request",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to create access request",
+			"error", err.Error(),
 		)
 		r.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
@@ -41,8 +42,8 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 	// RFC 8707: Handle resource parameter for audience claim
 	if resource := accessRequest.GetRequestForm().Get("resource"); resource != "" {
-		r.logger.DebugContext(ctx, "granting audience from resource parameter",
-			slog.String("resource", resource),
+		logger.Debugw("granting audience from resource parameter",
+			"resource", resource,
 		)
 		accessRequest.GrantAudience(resource)
 	}
@@ -50,8 +51,8 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Generate the access response (tokens)
 	response, err := r.provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
-		r.logger.ErrorContext(ctx, "failed to create access response",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to create access response",
+			"error", err.Error(),
 		)
 		r.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
@@ -63,12 +64,10 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 // JWKSHandler handles GET /.well-known/jwks.json requests.
 // It returns the public keys used for verifying JWTs.
-func (r *Router) JWKSHandler(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-
+func (r *Router) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 	publicJWKS := r.config.PublicJWKS()
 	if publicJWKS == nil {
-		r.logger.ErrorContext(ctx, "no public JWKS available")
+		logger.Error("no public JWKS available")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -77,8 +76,8 @@ func (r *Router) JWKSHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 
 	if err := json.NewEncoder(w).Encode(publicJWKS); err != nil {
-		r.logger.ErrorContext(ctx, "failed to encode JWKS",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to encode JWKS",
+			"error", err.Error(),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -100,9 +99,7 @@ type OIDCDiscoveryDocument struct {
 
 // OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.
 // It returns the OIDC discovery document describing the authorization server capabilities.
-func (r *Router) OIDCDiscoveryHandler(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-
+func (r *Router) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
 	issuer := r.config.AccessTokenIssuer
 
 	discovery := OIDCDiscoveryDocument{
@@ -121,8 +118,8 @@ func (r *Router) OIDCDiscoveryHandler(w http.ResponseWriter, req *http.Request) 
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 
 	if err := json.NewEncoder(w).Encode(discovery); err != nil {
-		r.logger.ErrorContext(ctx, "failed to encode discovery document",
-			slog.String("error", err.Error()),
+		logger.Errorw("failed to encode discovery document",
+			"error", err.Error(),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return

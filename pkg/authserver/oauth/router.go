@@ -15,7 +15,6 @@
 package oauth
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/ory/fosite"
@@ -26,7 +25,6 @@ import (
 
 // Router provides HTTP handlers for the OAuth authorization server endpoints.
 type Router struct {
-	logger   *slog.Logger
 	provider fosite.OAuth2Provider
 	config   *OAuth2Config
 	storage  storage.Storage
@@ -36,18 +34,12 @@ type Router struct {
 // NewRouter creates a new Router with the given dependencies.
 // The upstream IDP provider is required for the auth server to function.
 func NewRouter(
-	logger *slog.Logger,
 	provider fosite.OAuth2Provider,
 	config *OAuth2Config,
 	stor storage.Storage,
 	upstream idp.Provider,
 ) *Router {
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	return &Router{
-		logger:   logger,
 		provider: provider,
 		config:   config,
 		storage:  stor,

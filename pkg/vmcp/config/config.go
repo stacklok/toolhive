@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -63,6 +64,9 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 //
 // Platform-specific adapters (CLI YAML loader, Kubernetes CRD converter)
 // transform their native formats into this model.
+// +kubebuilder:object:generate=true
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=object
 type Config struct {
 	// Name is the virtual MCP server name.
 	Name string `json:"name" yaml:"name"`
@@ -98,6 +102,7 @@ type Config struct {
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
+// +kubebuilder:object:generate=true
 type IncomingAuthConfig struct {
 	// Type is the auth type: "oidc", "local", "anonymous"
 	Type string `json:"type" yaml:"type"`
@@ -110,6 +115,7 @@ type IncomingAuthConfig struct {
 }
 
 // OIDCConfig configures OpenID Connect authentication.
+// +kubebuilder:object:generate=true
 type OIDCConfig struct {
 	// Issuer is the OIDC issuer URL.
 	Issuer string `json:"issuer" yaml:"issuer"`
@@ -144,6 +150,7 @@ type OIDCConfig struct {
 }
 
 // AuthzConfig configures authorization.
+// +kubebuilder:object:generate=true
 type AuthzConfig struct {
 	// Type is the authz type: "cedar", "none"
 	Type string `json:"type" yaml:"type"`
@@ -153,6 +160,7 @@ type AuthzConfig struct {
 }
 
 // OutgoingAuthConfig configures backend authentication.
+// +kubebuilder:object:generate=true
 type OutgoingAuthConfig struct {
 	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
@@ -189,6 +197,7 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 }
 
 // AggregationConfig configures capability aggregation.
+// +kubebuilder:object:generate=true
 type AggregationConfig struct {
 	// ConflictResolution is the strategy: "prefix", "priority", "manual"
 	ConflictResolution vmcp.ConflictResolutionStrategy `json:"conflictResolution" yaml:"conflictResolution"`
@@ -203,6 +212,7 @@ type AggregationConfig struct {
 }
 
 // ConflictResolutionConfig contains conflict resolution settings.
+// +kubebuilder:object:generate=true
 type ConflictResolutionConfig struct {
 	// PrefixFormat is the prefix format (for prefix strategy).
 	// Options: "{workload}", "{workload}_", "{workload}.", custom string
@@ -213,6 +223,7 @@ type ConflictResolutionConfig struct {
 }
 
 // WorkloadToolConfig configures tool filtering/overrides for a workload.
+// +kubebuilder:object:generate=true
 type WorkloadToolConfig struct {
 	// Workload is the workload name/ID.
 	Workload string `json:"workload" yaml:"workload"`
@@ -227,6 +238,7 @@ type WorkloadToolConfig struct {
 }
 
 // ToolOverride defines tool name/description overrides.
+// +kubebuilder:object:generate=true
 type ToolOverride struct {
 	// Name is the new tool name (for renaming).
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
@@ -236,6 +248,7 @@ type ToolOverride struct {
 }
 
 // OperationalConfig contains operational settings.
+// +kubebuilder:object:generate=true
 type OperationalConfig struct {
 	// Timeouts configures request timeouts.
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty" yaml:"timeouts,omitempty"`
@@ -245,6 +258,7 @@ type OperationalConfig struct {
 }
 
 // TimeoutConfig configures timeouts.
+// +kubebuilder:object:generate=true
 type TimeoutConfig struct {
 	// Default is the default timeout for backend requests.
 	Default Duration `json:"default" yaml:"default"`
@@ -254,6 +268,7 @@ type TimeoutConfig struct {
 }
 
 // FailureHandlingConfig configures failure handling.
+// +kubebuilder:object:generate=true
 type FailureHandlingConfig struct {
 	// HealthCheckInterval is how often to check backend health.
 	HealthCheckInterval Duration `json:"healthCheckInterval" yaml:"healthCheckInterval"`
@@ -270,6 +285,7 @@ type FailureHandlingConfig struct {
 }
 
 // CircuitBreakerConfig configures circuit breaker.
+// +kubebuilder:object:generate=true
 type CircuitBreakerConfig struct {
 	// Enabled indicates if circuit breaker is enabled.
 	Enabled bool `json:"enabled" yaml:"enabled"`
@@ -283,6 +299,7 @@ type CircuitBreakerConfig struct {
 
 // CompositeToolConfig defines a composite tool workflow.
 // This matches the YAML structure from the proposal (lines 173-255).
+// +kubebuilder:object:generate=true
 type CompositeToolConfig struct {
 	// Name is the workflow name (unique identifier).
 	Name string `json:"name" yaml:"name"`
@@ -302,12 +319,13 @@ type CompositeToolConfig struct {
 	//     "required": ["param2"]
 	//   }
 	//
-	// We use map[string]any rather than a typed struct because JSON Schema is highly
+	// We use json.Map rather than a typed struct because JSON Schema is highly
 	// flexible with many optional fields (default, enum, minimum, maximum, pattern,
-	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using map[string]any
+	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map
 	// allows full JSON Schema compatibility without needing to define every possible
 	// field, and matches how the MCP SDK handles inputSchema.
-	Parameters map[string]any `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	// +optional
+	Parameters thvjson.Map `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
@@ -323,6 +341,7 @@ type CompositeToolConfig struct {
 
 // WorkflowStepConfig defines a single workflow step.
 // This matches the proposal's step configuration (lines 180-255).
+// +kubebuilder:object:generate=true
 type WorkflowStepConfig struct {
 	// ID uniquely identifies this step.
 	ID string `json:"id" yaml:"id"`
@@ -334,7 +353,8 @@ type WorkflowStepConfig struct {
 	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
 
 	// Arguments are the tool arguments (supports template expansion).
-	Arguments map[string]any `json:"arguments,omitempty" yaml:"arguments,omitempty"`
+	// +optional
+	Arguments thvjson.Map `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 
 	// Condition is an optional execution condition (template syntax).
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
@@ -346,9 +366,10 @@ type WorkflowStepConfig struct {
 	OnError *StepErrorHandling `json:"onError,omitempty" yaml:"onError,omitempty"`
 
 	// Elicitation config (for elicitation steps).
-	Message string         `json:"message,omitempty" yaml:"message,omitempty"`
-	Schema  map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
-	Timeout Duration       `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Message string `json:"message,omitempty" yaml:"message,omitempty"`
+	// +optional
+	Schema  thvjson.Map `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Timeout Duration    `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Elicitation response handlers.
 	OnDecline *ElicitationResponseConfig `json:"onDecline,omitempty" yaml:"onDecline,omitempty"`
@@ -357,10 +378,12 @@ type WorkflowStepConfig struct {
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
-	DefaultResults map[string]any `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
+	// +optional
+	DefaultResults thvjson.Map `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.
+// +kubebuilder:object:generate=true
 type StepErrorHandling struct {
 	// Action: "abort", "continue", "retry"
 	Action string `json:"action" yaml:"action"`
@@ -373,6 +396,7 @@ type StepErrorHandling struct {
 }
 
 // ElicitationResponseConfig defines how to handle elicitation responses.
+// +kubebuilder:object:generate=true
 type ElicitationResponseConfig struct {
 	// Action: "skip_remaining", "abort", "continue"
 	Action string `json:"action" yaml:"action"`
@@ -381,6 +405,7 @@ type ElicitationResponseConfig struct {
 // OutputConfig defines the structured output schema for a composite tool workflow.
 // This follows the same pattern as the Parameters field, defining both the
 // MCP output schema (type, description) and runtime value construction (value, default).
+// +kubebuilder:object:generate=true
 type OutputConfig struct {
 	// Properties defines the output properties.
 	// Map key is the property name, value is the property definition.
@@ -394,6 +419,7 @@ type OutputConfig struct {
 // OutputProperty defines a single output property.
 // For non-object types, Value is required.
 // For object types, either Value or Properties must be specified (but not both).
+// +kubebuilder:object:generate=true
 type OutputProperty struct {
 	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array".
 	Type string `json:"type" yaml:"type"`
@@ -410,12 +436,15 @@ type OutputProperty struct {
 	// Properties defines nested properties for object types.
 	// Each nested property has full metadata (type, description, value/properties).
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:Schemaless
 	Properties map[string]OutputProperty `json:"properties,omitempty" yaml:"properties,omitempty"`
 
 	// Default is the fallback value if template expansion fails.
 	// Type coercion is applied to match the declared Type.
 	// +optional
-	Default any `json:"default,omitempty" yaml:"default,omitempty"`
+	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // Validator validates configuration.

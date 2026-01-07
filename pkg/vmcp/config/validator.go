@@ -453,7 +453,7 @@ func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) e
 		if step.Message == "" {
 			return fmt.Errorf("step[%d].message is required for elicitation steps", index)
 		}
-		if len(step.Schema) == 0 {
+		if step.Schema.IsEmpty() {
 			return fmt.Errorf("step[%d].schema is required for elicitation steps", index)
 		}
 		// Note: timeout validation is optional - defaults are set during loading

@@ -183,7 +183,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, "toolhive-mcp-proxy", config.ServiceName)
 	assert.NotEmpty(t, config.ServiceVersion)
-	assert.Equal(t, 0.05, config.SamplingRate)
+	assert.Equal(t, "0.05", config.SamplingRate)
 	assert.NotNil(t, config.Headers)
 	assert.Empty(t, config.Headers)
 	assert.False(t, config.Insecure)
@@ -199,7 +199,7 @@ func TestProvider_Middleware(t *testing.T) {
 	config := Config{
 		ServiceName:                 "test-service",
 		ServiceVersion:              "1.0.0",
-		SamplingRate:                0.1,
+		SamplingRate:                "0.1",
 		Headers:                     make(map[string]string),
 		EnablePrometheusMetricsPath: true,
 	}
@@ -231,7 +231,7 @@ func TestProvider_ShutdownTimeout(t *testing.T) {
 		ServiceVersion:              "1.0.0",
 		TracingEnabled:              true,
 		MetricsEnabled:              true,
-		SamplingRate:                0.1,
+		SamplingRate:                "0.1",
 		Headers:                     make(map[string]string),
 		Endpoint:                    "localhost:4318",
 		Insecure:                    true,

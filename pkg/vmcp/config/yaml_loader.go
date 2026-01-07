@@ -151,8 +151,12 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 // processCompositeTool applies post-processing to a composite tool.
 func (l *YAMLLoader) processCompositeTool(tool *CompositeToolConfig) error {
 	// Validate parameters JSON Schema if present
-	if len(tool.Parameters) > 0 {
-		if err := validateParametersJSONSchema(tool.Parameters, tool.Name); err != nil {
+	if !tool.Parameters.IsEmpty() {
+		paramsMap, err := tool.Parameters.ToMap()
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal parameters for composite tool %s: %w", tool.Name, err)
+		}
+		if err := validateParametersJSONSchema(paramsMap, tool.Name); err != nil {
 			return err
 		}
 	}

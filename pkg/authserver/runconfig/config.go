@@ -44,13 +44,12 @@ type RunConfig struct {
 	SigningKeyPath string `json:"signing_key_path" yaml:"signing_key_path"`
 
 	// SigningKeyID is the key ID (kid) to include in JWT headers.
-	// Required when auth server is enabled.
-	SigningKeyID string `json:"signing_key_id" yaml:"signing_key_id"`
+	// Optional: if not set, a deterministic ID is derived from the key's JWK thumbprint (RFC 7638).
+	SigningKeyID string `json:"signing_key_id,omitempty" yaml:"signing_key_id,omitempty"`
 
-	// SigningKeyAlgorithm is the signing algorithm to use (e.g., "RS256", "RS384", "RS512").
-	// Required when auth server is enabled.
-	// TODO: Auto-derivation from key type could be added later.
-	SigningKeyAlgorithm string `json:"signing_key_algorithm" yaml:"signing_key_algorithm"`
+	// SigningKeyAlgorithm is the signing algorithm to use (e.g., "RS256", "ES256").
+	// Optional: if not set, derived from the key type (RSA -> RS256, ECDSA P-256 -> ES256, etc.).
+	SigningKeyAlgorithm string `json:"signing_key_algorithm,omitempty" yaml:"signing_key_algorithm,omitempty"`
 
 	// HMACSecretPath is the path to a file containing the HMAC secret (32+ bytes).
 	// Required for multi-replica deployments to ensure consistent token validation.
@@ -142,13 +141,8 @@ func (c *RunConfig) Validate() error {
 		return fmt.Errorf("signing_key_path is required when auth server is enabled")
 	}
 
-	if c.SigningKeyID == "" {
-		return fmt.Errorf("signing_key_id is required when auth server is enabled")
-	}
-
-	if c.SigningKeyAlgorithm == "" {
-		return fmt.Errorf("signing_key_algorithm is required when auth server is enabled")
-	}
+	// Note: SigningKeyID and SigningKeyAlgorithm are optional.
+	// If not set, they will be auto-derived from the key in BuildConfig.
 
 	if c.HMACSecretPath == "" {
 		return fmt.Errorf("hmac_secret_path is required when auth server is enabled")

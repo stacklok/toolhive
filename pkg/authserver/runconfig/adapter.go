@@ -54,9 +54,16 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	}
 
 	// Load signing key from file
-	rsaKey, err := oauth.LoadSigningKey(cfg.SigningKeyPath)
+	signingKey, err := oauth.LoadSigningKey(cfg.SigningKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load signing key: %w", err)
+	}
+
+	// Derive or validate signing key parameters (KeyID and Algorithm)
+	// If not provided in config, they are auto-derived from the key.
+	keyParams, err := oauth.DeriveSigningKeyParams(signingKey, cfg.SigningKeyID, cfg.SigningKeyAlgorithm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive signing key parameters: %w", err)
 	}
 
 	// Load HMAC secret from file (required)
@@ -72,9 +79,9 @@ func BuildConfig(cfg *RunConfig, proxyPort int) (*authserver.Config, error) {
 	genericCfg := &authserver.Config{
 		Issuer: issuer,
 		SigningKey: authserver.SigningKey{
-			KeyID:     cfg.SigningKeyID,
-			Algorithm: cfg.SigningKeyAlgorithm,
-			Key:       rsaKey,
+			KeyID:     keyParams.KeyID,
+			Algorithm: keyParams.Algorithm,
+			Key:       keyParams.Key,
 		},
 		HMACSecret:           hmacSecret,
 		AccessTokenLifespan:  cfg.AccessTokenLifespan,

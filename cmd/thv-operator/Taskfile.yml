@@ -290,10 +290,12 @@ tasks:
     desc: Generate CRD API docs via crd-ref-docs
     deps: [crdref-install]
     cmds:
-      - crd-ref-docs --source-path=. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
+      # Run from repo root to include types from pkg/vmcp/config
+      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
     sources:
       - 'config/crd/bases/**/*.yaml'
       - 'api/**/*.go'
+      - '../../pkg/vmcp/config/*.go'
     generates:
       - '{{ .DOCS_OUT }}'
 

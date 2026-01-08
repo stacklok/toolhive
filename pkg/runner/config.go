@@ -236,6 +236,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 		return nil // No OAuth config to migrate
 	}
 
+	if config.RemoteAuthConfig.ClientSecret == "" {
+		return nil
+	}
+
 	// Check if the client secret is already in CLI format
 	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
 		return nil // Already in CLI format, no migration needed
@@ -269,6 +273,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 func migrateBearerToken(config *RunConfig) error {
 	if config.RemoteAuthConfig == nil {
 		return nil // No remote auth config to migrate
+	}
+
+	if config.RemoteAuthConfig.BearerToken == "" {
+		return nil
 	}
 
 	// Check if the bearer token is already in CLI format

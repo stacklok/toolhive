@@ -419,22 +419,6 @@ _Appears in:_
 | `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
-#### GroupRef
-
-
-
-GroupRef references an MCPGroup resource
-
-
-
-_Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the MCPGroup resource in the same namespace |  | Required: \{\} <br /> |
-
-
 #### HeaderInjectionConfig
 
 
@@ -2074,7 +2058,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `groupRef` _[GroupRef](#groupref)_ | GroupRef references an existing MCPGroup that defines backend workloads<br />The referenced MCPGroup must exist in the same namespace |  | Required: \{\} <br /> |
 | `incomingAuth` _[IncomingAuthConfig](#incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server<br />Must be explicitly set - use "anonymous" type when no authentication is required |  | Required: \{\} <br /> |
 | `outgoingAuth` _[OutgoingAuthConfig](#outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
 | `aggregation` _[AggregationConfig](#aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
@@ -2085,6 +2068,7 @@ _Appears in:_
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint |  |  |
 | `audit` _[AuditConfig](#auditconfig)_ | Audit configures audit logging for the Virtual MCP server<br />When enabled, audit logs include MCP protocol operations |  |  |
+| `config` _[Config](#config)_ | Config is the Virtual MCP server configuration<br />NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE. |  |  |
 
 
 #### VirtualMCPServerStatus

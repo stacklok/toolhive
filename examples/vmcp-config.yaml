@@ -195,7 +195,7 @@ telemetry:
   serviceName: "engineering-vmcp"
   tracingEnabled: true
   metricsEnabled: true
-  samplingRate: 0.1  # 10% sampling
+  samplingRate: "0.1"  # 10% sampling
   insecure: true  # Use HTTP instead of HTTPS
   enablePrometheusMetricsPath: true  # Expose /metrics endpoint
 

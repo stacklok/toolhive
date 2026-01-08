@@ -632,7 +632,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	if config == nil {
 		return "", 0.0, nil
 	}
-	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
+	return config.Endpoint, config.GetSamplingRateFloat(), config.EnvironmentVariables
 }
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
@@ -901,17 +901,18 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		customAttrs = nil
 	}
 
-	return &telemetry.Config{
+	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 	}
+	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
+	return telemetryCfg
 }

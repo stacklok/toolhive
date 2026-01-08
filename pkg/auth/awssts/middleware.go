@@ -150,6 +150,7 @@ func createAWSStsMiddlewareFunc(
 
 			// Extract JWT claims from identity
 			claims := identity.Claims
+			logger.Debugf("AWS STS middleware received claims: %+v", claims)
 			if claims == nil {
 				logger.Debug("No claims in identity, proceeding without AWS STS signing")
 				next.ServeHTTP(w, r)

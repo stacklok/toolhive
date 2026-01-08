@@ -69,9 +69,19 @@ _Validation:_
 {{- end }}
 {{- end }}
 
-{{ if $type.References -}}
+{{- /* Only show "Appears in" for references that pass the filter */ -}}
+{{- $filteredRefs := list -}}
+{{- range $type.SortedReferences -}}
+  {{- $refHasGendoc := index .Markers "gendoc" -}}
+  {{- $refIsAPIType := hasSuffix "/api/v1alpha1" .Package -}}
+  {{- if or $refHasGendoc $refIsAPIType -}}
+    {{- $filteredRefs = append $filteredRefs . -}}
+  {{- end -}}
+{{- end }}
+
+{{ if $filteredRefs -}}
 _Appears in:_
-  {{- range $type.SortedReferences }}
+  {{- range $filteredRefs }}
     {{- $refPkgParts := splitList "/" .Package -}}
     {{- $refPkgLen := len $refPkgParts -}}
     {{- $refPrefix := "" -}}

@@ -26,10 +26,7 @@ Config represents the audit logging configuration.
 
 
 _Appears in:_
-- [pkg.audit.Auditor](#pkgauditauditor)
 - [vmcp.config.Config](#vmcpconfigconfig)
-- [pkg.audit.MiddlewareParams](#pkgauditmiddlewareparams)
-- [pkg.audit.WorkflowAuditor](#pkgauditworkflowauditor)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -524,9 +521,6 @@ Config holds the configuration for OpenTelemetry instrumentation.
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
-- [pkg.telemetry.FactoryMiddlewareParams](#pkgtelemetryfactorymiddlewareparams)
-- [pkg.telemetry.HTTPMiddleware](#pkgtelemetryhttpmiddleware)
-- [pkg.telemetry.Provider](#pkgtelemetryprovider)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

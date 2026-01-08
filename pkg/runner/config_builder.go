@@ -231,6 +231,14 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithEndpointPrefix sets the path prefix for SSE endpoint URLs
+func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {

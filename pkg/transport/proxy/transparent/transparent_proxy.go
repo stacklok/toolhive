@@ -3,19 +3,16 @@
 package transparent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -86,9 +83,21 @@ type TransparentProxy struct {
 
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
+
+	// Response processor for transport-specific logic
+	responseProcessor ResponseProcessor
+
+	// Deprecated: SSE endpoint URL rewriting configuration (moved to SSEResponseProcessor)
+	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
+	endpointPrefix string
+
+	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
+	trustProxyHeaders bool
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
+// The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
+// The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
 func NewTransparentProxy(
 	host string,
 	port int,
@@ -100,6 +109,8 @@ func NewTransparentProxy(
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
+	endpointPrefix string,
+	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -115,7 +126,17 @@ func NewTransparentProxy(
 		transportType:          transportType,
 		onHealthCheckFailed:    onHealthCheckFailed,
 		onUnauthorizedResponse: onUnauthorizedResponse,
+		endpointPrefix:         endpointPrefix,
+		trustProxyHeaders:      trustProxyHeaders,
 	}
+
+	// Create appropriate response processor based on transport type
+	proxy.responseProcessor = createResponseProcessor(
+		transportType,
+		proxy,
+		endpointPrefix,
+		trustProxyHeaders,
+	)
 
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
@@ -243,68 +264,10 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 	return false
 }
 
-var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
-
-func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if mediaType != "text/event-stream" {
-		return nil
-	}
-
-	pr, pw := io.Pipe()
-	originalBody := resp.Body
-	resp.Body = pr
-
-	// NOTE: it would be better to have a proper function instead of a goroutine, as this
-	// makes it harder to debug and test.
-	go func() {
-		defer func() {
-			if err := pw.Close(); err != nil {
-				logger.Debugf("Failed to close pipe writer: %v", err)
-			}
-		}()
-		scanner := bufio.NewScanner(originalBody)
-		// NOTE: The following line mitigates the issue of the response body being too large.
-		// By default, the maximum token size of the scanner is 64KB, which is too small in
-		// the case of e.g. images. This raises the limit to 1MB. This is a workaround, and
-		// not a proper fix.
-		scanner.Buffer(make([]byte, 0, 1024), 1024*1024*1)
-		found := false
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if !found {
-				if m := sessionRe.FindSubmatch(line); m != nil {
-					sid := string(m[1])
-					if sid == "" {
-						sid = string(m[2])
-					}
-					p.setServerInitialized()
-					err := p.sessionManager.AddWithID(sid)
-					if err != nil {
-						logger.Errorf("Failed to create session from SSE line: %v", err)
-					}
-					found = true
-				}
-			}
-			if _, err := pw.Write(append(line, '\n')); err != nil {
-				return
-			}
-		}
-
-		// NOTE: this line is always necessary since scanner.Scan() will return false
-		// in case of an error.
-		if err := scanner.Err(); err != nil {
-			logger.Errorf("Failed to scan response body: %v", err)
-		}
-
-		_, err := io.Copy(pw, originalBody)
-		if err != nil && err != io.EOF {
-			logger.Errorf("Failed to copy response body: %v", err)
-		}
-	}()
-
-	return nil
+// modifyResponse modifies HTTP responses based on transport-specific requirements.
+// Delegates to the appropriate ResponseProcessor based on transport type.
+func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
+	return p.responseProcessor.ProcessResponse(resp)
 }
 
 // Start starts the transparent proxy.
@@ -339,7 +302,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		return p.modifyForSessionID(resp)
+		return p.modifyResponse(resp)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

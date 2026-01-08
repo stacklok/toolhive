@@ -2348,16 +2348,6 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		*out = new(runtime.RawExtension)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.Telemetry != nil {
-		in, out := &in.Telemetry, &out.Telemetry
-		*out = new(TelemetryConfig)
-		(*in).DeepCopyInto(*out)
-	}
-	if in.Audit != nil {
-		in, out := &in.Audit, &out.Audit
-		*out = new(AuditConfig)
-		**out = **in
-	}
 	in.Config.DeepCopyInto(&out.Config)
 }
 

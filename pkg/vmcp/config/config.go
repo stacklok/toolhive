@@ -97,10 +97,15 @@ type Config struct {
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
-	// Telemetry configures telemetry settings.
+	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+	// +optional
 	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 
-	// Audit configures audit logging settings.
+	// Audit configures audit logging for the Virtual MCP server.
+	// When present, audit logs include MCP protocol operations.
+	// See audit.Config for available configuration options.
+	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 

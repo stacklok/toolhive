@@ -67,7 +67,7 @@ func (c *Converter) Convert(
 ) (*vmcpconfig.Config, error) {
 	config := &vmcpconfig.Config{
 		Name:  vmcp.Name,
-		Group: vmcp.Spec.GroupRef.Name,
+		Group: vmcp.Spec.Config.Group,
 	}
 
 	// Convert IncomingAuth - required field, no defaults

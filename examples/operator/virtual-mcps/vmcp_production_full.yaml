@@ -140,8 +140,8 @@ metadata:
     environment: production
 spec:
   # Reference to the MCPGroup containing backend MCPServers
-  groupRef:
-    name: production-services
+  config:
+    groupRef: production-services
 
   # Incoming authentication (client -> vMCP)
   # Using OIDC for secure authentication

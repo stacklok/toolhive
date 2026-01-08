@@ -54,8 +54,8 @@ kind: VirtualMCPServer
 metadata:
   name: my-vmcp
 spec:
-  groupRef:
-    name: my-group
+  config:
+    groupRef: my-group
   incomingAuth:
     type: anonymous
   telemetry:

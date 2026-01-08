@@ -24,20 +24,17 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 
 ## Spec Fields
 
-### `.spec.groupRef` (required)
+### `.spec.config.groupRef` (required)
 
 References an existing `MCPGroup` that defines the backend workloads to aggregate.
 
-**Type**: `GroupRef`
-
-**Fields**:
-- `name` (string, required): Name of the MCPGroup resource in the same namespace
+**Type**: `string`
 
 **Example**:
 ```yaml
 spec:
-  groupRef:
-    name: engineering-team
+  config:
+    groupRef: engineering-team
 ```
 
 ### `.spec.incomingAuth` (optional)
@@ -411,8 +408,8 @@ metadata:
   namespace: default
 spec:
   # Reference to MCPGroup defining backend workloads
-  groupRef:
-    name: engineering-team
+  config:
+    groupRef: engineering-team
 
   # Client authentication
   incomingAuth:
@@ -558,9 +555,9 @@ status:
 The VirtualMCPServer CRD includes comprehensive validation:
 
 1. **Required Fields**:
-   - `spec.groupRef.name` must be specified
+   - `spec.config.groupRef` must be specified
    - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
-2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
+2. **Reference Validation**: All references (config.groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration
 4. **Composite Tools**: Must have unique names, valid steps with IDs, and proper dependencies
 5. **Token Cache**: Redis provider requires valid address configuration

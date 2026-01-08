@@ -421,7 +421,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.TelemetryConfig.Insecure).To(BeTrue())
 			Expect(runConfig.TelemetryConfig.TracingEnabled).To(BeTrue())
 			Expect(runConfig.TelemetryConfig.MetricsEnabled).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal(0.1))
+			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal("0.1"))
 			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
 		})
 

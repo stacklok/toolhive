@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -93,9 +94,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	expanded, err := e.templateExpander.Expand(ctx, templateMap, workflowCtx)
 	if err != nil {
 		// Template expansion failed - try to use default value
-		if propertyDef.Default != nil {
+		if !propertyDef.Default.IsEmpty() {
 			logger.Warnf("Failed to expand template for property %q: %v. Using default value.", propertyName, err)
-			return e.coerceDefaultValue(propertyDef.Default, propertyDef.Type)
+			return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 		}
 		// No default - propagate error
 		return nil, fmt.Errorf("failed to expand template for property %q: %w", propertyName, err)
@@ -111,9 +112,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 
 	// Check if template expansion returned "<no value>" placeholder (missing field)
 	// In this case, fallback to default value if available
-	if expandedStr == "<no value>" && propertyDef.Default != nil {
+	if expandedStr == "<no value>" && !propertyDef.Default.IsEmpty() {
 		logger.Warnf("Template expanded to <no value> for property %q, using default value", propertyName)
-		return e.coerceDefaultValue(propertyDef.Default, propertyDef.Type)
+		return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 	}
 
 	// For object types, attempt JSON deserialization
@@ -124,9 +125,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(expandedStr), &obj); err != nil {
 			// JSON deserialization failed - try default value
-			if propertyDef.Default != nil {
+			if !propertyDef.Default.IsEmpty() {
 				logger.Warnf("Failed to deserialize JSON for property %q: %v. Using default value.", propertyName, err)
-				return e.coerceDefaultValue(propertyDef.Default, propertyDef.Type)
+				return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 			}
 			return nil, fmt.Errorf("failed to deserialize JSON for object property %q: %w", propertyName, err)
 		}
@@ -138,9 +139,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 		var arr []any
 		if err := json.Unmarshal([]byte(expandedStr), &arr); err != nil {
 			// JSON deserialization failed - try default value
-			if propertyDef.Default != nil {
+			if !propertyDef.Default.IsEmpty() {
 				logger.Warnf("Failed to deserialize JSON array for property %q: %v. Using default value.", propertyName, err)
-				return e.coerceDefaultValue(propertyDef.Default, propertyDef.Type)
+				return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 			}
 			return nil, fmt.Errorf("failed to deserialize JSON array for property %q: %w", propertyName, err)
 		}
@@ -151,9 +152,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	typedValue, err := e.coerceStringToType(expandedStr, propertyDef.Type)
 	if err != nil {
 		// Type coercion failed - try default value
-		if propertyDef.Default != nil {
+		if !propertyDef.Default.IsEmpty() {
 			logger.Warnf("Failed to coerce value for property %q: %v. Using default value.", propertyName, err)
-			return e.coerceDefaultValue(propertyDef.Default, propertyDef.Type)
+			return e.coerceRawJSONDefaultValue(propertyDef.Default, propertyDef.Type)
 		}
 		return nil, fmt.Errorf("failed to coerce value for property %q: %w", propertyName, err)
 	}
@@ -220,6 +221,15 @@ func (*workflowEngine) coerceStringToType(value string, targetType string) (any,
 	default:
 		return nil, fmt.Errorf("unsupported type for string coercion: %s", targetType)
 	}
+}
+
+// coerceRawJSONDefaultValue extracts value from json.Any and coerces it to the target type.
+func (e *workflowEngine) coerceRawJSONDefaultValue(defaultVal thvjson.Any, targetType string) (any, error) {
+	value, err := defaultVal.ToAny()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract default value: %w", err)
+	}
+	return e.coerceDefaultValue(value, targetType)
 }
 
 // coerceDefaultValue coerces a default value to the target type.

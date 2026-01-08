@@ -90,6 +90,9 @@ type RunFlags struct {
 	// Proxy headers
 	TrustProxyHeaders bool
 
+	// Endpoint prefix for SSE endpoint URLs
+	EndpointPrefix string
+
 	// Network mode
 	Network string
 
@@ -215,6 +218,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
+	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
+		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
 		"Connect the container to a network (e.g., 'host' for host networking)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
@@ -258,6 +263,11 @@ func BuildRunnerConfig(
 	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host: %s", runFlags.Host)
+	}
+
+	// Validate endpoint prefix
+	if runFlags.EndpointPrefix != "" && !strings.HasPrefix(runFlags.EndpointPrefix, "/") {
+		return nil, fmt.Errorf("endpoint-prefix must start with '/' when provided, got: %s", runFlags.EndpointPrefix)
 	}
 
 	// Setup OIDC configuration
@@ -452,6 +462,7 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
@@ -621,7 +632,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	if config == nil {
 		return "", 0.0, nil
 	}
-	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
+	return config.Endpoint, config.GetSamplingRateFloat(), config.EnvironmentVariables
 }
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
@@ -890,17 +901,18 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		customAttrs = nil
 	}
 
-	return &telemetry.Config{
+	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 	}
+	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
+	return telemetryCfg
 }

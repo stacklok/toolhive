@@ -205,8 +205,8 @@ metadata:
   name: my-vmcp
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   # Configure authentication (adjust from CLI if using OIDC)
   incomingAuth:
@@ -365,8 +365,8 @@ kind: VirtualMCPServer
 metadata:
   name: services-vmcp
 spec:
-  groupRef:
-    name: services
+  config:
+    groupRef: services
   incomingAuth:
     type: anonymous
   outgoingAuth:
@@ -451,7 +451,7 @@ kubectl get virtualmcpserver my-vmcp -o yaml | grep -A 5 conditions
 kubectl get mcpgroup <group-name>
 ```
 
-Create if missing or fix the `groupRef.name` in VirtualMCPServer spec.
+Create if missing or fix `spec.config.groupRef` in VirtualMCPServer spec.
 
 **2. No Backend MCPServers in Group**
 

@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -66,7 +67,7 @@ func (c *Converter) Convert(
 ) (*vmcpconfig.Config, error) {
 	config := &vmcpconfig.Config{
 		Name:  vmcp.Name,
-		Group: vmcp.Spec.GroupRef.Name,
+		Group: vmcp.Spec.Config.Group,
 	}
 
 	// Convert IncomingAuth - required field, no defaults
@@ -649,14 +650,12 @@ func (c *Converter) convertCompositeToolSpec(
 		}
 	}
 
-	// Convert parameters from runtime.RawExtension to map[string]any
+	// Convert parameters from runtime.RawExtension to json.Map
 	if parameters != nil && len(parameters.Raw) > 0 {
-		var params map[string]any
-		if err := json.Unmarshal(parameters.Raw, &params); err != nil {
-			// Log warning but continue - validation should have caught this at admission time
+		params, err := thvjson.MapFromRawExtension(*parameters)
+		if err != nil {
 			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to unmarshal composite tool parameters",
-				"tool", toolNameForLogging, "raw", string(parameters.Raw))
+			ctxLogger.Error(err, "failed to convert parameters", "tool", toolNameForLogging)
 		} else {
 			tool.Parameters = params
 		}
@@ -702,14 +701,12 @@ func (*Converter) convertWorkflowSteps(
 			DependsOn: crdStep.DependsOn,
 		}
 
-		// Convert Schema from runtime.RawExtension to map[string]any (for elicitation steps)
+		// Convert Schema from runtime.RawExtension to json.Map (for elicitation steps)
 		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			var schema map[string]any
-			if err := json.Unmarshal(crdStep.Schema.Raw, &schema); err != nil {
-				// Log warning but continue - validation should have caught this at admission time
+			schema, err := thvjson.MapFromRawExtension(*crdStep.Schema)
+			if err != nil {
 				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "failed to unmarshal step schema",
-					"tool", toolNameForLogging, "step", crdStep.ID, "raw", string(crdStep.Schema.Raw))
+				ctxLogger.Error(err, "failed to convert schema", "tool", toolNameForLogging, "step", crdStep.ID)
 			} else {
 				step.Schema = schema
 			}
@@ -759,18 +756,19 @@ func (*Converter) convertWorkflowSteps(
 			}
 		}
 
-		// Convert default results from map[string]runtime.RawExtension to map[string]any
+		// Convert default results from map[string]runtime.RawExtension to thvjson.Map
 		if len(crdStep.DefaultResults) > 0 {
-			step.DefaultResults = make(map[string]any, len(crdStep.DefaultResults))
+			defaultResults := make(map[string]any, len(crdStep.DefaultResults))
 			for key, rawExt := range crdStep.DefaultResults {
 				if len(rawExt.Raw) > 0 {
 					var value any
 					if err := json.Unmarshal(rawExt.Raw, &value); err != nil {
 						return nil, fmt.Errorf("failed to unmarshal default result %q: %w", key, err)
 					}
-					step.DefaultResults[key] = value
+					defaultResults[key] = value
 				}
 			}
+			step.DefaultResults = thvjson.NewMap(defaultResults)
 		}
 
 		workflowSteps = append(workflowSteps, step)
@@ -791,19 +789,14 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 	return nil
 }
 
-// convertArguments converts arguments from runtime.RawExtension to map[string]any.
+// convertArguments converts arguments from runtime.RawExtension to json.Map.
 // This preserves the original types (integers, booleans, arrays, objects) from the CRD.
-// Returns an empty map if no arguments are specified.
-// Returns an error if the JSON fails to unmarshal.
-func convertArguments(args *runtime.RawExtension) (map[string]any, error) {
+// Returns an empty json.Map if no arguments are specified.
+func convertArguments(args *runtime.RawExtension) (thvjson.Map, error) {
 	if args == nil || len(args.Raw) == 0 {
-		return make(map[string]any), nil
+		return thvjson.Map{}, nil
 	}
-	var result map[string]any
-	if err := json.Unmarshal(args.Raw, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
-	}
-	return result, nil
+	return thvjson.MapFromRawExtension(*args)
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
@@ -843,16 +836,10 @@ func convertOutputProperty(
 		}
 	}
 
-	// Convert default value from runtime.RawExtension to any
-	// RawExtension.Raw contains JSON bytes. json.Unmarshal correctly handles:
-	// - JSON strings: "hello" -> Go string "hello"
-	// - JSON numbers: 42 -> Go float64(42)
-	// - JSON booleans: true -> Go bool true
-	// - JSON objects: {"key":"value"} -> Go map[string]any
-	// - JSON arrays: [1,2,3] -> Go []any
+	// Convert default value from runtime.RawExtension to json.Any
 	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
-		var defaultVal any
-		if err := json.Unmarshal(crdProp.Default.Raw, &defaultVal); err != nil {
+		defaultVal, err := thvjson.FromRawExtension(*crdProp.Default)
+		if err != nil {
 			// Log warning but continue - invalid defaults will be caught at runtime
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "failed to unmarshal output property default value",

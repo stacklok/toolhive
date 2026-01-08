@@ -82,7 +82,7 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 				assert.True(t, config.TelemetryConfig.Insecure)
 				assert.True(t, config.TelemetryConfig.TracingEnabled)
 				assert.True(t, config.TelemetryConfig.MetricsEnabled)
-				assert.Equal(t, 0.25, config.TelemetryConfig.SamplingRate)
+				assert.Equal(t, "0.25", config.TelemetryConfig.SamplingRate)
 				assert.Equal(t, map[string]string{"Authorization": "Bearer token123", "X-API-Key": "abc"}, config.TelemetryConfig.Headers)
 
 				// Check Prometheus settings
@@ -119,8 +119,8 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 				// Check that service name defaults to MCPServer name
 				assert.Equal(t, "minimal-telemetry-server", config.TelemetryConfig.ServiceName)
 				assert.Equal(t, "secure-otel:4318", config.TelemetryConfig.Endpoint)
-				assert.False(t, config.TelemetryConfig.Insecure)           // Default should be false
-				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate) // Default sampling rate
+				assert.False(t, config.TelemetryConfig.Insecure)             // Default should be false
+				assert.Equal(t, "0.05", config.TelemetryConfig.SamplingRate) // Default sampling rate
 			},
 		},
 		{
@@ -186,7 +186,7 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 				assert.NotNil(t, config.TelemetryConfig)
 
 				// Check that invalid sampling rate defaults to 0.05
-				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate)
+				assert.Equal(t, "0.05", config.TelemetryConfig.SamplingRate)
 				assert.True(t, config.TelemetryConfig.TracingEnabled)
 				assert.Equal(t, "otel-collector:4317", config.TelemetryConfig.Endpoint)
 			},

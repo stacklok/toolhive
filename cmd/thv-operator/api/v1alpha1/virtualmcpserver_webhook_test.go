@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"testing"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestVirtualMCPServerValidate(t *testing.T) {
@@ -16,9 +18,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid minimal configuration",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{
-						Name: "test-group",
-					},
+					Config: config.Config{Group: "test-group"},
 				},
 			},
 			wantErr: false,
@@ -27,19 +27,17 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "missing groupRef name",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{
-						Name: "",
-					},
+					Config: config.Config{Group: ""},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.groupRef.name is required",
+			errMsg:  "spec.config.groupRef is required",
 		},
 		{
 			name: "empty IncomingAuth type",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					IncomingAuth: &IncomingAuthConfig{
 						Type: "",
 					},
@@ -52,7 +50,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "OIDC auth without OIDCConfig",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					IncomingAuth: &IncomingAuthConfig{
 						Type:       "oidc",
 						OIDCConfig: nil,
@@ -66,7 +64,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid outgoingAuth with discovered source",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -78,7 +76,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid outgoingAuth source",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Source: "invalid",
 					},
@@ -91,7 +89,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid backend auth type",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Backends: map[string]BackendAuthConfig{
 							"test-backend": {
@@ -108,7 +106,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid backend external auth config ref",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Backends: map[string]BackendAuthConfig{
 							"test-backend": {
@@ -127,7 +125,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid backend external auth config ref - missing name",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Backends: map[string]BackendAuthConfig{
 							"test-backend": {
@@ -145,7 +143,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid aggregation with prefix strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						ConflictResolution: ConflictResolutionPrefix,
 						ConflictResolutionConfig: &ConflictResolutionConfig{
@@ -160,7 +158,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid aggregation with priority strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						ConflictResolution: ConflictResolutionPriority,
 						ConflictResolutionConfig: &ConflictResolutionConfig{
@@ -175,7 +173,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - priority strategy without priority order",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						ConflictResolution:       ConflictResolutionPriority,
 						ConflictResolutionConfig: &ConflictResolutionConfig{},
@@ -189,7 +187,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid aggregation with tool config ref",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						Tools: []WorkloadToolConfig{
 							{
@@ -208,7 +206,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - missing workload name",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						Tools: []WorkloadToolConfig{
 							{
@@ -227,7 +225,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid composite tool",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -249,7 +247,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - missing name",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Description: "Test composite tool",
@@ -270,7 +268,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - missing description",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name: "test-tool",
@@ -291,7 +289,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - no steps",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -308,7 +306,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - duplicate tool names",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -334,7 +332,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - missing step ID",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -353,7 +351,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - tool step without tool",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -375,7 +373,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - elicitation step without message",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -397,7 +395,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - duplicate step IDs",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -417,7 +415,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid composite tool - invalid step type",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -440,7 +438,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - invalid conflict resolution strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						ConflictResolution: "invalid-strategy",
 					},
@@ -479,7 +477,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid step dependencies",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -498,7 +496,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid forward dependencies",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -517,7 +515,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid error handling with retry",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -542,7 +540,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid error handling action",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -567,7 +565,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid error handling - retry without maxRetries",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -593,7 +591,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid error handling with retryDelay",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -619,7 +617,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid error handling with complex retryDelay",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -645,7 +643,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid error handling - invalid retryDelay format",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -672,7 +670,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid composite tool - unknown dependency reference",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -695,7 +693,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnDecline skip_remaining",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -720,7 +718,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnDecline abort",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -745,7 +743,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnDecline continue",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -770,7 +768,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnCancel skip_remaining",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -795,7 +793,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnCancel abort",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -820,7 +818,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with OnCancel continue",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -845,7 +843,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "valid elicitation with both OnDecline and OnCancel",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -873,7 +871,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid elicitation - OnDecline with invalid action",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -899,7 +897,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			name: "invalid elicitation - OnCancel with invalid action",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-tool",

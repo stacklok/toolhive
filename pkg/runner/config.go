@@ -168,6 +168,10 @@ type RunConfig struct {
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
 	existingPort int
+
+	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios.
+	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -232,6 +236,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 		return nil // No OAuth config to migrate
 	}
 
+	if config.RemoteAuthConfig.ClientSecret == "" {
+		return nil
+	}
+
 	// Check if the client secret is already in CLI format
 	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
 		return nil // Already in CLI format, no migration needed
@@ -265,6 +273,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 func migrateBearerToken(config *RunConfig) error {
 	if config.RemoteAuthConfig == nil {
 		return nil // No remote auth config to migrate
+	}
+
+	if config.RemoteAuthConfig.BearerToken == "" {
+		return nil
 	}
 
 	// Check if the bearer token is already in CLI format

@@ -53,8 +53,8 @@ metadata:
   namespace: default
 spec:
   # Reference to the MCPGroup containing backend MCPServers
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   # Incoming authentication (client -> vMCP)
   # Using anonymous auth for simplicity - replace with OIDC in production

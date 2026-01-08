@@ -567,3 +567,16 @@ func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
 	// Verify 401 was returned
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
+
+// TestHealthCheckRetryConstants verifies the retry configuration constants
+func TestHealthCheckRetryConstants(t *testing.T) {
+	t.Parallel()
+
+	// Verify retry count is reasonable (not too low, not too high)
+	assert.GreaterOrEqual(t, healthCheckRetryCount, 2, "Should retry at least twice before giving up")
+	assert.LessOrEqual(t, healthCheckRetryCount, 10, "Should not retry too many times")
+
+	// Verify retry delay is reasonable
+	assert.GreaterOrEqual(t, healthCheckRetryDelay, 1*time.Second, "Retry delay should be at least 1 second")
+	assert.LessOrEqual(t, healthCheckRetryDelay, 30*time.Second, "Retry delay should not be too long")
+}

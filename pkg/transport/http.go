@@ -42,6 +42,12 @@ type HTTPTransport struct {
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
 
+	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
+	endpointPrefix string
+
+	// trustProxyHeaders indicates whether to trust X-Forwarded-* headers
+	trustProxyHeaders bool
+
 	// Remote MCP server support
 	remoteURL string
 
@@ -87,6 +93,8 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
+	endpointPrefix string,
+	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
@@ -109,6 +117,8 @@ func NewHTTPTransport(
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
+		endpointPrefix:    endpointPrefix,
+		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 	}
 }
@@ -255,6 +265,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		string(t.transportType),
 		t.onHealthCheckFailed,
 		t.onUnauthorizedResponse,
+		t.endpointPrefix,
+		t.trustProxyHeaders,
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

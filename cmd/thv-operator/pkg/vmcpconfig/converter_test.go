@@ -21,6 +21,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -61,7 +62,7 @@ func newTestVMCPServer(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.Virtu
 	return &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:     mcpv1alpha1.GroupRef{Name: "test-group"},
+			Config:       vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfig: oidcConfig},
 		},
 	}
@@ -280,7 +281,7 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -309,10 +310,10 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 			require.Len(t, result, 1, "Should have one composite tool")
 
 			if tt.expectNilParams {
-				assert.Nil(t, result[0].Parameters, tt.description)
+				assert.True(t, result[0].Parameters.IsEmpty(), tt.description)
 			} else {
-				require.NotNil(t, result[0].Parameters, tt.description)
-				assert.Equal(t, tt.expectedParams, result[0].Parameters, tt.description)
+				require.False(t, result[0].Parameters.IsEmpty(), tt.description)
+				assert.Equal(t, tt.expectedParams, result[0].Parameters.Value, tt.description)
 			}
 		})
 	}
@@ -363,7 +364,7 @@ func TestConvertCompositeTools_Timeout(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -487,7 +488,7 @@ func TestConverter_ConvertCompositeTools_ErrorHandling(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -536,7 +537,7 @@ func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{Group: "test-group"},
 			CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 				{
 					Name:        "test-tool",
@@ -655,7 +656,7 @@ func TestConverter_ConvertCompositeTools_ElicitationResponseHandlers(t *testing.
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -713,7 +714,7 @@ func TestConverter_ConvertCompositeTools_StepTimeout(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{Group: "test-group"},
 			CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 				{
 					Name:        "test-tool",
@@ -801,7 +802,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -828,12 +829,12 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 			require.Len(t, result[0].Steps, 1, "Should have one step")
 
 			stepArgs := result[0].Steps[0].Arguments
-			require.NotNil(t, stepArgs, tt.description)
-			assert.Equal(t, expectedArgs, stepArgs, tt.description)
+			require.False(t, stepArgs.IsEmpty(), tt.description)
+			assert.Equal(t, expectedArgs, stepArgs.Value, tt.description)
 		})
 	}
 
-	t.Run("nil arguments returns empty map", func(t *testing.T) {
+	t.Run("nil arguments returns empty json.Any", func(t *testing.T) {
 		t.Parallel()
 
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -842,7 +843,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+				Config: vmcpconfig.Config{Group: "test-group"},
 				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 					{
 						Name:        "test-tool",
@@ -869,8 +870,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 		require.Len(t, result[0].Steps, 1)
 
 		stepArgs := result[0].Steps[0].Arguments
-		assert.NotNil(t, stepArgs, "Should return empty map, not nil")
-		assert.Empty(t, stepArgs, "Should be empty map")
+		assert.True(t, stepArgs.IsEmpty(), "Should be empty json.Any")
 	})
 
 	t.Run("invalid JSON returns error", func(t *testing.T) {
@@ -882,7 +882,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+				Config: vmcpconfig.Config{Group: "test-group"},
 				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 					{
 						Name:        "test-tool",
@@ -905,7 +905,7 @@ func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
 
 		_, err := converter.convertCompositeTools(ctx, vmcpServer)
 		require.Error(t, err, "Should return error for invalid JSON")
-		assert.Contains(t, err.Error(), "failed to unmarshal arguments")
+		assert.Contains(t, err.Error(), "failed to convert steps")
 	})
 }
 
@@ -1005,19 +1005,19 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 						Type:        "string",
 						Description: "Status of the operation",
 						Value:       "{{.steps.step1.output.status}}",
-						Default:     "pending",
+						Default:     thvjson.NewAny("pending"),
 					},
 					"count": {
 						Type:        "integer",
 						Description: "Number of items processed",
 						Value:       "{{.steps.step1.output.count}}",
-						Default:     float64(0), // JSON numbers unmarshal as float64
+						Default:     thvjson.NewAny(float64(0)),
 					},
 					"enabled": {
 						Type:        "boolean",
 						Description: "Whether the feature is enabled",
 						Value:       "{{.steps.step1.output.enabled}}",
-						Default:     true,
+						Default:     thvjson.NewAny(true),
 					},
 				},
 				Required: []string{"status"},
@@ -1048,17 +1048,13 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 						Type:        "object",
 						Description: "Configuration object",
 						Value:       "{{.steps.step1.output.config}}",
-						Default: map[string]any{
-							"timeout": float64(30),
-							"retries": float64(3),
-							"enabled": true,
-						},
+						Default:     thvjson.NewAny(map[string]any{"timeout": float64(30), "retries": float64(3), "enabled": true}),
 					},
 					"tags": {
 						Type:        "array",
 						Description: "List of tags",
 						Value:       "{{.steps.step1.output.tags}}",
-						Default:     []any{"default", "prod"},
+						Default:     thvjson.NewAny([]any{"default", "prod"}),
 					},
 				},
 			},
@@ -1102,7 +1098,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 								Type:        "integer",
 								Description: "Version of the result format",
 								Value:       "{{.steps.step1.output.version}}",
-								Default:     float64(1),
+								Default:     thvjson.NewAny(float64(1)),
 							},
 						},
 					},
@@ -1181,13 +1177,13 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 												Type:        "string",
 												Description: "Fourth level actual value",
 												Value:       "{{.steps.step1.output.deep.value}}",
-												Default:     "default_value",
+												Default:     thvjson.NewAny("default_value"),
 											},
 											"count": {
 												Type:        "integer",
 												Description: "Fourth level count",
 												Value:       "{{.steps.step1.output.deep.count}}",
-												Default:     float64(0),
+												Default:     thvjson.NewAny(float64(0)),
 											},
 										},
 									},
@@ -1208,7 +1204,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 								Type:        "string",
 								Description: "Second level status",
 								Value:       "{{.steps.step1.output.status}}",
-								Default:     "success",
+								Default:     thvjson.NewAny("success"),
 							},
 						},
 					},
@@ -1228,7 +1224,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "test-tool",
@@ -1350,7 +1346,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:     mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config:       vmcpconfig.Config{Group: "test-group"},
 					IncomingAuth: tt.incomingAuth,
 				},
 			}
@@ -1425,7 +1421,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: "referenced-tool"},
 					},
@@ -1469,7 +1465,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "inline-tool",
@@ -1528,7 +1524,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: "non-existent-tool"},
 					},
@@ -1546,7 +1542,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
 						{
 							Name:        "duplicate-tool",
@@ -1595,7 +1591,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
@@ -1611,7 +1607,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: "tool1"},
 						{Name: "tool2"},
@@ -1674,7 +1670,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: "referenced-tool"},
 					},
@@ -1711,7 +1707,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				assert.Equal(t, "referenced-tool", tool.Name)
 				assert.Equal(t, vmcpconfig.Duration(5*time.Minute), tool.Timeout)
 				require.NotNil(t, tool.Parameters)
-				params := tool.Parameters
+				params, err := tool.Parameters.ToMap()
+				require.NoError(t, err)
 				assert.Equal(t, "object", params["type"])
 			},
 		},
@@ -2168,7 +2165,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					Aggregation: &mcpv1alpha1.AggregationConfig{
 						Tools: []mcpv1alpha1.WorkloadToolConfig{{
 							Workload:      "backend1",
@@ -2186,7 +2183,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					Aggregation: &mcpv1alpha1.AggregationConfig{
 						Tools: []mcpv1alpha1.WorkloadToolConfig{{
 							Workload:      "backend1",
@@ -2203,7 +2200,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			existingConfig: nil,

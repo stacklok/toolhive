@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -472,12 +473,12 @@ func TestConfigRoundtrip(t *testing.T) {
 			{
 				Name:        "test-tool",
 				Description: "A test composite tool",
-				Parameters: map[string]any{
+				Parameters: thvjson.NewMap(map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"input": map[string]any{"type": "string"},
 					},
-				},
+				}),
 				Steps: []*WorkflowStepConfig{
 					{
 						ID:   "step1",

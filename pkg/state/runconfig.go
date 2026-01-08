@@ -97,7 +97,7 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
 
-	logger.Infof("Saved run configuration for %s", config.GetBaseName())
+	logger.Debugf("Saved run configuration for %s", config.GetBaseName())
 	return nil
 }
 

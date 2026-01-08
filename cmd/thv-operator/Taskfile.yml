@@ -290,10 +290,11 @@ tasks:
     desc: Generate CRD API docs via crd-ref-docs
     deps: [crdref-install]
     cmds:
-      - crd-ref-docs --source-path=. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
+      - crd-ref-docs --source-path=. --config={{ .CRDREF_CONFIG }} --renderer markdown --templates-dir=../../docs/operator/templates/markdown --output-path {{ .DOCS_OUT }}
     sources:
       - 'config/crd/bases/**/*.yaml'
       - 'api/**/*.go'
+      - '../../docs/operator/templates/markdown/*.tpl'
     generates:
       - '{{ .DOCS_OUT }}'
 

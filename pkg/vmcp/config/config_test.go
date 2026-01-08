@@ -470,6 +470,11 @@ func collectStructTypes(t reflect.Type, visited map[reflect.Type]bool) []string 
 		return types
 	}
 
+	// Skip pkg/json.Data types - they are generic container types that don't need documentation
+	if strings.HasSuffix(pkgPath, "/pkg/json") && strings.HasPrefix(t.Name(), "Data[") {
+		return types
+	}
+
 	// Avoid infinite recursion
 	if visited[t] {
 		return types

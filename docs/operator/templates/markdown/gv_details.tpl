@@ -3,8 +3,6 @@
 
 ## {{ $gv.GroupVersionString }}
 
-{{ $gv.Doc }}
-
 {{- if $gv.Kinds  }}
 ### Resource Types
 {{- range $gv.SortedKinds }}

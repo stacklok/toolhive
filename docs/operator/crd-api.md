@@ -1,13 +1,558 @@
 # API Reference
 
 ## Packages
+- [toolhive.stacklok.dev/audit](#toolhivestacklokdevaudit)
+- [toolhive.stacklok.dev/authtypes](#toolhivestacklokdevauthtypes)
+- [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
+- [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 
 
+## toolhive.stacklok.dev/audit
+
+
+
+
+
+
+
+
+#### pkg.audit.Config
+
+
+
+Config represents the audit logging configuration.
+
+
+
+_Appears in:_
+- [pkg.audit.Auditor](#pkgauditauditor)
+- [vmcp.config.Config](#vmcpconfigconfig)
+- [pkg.audit.MiddlewareParams](#pkgauditmiddlewareparams)
+- [pkg.audit.WorkflowAuditor](#pkgauditworkflowauditor)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether audit logging is enabled.<br />When true, enables audit logging with the configured options. | false |  |
+| `component` _string_ | Component is the component name to use in audit events. |  |  |
+| `eventTypes` _string array_ | EventTypes specifies which event types to audit. If empty, all events are audited. |  |  |
+| `excludeEventTypes` _string array_ | ExcludeEventTypes specifies which event types to exclude from auditing.<br />This takes precedence over EventTypes. |  |  |
+| `includeRequestData` _boolean_ | IncludeRequestData determines whether to include request data in audit logs. | false |  |
+| `includeResponseData` _boolean_ | IncludeResponseData determines whether to include response data in audit logs. | false |  |
+| `maxDataSize` _integer_ | MaxDataSize limits the size of request/response data included in audit logs (in bytes). | 1024 |  |
+| `logFile` _string_ | LogFile specifies the file path for audit logs. If empty, logs to stdout. |  |  |
+
+
+
+
+
+
+
+
+
+
+
+
+
+## toolhive.stacklok.dev/authtypes
+
+
+#### auth.types.BackendAuthStrategy
+
+
+
+BackendAuthStrategy defines how to authenticate to a specific backend.
+
+This struct provides type-safe configuration for different authentication strategies
+using HeaderInjection or TokenExchange fields based on the Type field.
+
+
+
+_Appears in:_
+- [vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange" |  |  |
+| `headerInjection` _[auth.types.HeaderInjectionConfig](#authtypesheaderinjectionconfig)_ | HeaderInjection contains configuration for header injection auth strategy.<br />Used when Type = "header_injection". |  |  |
+| `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
+
+
+#### auth.types.HeaderInjectionConfig
+
+
+
+HeaderInjectionConfig configures the header injection auth strategy.
+This strategy injects a static or environment-sourced header value into requests.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `headerName` _string_ | HeaderName is the name of the header to inject (e.g., "Authorization"). |  |  |
+| `headerValue` _string_ | HeaderValue is the static header value to inject.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
+| `headerValueEnv` _string_ | HeaderValueEnv is the environment variable name containing the header value.<br />The value will be resolved at runtime from this environment variable.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
+
+
+#### auth.types.TokenExchangeConfig
+
+
+
+TokenExchangeConfig configures the OAuth 2.0 token exchange auth strategy.
+This strategy exchanges incoming tokens for backend-specific tokens using RFC 8693.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tokenUrl` _string_ | TokenURL is the OAuth token endpoint URL for token exchange. |  |  |
+| `clientId` _string_ | ClientID is the OAuth client ID for the token exchange request. |  |  |
+| `clientSecret` _string_ | ClientSecret is the OAuth client secret (use ClientSecretEnv for security). |  |  |
+| `clientSecretEnv` _string_ | ClientSecretEnv is the environment variable name containing the client secret.<br />The value will be resolved at runtime from this environment variable. |  |  |
+| `audience` _string_ | Audience is the target audience for the exchanged token. |  |  |
+| `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
+| `subjectTokenType` _string_ | SubjectTokenType is the token type of the incoming subject token.<br />Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified. |  |  |
+
+
+
+## toolhive.stacklok.dev/config
+
+
+#### vmcp.config.AggregationConfig
+
+
+
+AggregationConfig configures capability aggregation.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution is the strategy: "prefix", "priority", "manual" |  |  |
+| `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig contains strategy-specific configuration. |  |  |
+| `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools contains per-workload tool configuration. |  |  |
+| `excludeAllTools` _boolean_ |  |  |  |
+
+
+#### vmcp.config.AuthzConfig
+
+
+
+AuthzConfig configures authorization.
+
+
+
+_Appears in:_
+- [vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the authz type: "cedar", "none" |  |  |
+| `policies` _string array_ | Policies contains Cedar policy definitions (when Type = "cedar"). |  |  |
+
+
+#### vmcp.config.CircuitBreakerConfig
+
+
+
+CircuitBreakerConfig configures circuit breaker.
+
+
+
+_Appears in:_
+- [vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled indicates if circuit breaker is enabled. |  |  |
+| `failureThreshold` _integer_ | FailureThreshold is how many failures trigger open circuit. |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is how long to keep circuit open. |  |  |
+
+
+#### vmcp.config.CompositeToolConfig
+
+
+
+CompositeToolConfig defines a composite tool workflow.
+This matches the YAML structure from the proposal (lines 173-255).
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the workflow name (unique identifier). |  |  |
+| `description` _string_ | Description describes what the workflow does. |  |  |
+| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  |  |
+| `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
+| `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
+
+
+#### vmcp.config.Config
+
+
+
+Config is the unified configuration model for Virtual MCP Server.
+This is platform-agnostic and used by both CLI and Kubernetes deployments.
+
+Platform-specific adapters (CLI YAML loader, Kubernetes CRD converter)
+transform their native formats into this model.
+
+_Validation:_
+- Type: object
+
+_Appears in:_
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the virtual MCP server name. |  |  |
+| `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
+| `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server. |  |  |
+| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends. |  |  |
+| `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation configures capability aggregation and conflict resolution. |  |  |
+| `compositeTools` _[vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig) array_ | CompositeTools defines inline composite tool workflows.<br />Full workflow definitions are embedded in the configuration.<br />For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs. |  |  |
+| `operational` _[vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)_ | Operational configures operational settings. |  |  |
+| `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  |  |
+| `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  |  |
+
+
+#### vmcp.config.ConflictResolutionConfig
+
+
+
+ConflictResolutionConfig contains conflict resolution settings.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `prefixFormat` _string_ | PrefixFormat is the prefix format (for prefix strategy).<br />Options: "\{workload\}", "\{workload\}_", "\{workload\}.", custom string |  |  |
+| `priorityOrder` _string array_ | PriorityOrder is the explicit priority ordering (for priority strategy). |  |  |
+
+
+
+
+
+
+#### vmcp.config.ElicitationResponseConfig
+
+
+
+ElicitationResponseConfig defines how to handle elicitation responses.
+
+
+
+_Appears in:_
+- [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `action` _string_ | Action: "skip_remaining", "abort", "continue" |  |  |
+
+
+#### vmcp.config.FailureHandlingConfig
+
+
+
+FailureHandlingConfig configures failure handling.
+
+
+
+_Appears in:_
+- [vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is how often to check backend health. |  |  |
+| `unhealthyThreshold` _integer_ | UnhealthyThreshold is how many failures before marking unhealthy. |  |  |
+| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends fail.<br />Options: "fail" (fail entire request), "best_effort" (return partial results) |  |  |
+| `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker settings. |  |  |
+
+
+#### vmcp.config.IncomingAuthConfig
+
+
+
+IncomingAuthConfig configures client authentication to the virtual MCP server.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the auth type: "oidc", "local", "anonymous" |  |  |
+| `oidc` _[vmcp.config.OIDCConfig](#vmcpconfigoidcconfig)_ | OIDC contains OIDC configuration (when Type = "oidc"). |  |  |
+| `authz` _[vmcp.config.AuthzConfig](#vmcpconfigauthzconfig)_ | Authz contains authorization configuration (optional). |  |  |
+
+
+
+
+#### vmcp.config.OIDCConfig
+
+
+
+OIDCConfig configures OpenID Connect authentication.
+
+
+
+_Appears in:_
+- [vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuer` _string_ | Issuer is the OIDC issuer URL. |  |  |
+| `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
+| `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
+| `audience` _string_ | Audience is the required token audience. |  |  |
+| `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
+| `scopes` _string array_ | Scopes are the required OAuth scopes. |  |  |
+| `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
+| `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
+
+
+#### vmcp.config.OperationalConfig
+
+
+
+OperationalConfig contains operational settings.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures request timeouts. |  |  |
+| `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
+
+
+#### vmcp.config.OutgoingAuthConfig
+
+
+
+OutgoingAuthConfig configures backend authentication.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `source` _string_ | Source defines how to discover backend auth: "inline", "discovered"<br />- inline: Explicit configuration in OutgoingAuth<br />- discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only) |  |  |
+| `default` _[auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)_ | Default is the default auth strategy for backends without explicit config. |  |  |
+| `backends` _object (keys:string, values:[auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy))_ | Backends contains per-backend auth configuration. |  |  |
+
+
+#### vmcp.config.OutputConfig
+
+
+
+OutputConfig defines the structured output schema for a composite tool workflow.
+This follows the same pattern as the Parameters field, defining both the
+MCP output schema (type, description) and runtime value construction (value, default).
+
+
+
+_Appears in:_
+- [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines the output properties.<br />Map key is the property name, value is the property definition. |  |  |
+| `required` _string array_ | Required lists property names that must be present in the output. |  |  |
+
+
+#### vmcp.config.OutputProperty
+
+
+
+OutputProperty defines a single output property.
+For non-object types, Value is required.
+For object types, either Value or Properties must be specified (but not both).
+
+
+
+_Appears in:_
+- [vmcp.config.OutputConfig](#vmcpconfigoutputconfig)
+- [vmcp.config.OutputProperty](#vmcpconfigoutputproperty)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array". |  |  |
+| `description` _string_ | Description is a human-readable description exposed to clients and models. |  |  |
+| `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  |  |
+| `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br /> |
+| `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  |  |
+
+
+#### vmcp.config.StepErrorHandling
+
+
+
+StepErrorHandling defines error handling for a workflow step.
+
+
+
+_Appears in:_
+- [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `action` _string_ | Action: "abort", "continue", "retry" |  |  |
+| `retryCount` _integer_ | RetryCount is the number of retry attempts (for retry action). |  |  |
+| `retryDelay` _[vmcp.config.Duration](#vmcpconfigduration)_ | RetryDelay is the initial delay between retries. |  |  |
+
+
+#### vmcp.config.TimeoutConfig
+
+
+
+TimeoutConfig configures timeouts.
+
+
+
+_Appears in:_
+- [vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. |  |  |
+| `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload contains per-workload timeout overrides. |  |  |
+
+
+#### vmcp.config.ToolOverride
+
+
+
+ToolOverride defines tool name/description overrides.
+
+
+
+_Appears in:_
+- [vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the new tool name (for renaming). |  |  |
+| `description` _string_ | Description is the new tool description (for updating). |  |  |
+
+
+
+
+#### vmcp.config.WorkflowStepConfig
+
+
+
+WorkflowStepConfig defines a single workflow step.
+This matches the proposal's step configuration (lines 180-255).
+
+
+
+_Appears in:_
+- [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `id` _string_ | ID uniquely identifies this step. |  |  |
+| `type` _string_ | Type is the step type: "tool", "elicitation" |  |  |
+| `tool` _string_ | Tool is the tool name to call (for tool steps). |  |  |
+| `arguments` _[pkg.json.Map](#pkgjsonmap)_ | Arguments are the tool arguments (supports template expansion). |  |  |
+| `condition` _string_ | Condition is an optional execution condition (template syntax). |  |  |
+| `dependsOn` _string array_ | DependsOn lists step IDs that must complete first (for DAG execution). |  |  |
+| `onError` _[vmcp.config.StepErrorHandling](#vmcpconfigsteperrorhandling)_ | OnError defines error handling for this step. |  |  |
+| `message` _string_ | Elicitation config (for elicitation steps). |  |  |
+| `schema` _[pkg.json.Map](#pkgjsonmap)_ |  |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ |  |  |  |
+| `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | Elicitation response handlers. |  |  |
+| `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ |  |  |  |
+| `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps. |  |  |
+
+
+#### vmcp.config.WorkloadToolConfig
+
+
+
+WorkloadToolConfig configures tool filtering/overrides for a workload.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `workload` _string_ | Workload is the workload name/ID. |  |  |
+| `filter` _string array_ | Filter is the list of tools to include (nil = include all). |  |  |
+| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides maps tool names to override configurations. |  |  |
+| `excludeAll` _boolean_ |  |  |  |
+
+
+
+
+
+## toolhive.stacklok.dev/telemetry
+
+
+#### pkg.telemetry.Config
+
+
+
+Config holds the configuration for OpenTelemetry instrumentation.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+- [pkg.telemetry.FactoryMiddlewareParams](#pkgtelemetryfactorymiddlewareparams)
+- [pkg.telemetry.HTTPMiddleware](#pkgtelemetryhttpmiddleware)
+- [pkg.telemetry.Provider](#pkgtelemetryprovider)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the OTLP endpoint URL |  |  |
+| `serviceName` _string_ | ServiceName is the service name for telemetry |  |  |
+| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry |  |  |
+| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled<br />When false, no tracer provider is created even if an endpoint is configured |  |  |
+| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled<br />When false, OTLP metrics are not sent even if an endpoint is configured<br />This is independent of EnablePrometheusMetricsPath |  |  |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. |  |  |
+| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint |  |  |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint |  |  |
+| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint<br />The metrics are served on the main transport port at /metrics<br />This is separate from OTLP metrics which are sent to the Endpoint |  |  |
+| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: []string\{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"\} |  |  |
+| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.<br />We use map[string]string for proper JSON serialization instead of []attribute.KeyValue<br />which doesn't marshal/unmarshal correctly. |  |  |
+
+
+
+
+
+
+
+
+
+
+
 ## toolhive.stacklok.dev/v1alpha1
-
-Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
-
 ### Resource Types
 - [MCPExternalAuthConfig](#mcpexternalauthconfig)
 - [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
@@ -2064,7 +2609,7 @@ _Appears in:_
 | `operational` _[api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
-| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE. |  |  |
+| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE. |  | Type: object <br /> |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus

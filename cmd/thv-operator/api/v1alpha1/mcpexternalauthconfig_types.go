@@ -12,6 +12,10 @@ const (
 	// ExternalAuthTypeHeaderInjection is the type for custom header injection
 	ExternalAuthTypeHeaderInjection ExternalAuthType = "headerInjection"
 
+	// ExternalAuthTypeBearerToken is the type for bearer token authentication
+	// This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets
+	ExternalAuthTypeBearerToken ExternalAuthType = "bearerToken"
+
 	// ExternalAuthTypeUnauthenticated is the type for no authentication
 	// This should only be used for backends on trusted networks (e.g., localhost, VPC)
 	// or when authentication is handled by network-level security
@@ -26,7 +30,7 @@ type ExternalAuthType string
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -39,6 +43,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "headerInjection"
 	// +optional
 	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty"`
+
+	// BearerToken configures bearer token authentication
+	// Only used when Type is "bearerToken"
+	// +optional
+	BearerToken *BearerTokenConfig `json:"bearerToken,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -97,6 +106,15 @@ type HeaderInjectionConfig struct {
 	// ValueSecretRef references a Kubernetes Secret containing the header value
 	// +kubebuilder:validation:Required
 	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
+}
+
+// BearerTokenConfig holds configuration for bearer token authentication.
+// This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets.
+// For security reasons, only secret references are supported (no plaintext values).
+type BearerTokenConfig struct {
+	// TokenSecretRef references a Kubernetes Secret containing the bearer token
+	// +kubebuilder:validation:Required
+	TokenSecretRef *SecretKeyRef `json:"tokenSecretRef"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

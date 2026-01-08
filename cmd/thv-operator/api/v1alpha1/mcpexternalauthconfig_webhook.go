@@ -62,6 +62,9 @@ func (r *MCPExternalAuthConfig) validate() error {
 		if r.Spec.HeaderInjection != nil {
 			return fmt.Errorf("headerInjection must not be set when type is 'tokenExchange'")
 		}
+		if r.Spec.BearerToken != nil {
+			return fmt.Errorf("bearerToken must not be set when type is 'tokenExchange'")
+		}
 
 	case ExternalAuthTypeHeaderInjection:
 		if r.Spec.HeaderInjection == nil {
@@ -70,6 +73,20 @@ func (r *MCPExternalAuthConfig) validate() error {
 		if r.Spec.TokenExchange != nil {
 			return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
 		}
+		if r.Spec.BearerToken != nil {
+			return fmt.Errorf("bearerToken must not be set when type is 'headerInjection'")
+		}
+
+	case ExternalAuthTypeBearerToken:
+		if r.Spec.BearerToken == nil {
+			return fmt.Errorf("bearerToken configuration is required when type is 'bearerToken'")
+		}
+		if r.Spec.TokenExchange != nil {
+			return fmt.Errorf("tokenExchange must not be set when type is 'bearerToken'")
+		}
+		if r.Spec.HeaderInjection != nil {
+			return fmt.Errorf("headerInjection must not be set when type is 'bearerToken'")
+		}
 
 	case ExternalAuthTypeUnauthenticated:
 		if r.Spec.TokenExchange != nil {
@@ -77,6 +94,9 @@ func (r *MCPExternalAuthConfig) validate() error {
 		}
 		if r.Spec.HeaderInjection != nil {
 			return fmt.Errorf("headerInjection must not be set when type is 'unauthenticated'")
+		}
+		if r.Spec.BearerToken != nil {
+			return fmt.Errorf("bearerToken must not be set when type is 'unauthenticated'")
 		}
 
 	default:

@@ -56,52 +56,70 @@ func (*MCPExternalAuthConfig) ValidateDelete(_ context.Context, _ runtime.Object
 func (r *MCPExternalAuthConfig) validate() error {
 	switch r.Spec.Type {
 	case ExternalAuthTypeTokenExchange:
-		if r.Spec.TokenExchange == nil {
-			return fmt.Errorf("tokenExchange configuration is required when type is 'tokenExchange'")
-		}
-		if r.Spec.HeaderInjection != nil {
-			return fmt.Errorf("headerInjection must not be set when type is 'tokenExchange'")
-		}
-		if r.Spec.BearerToken != nil {
-			return fmt.Errorf("bearerToken must not be set when type is 'tokenExchange'")
-		}
-
+		return r.validateTokenExchange()
 	case ExternalAuthTypeHeaderInjection:
-		if r.Spec.HeaderInjection == nil {
-			return fmt.Errorf("headerInjection configuration is required when type is 'headerInjection'")
-		}
-		if r.Spec.TokenExchange != nil {
-			return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
-		}
-		if r.Spec.BearerToken != nil {
-			return fmt.Errorf("bearerToken must not be set when type is 'headerInjection'")
-		}
-
+		return r.validateHeaderInjection()
 	case ExternalAuthTypeBearerToken:
-		if r.Spec.BearerToken == nil {
-			return fmt.Errorf("bearerToken configuration is required when type is 'bearerToken'")
-		}
-		if r.Spec.TokenExchange != nil {
-			return fmt.Errorf("tokenExchange must not be set when type is 'bearerToken'")
-		}
-		if r.Spec.HeaderInjection != nil {
-			return fmt.Errorf("headerInjection must not be set when type is 'bearerToken'")
-		}
-
+		return r.validateBearerToken()
 	case ExternalAuthTypeUnauthenticated:
-		if r.Spec.TokenExchange != nil {
-			return fmt.Errorf("tokenExchange must not be set when type is 'unauthenticated'")
-		}
-		if r.Spec.HeaderInjection != nil {
-			return fmt.Errorf("headerInjection must not be set when type is 'unauthenticated'")
-		}
-		if r.Spec.BearerToken != nil {
-			return fmt.Errorf("bearerToken must not be set when type is 'unauthenticated'")
-		}
-
+		return r.validateUnauthenticated()
 	default:
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
 	}
+}
 
+// validateTokenExchange validates tokenExchange type configuration
+func (r *MCPExternalAuthConfig) validateTokenExchange() error {
+	if r.Spec.TokenExchange == nil {
+		return fmt.Errorf("tokenExchange configuration is required when type is 'tokenExchange'")
+	}
+	if r.Spec.HeaderInjection != nil {
+		return fmt.Errorf("headerInjection must not be set when type is 'tokenExchange'")
+	}
+	if r.Spec.BearerToken != nil {
+		return fmt.Errorf("bearerToken must not be set when type is 'tokenExchange'")
+	}
+	return nil
+}
+
+// validateHeaderInjection validates headerInjection type configuration
+func (r *MCPExternalAuthConfig) validateHeaderInjection() error {
+	if r.Spec.HeaderInjection == nil {
+		return fmt.Errorf("headerInjection configuration is required when type is 'headerInjection'")
+	}
+	if r.Spec.TokenExchange != nil {
+		return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
+	}
+	if r.Spec.BearerToken != nil {
+		return fmt.Errorf("bearerToken must not be set when type is 'headerInjection'")
+	}
+	return nil
+}
+
+// validateBearerToken validates bearerToken type configuration
+func (r *MCPExternalAuthConfig) validateBearerToken() error {
+	if r.Spec.BearerToken == nil {
+		return fmt.Errorf("bearerToken configuration is required when type is 'bearerToken'")
+	}
+	if r.Spec.TokenExchange != nil {
+		return fmt.Errorf("tokenExchange must not be set when type is 'bearerToken'")
+	}
+	if r.Spec.HeaderInjection != nil {
+		return fmt.Errorf("headerInjection must not be set when type is 'bearerToken'")
+	}
+	return nil
+}
+
+// validateUnauthenticated validates unauthenticated type configuration
+func (r *MCPExternalAuthConfig) validateUnauthenticated() error {
+	if r.Spec.TokenExchange != nil {
+		return fmt.Errorf("tokenExchange must not be set when type is 'unauthenticated'")
+	}
+	if r.Spec.HeaderInjection != nil {
+		return fmt.Errorf("headerInjection must not be set when type is 'unauthenticated'")
+	}
+	if r.Spec.BearerToken != nil {
+		return fmt.Errorf("bearerToken must not be set when type is 'unauthenticated'")
+	}
 	return nil
 }

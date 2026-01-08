@@ -661,6 +661,7 @@ func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.M
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
 		logger.Warnf("failed to create recovery middleware: %v", err)
+		return middlewareConfigs
 	}
 	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
 	return middlewareConfigs

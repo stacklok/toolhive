@@ -30,6 +30,8 @@ var backendInfoKey = contextKey{}
 
 // BackendInfo stores backend routing information that can be mutated by handlers.
 // This allows handlers deep in the call stack to provide backend info to the audit middleware.
+//
+// +hidefromdoc
 type BackendInfo struct {
 	BackendName string
 }
@@ -60,6 +62,8 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 }
 
 // Auditor handles audit logging for HTTP requests.
+//
+// +hidefromdoc
 type Auditor struct {
 	config        *Config
 	auditLogger   *slog.Logger

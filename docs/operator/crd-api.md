@@ -1,29 +1,61 @@
 # API Reference
 
 ## Packages
+- [toolhive.stacklok.dev/audit](#toolhivestacklokdevaudit)
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
+- [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
+
+
+## toolhive.stacklok.dev/audit
+
+
+
+
+
+
+
+
+#### audit.Config
+
+
+
+Config represents the audit logging configuration.
+
+
+
+_Appears in:_
+- [audit.Auditor](#auditauditor)
+- [config.Config](#configconfig)
+- [audit.MiddlewareParams](#auditmiddlewareparams)
+- [audit.WorkflowAuditor](#auditworkflowauditor)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `component` _string_ | Component is the component name to use in audit events |  |  |
+| `eventTypes` _string array_ | EventTypes specifies which event types to audit. If empty, all events are audited. |  |  |
+| `excludeEventTypes` _string array_ | ExcludeEventTypes specifies which event types to exclude from auditing.<br />This takes precedence over EventTypes. |  |  |
+| `includeRequestData` _boolean_ | IncludeRequestData determines whether to include request data in audit logs |  |  |
+| `includeResponseData` _boolean_ | IncludeResponseData determines whether to include response data in audit logs |  |  |
+| `maxDataSize` _integer_ | MaxDataSize limits the size of request/response data included in audit logs (in bytes) |  |  |
+| `logFile` _string_ | LogFile specifies the file path for audit logs. If empty, logs to stdout. |  |  |
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## toolhive.stacklok.dev/config
 
-Package config provides the configuration model for Virtual MCP Server.
 
-This package defines a platform-agnostic configuration model that works
-for both CLI (YAML) and Kubernetes (CRD) deployments. Platform-specific
-adapters transform their native formats into this unified model.
-
-Package config provides the configuration model for Virtual MCP Server.
-
-Package config provides the configuration model for Virtual MCP Server.
-
-This package defines a platform-agnostic configuration model that works
-for both CLI (YAML) and Kubernetes (CRD) deployments.
-
-
-
-
-#### AggregationConfig
+#### config.AggregationConfig
 
 
 
@@ -32,7 +64,7 @@ AggregationConfig configures capability aggregation.
 
 
 _Appears in:_
-- [Config](#config)
+- [config.Config](#configconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -42,7 +74,7 @@ _Appears in:_
 | `excludeAllTools` _boolean_ |  |  |  |
 
 
-#### AuthzConfig
+#### config.AuthzConfig
 
 
 
@@ -51,7 +83,7 @@ AuthzConfig configures authorization.
 
 
 _Appears in:_
-- [IncomingAuthConfig](#incomingauthconfig)
+- [config.IncomingAuthConfig](#configincomingauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -59,7 +91,7 @@ _Appears in:_
 | `policies` _string array_ | Policies contains Cedar policy definitions (when Type = "cedar"). |  |  |
 
 
-#### CircuitBreakerConfig
+#### config.CircuitBreakerConfig
 
 
 
@@ -68,7 +100,7 @@ CircuitBreakerConfig configures circuit breaker.
 
 
 _Appears in:_
-- [FailureHandlingConfig](#failurehandlingconfig)
+- [config.FailureHandlingConfig](#configfailurehandlingconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -77,7 +109,7 @@ _Appears in:_
 | `timeout` _[Duration](#duration)_ | Timeout is how long to keep circuit open. |  |  |
 
 
-#### CompositeToolConfig
+#### config.CompositeToolConfig
 
 
 
@@ -87,7 +119,7 @@ This matches the YAML structure from the proposal (lines 173-255).
 
 
 _Appears in:_
-- [Config](#config)
+- [config.Config](#configconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -99,7 +131,7 @@ _Appears in:_
 | `output` _[OutputConfig](#outputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
-#### Config
+#### config.Config
 
 
 
@@ -113,7 +145,7 @@ _Validation:_
 - Type: object
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -125,11 +157,11 @@ _Appears in:_
 | `compositeTools` _[CompositeToolConfig](#compositetoolconfig) array_ | CompositeTools defines inline composite tool workflows.<br />Full workflow definitions are embedded in the configuration.<br />For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs. |  |  |
 | `operational` _[OperationalConfig](#operationalconfig)_ | Operational configures operational settings. |  |  |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `telemetry` _[Config](#config)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  | Type: object <br /> |
-| `audit` _[Config](#config)_ | Audit configures audit logging settings. |  | Type: object <br /> |
+| `telemetry` _[Config](#config)_ | Telemetry configures telemetry settings. |  |  |
+| `audit` _[Config](#config)_ | Audit configures audit logging settings. |  |  |
 
 
-#### ConflictResolutionConfig
+#### config.ConflictResolutionConfig
 
 
 
@@ -138,7 +170,7 @@ ConflictResolutionConfig contains conflict resolution settings.
 
 
 _Appears in:_
-- [AggregationConfig](#aggregationconfig)
+- [config.AggregationConfig](#configaggregationconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -148,9 +180,9 @@ _Appears in:_
 
 
 
-#### Duration
+#### config.Duration
 
-_Underlying type:_ _Duration_
+_Underlying type:_ _time.Duration_
 
 Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
@@ -158,16 +190,16 @@ This ensures duration values are serialized as "30s", "1m", etc. instead of nano
 
 
 _Appears in:_
-- [CircuitBreakerConfig](#circuitbreakerconfig)
-- [CompositeToolConfig](#compositetoolconfig)
-- [FailureHandlingConfig](#failurehandlingconfig)
-- [StepErrorHandling](#steperrorhandling)
-- [TimeoutConfig](#timeoutconfig)
-- [WorkflowStepConfig](#workflowstepconfig)
+- [config.CircuitBreakerConfig](#configcircuitbreakerconfig)
+- [config.CompositeToolConfig](#configcompositetoolconfig)
+- [config.FailureHandlingConfig](#configfailurehandlingconfig)
+- [config.StepErrorHandling](#configsteperrorhandling)
+- [config.TimeoutConfig](#configtimeoutconfig)
+- [config.WorkflowStepConfig](#configworkflowstepconfig)
 
 
 
-#### ElicitationResponseConfig
+#### config.ElicitationResponseConfig
 
 
 
@@ -176,14 +208,14 @@ ElicitationResponseConfig defines how to handle elicitation responses.
 
 
 _Appears in:_
-- [WorkflowStepConfig](#workflowstepconfig)
+- [config.WorkflowStepConfig](#configworkflowstepconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `action` _string_ | Action: "skip_remaining", "abort", "continue" |  |  |
 
 
-#### FailureHandlingConfig
+#### config.FailureHandlingConfig
 
 
 
@@ -192,7 +224,7 @@ FailureHandlingConfig configures failure handling.
 
 
 _Appears in:_
-- [OperationalConfig](#operationalconfig)
+- [config.OperationalConfig](#configoperationalconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -202,7 +234,7 @@ _Appears in:_
 | `circuitBreaker` _[CircuitBreakerConfig](#circuitbreakerconfig)_ | CircuitBreaker configures circuit breaker settings. |  |  |
 
 
-#### IncomingAuthConfig
+#### config.IncomingAuthConfig
 
 
 
@@ -211,7 +243,7 @@ IncomingAuthConfig configures client authentication to the virtual MCP server.
 
 
 _Appears in:_
-- [Config](#config)
+- [config.Config](#configconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -222,7 +254,7 @@ _Appears in:_
 
 
 
-#### OIDCConfig
+#### config.OIDCConfig
 
 
 
@@ -231,7 +263,7 @@ OIDCConfig configures OpenID Connect authentication.
 
 
 _Appears in:_
-- [IncomingAuthConfig](#incomingauthconfig)
+- [config.IncomingAuthConfig](#configincomingauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -245,7 +277,7 @@ _Appears in:_
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
 
 
-#### OperationalConfig
+#### config.OperationalConfig
 
 
 
@@ -254,7 +286,7 @@ OperationalConfig contains operational settings.
 
 
 _Appears in:_
-- [Config](#config)
+- [config.Config](#configconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -262,7 +294,7 @@ _Appears in:_
 | `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
 
 
-#### OutgoingAuthConfig
+#### config.OutgoingAuthConfig
 
 
 
@@ -271,7 +303,7 @@ OutgoingAuthConfig configures backend authentication.
 
 
 _Appears in:_
-- [Config](#config)
+- [config.Config](#configconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -280,7 +312,7 @@ _Appears in:_
 | `backends` _object (keys:string, values:[BackendAuthStrategy](#backendauthstrategy))_ | Backends contains per-backend auth configuration. |  |  |
 
 
-#### OutputConfig
+#### config.OutputConfig
 
 
 
@@ -291,7 +323,7 @@ MCP output schema (type, description) and runtime value construction (value, def
 
 
 _Appears in:_
-- [CompositeToolConfig](#compositetoolconfig)
+- [config.CompositeToolConfig](#configcompositetoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -299,7 +331,7 @@ _Appears in:_
 | `required` _string array_ | Required lists property names that must be present in the output. |  |  |
 
 
-#### OutputProperty
+#### config.OutputProperty
 
 
 
@@ -310,8 +342,8 @@ For object types, either Value or Properties must be specified (but not both).
 
 
 _Appears in:_
-- [OutputConfig](#outputconfig)
-- [OutputProperty](#outputproperty)
+- [config.OutputConfig](#configoutputconfig)
+- [config.OutputProperty](#configoutputproperty)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -322,7 +354,7 @@ _Appears in:_
 | `default` _[Any](#any)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  |  |
 
 
-#### StepErrorHandling
+#### config.StepErrorHandling
 
 
 
@@ -331,7 +363,7 @@ StepErrorHandling defines error handling for a workflow step.
 
 
 _Appears in:_
-- [WorkflowStepConfig](#workflowstepconfig)
+- [config.WorkflowStepConfig](#configworkflowstepconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -340,7 +372,7 @@ _Appears in:_
 | `retryDelay` _[Duration](#duration)_ | RetryDelay is the initial delay between retries. |  |  |
 
 
-#### TimeoutConfig
+#### config.TimeoutConfig
 
 
 
@@ -349,7 +381,7 @@ TimeoutConfig configures timeouts.
 
 
 _Appears in:_
-- [OperationalConfig](#operationalconfig)
+- [config.OperationalConfig](#configoperationalconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -357,7 +389,7 @@ _Appears in:_
 | `perWorkload` _object (keys:string, values:[Duration](#duration))_ | PerWorkload contains per-workload timeout overrides. |  |  |
 
 
-#### ToolOverride
+#### config.ToolOverride
 
 
 
@@ -366,7 +398,7 @@ ToolOverride defines tool name/description overrides.
 
 
 _Appears in:_
-- [WorkloadToolConfig](#workloadtoolconfig)
+- [config.WorkloadToolConfig](#configworkloadtoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -376,7 +408,7 @@ _Appears in:_
 
 
 
-#### WorkflowStepConfig
+#### config.WorkflowStepConfig
 
 
 
@@ -386,7 +418,7 @@ This matches the proposal's step configuration (lines 180-255).
 
 
 _Appears in:_
-- [CompositeToolConfig](#compositetoolconfig)
+- [config.CompositeToolConfig](#configcompositetoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -405,7 +437,7 @@ _Appears in:_
 | `defaultResults` _[Map](#map)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps. |  |  |
 
 
-#### WorkloadToolConfig
+#### config.WorkloadToolConfig
 
 
 
@@ -414,7 +446,7 @@ WorkloadToolConfig configures tool filtering/overrides for a workload.
 
 
 _Appears in:_
-- [AggregationConfig](#aggregationconfig)
+- [config.AggregationConfig](#configaggregationconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -427,10 +459,48 @@ _Appears in:_
 
 
 
+## toolhive.stacklok.dev/telemetry
+
+
+#### telemetry.Config
+
+
+
+Config holds the configuration for OpenTelemetry instrumentation.
+
+
+
+_Appears in:_
+- [config.Config](#configconfig)
+- [telemetry.FactoryMiddlewareParams](#telemetryfactorymiddlewareparams)
+- [telemetry.HTTPMiddleware](#telemetryhttpmiddleware)
+- [telemetry.Provider](#telemetryprovider)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the OTLP endpoint URL |  |  |
+| `serviceName` _string_ | ServiceName is the service name for telemetry |  |  |
+| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry |  |  |
+| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled<br />When false, no tracer provider is created even if an endpoint is configured |  |  |
+| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled<br />When false, OTLP metrics are not sent even if an endpoint is configured<br />This is independent of EnablePrometheusMetricsPath |  |  |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. |  |  |
+| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint |  |  |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint |  |  |
+| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint<br />The metrics are served on the main transport port at /metrics<br />This is separate from OTLP metrics which are sent to the Endpoint |  |  |
+| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: []string\{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"\} |  |  |
+| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.<br />We use map[string]string for proper JSON serialization instead of []attribute.KeyValue<br />which doesn't marshal/unmarshal correctly. |  |  |
+
+
+
+
+
+
+
+
+
+
+
 ## toolhive.stacklok.dev/v1alpha1
-
-Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
-
 ### Resource Types
 - [MCPExternalAuthConfig](#mcpexternalauthconfig)
 - [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
@@ -451,9 +521,9 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 
 
 
-#### APIPhase
+#### v1alpha1.APIPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 APIPhase represents the API service state
 
@@ -461,7 +531,7 @@ _Validation:_
 - Enum: [NotStarted Deploying Ready Unhealthy Error]
 
 _Appears in:_
-- [APIStatus](#apistatus)
+- [v1alpha1.APIStatus](#v1alpha1apistatus)
 
 | Field | Description |
 | --- | --- |
@@ -472,7 +542,7 @@ _Appears in:_
 | `Error` | APIPhaseError means API deployment failed<br /> |
 
 
-#### APISource
+#### v1alpha1.APISource
 
 
 
@@ -483,14 +553,14 @@ Phase 2: Will add support for upstream MCP Registry API with pagination
 
 
 _Appears in:_
-- [MCPRegistryConfig](#mcpregistryconfig)
+- [v1alpha1.MCPRegistryConfig](#v1alpha1mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
 
 
-#### APIStatus
+#### v1alpha1.APIStatus
 
 
 
@@ -499,7 +569,7 @@ APIStatus provides detailed information about the API service
 
 
 _Appears in:_
-- [MCPRegistryStatus](#mcpregistrystatus)
+- [v1alpha1.MCPRegistryStatus](#v1alpha1mcpregistrystatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -511,7 +581,7 @@ _Appears in:_
 
 
 
-#### AggregationConfig
+#### v1alpha1.AggregationConfig
 
 
 
@@ -520,7 +590,7 @@ AggregationConfig defines tool aggregation and conflict resolution strategies
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -529,7 +599,7 @@ _Appears in:_
 | `tools` _[WorkloadToolConfig](#workloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides<br />References existing MCPToolConfig resources |  |  |
 
 
-#### AuditConfig
+#### v1alpha1.AuditConfig
 
 
 
@@ -538,16 +608,16 @@ AuditConfig defines audit logging configuration for the MCP server
 
 
 _Appears in:_
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether audit logging is enabled<br />When true, enables audit logging with default configuration | false |  |
 
 
-#### AuthzConfigRef
+#### v1alpha1.AuthzConfigRef
 
 
 
@@ -556,9 +626,9 @@ AuthzConfigRef defines a reference to authorization configuration
 
 
 _Appears in:_
-- [IncomingAuthConfig](#incomingauthconfig)
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.IncomingAuthConfig](#v1alpha1incomingauthconfig)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -567,7 +637,7 @@ _Appears in:_
 | `inline` _[InlineAuthzConfig](#inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  |  |
 
 
-#### BackendAuthConfig
+#### v1alpha1.BackendAuthConfig
 
 
 
@@ -576,7 +646,7 @@ BackendAuthConfig defines authentication configuration for a backend MCPServer
 
 
 _Appears in:_
-- [OutgoingAuthConfig](#outgoingauthconfig)
+- [v1alpha1.OutgoingAuthConfig](#v1alpha1outgoingauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -584,7 +654,7 @@ _Appears in:_
 | `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
-#### CircuitBreakerConfig
+#### v1alpha1.CircuitBreakerConfig
 
 
 
@@ -593,7 +663,7 @@ CircuitBreakerConfig configures circuit breaker behavior
 
 
 _Appears in:_
-- [FailureHandlingConfig](#failurehandlingconfig)
+- [v1alpha1.FailureHandlingConfig](#v1alpha1failurehandlingconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -602,7 +672,7 @@ _Appears in:_
 | `timeout` _string_ | Timeout is the duration to wait before attempting to close the circuit | 60s |  |
 
 
-#### CompositeToolDefinitionRef
+#### v1alpha1.CompositeToolDefinitionRef
 
 
 
@@ -611,14 +681,14 @@ CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition resour
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace |  | Required: \{\} <br /> |
 
 
-#### CompositeToolSpec
+#### v1alpha1.CompositeToolSpec
 
 
 
@@ -628,7 +698,7 @@ For complex workflows, reference VirtualMCPCompositeToolDefinition resources ins
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -640,7 +710,7 @@ _Appears in:_
 | `output` _[OutputSpec](#outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
-#### ConfigMapAuthzRef
+#### v1alpha1.ConfigMapAuthzRef
 
 
 
@@ -649,7 +719,7 @@ ConfigMapAuthzRef references a ConfigMap containing authorization configuration
 
 
 _Appears in:_
-- [AuthzConfigRef](#authzconfigref)
+- [v1alpha1.AuthzConfigRef](#v1alpha1authzconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -657,7 +727,7 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json |  |
 
 
-#### ConfigMapOIDCRef
+#### v1alpha1.ConfigMapOIDCRef
 
 
 
@@ -666,7 +736,7 @@ ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
 
 
 _Appears in:_
-- [OIDCConfigRef](#oidcconfigref)
+- [v1alpha1.OIDCConfigRef](#v1alpha1oidcconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -674,7 +744,7 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json |  |
 
 
-#### ConflictResolutionConfig
+#### v1alpha1.ConflictResolutionConfig
 
 
 
@@ -683,7 +753,7 @@ ConflictResolutionConfig provides configuration for conflict resolution strategi
 
 
 _Appears in:_
-- [AggregationConfig](#aggregationconfig)
+- [v1alpha1.AggregationConfig](#v1alpha1aggregationconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -691,7 +761,7 @@ _Appears in:_
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy |  |  |
 
 
-#### DiscoveredBackend
+#### v1alpha1.DiscoveredBackend
 
 
 
@@ -700,7 +770,7 @@ DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
 
 
 _Appears in:_
-- [VirtualMCPServerStatus](#virtualmcpserverstatus)
+- [v1alpha1.VirtualMCPServerStatus](#v1alpha1virtualmcpserverstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -712,7 +782,7 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
-#### ElicitationResponseHandler
+#### v1alpha1.ElicitationResponseHandler
 
 
 
@@ -721,7 +791,7 @@ ElicitationResponseHandler defines how to handle user responses to elicitation r
 
 
 _Appears in:_
-- [WorkflowStep](#workflowstep)
+- [v1alpha1.WorkflowStep](#v1alpha1workflowstep)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -730,7 +800,7 @@ _Appears in:_
 
 
 
-#### EnvVar
+#### v1alpha1.EnvVar
 
 
 
@@ -739,8 +809,8 @@ EnvVar represents an environment variable in a container
 
 
 _Appears in:_
-- [MCPServerSpec](#mcpserverspec)
-- [ProxyDeploymentOverrides](#proxydeploymentoverrides)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
+- [v1alpha1.ProxyDeploymentOverrides](#v1alpha1proxydeploymentoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -748,7 +818,7 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
-#### ErrorHandling
+#### v1alpha1.ErrorHandling
 
 
 
@@ -757,7 +827,7 @@ ErrorHandling defines error handling behavior for workflow steps
 
 
 _Appears in:_
-- [WorkflowStep](#workflowstep)
+- [v1alpha1.WorkflowStep](#v1alpha1workflowstep)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -766,7 +836,7 @@ _Appears in:_
 | `retryDelay` _string_ | RetryDelay is the delay between retry attempts<br />Only used when Action is "retry" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
 
 
-#### ExternalAuthConfigRef
+#### v1alpha1.ExternalAuthConfigRef
 
 
 
@@ -776,25 +846,25 @@ The referenced MCPExternalAuthConfig must be in the same namespace as the MCPSer
 
 
 _Appears in:_
-- [BackendAuthConfig](#backendauthconfig)
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.BackendAuthConfig](#v1alpha1backendauthconfig)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
 
 
-#### ExternalAuthType
+#### v1alpha1.ExternalAuthType
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 ExternalAuthType represents the type of external authentication
 
 
 
 _Appears in:_
-- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+- [v1alpha1.MCPExternalAuthConfigSpec](#v1alpha1mcpexternalauthconfigspec)
 
 | Field | Description |
 | --- | --- |
@@ -803,7 +873,7 @@ _Appears in:_
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
 
 
-#### FailureHandlingConfig
+#### v1alpha1.FailureHandlingConfig
 
 
 
@@ -812,7 +882,7 @@ FailureHandlingConfig configures failure handling behavior
 
 
 _Appears in:_
-- [OperationalConfig](#operationalconfig)
+- [v1alpha1.OperationalConfig](#v1alpha1operationalconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -822,7 +892,7 @@ _Appears in:_
 | `circuitBreaker` _[CircuitBreakerConfig](#circuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior |  |  |
 
 
-#### GitSource
+#### v1alpha1.GitSource
 
 
 
@@ -831,7 +901,7 @@ GitSource defines Git repository source configuration
 
 
 _Appears in:_
-- [MCPRegistryConfig](#mcpregistryconfig)
+- [v1alpha1.MCPRegistryConfig](#v1alpha1mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -842,7 +912,7 @@ _Appears in:_
 | `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
-#### HeaderInjectionConfig
+#### v1alpha1.HeaderInjectionConfig
 
 
 
@@ -853,7 +923,7 @@ For security reasons, only secret references are supported (no plaintext values)
 
 
 _Appears in:_
-- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+- [v1alpha1.MCPExternalAuthConfigSpec](#v1alpha1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -861,7 +931,7 @@ _Appears in:_
 | `valueSecretRef` _[SecretKeyRef](#secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
-#### IncomingAuthConfig
+#### v1alpha1.IncomingAuthConfig
 
 
 
@@ -870,7 +940,7 @@ IncomingAuthConfig configures authentication for clients connecting to the Virtu
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -879,7 +949,7 @@ _Appears in:_
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  |  |
 
 
-#### InlineAuthzConfig
+#### v1alpha1.InlineAuthzConfig
 
 
 
@@ -888,7 +958,7 @@ InlineAuthzConfig contains direct authorization configuration
 
 
 _Appears in:_
-- [AuthzConfigRef](#authzconfigref)
+- [v1alpha1.AuthzConfigRef](#v1alpha1authzconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -896,7 +966,7 @@ _Appears in:_
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] |  |
 
 
-#### InlineOIDCConfig
+#### v1alpha1.InlineOIDCConfig
 
 
 
@@ -905,7 +975,7 @@ InlineOIDCConfig contains direct OIDC configuration
 
 
 _Appears in:_
-- [OIDCConfigRef](#oidcconfigref)
+- [v1alpha1.OIDCConfigRef](#v1alpha1oidcconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -924,7 +994,7 @@ _Appears in:_
 | `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)<br />If empty, defaults to ["openid"] |  |  |
 
 
-#### KubernetesOIDCConfig
+#### v1alpha1.KubernetesOIDCConfig
 
 
 
@@ -933,7 +1003,7 @@ KubernetesOIDCConfig configures OIDC for Kubernetes service account token valida
 
 
 _Appears in:_
-- [OIDCConfigRef](#oidcconfigref)
+- [v1alpha1.OIDCConfigRef](#v1alpha1oidcconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -946,7 +1016,7 @@ _Appears in:_
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
 
 
-#### MCPExternalAuthConfig
+#### v1alpha1.MCPExternalAuthConfig
 
 
 
@@ -958,7 +1028,7 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
+- [v1alpha1.MCPExternalAuthConfigList](#v1alpha1mcpexternalauthconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -971,7 +1041,7 @@ _Appears in:_
 | `status` _[MCPExternalAuthConfigStatus](#mcpexternalauthconfigstatus)_ |  |  |  |
 
 
-#### MCPExternalAuthConfigList
+#### v1alpha1.MCPExternalAuthConfigList
 
 
 
@@ -991,7 +1061,7 @@ MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig
 | `items` _[MCPExternalAuthConfig](#mcpexternalauthconfig) array_ |  |  |  |
 
 
-#### MCPExternalAuthConfigSpec
+#### v1alpha1.MCPExternalAuthConfigSpec
 
 
 
@@ -1002,7 +1072,7 @@ MCPServer resources in the same namespace.
 
 
 _Appears in:_
-- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+- [v1alpha1.MCPExternalAuthConfig](#v1alpha1mcpexternalauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1011,7 +1081,7 @@ _Appears in:_
 | `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 
 
-#### MCPExternalAuthConfigStatus
+#### v1alpha1.MCPExternalAuthConfigStatus
 
 
 
@@ -1020,7 +1090,7 @@ MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 
 
 _Appears in:_
-- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+- [v1alpha1.MCPExternalAuthConfig](#v1alpha1mcpexternalauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1029,7 +1099,7 @@ _Appears in:_
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
-#### MCPGroup
+#### v1alpha1.MCPGroup
 
 
 
@@ -1038,7 +1108,7 @@ MCPGroup is the Schema for the mcpgroups API
 
 
 _Appears in:_
-- [MCPGroupList](#mcpgrouplist)
+- [v1alpha1.MCPGroupList](#v1alpha1mcpgrouplist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1051,7 +1121,7 @@ _Appears in:_
 | `status` _[MCPGroupStatus](#mcpgroupstatus)_ |  |  |  |
 
 
-#### MCPGroupList
+#### v1alpha1.MCPGroupList
 
 
 
@@ -1071,9 +1141,9 @@ MCPGroupList contains a list of MCPGroup
 | `items` _[MCPGroup](#mcpgroup) array_ |  |  |  |
 
 
-#### MCPGroupPhase
+#### v1alpha1.MCPGroupPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 MCPGroupPhase represents the lifecycle phase of an MCPGroup
 
@@ -1081,7 +1151,7 @@ _Validation:_
 - Enum: [Ready Pending Failed]
 
 _Appears in:_
-- [MCPGroupStatus](#mcpgroupstatus)
+- [v1alpha1.MCPGroupStatus](#v1alpha1mcpgroupstatus)
 
 | Field | Description |
 | --- | --- |
@@ -1090,7 +1160,7 @@ _Appears in:_
 | `Failed` | MCPGroupPhaseFailed indicates the MCPGroup has failed<br /> |
 
 
-#### MCPGroupSpec
+#### v1alpha1.MCPGroupSpec
 
 
 
@@ -1099,14 +1169,14 @@ MCPGroupSpec defines the desired state of MCPGroup
 
 
 _Appears in:_
-- [MCPGroup](#mcpgroup)
+- [v1alpha1.MCPGroup](#v1alpha1mcpgroup)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `description` _string_ | Description provides human-readable context |  |  |
 
 
-#### MCPGroupStatus
+#### v1alpha1.MCPGroupStatus
 
 
 
@@ -1115,7 +1185,7 @@ MCPGroupStatus defines observed state
 
 
 _Appears in:_
-- [MCPGroup](#mcpgroup)
+- [v1alpha1.MCPGroup](#v1alpha1mcpgroup)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1127,7 +1197,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  |  |
 
 
-#### MCPRegistry
+#### v1alpha1.MCPRegistry
 
 
 
@@ -1136,7 +1206,7 @@ MCPRegistry is the Schema for the mcpregistries API
 
 
 _Appears in:_
-- [MCPRegistryList](#mcpregistrylist)
+- [v1alpha1.MCPRegistryList](#v1alpha1mcpregistrylist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1149,7 +1219,7 @@ _Appears in:_
 | `status` _[MCPRegistryStatus](#mcpregistrystatus)_ |  |  |  |
 
 
-#### MCPRegistryAuthConfig
+#### v1alpha1.MCPRegistryAuthConfig
 
 
 
@@ -1158,7 +1228,7 @@ MCPRegistryAuthConfig defines authentication configuration for the registry API 
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [v1alpha1.MCPRegistrySpec](#v1alpha1mcpregistryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1166,16 +1236,16 @@ _Appears in:_
 | `oauth` _[MCPRegistryOAuthConfig](#mcpregistryoauthconfig)_ | OAuth defines OAuth/OIDC specific authentication settings<br />Only used when Mode is "oauth" |  |  |
 
 
-#### MCPRegistryAuthMode
+#### v1alpha1.MCPRegistryAuthMode
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 MCPRegistryAuthMode represents the authentication mode for the registry API server
 
 
 
 _Appears in:_
-- [MCPRegistryAuthConfig](#mcpregistryauthconfig)
+- [v1alpha1.MCPRegistryAuthConfig](#v1alpha1mcpregistryauthconfig)
 
 | Field | Description |
 | --- | --- |
@@ -1183,7 +1253,7 @@ _Appears in:_
 | `oauth` | MCPRegistryAuthModeOAuth enables OAuth/OIDC authentication<br /> |
 
 
-#### MCPRegistryConfig
+#### v1alpha1.MCPRegistryConfig
 
 
 
@@ -1192,7 +1262,7 @@ MCPRegistryConfig defines the configuration for a registry data source
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [v1alpha1.MCPRegistrySpec](#v1alpha1mcpregistryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1206,7 +1276,7 @@ _Appears in:_
 | `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
 
 
-#### MCPRegistryDatabaseConfig
+#### v1alpha1.MCPRegistryDatabaseConfig
 
 
 
@@ -1216,7 +1286,7 @@ Uses a two-user security model: separate users for operations and migrations.
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [v1alpha1.MCPRegistrySpec](#v1alpha1mcpregistryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1233,7 +1303,7 @@ _Appears in:_
 | `dbMigrationUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.<br />The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
 
 
-#### MCPRegistryList
+#### v1alpha1.MCPRegistryList
 
 
 
@@ -1253,7 +1323,7 @@ MCPRegistryList contains a list of MCPRegistry
 | `items` _[MCPRegistry](#mcpregistry) array_ |  |  |  |
 
 
-#### MCPRegistryOAuthConfig
+#### v1alpha1.MCPRegistryOAuthConfig
 
 
 
@@ -1262,7 +1332,7 @@ MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
 
 
 _Appears in:_
-- [MCPRegistryAuthConfig](#mcpregistryauthconfig)
+- [v1alpha1.MCPRegistryAuthConfig](#v1alpha1mcpregistryauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1272,7 +1342,7 @@ _Appears in:_
 | `realm` _string_ | Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)<br />Defaults to "mcp-registry" if not specified |  |  |
 
 
-#### MCPRegistryOAuthProviderConfig
+#### v1alpha1.MCPRegistryOAuthProviderConfig
 
 
 
@@ -1281,7 +1351,7 @@ MCPRegistryOAuthProviderConfig defines configuration for an OAuth/OIDC provider
 
 
 _Appears in:_
-- [MCPRegistryOAuthConfig](#mcpregistryoauthconfig)
+- [v1alpha1.MCPRegistryOAuthConfig](#v1alpha1mcpregistryoauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1299,9 +1369,9 @@ _Appears in:_
 | `allowPrivateIP` _boolean_ | AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Required when the OAuth provider (e.g., Kubernetes API server) is running on a private network<br />Example: Set to true when using https://kubernetes.default.svc as the issuer URL | false |  |
 
 
-#### MCPRegistryPhase
+#### v1alpha1.MCPRegistryPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 MCPRegistryPhase represents the phase of the MCPRegistry
 
@@ -1309,7 +1379,7 @@ _Validation:_
 - Enum: [Pending Ready Failed Syncing Terminating]
 
 _Appears in:_
-- [MCPRegistryStatus](#mcpregistrystatus)
+- [v1alpha1.MCPRegistryStatus](#v1alpha1mcpregistrystatus)
 
 | Field | Description |
 | --- | --- |
@@ -1320,7 +1390,7 @@ _Appears in:_
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
-#### MCPRegistrySpec
+#### v1alpha1.MCPRegistrySpec
 
 
 
@@ -1329,7 +1399,7 @@ MCPRegistrySpec defines the desired state of MCPRegistry
 
 
 _Appears in:_
-- [MCPRegistry](#mcpregistry)
+- [v1alpha1.MCPRegistry](#v1alpha1mcpregistry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1341,7 +1411,7 @@ _Appears in:_
 | `authConfig` _[MCPRegistryAuthConfig](#mcpregistryauthconfig)_ | AuthConfig defines the authentication configuration for the registry API server.<br />If not specified, defaults to anonymous authentication. |  |  |
 
 
-#### MCPRegistryStatus
+#### v1alpha1.MCPRegistryStatus
 
 
 
@@ -1350,7 +1420,7 @@ MCPRegistryStatus defines the observed state of MCPRegistry
 
 
 _Appears in:_
-- [MCPRegistry](#mcpregistry)
+- [v1alpha1.MCPRegistry](#v1alpha1mcpregistry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1364,7 +1434,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
 
 
-#### MCPRemoteProxy
+#### v1alpha1.MCPRemoteProxy
 
 
 
@@ -1374,7 +1444,7 @@ It enables proxying remote MCP servers with authentication, authorization, audit
 
 
 _Appears in:_
-- [MCPRemoteProxyList](#mcpremoteproxylist)
+- [v1alpha1.MCPRemoteProxyList](#v1alpha1mcpremoteproxylist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1387,7 +1457,7 @@ _Appears in:_
 | `status` _[MCPRemoteProxyStatus](#mcpremoteproxystatus)_ |  |  |  |
 
 
-#### MCPRemoteProxyList
+#### v1alpha1.MCPRemoteProxyList
 
 
 
@@ -1407,9 +1477,9 @@ MCPRemoteProxyList contains a list of MCPRemoteProxy
 | `items` _[MCPRemoteProxy](#mcpremoteproxy) array_ |  |  |  |
 
 
-#### MCPRemoteProxyPhase
+#### v1alpha1.MCPRemoteProxyPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 MCPRemoteProxyPhase is a label for the condition of a MCPRemoteProxy at the current time
 
@@ -1417,7 +1487,7 @@ _Validation:_
 - Enum: [Pending Ready Failed Terminating]
 
 _Appears in:_
-- [MCPRemoteProxyStatus](#mcpremoteproxystatus)
+- [v1alpha1.MCPRemoteProxyStatus](#v1alpha1mcpremoteproxystatus)
 
 | Field | Description |
 | --- | --- |
@@ -1427,7 +1497,7 @@ _Appears in:_
 | `Terminating` | MCPRemoteProxyPhaseTerminating means the proxy is being deleted<br /> |
 
 
-#### MCPRemoteProxySpec
+#### v1alpha1.MCPRemoteProxySpec
 
 
 
@@ -1436,7 +1506,7 @@ MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 
 
 _Appears in:_
-- [MCPRemoteProxy](#mcpremoteproxy)
+- [v1alpha1.MCPRemoteProxy](#v1alpha1mcpremoteproxy)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1456,7 +1526,7 @@ _Appears in:_
 | `groupRef` _string_ | GroupRef is the name of the MCPGroup this proxy belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
-#### MCPRemoteProxyStatus
+#### v1alpha1.MCPRemoteProxyStatus
 
 
 
@@ -1465,7 +1535,7 @@ MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
 
 
 _Appears in:_
-- [MCPRemoteProxy](#mcpremoteproxy)
+- [v1alpha1.MCPRemoteProxy](#v1alpha1mcpremoteproxy)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1479,7 +1549,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 
 
-#### MCPServer
+#### v1alpha1.MCPServer
 
 
 
@@ -1488,7 +1558,7 @@ MCPServer is the Schema for the mcpservers API
 
 
 _Appears in:_
-- [MCPServerList](#mcpserverlist)
+- [v1alpha1.MCPServerList](#v1alpha1mcpserverlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1501,7 +1571,7 @@ _Appears in:_
 | `status` _[MCPServerStatus](#mcpserverstatus)_ |  |  |  |
 
 
-#### MCPServerList
+#### v1alpha1.MCPServerList
 
 
 
@@ -1521,9 +1591,9 @@ MCPServerList contains a list of MCPServer
 | `items` _[MCPServer](#mcpserver) array_ |  |  |  |
 
 
-#### MCPServerPhase
+#### v1alpha1.MCPServerPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 MCPServerPhase is the phase of the MCPServer
 
@@ -1531,7 +1601,7 @@ _Validation:_
 - Enum: [Pending Running Failed Terminating]
 
 _Appears in:_
-- [MCPServerStatus](#mcpserverstatus)
+- [v1alpha1.MCPServerStatus](#v1alpha1mcpserverstatus)
 
 | Field | Description |
 | --- | --- |
@@ -1541,7 +1611,7 @@ _Appears in:_
 | `Terminating` | MCPServerPhaseTerminating means the MCPServer is being deleted<br /> |
 
 
-#### MCPServerSpec
+#### v1alpha1.MCPServerSpec
 
 
 
@@ -1550,7 +1620,7 @@ MCPServerSpec defines the desired state of MCPServer
 
 
 _Appears in:_
-- [MCPServer](#mcpserver)
+- [v1alpha1.MCPServer](#v1alpha1mcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1582,7 +1652,7 @@ _Appears in:_
 | `groupRef` _string_ | GroupRef is the name of the MCPGroup this server belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
-#### MCPServerStatus
+#### v1alpha1.MCPServerStatus
 
 
 
@@ -1591,7 +1661,7 @@ MCPServerStatus defines the observed state of MCPServer
 
 
 _Appears in:_
-- [MCPServer](#mcpserver)
+- [v1alpha1.MCPServer](#v1alpha1mcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1603,7 +1673,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 
 
-#### MCPToolConfig
+#### v1alpha1.MCPToolConfig
 
 
 
@@ -1615,7 +1685,7 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [MCPToolConfigList](#mcptoolconfiglist)
+- [v1alpha1.MCPToolConfigList](#v1alpha1mcptoolconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1628,7 +1698,7 @@ _Appears in:_
 | `status` _[MCPToolConfigStatus](#mcptoolconfigstatus)_ |  |  |  |
 
 
-#### MCPToolConfigList
+#### v1alpha1.MCPToolConfigList
 
 
 
@@ -1648,7 +1718,7 @@ MCPToolConfigList contains a list of MCPToolConfig
 | `items` _[MCPToolConfig](#mcptoolconfig) array_ |  |  |  |
 
 
-#### MCPToolConfigSpec
+#### v1alpha1.MCPToolConfigSpec
 
 
 
@@ -1659,7 +1729,7 @@ MCPServer resources in the same namespace.
 
 
 _Appears in:_
-- [MCPToolConfig](#mcptoolconfig)
+- [v1alpha1.MCPToolConfig](#v1alpha1mcptoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1667,7 +1737,7 @@ _Appears in:_
 | `toolsOverride` _object (keys:string, values:[ToolOverride](#tooloverride))_ | ToolsOverride is a map from actual tool names to their overridden configuration.<br />This allows renaming tools and/or changing their descriptions. |  |  |
 
 
-#### MCPToolConfigStatus
+#### v1alpha1.MCPToolConfigStatus
 
 
 
@@ -1676,7 +1746,7 @@ MCPToolConfigStatus defines the observed state of MCPToolConfig
 
 
 _Appears in:_
-- [MCPToolConfig](#mcptoolconfig)
+- [v1alpha1.MCPToolConfig](#v1alpha1mcptoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1685,7 +1755,7 @@ _Appears in:_
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
-#### NameFilter
+#### v1alpha1.NameFilter
 
 
 
@@ -1694,7 +1764,7 @@ NameFilter defines name-based filtering
 
 
 _Appears in:_
-- [RegistryFilter](#registryfilter)
+- [v1alpha1.RegistryFilter](#v1alpha1registryfilter)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1702,7 +1772,7 @@ _Appears in:_
 | `exclude` _string array_ | Exclude is a list of glob patterns to exclude |  |  |
 
 
-#### NetworkPermissions
+#### v1alpha1.NetworkPermissions
 
 
 
@@ -1711,7 +1781,7 @@ NetworkPermissions defines the network permissions for an MCP server
 
 
 _Appears in:_
-- [PermissionProfileSpec](#permissionprofilespec)
+- [v1alpha1.PermissionProfileSpec](#v1alpha1permissionprofilespec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1719,7 +1789,7 @@ _Appears in:_
 | `outbound` _[OutboundNetworkPermissions](#outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  |  |
 
 
-#### OIDCConfigRef
+#### v1alpha1.OIDCConfigRef
 
 
 
@@ -1728,9 +1798,9 @@ OIDCConfigRef defines a reference to OIDC configuration
 
 
 _Appears in:_
-- [IncomingAuthConfig](#incomingauthconfig)
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.IncomingAuthConfig](#v1alpha1incomingauthconfig)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1741,7 +1811,7 @@ _Appears in:_
 | `inline` _[InlineOIDCConfig](#inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  |  |
 
 
-#### OpenTelemetryConfig
+#### v1alpha1.OpenTelemetryConfig
 
 
 
@@ -1750,7 +1820,7 @@ OpenTelemetryConfig defines pure OpenTelemetry configuration
 
 
 _Appears in:_
-- [TelemetryConfig](#telemetryconfig)
+- [v1alpha1.TelemetryConfig](#v1alpha1telemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1763,7 +1833,7 @@ _Appears in:_
 | `tracing` _[OpenTelemetryTracingConfig](#opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  |  |
 
 
-#### OpenTelemetryMetricsConfig
+#### v1alpha1.OpenTelemetryMetricsConfig
 
 
 
@@ -1772,14 +1842,14 @@ OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 
 
 _Appears in:_
-- [OpenTelemetryConfig](#opentelemetryconfig)
+- [v1alpha1.OpenTelemetryConfig](#v1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether OTLP metrics are sent | false |  |
 
 
-#### OpenTelemetryTracingConfig
+#### v1alpha1.OpenTelemetryTracingConfig
 
 
 
@@ -1788,7 +1858,7 @@ OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
 
 
 _Appears in:_
-- [OpenTelemetryConfig](#opentelemetryconfig)
+- [v1alpha1.OpenTelemetryConfig](#v1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1796,7 +1866,7 @@ _Appears in:_
 | `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 |  |
 
 
-#### OperationalConfig
+#### v1alpha1.OperationalConfig
 
 
 
@@ -1805,7 +1875,7 @@ OperationalConfig defines operational settings
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1814,7 +1884,7 @@ _Appears in:_
 | `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
 
 
-#### OutboundNetworkPermissions
+#### v1alpha1.OutboundNetworkPermissions
 
 
 
@@ -1823,7 +1893,7 @@ OutboundNetworkPermissions defines the outbound network permissions
 
 
 _Appears in:_
-- [NetworkPermissions](#networkpermissions)
+- [v1alpha1.NetworkPermissions](#v1alpha1networkpermissions)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1832,7 +1902,7 @@ _Appears in:_
 | `allowPort` _integer array_ | AllowPort is a list of ports to allow connections to |  |  |
 
 
-#### OutgoingAuthConfig
+#### v1alpha1.OutgoingAuthConfig
 
 
 
@@ -1841,7 +1911,7 @@ OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServ
 
 
 _Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1850,7 +1920,7 @@ _Appears in:_
 | `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  |  |
 
 
-#### OutputPropertySpec
+#### v1alpha1.OutputPropertySpec
 
 
 
@@ -1859,8 +1929,8 @@ OutputPropertySpec defines a single output property
 
 
 _Appears in:_
-- [OutputPropertySpec](#outputpropertyspec)
-- [OutputSpec](#outputspec)
+- [v1alpha1.OutputPropertySpec](#v1alpha1outputpropertyspec)
+- [v1alpha1.OutputSpec](#v1alpha1outputspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1871,7 +1941,7 @@ _Appears in:_
 | `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Schemaless: \{\} <br /> |
 
 
-#### OutputSpec
+#### v1alpha1.OutputSpec
 
 
 
@@ -1880,8 +1950,8 @@ OutputSpec defines the structured output schema for a composite tool workflow
 
 
 _Appears in:_
-- [CompositeToolSpec](#compositetoolspec)
-- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
+- [v1alpha1.CompositeToolSpec](#v1alpha1compositetoolspec)
+- [v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#v1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1889,7 +1959,7 @@ _Appears in:_
 | `required` _string array_ | Required lists property names that must be present in the output |  |  |
 
 
-#### PVCSource
+#### v1alpha1.PVCSource
 
 
 
@@ -1898,7 +1968,7 @@ PVCSource defines PersistentVolumeClaim source configuration
 
 
 _Appears in:_
-- [MCPRegistryConfig](#mcpregistryconfig)
+- [v1alpha1.MCPRegistryConfig](#v1alpha1mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1906,7 +1976,7 @@ _Appears in:_
 | `path` _string_ | Path is the relative path to the registry file within the PVC.<br />The PVC is mounted at /config/registry/\{registryName\}/.<br />The full file path becomes: /config/registry/\{registryName\}/\{path\}<br />This design:<br />- Each registry gets its own mount point (consistent with ConfigMap sources)<br />- Multiple registries can share the same PVC by mounting it at different paths<br />- Users control PVC organization freely via the path field<br />Examples:<br />  Registry "production" using PVC "shared-data" with path "prod/registry.json":<br />    PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json<br />  Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":<br />    PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json<br />    (Same PVC, different mount path)<br />  Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":<br />    PVC contains /registry.json → accessed at /config/registry/staging/registry.json<br />    (Different PVC, independent mount)<br />  Registry "team-a" with path "v1/servers.json":<br />    PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json<br />    (Subdirectories allowed in path) | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
-#### PermissionProfileRef
+#### v1alpha1.PermissionProfileRef
 
 
 
@@ -1915,7 +1985,7 @@ PermissionProfileRef defines a reference to a permission profile
 
 
 _Appears in:_
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1926,7 +1996,7 @@ _Appears in:_
 
 
 
-#### PrometheusConfig
+#### v1alpha1.PrometheusConfig
 
 
 
@@ -1935,14 +2005,14 @@ PrometheusConfig defines Prometheus-specific configuration
 
 
 _Appears in:_
-- [TelemetryConfig](#telemetryconfig)
+- [v1alpha1.TelemetryConfig](#v1alpha1telemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false |  |
 
 
-#### ProxyDeploymentOverrides
+#### v1alpha1.ProxyDeploymentOverrides
 
 
 
@@ -1951,7 +2021,7 @@ ProxyDeploymentOverrides defines overrides specific to the proxy deployment
 
 
 _Appears in:_
-- [ResourceOverrides](#resourceoverrides)
+- [v1alpha1.ResourceOverrides](#v1alpha1resourceoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1961,7 +2031,7 @@ _Appears in:_
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  |  |
 
 
-#### RegistryFilter
+#### v1alpha1.RegistryFilter
 
 
 
@@ -1970,7 +2040,7 @@ RegistryFilter defines include/exclude patterns for registry content
 
 
 _Appears in:_
-- [MCPRegistryConfig](#mcpregistryconfig)
+- [v1alpha1.MCPRegistryConfig](#v1alpha1mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1978,7 +2048,7 @@ _Appears in:_
 | `tags` _[TagFilter](#tagfilter)_ | Tags defines tag-based filtering |  |  |
 
 
-#### ResourceList
+#### v1alpha1.ResourceList
 
 
 
@@ -1987,7 +2057,7 @@ ResourceList is a set of (resource name, quantity) pairs
 
 
 _Appears in:_
-- [ResourceRequirements](#resourcerequirements)
+- [v1alpha1.ResourceRequirements](#v1alpha1resourcerequirements)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1995,7 +2065,7 @@ _Appears in:_
 | `memory` _string_ | Memory is the memory limit in bytes (e.g., "64Mi" for 64 megabytes) |  |  |
 
 
-#### ResourceMetadataOverrides
+#### v1alpha1.ResourceMetadataOverrides
 
 
 
@@ -2004,8 +2074,8 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
-- [ProxyDeploymentOverrides](#proxydeploymentoverrides)
-- [ResourceOverrides](#resourceoverrides)
+- [v1alpha1.ProxyDeploymentOverrides](#v1alpha1proxydeploymentoverrides)
+- [v1alpha1.ResourceOverrides](#v1alpha1resourceoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2013,7 +2083,7 @@ _Appears in:_
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
 
 
-#### ResourceOverrides
+#### v1alpha1.ResourceOverrides
 
 
 
@@ -2022,8 +2092,8 @@ ResourceOverrides defines overrides for annotations and labels on created resour
 
 
 _Appears in:_
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2031,7 +2101,7 @@ _Appears in:_
 | `proxyService` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ | ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment) |  |  |
 
 
-#### ResourceRequirements
+#### v1alpha1.ResourceRequirements
 
 
 
@@ -2040,8 +2110,8 @@ ResourceRequirements describes the compute resource requirements
 
 
 _Appears in:_
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2049,7 +2119,7 @@ _Appears in:_
 | `requests` _[ResourceList](#resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
 
 
-#### RetryPolicy
+#### v1alpha1.RetryPolicy
 
 
 
@@ -2058,7 +2128,7 @@ RetryPolicy defines retry behavior for workflow steps
 
 
 _Appears in:_
-- [AdvancedWorkflowStep](#advancedworkflowstep)
+- [v1alpha1.AdvancedWorkflowStep](#v1alpha1advancedworkflowstep)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2069,7 +2139,7 @@ _Appears in:_
 | `retryableErrors` _string array_ | RetryableErrors defines which errors should trigger retry<br />If empty, all errors are retryable<br />Supports regex patterns |  |  |
 
 
-#### SecretKeyRef
+#### v1alpha1.SecretKeyRef
 
 
 
@@ -2078,9 +2148,9 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
-- [HeaderInjectionConfig](#headerinjectionconfig)
-- [InlineOIDCConfig](#inlineoidcconfig)
-- [TokenExchangeConfig](#tokenexchangeconfig)
+- [v1alpha1.HeaderInjectionConfig](#v1alpha1headerinjectionconfig)
+- [v1alpha1.InlineOIDCConfig](#v1alpha1inlineoidcconfig)
+- [v1alpha1.TokenExchangeConfig](#v1alpha1tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2088,7 +2158,7 @@ _Appears in:_
 | `key` _string_ | Key is the key within the secret |  | Required: \{\} <br /> |
 
 
-#### SecretRef
+#### v1alpha1.SecretRef
 
 
 
@@ -2097,7 +2167,7 @@ SecretRef is a reference to a secret
 
 
 _Appears in:_
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2106,7 +2176,7 @@ _Appears in:_
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  |  |
 
 
-#### StorageReference
+#### v1alpha1.StorageReference
 
 
 
@@ -2115,7 +2185,7 @@ StorageReference defines a reference to internal storage
 
 
 _Appears in:_
-- [MCPRegistryStatus](#mcpregistrystatus)
+- [v1alpha1.MCPRegistryStatus](#v1alpha1mcpregistrystatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2123,9 +2193,9 @@ _Appears in:_
 | `configMapRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | ConfigMapRef is a reference to a ConfigMap storage<br />Only used when Type is "configmap" |  |  |
 
 
-#### SyncPhase
+#### v1alpha1.SyncPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 SyncPhase represents the data synchronization state
 
@@ -2133,7 +2203,7 @@ _Validation:_
 - Enum: [Syncing Complete Failed]
 
 _Appears in:_
-- [SyncStatus](#syncstatus)
+- [v1alpha1.SyncStatus](#v1alpha1syncstatus)
 
 | Field | Description |
 | --- | --- |
@@ -2142,7 +2212,7 @@ _Appears in:_
 | `Failed` | SyncPhaseFailed means sync failed<br /> |
 
 
-#### SyncPolicy
+#### v1alpha1.SyncPolicy
 
 
 
@@ -2154,14 +2224,14 @@ regardless of this policy setting.
 
 
 _Appears in:_
-- [MCPRegistryConfig](#mcpregistryconfig)
+- [v1alpha1.MCPRegistryConfig](#v1alpha1mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
 
 
-#### SyncStatus
+#### v1alpha1.SyncStatus
 
 
 
@@ -2170,7 +2240,7 @@ SyncStatus provides detailed information about data synchronization
 
 
 _Appears in:_
-- [MCPRegistryStatus](#mcpregistrystatus)
+- [v1alpha1.MCPRegistryStatus](#v1alpha1mcpregistrystatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2183,7 +2253,7 @@ _Appears in:_
 | `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br /> |
 
 
-#### TagFilter
+#### v1alpha1.TagFilter
 
 
 
@@ -2192,7 +2262,7 @@ TagFilter defines tag-based filtering
 
 
 _Appears in:_
-- [RegistryFilter](#registryfilter)
+- [v1alpha1.RegistryFilter](#v1alpha1registryfilter)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2200,7 +2270,7 @@ _Appears in:_
 | `exclude` _string array_ | Exclude is a list of tags to exclude |  |  |
 
 
-#### TelemetryConfig
+#### v1alpha1.TelemetryConfig
 
 
 
@@ -2209,9 +2279,9 @@ TelemetryConfig defines observability configuration for the MCP server
 
 
 _Appears in:_
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
+- [v1alpha1.VirtualMCPServerSpec](#v1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2219,7 +2289,7 @@ _Appears in:_
 | `prometheus` _[PrometheusConfig](#prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
 
 
-#### TimeoutConfig
+#### v1alpha1.TimeoutConfig
 
 
 
@@ -2228,7 +2298,7 @@ TimeoutConfig configures timeout settings
 
 
 _Appears in:_
-- [OperationalConfig](#operationalconfig)
+- [v1alpha1.OperationalConfig](#v1alpha1operationalconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2236,7 +2306,7 @@ _Appears in:_
 | `perWorkload` _object (keys:string, values:string)_ | PerWorkload defines per-workload timeout overrides |  |  |
 
 
-#### TokenExchangeConfig
+#### v1alpha1.TokenExchangeConfig
 
 
 
@@ -2248,7 +2318,7 @@ The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middl
 
 
 _Appears in:_
-- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+- [v1alpha1.MCPExternalAuthConfigSpec](#v1alpha1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2261,7 +2331,7 @@ _Appears in:_
 | `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  |  |
 
 
-#### ToolConfigRef
+#### v1alpha1.ToolConfigRef
 
 
 
@@ -2271,16 +2341,16 @@ The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 
 
 _Appears in:_
-- [MCPRemoteProxySpec](#mcpremoteproxyspec)
-- [MCPServerSpec](#mcpserverspec)
-- [WorkloadToolConfig](#workloadtoolconfig)
+- [v1alpha1.MCPRemoteProxySpec](#v1alpha1mcpremoteproxyspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
+- [v1alpha1.WorkloadToolConfig](#v1alpha1workloadtoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPToolConfig resource in the same namespace |  | Required: \{\} <br /> |
 
 
-#### ToolOverride
+#### v1alpha1.ToolOverride
 
 
 
@@ -2291,8 +2361,8 @@ they can't be both empty.
 
 
 _Appears in:_
-- [MCPToolConfigSpec](#mcptoolconfigspec)
-- [WorkloadToolConfig](#workloadtoolconfig)
+- [v1alpha1.MCPToolConfigSpec](#v1alpha1mcptoolconfigspec)
+- [v1alpha1.WorkloadToolConfig](#v1alpha1workloadtoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2300,9 +2370,9 @@ _Appears in:_
 | `description` _string_ | Description is the redefined description of the tool |  |  |
 
 
-#### ValidationStatus
+#### v1alpha1.ValidationStatus
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 ValidationStatus represents the validation state of a workflow
 
@@ -2310,7 +2380,7 @@ _Validation:_
 - Enum: [Valid Invalid Unknown]
 
 _Appears in:_
-- [VirtualMCPCompositeToolDefinitionStatus](#virtualmcpcompositetooldefinitionstatus)
+- [v1alpha1.VirtualMCPCompositeToolDefinitionStatus](#v1alpha1virtualmcpcompositetooldefinitionstatus)
 
 | Field | Description |
 | --- | --- |
@@ -2319,7 +2389,7 @@ _Appears in:_
 | `Unknown` | ValidationStatusUnknown indicates validation hasn't been performed yet<br /> |
 
 
-#### VirtualMCPCompositeToolDefinition
+#### v1alpha1.VirtualMCPCompositeToolDefinition
 
 
 
@@ -2330,7 +2400,7 @@ by multiple VirtualMCPServer instances
 
 
 _Appears in:_
-- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
+- [v1alpha1.VirtualMCPCompositeToolDefinitionList](#v1alpha1virtualmcpcompositetooldefinitionlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2343,7 +2413,7 @@ _Appears in:_
 | `status` _[VirtualMCPCompositeToolDefinitionStatus](#virtualmcpcompositetooldefinitionstatus)_ |  |  |  |
 
 
-#### VirtualMCPCompositeToolDefinitionList
+#### v1alpha1.VirtualMCPCompositeToolDefinitionList
 
 
 
@@ -2363,7 +2433,7 @@ VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeTool
 | `items` _[VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition) array_ |  |  |  |
 
 
-#### VirtualMCPCompositeToolDefinitionSpec
+#### v1alpha1.VirtualMCPCompositeToolDefinitionSpec
 
 
 
@@ -2372,7 +2442,7 @@ VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCom
 
 
 _Appears in:_
-- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
+- [v1alpha1.VirtualMCPCompositeToolDefinition](#v1alpha1virtualmcpcompositetooldefinition)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2385,7 +2455,7 @@ _Appears in:_
 | `output` _[OutputSpec](#outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
-#### VirtualMCPCompositeToolDefinitionStatus
+#### v1alpha1.VirtualMCPCompositeToolDefinitionStatus
 
 
 
@@ -2394,7 +2464,7 @@ VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCP
 
 
 _Appears in:_
-- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
+- [v1alpha1.VirtualMCPCompositeToolDefinition](#v1alpha1virtualmcpcompositetooldefinition)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2405,7 +2475,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the workflow's state |  |  |
 
 
-#### VirtualMCPServer
+#### v1alpha1.VirtualMCPServer
 
 
 
@@ -2415,7 +2485,7 @@ VirtualMCPServer aggregates multiple backend MCPServers into a unified endpoint
 
 
 _Appears in:_
-- [VirtualMCPServerList](#virtualmcpserverlist)
+- [v1alpha1.VirtualMCPServerList](#v1alpha1virtualmcpserverlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2428,7 +2498,7 @@ _Appears in:_
 | `status` _[VirtualMCPServerStatus](#virtualmcpserverstatus)_ |  |  |  |
 
 
-#### VirtualMCPServerList
+#### v1alpha1.VirtualMCPServerList
 
 
 
@@ -2448,9 +2518,9 @@ VirtualMCPServerList contains a list of VirtualMCPServer
 | `items` _[VirtualMCPServer](#virtualmcpserver) array_ |  |  |  |
 
 
-#### VirtualMCPServerPhase
+#### v1alpha1.VirtualMCPServerPhase
 
-_Underlying type:_ _string_
+_Underlying type:_ _..string_
 
 VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
 
@@ -2458,7 +2528,7 @@ _Validation:_
 - Enum: [Pending Ready Degraded Failed]
 
 _Appears in:_
-- [VirtualMCPServerStatus](#virtualmcpserverstatus)
+- [v1alpha1.VirtualMCPServerStatus](#v1alpha1virtualmcpserverstatus)
 
 | Field | Description |
 | --- | --- |
@@ -2468,7 +2538,7 @@ _Appears in:_
 | `Failed` | VirtualMCPServerPhaseFailed indicates the VirtualMCPServer has failed<br /> |
 
 
-#### VirtualMCPServerSpec
+#### v1alpha1.VirtualMCPServerSpec
 
 
 
@@ -2477,7 +2547,7 @@ VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 
 
 _Appears in:_
-- [VirtualMCPServer](#virtualmcpserver)
+- [v1alpha1.VirtualMCPServer](#v1alpha1virtualmcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2494,7 +2564,7 @@ _Appears in:_
 | `config` _[Config](#config)_ | Config is the Virtual MCP server configuration<br />NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE. |  | Type: object <br /> |
 
 
-#### VirtualMCPServerStatus
+#### v1alpha1.VirtualMCPServerStatus
 
 
 
@@ -2503,7 +2573,7 @@ VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 
 
 _Appears in:_
-- [VirtualMCPServer](#virtualmcpserver)
+- [v1alpha1.VirtualMCPServer](#v1alpha1virtualmcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2516,7 +2586,7 @@ _Appears in:_
 | `backendCount` _integer_ | BackendCount is the number of discovered backends |  |  |
 
 
-#### Volume
+#### v1alpha1.Volume
 
 
 
@@ -2525,7 +2595,7 @@ Volume represents a volume to mount in a container
 
 
 _Appears in:_
-- [MCPServerSpec](#mcpserverspec)
+- [v1alpha1.MCPServerSpec](#v1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2535,7 +2605,7 @@ _Appears in:_
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false |  |
 
 
-#### WorkflowStep
+#### v1alpha1.WorkflowStep
 
 
 
@@ -2544,8 +2614,8 @@ WorkflowStep defines a step in a composite tool workflow
 
 
 _Appears in:_
-- [CompositeToolSpec](#compositetoolspec)
-- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
+- [v1alpha1.CompositeToolSpec](#v1alpha1compositetoolspec)
+- [v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#v1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2564,7 +2634,7 @@ _Appears in:_
 | `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 
-#### WorkloadToolConfig
+#### v1alpha1.WorkloadToolConfig
 
 
 
@@ -2573,7 +2643,7 @@ WorkloadToolConfig defines tool filtering and overrides for a specific workload
 
 
 _Appears in:_
-- [AggregationConfig](#aggregationconfig)
+- [v1alpha1.AggregationConfig](#v1alpha1aggregationconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

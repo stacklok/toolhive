@@ -1,5 +1,9 @@
 processor:
   ignoreTypes: []
   ignoreFields: []
+  customMarkers:
+    # Register hidefromdoc marker for opt-out type documentation
+    - name: "hidefromdoc"
+      target: type
 render:
   kubernetesVersion: 1.27

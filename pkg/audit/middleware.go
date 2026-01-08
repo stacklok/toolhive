@@ -13,6 +13,8 @@ const (
 )
 
 // MiddlewareParams represents the parameters for audit middleware
+//
+// +hidefromdoc
 type MiddlewareParams struct {
 	ConfigPath string  `json:"config_path,omitempty"` // Kept for backwards compatibility
 	ConfigData *Config `json:"config_data,omitempty"` // New field for config contents
@@ -22,6 +24,8 @@ type MiddlewareParams struct {
 }
 
 // Middleware wraps audit middleware functionality
+//
+// +hidefromdoc
 type Middleware struct {
 	middleware types.MiddlewareFunction
 }

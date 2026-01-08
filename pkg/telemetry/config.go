@@ -161,6 +161,8 @@ func MaybeMakeConfig(
 }
 
 // Provider encapsulates OpenTelemetry providers and configuration.
+//
+// +hidefromdoc
 type Provider struct {
 	config            Config
 	tracerProvider    trace.TracerProvider

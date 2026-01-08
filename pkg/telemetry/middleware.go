@@ -29,6 +29,8 @@ const (
 )
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
+//
+// +hidefromdoc
 type HTTPMiddleware struct {
 	config         Config
 	tracerProvider trace.TracerProvider
@@ -547,6 +549,8 @@ const (
 )
 
 // FactoryMiddlewareParams represents the parameters for telemetry middleware
+//
+// +hidefromdoc
 type FactoryMiddlewareParams struct {
 	Config     *Config `json:"config"`
 	ServerName string  `json:"server_name"`
@@ -554,6 +558,8 @@ type FactoryMiddlewareParams struct {
 }
 
 // FactoryMiddleware wraps telemetry middleware functionality for factory pattern
+//
+// +hidefromdoc
 type FactoryMiddleware struct {
 	provider          *Provider
 	middleware        types.MiddlewareFunction

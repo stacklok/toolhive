@@ -291,11 +291,15 @@ tasks:
     deps: [crdref-install]
     cmds:
       # Run from repo root to include types from pkg/vmcp/config
-      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
+      # Uses custom templates that only render types with +kubebuilder:object:generate=true
+      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --templates-dir=../../docs/operator/templates/markdown --output-path {{ .DOCS_OUT }}
     sources:
       - 'config/crd/bases/**/*.yaml'
       - 'api/**/*.go'
       - '../../pkg/vmcp/config/*.go'
+      - '../../pkg/telemetry/*.go'
+      - '../../pkg/audit/*.go'
+      - '../../docs/operator/templates/**/*.tpl'
     generates:
       - '{{ .DOCS_OUT }}'
 

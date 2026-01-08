@@ -14,6 +14,8 @@ import (
 // WorkflowAuditor provides audit logging for workflow execution.
 // This struct abstracts workflow-specific audit operations from the
 // HTTP middleware-based Auditor.
+//
+// +hidefromdoc
 type WorkflowAuditor struct {
 	auditLogger *slog.Logger
 	config      *Config

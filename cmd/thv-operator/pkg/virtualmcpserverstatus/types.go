@@ -44,6 +44,11 @@ type StatusManager interface {
 	// SetDiscoveredBackends sets the discovered backends list
 	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
 
+	// GetDiscoveredBackends returns the current discovered backends value.
+	// If SetDiscoveredBackends has been called, returns the new value.
+	// Otherwise, returns the existing value from the VirtualMCPServer status.
+	GetDiscoveredBackends() []mcpv1alpha1.DiscoveredBackend
+
 	// UpdateStatus applies all collected status changes in a single batch update.
 	// Returns true if updates were applied, false if no changes were collected.
 	UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool

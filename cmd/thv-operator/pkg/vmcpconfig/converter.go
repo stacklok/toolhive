@@ -125,7 +125,6 @@ func (c *Converter) Convert(
 	}
 
 	config.Telemetry = spectoconfig.ConvertTelemetryConfig(ctx, vmcp.Spec.Telemetry, vmcp.Name)
-	config.Audit = spectoconfig.ConvertAuditConfig(ctx, vmcp.Spec.Audit, vmcp.Name)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -854,7 +853,7 @@ func convertOutputProperty(
 
 // convertOperational converts OperationalConfig from CRD to vmcp config
 func (*Converter) convertOperational(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.OperationalConfig {
 	operational := &vmcpconfig.OperationalConfig{}
@@ -887,7 +886,12 @@ func (*Converter) convertOperational(
 
 		// Parse health check interval
 		if vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
-			if duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval); err == nil {
+			duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
+			if err != nil {
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to parse HealthCheckInterval, health monitoring will be disabled",
+					"value", vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
+			} else {
 				operational.FailureHandling.HealthCheckInterval = vmcpconfig.Duration(duration)
 			}
 		}

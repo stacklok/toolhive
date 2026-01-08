@@ -1,8 +1,10 @@
 {{- define "type" -}}
 {{- $type := . -}}
 {{- if markdownShouldRenderType $type -}}
-{{- /* Skip types marked with +hidefromdoc */ -}}
-{{- if not (index $type.Markers "hidefromdoc") -}}
+{{- /* Render types with +gendoc marker OR in api/v1alpha1 package */ -}}
+{{- $hasGendoc := index $type.Markers "gendoc" -}}
+{{- $isV1alpha1 := regexMatch "v1alpha1" $type.Package -}}
+{{- if or $hasGendoc $isV1alpha1 -}}
 
 #### {{ base $type.Package }}.{{ $type.Name }}
 

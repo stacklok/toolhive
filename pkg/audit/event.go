@@ -38,8 +38,6 @@ limitations under the License.
 // It is highly recommended to use the NewAuditEvent function to create
 // audit events and set the required fields.
 //
-// +hidefromdoc
-//
 //nolint:revive // AuditEvent name is intentional for compatibility with auditevent library
 type AuditEvent struct {
 	Metadata EventMetadata `json:"metadata"`
@@ -82,8 +80,6 @@ type AuditEvent struct {
 }
 
 // EventMetadata contains metadata about the audit event.
-//
-// +hidefromdoc
 type EventMetadata struct {
 	// AuditID: is a unique identifier for the audit event.
 	AuditID string `json:"auditId"`
@@ -93,8 +89,6 @@ type EventMetadata struct {
 }
 
 // EventSource represents the source of an audit event.
-//
-// +hidefromdoc
 type EventSource struct {
 	// Type indicates the source type. e.g. Network, File, local, etc.
 	// The intent is to determine where a request came from.

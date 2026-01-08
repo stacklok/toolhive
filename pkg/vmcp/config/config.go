@@ -67,6 +67,7 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // +kubebuilder:object:generate=true
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
+// +gendoc
 type Config struct {
 	// Name is the virtual MCP server name.
 	// +optional

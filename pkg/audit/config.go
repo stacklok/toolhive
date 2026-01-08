@@ -15,6 +15,7 @@ import (
 
 // Config represents the audit logging configuration.
 // +kubebuilder:object:generate=true
+// +gendoc
 type Config struct {
 	// Component is the component name to use in audit events
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`

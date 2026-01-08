@@ -55,80 +55,12 @@ _Appears in:_
 ## toolhive.stacklok.dev/config
 
 
-#### config.AggregationConfig
 
 
 
-AggregationConfig configures capability aggregation.
 
 
 
-_Appears in:_
-- [config.Config](#configconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `conflictResolution` _[ConflictResolutionStrategy](#conflictresolutionstrategy)_ | ConflictResolution is the strategy: "prefix", "priority", "manual" |  |  |
-| `conflictResolutionConfig` _[ConflictResolutionConfig](#conflictresolutionconfig)_ | ConflictResolutionConfig contains strategy-specific configuration. |  |  |
-| `tools` _[WorkloadToolConfig](#workloadtoolconfig) array_ | Tools contains per-workload tool configuration. |  |  |
-| `excludeAllTools` _boolean_ |  |  |  |
-
-
-#### config.AuthzConfig
-
-
-
-AuthzConfig configures authorization.
-
-
-
-_Appears in:_
-- [config.IncomingAuthConfig](#configincomingauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the authz type: "cedar", "none" |  |  |
-| `policies` _string array_ | Policies contains Cedar policy definitions (when Type = "cedar"). |  |  |
-
-
-#### config.CircuitBreakerConfig
-
-
-
-CircuitBreakerConfig configures circuit breaker.
-
-
-
-_Appears in:_
-- [config.FailureHandlingConfig](#configfailurehandlingconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled indicates if circuit breaker is enabled. |  |  |
-| `failureThreshold` _integer_ | FailureThreshold is how many failures trigger open circuit. |  |  |
-| `timeout` _[Duration](#duration)_ | Timeout is how long to keep circuit open. |  |  |
-
-
-#### config.CompositeToolConfig
-
-
-
-CompositeToolConfig defines a composite tool workflow.
-This matches the YAML structure from the proposal (lines 173-255).
-
-
-
-_Appears in:_
-- [config.Config](#configconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the workflow name (unique identifier). |  |  |
-| `description` _string_ | Description describes what the workflow does. |  |  |
-| `parameters` _[Map](#map)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  |  |
-| `timeout` _[Duration](#duration)_ | Timeout is the maximum workflow execution time. |  |  |
-| `steps` _[WorkflowStepConfig](#workflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
-| `output` _[OutputConfig](#outputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
 #### config.Config
@@ -161,299 +93,40 @@ _Appears in:_
 | `audit` _[Config](#config)_ | Audit configures audit logging settings. |  |  |
 
 
-#### config.ConflictResolutionConfig
 
 
 
-ConflictResolutionConfig contains conflict resolution settings.
 
 
 
-_Appears in:_
-- [config.AggregationConfig](#configaggregationconfig)
 
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `prefixFormat` _string_ | PrefixFormat is the prefix format (for prefix strategy).<br />Options: "\{workload\}", "\{workload\}_", "\{workload\}.", custom string |  |  |
-| `priorityOrder` _string array_ | PriorityOrder is the explicit priority ordering (for priority strategy). |  |  |
 
 
 
 
-#### config.Duration
 
-_Underlying type:_ _time.Duration_
 
-Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
-This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
 
 
 
-_Appears in:_
-- [config.CircuitBreakerConfig](#configcircuitbreakerconfig)
-- [config.CompositeToolConfig](#configcompositetoolconfig)
-- [config.FailureHandlingConfig](#configfailurehandlingconfig)
-- [config.StepErrorHandling](#configsteperrorhandling)
-- [config.TimeoutConfig](#configtimeoutconfig)
-- [config.WorkflowStepConfig](#configworkflowstepconfig)
 
 
 
-#### config.ElicitationResponseConfig
 
 
 
-ElicitationResponseConfig defines how to handle elicitation responses.
 
 
 
-_Appears in:_
-- [config.WorkflowStepConfig](#configworkflowstepconfig)
 
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action: "skip_remaining", "abort", "continue" |  |  |
 
 
-#### config.FailureHandlingConfig
 
 
 
-FailureHandlingConfig configures failure handling.
 
 
 
-_Appears in:_
-- [config.OperationalConfig](#configoperationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `healthCheckInterval` _[Duration](#duration)_ | HealthCheckInterval is how often to check backend health. |  |  |
-| `unhealthyThreshold` _integer_ | UnhealthyThreshold is how many failures before marking unhealthy. |  |  |
-| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends fail.<br />Options: "fail" (fail entire request), "best_effort" (return partial results) |  |  |
-| `circuitBreaker` _[CircuitBreakerConfig](#circuitbreakerconfig)_ | CircuitBreaker configures circuit breaker settings. |  |  |
-
-
-#### config.IncomingAuthConfig
-
-
-
-IncomingAuthConfig configures client authentication to the virtual MCP server.
-
-
-
-_Appears in:_
-- [config.Config](#configconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the auth type: "oidc", "local", "anonymous" |  |  |
-| `oidc` _[OIDCConfig](#oidcconfig)_ | OIDC contains OIDC configuration (when Type = "oidc"). |  |  |
-| `authz` _[AuthzConfig](#authzconfig)_ | Authz contains authorization configuration (optional). |  |  |
-
-
-
-
-#### config.OIDCConfig
-
-
-
-OIDCConfig configures OpenID Connect authentication.
-
-
-
-_Appears in:_
-- [config.IncomingAuthConfig](#configincomingauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `issuer` _string_ | Issuer is the OIDC issuer URL. |  |  |
-| `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
-| `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
-| `audience` _string_ | Audience is the required token audience. |  |  |
-| `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
-| `scopes` _string array_ | Scopes are the required OAuth scopes. |  |  |
-| `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
-| `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
-
-
-#### config.OperationalConfig
-
-
-
-OperationalConfig contains operational settings.
-
-
-
-_Appears in:_
-- [config.Config](#configconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `timeouts` _[TimeoutConfig](#timeoutconfig)_ | Timeouts configures request timeouts. |  |  |
-| `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
-
-
-#### config.OutgoingAuthConfig
-
-
-
-OutgoingAuthConfig configures backend authentication.
-
-
-
-_Appears in:_
-- [config.Config](#configconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `source` _string_ | Source defines how to discover backend auth: "inline", "discovered"<br />- inline: Explicit configuration in OutgoingAuth<br />- discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only) |  |  |
-| `default` _[BackendAuthStrategy](#backendauthstrategy)_ | Default is the default auth strategy for backends without explicit config. |  |  |
-| `backends` _object (keys:string, values:[BackendAuthStrategy](#backendauthstrategy))_ | Backends contains per-backend auth configuration. |  |  |
-
-
-#### config.OutputConfig
-
-
-
-OutputConfig defines the structured output schema for a composite tool workflow.
-This follows the same pattern as the Parameters field, defining both the
-MCP output schema (type, description) and runtime value construction (value, default).
-
-
-
-_Appears in:_
-- [config.CompositeToolConfig](#configcompositetoolconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `properties` _object (keys:string, values:[OutputProperty](#outputproperty))_ | Properties defines the output properties.<br />Map key is the property name, value is the property definition. |  |  |
-| `required` _string array_ | Required lists property names that must be present in the output. |  |  |
-
-
-#### config.OutputProperty
-
-
-
-OutputProperty defines a single output property.
-For non-object types, Value is required.
-For object types, either Value or Properties must be specified (but not both).
-
-
-
-_Appears in:_
-- [config.OutputConfig](#configoutputconfig)
-- [config.OutputProperty](#configoutputproperty)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array". |  |  |
-| `description` _string_ | Description is a human-readable description exposed to clients and models. |  |  |
-| `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  |  |
-| `properties` _object (keys:string, values:[OutputProperty](#outputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br /> |
-| `default` _[Any](#any)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  |  |
-
-
-#### config.StepErrorHandling
-
-
-
-StepErrorHandling defines error handling for a workflow step.
-
-
-
-_Appears in:_
-- [config.WorkflowStepConfig](#configworkflowstepconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action: "abort", "continue", "retry" |  |  |
-| `retryCount` _integer_ | RetryCount is the number of retry attempts (for retry action). |  |  |
-| `retryDelay` _[Duration](#duration)_ | RetryDelay is the initial delay between retries. |  |  |
-
-
-#### config.TimeoutConfig
-
-
-
-TimeoutConfig configures timeouts.
-
-
-
-_Appears in:_
-- [config.OperationalConfig](#configoperationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `default` _[Duration](#duration)_ | Default is the default timeout for backend requests. |  |  |
-| `perWorkload` _object (keys:string, values:[Duration](#duration))_ | PerWorkload contains per-workload timeout overrides. |  |  |
-
-
-#### config.ToolOverride
-
-
-
-ToolOverride defines tool name/description overrides.
-
-
-
-_Appears in:_
-- [config.WorkloadToolConfig](#configworkloadtoolconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the new tool name (for renaming). |  |  |
-| `description` _string_ | Description is the new tool description (for updating). |  |  |
-
-
-
-
-#### config.WorkflowStepConfig
-
-
-
-WorkflowStepConfig defines a single workflow step.
-This matches the proposal's step configuration (lines 180-255).
-
-
-
-_Appears in:_
-- [config.CompositeToolConfig](#configcompositetoolconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `id` _string_ | ID uniquely identifies this step. |  |  |
-| `type` _string_ | Type is the step type: "tool", "elicitation" |  |  |
-| `tool` _string_ | Tool is the tool name to call (for tool steps). |  |  |
-| `arguments` _[Map](#map)_ | Arguments are the tool arguments (supports template expansion). |  |  |
-| `condition` _string_ | Condition is an optional execution condition (template syntax). |  |  |
-| `dependsOn` _string array_ | DependsOn lists step IDs that must complete first (for DAG execution). |  |  |
-| `onError` _[StepErrorHandling](#steperrorhandling)_ | OnError defines error handling for this step. |  |  |
-| `message` _string_ | Elicitation config (for elicitation steps). |  |  |
-| `schema` _[Map](#map)_ |  |  |  |
-| `timeout` _[Duration](#duration)_ |  |  |  |
-| `onDecline` _[ElicitationResponseConfig](#elicitationresponseconfig)_ | Elicitation response handlers. |  |  |
-| `onCancel` _[ElicitationResponseConfig](#elicitationresponseconfig)_ |  |  |  |
-| `defaultResults` _[Map](#map)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps. |  |  |
-
-
-#### config.WorkloadToolConfig
-
-
-
-WorkloadToolConfig configures tool filtering/overrides for a workload.
-
-
-
-_Appears in:_
-- [config.AggregationConfig](#configaggregationconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `workload` _string_ | Workload is the workload name/ID. |  |  |
-| `filter` _string array_ | Filter is the list of tools to include (nil = include all). |  |  |
-| `overrides` _object (keys:string, values:[ToolOverride](#tooloverride))_ | Overrides maps tool names to override configurations. |  |  |
-| `excludeAll` _boolean_ |  |  |  |
 
 
 

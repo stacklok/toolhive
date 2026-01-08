@@ -31,6 +31,17 @@ import (
 //
 // Implementation status: DynamicRegistry is fully integrated with BackendReconciler that
 // watches MCPServer/MCPRemoteProxy resources and updates the registry in real-time.
+
+// getBackendName safely extracts the backend name from a status response interface.
+func getBackendName(b interface{}) string {
+	if backend, ok := b.(map[string]interface{}); ok {
+		if name, ok := backend["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
 var _ = Describe("VirtualMCPServer Lifecycle - Dynamic Backend Discovery", Ordered, func() {
 	var (
 		testNamespace   = "default"
@@ -890,7 +901,8 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 			err = json.NewDecoder(resp.Body).Decode(&initialStatus)
 			Expect(err).NotTo(HaveOccurred())
 
-			initialBackends := initialStatus["backends"].([]interface{})
+			initialBackends, ok := initialStatus["backends"].([]interface{})
+			Expect(ok).To(BeTrue(), "backends field should be an array")
 			initialCount := len(initialBackends)
 
 			By("Creating a new backend MCPServer in the same group")
@@ -938,15 +950,17 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 					return false
 				}
 
-				backends := status["backends"].([]interface{})
+				backends, ok := status["backends"].([]interface{})
+				if !ok {
+					return false
+				}
 				if len(backends) != initialCount+1 {
 					return false
 				}
 
 				// Check that the new backend is in the list
 				for _, b := range backends {
-					backend := b.(map[string]interface{})
-					if strings.Contains(backend["name"].(string), dynamicBackend1Name) {
+					if strings.Contains(getBackendName(b), dynamicBackend1Name) {
 						return true
 					}
 				}
@@ -986,10 +1000,12 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 					return false
 				}
 
-				backends := status["backends"].([]interface{})
+				backends, ok := status["backends"].([]interface{})
+				if !ok {
+					return false
+				}
 				for _, b := range backends {
-					backend := b.(map[string]interface{})
-					if strings.Contains(backend["name"].(string), dynamicBackend2Name) {
+					if strings.Contains(getBackendName(b), dynamicBackend2Name) {
 						return true
 					}
 				}
@@ -1038,8 +1054,7 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 				}
 
 				for _, b := range backends {
-					backend := b.(map[string]interface{})
-					if strings.Contains(backend["name"].(string), dynamicBackend2Name) {
+					if strings.Contains(getBackendName(b), dynamicBackend2Name) {
 						return false // Backend still present
 					}
 				}
@@ -1111,10 +1126,12 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 					return true
 				}
 
-				backends := status["backends"].([]interface{})
+				backends, ok := status["backends"].([]interface{})
+				if !ok {
+					return true // Continue checking if structure is unexpected
+				}
 				for _, b := range backends {
-					backend := b.(map[string]interface{})
-					if strings.Contains(backend["name"].(string), "other-group-backend") {
+					if strings.Contains(getBackendName(b), "other-group-backend") {
 						return false // Backend found - test should fail
 					}
 				}
@@ -1217,7 +1234,8 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 			Expect(backends).NotTo(BeEmpty(), "Should have at least one backend")
 
 			// Verify backend structure
-			backend := backends[0].(map[string]interface{})
+			backend, ok := backends[0].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "backend should be a map")
 			Expect(backend).To(HaveKey("name"))
 			Expect(backend).To(HaveKey("health"))
 			Expect(backend).To(HaveKey("transport"))

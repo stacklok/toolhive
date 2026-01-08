@@ -50,6 +50,15 @@ func (m *mockRegistry) Upsert(backend vmcp.Backend) error {
 func (m *mockRegistry) Remove(backendID string) error {
 	m.removedIDs = append(m.removedIDs, backendID)
 	m.version++
+
+	// Actually remove the backend from upsertedBackends to match real registry behavior
+	for i, backend := range m.upsertedBackends {
+		if backend.ID == backendID {
+			m.upsertedBackends = append(m.upsertedBackends[:i], m.upsertedBackends[i+1:]...)
+			break
+		}
+	}
+
 	return nil
 }
 
@@ -74,9 +83,10 @@ func (m *mockRegistry) Count() int {
 	return len(m.upsertedBackends)
 }
 
-// newTestReconciler creates a BackendReconciler for testing with fake client and mocks
+// newTestReconciler creates a BackendReconciler for testing with fake client and mocks.
+// Parameters provide flexibility for future tests and make test setup explicit and self-documenting.
 //
-//nolint:unparam // Parameters provide flexibility for future tests even if current tests use same values
+//nolint:unparam // namespace and groupRef parameters make tests self-documenting
 func newTestReconciler(
 	k8sClient client.Client,
 	namespace string,

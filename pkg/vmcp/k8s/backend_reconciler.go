@@ -24,6 +24,12 @@ import (
 // can be added/removed without restarting the vMCP server. It filters backends
 // by groupRef to only process workloads belonging to the configured MCPGroup.
 //
+// Namespace Scoping:
+//   - Each BackendWatcher (and its reconciler) is scoped to a SINGLE namespace
+//   - The controller-runtime manager is configured with DefaultNamespaces (single namespace)
+//   - Backend IDs use name-only format (no namespace prefix) because namespace collisions are impossible
+//   - This matches how the discoverer stores backends (ID = resource.Name)
+//
 // Design Philosophy:
 //   - Reuses existing conversion logic from workloads.Discoverer.GetWorkloadAsVMCPBackend()
 //   - Filters workloads by groupRef before conversion (security + performance)
@@ -67,96 +73,132 @@ type BackendReconciler struct {
 // Returns:
 //   - ctrl.Result{}, nil: Reconciliation succeeded, no requeue needed
 //   - ctrl.Result{}, err: Reconciliation failed, controller-runtime will requeue
-//
-//nolint:gocyclo // Reconciler complexity is inherent to handling multiple resource types and error cases
 func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Fetch backend resource and determine type
+	resourceInfo, err := r.fetchBackendResource(ctx, req.NamespacedName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Resource deleted - remove from registry
+	if resourceInfo == nil {
+		return r.removeBackendFromRegistry(ctx, req.Name, "Resource deleted")
+	}
+
+	// GroupRef filtering: Only process backends belonging to our MCPGroup
+	if resourceInfo.GroupRef != r.GroupRef {
+		ctxLogger.V(1).Info(
+			"Resource does not match groupRef, removing from registry",
+			"backendID", req.Name,
+			"resourceGroupRef", resourceInfo.GroupRef,
+			"watcherGroupRef", r.GroupRef,
+		)
+		return r.removeBackendFromRegistry(ctx, req.Name, "GroupRef mismatch")
+	}
+
+	// Convert resource to vmcp.Backend and upsert to registry
+	return r.convertAndUpsertBackend(ctx, req.Name, resourceInfo)
+}
+
+// backendResourceInfo holds information about a fetched backend resource
+type backendResourceInfo struct {
+	Name     string
+	GroupRef string
+	Type     workloads.WorkloadType
+}
+
+// fetchBackendResource attempts to fetch a resource as MCPServer or MCPRemoteProxy.
+//
+// Returns:
+//   - (*backendResourceInfo, nil) if resource exists (MCPServer or MCPRemoteProxy)
+//   - (nil, nil) if both resources are NotFound (resource deleted)
+//   - (nil, error) if API error occurs (returns first non-NotFound error)
+func (r *BackendReconciler) fetchBackendResource(
+	ctx context.Context,
+	namespacedName types.NamespacedName,
+) (*backendResourceInfo, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Try to fetch as MCPServer first
 	mcpServer := &mcpv1alpha1.MCPServer{}
-	errServer := r.Get(ctx, req.NamespacedName, mcpServer)
+	errServer := r.Get(ctx, namespacedName, mcpServer)
+
+	if errServer == nil {
+		return &backendResourceInfo{
+			Name:     mcpServer.Name,
+			GroupRef: mcpServer.Spec.GroupRef,
+			Type:     workloads.WorkloadTypeMCPServer,
+		}, nil
+	}
 
 	// Try to fetch as MCPRemoteProxy
 	mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
-	errProxy := r.Get(ctx, req.NamespacedName, mcpRemoteProxy)
+	errProxy := r.Get(ctx, namespacedName, mcpRemoteProxy)
 
-	// Determine which resource type we're reconciling
-	var (
-		isServer        bool
-		isProxy         bool
-		currentGroupRef string
-	)
+	if errProxy == nil {
+		return &backendResourceInfo{
+			Name:     mcpRemoteProxy.Name,
+			GroupRef: mcpRemoteProxy.Spec.GroupRef,
+			Type:     workloads.WorkloadTypeMCPRemoteProxy,
+		}, nil
+	}
 
-	if errServer == nil {
-		isServer = true
-		currentGroupRef = mcpServer.Spec.GroupRef
-	} else if errProxy == nil {
-		isProxy = true
-		currentGroupRef = mcpRemoteProxy.Spec.GroupRef
-	} else if errors.IsNotFound(errServer) && errors.IsNotFound(errProxy) {
-		// Resource deleted - remove from registry
-		// Use name only (not namespace/name) to match how discoverer stores it
-		backendID := req.Name
-		ctxLogger.Info("Resource deleted, removing from registry", "backendID", backendID)
+	// Both resources not found - resource deleted
+	if errors.IsNotFound(errServer) && errors.IsNotFound(errProxy) {
+		return nil, nil
+	}
 
-		if err := r.Registry.Remove(backendID); err != nil {
-			ctxLogger.Error(err, "Failed to remove backend from registry")
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{}, nil
-	} else {
-		// Unexpected error fetching resource
-		if errServer != nil {
-			ctxLogger.Error(errServer, "Failed to get MCPServer")
-			return ctrl.Result{}, errServer
-		}
+	// Return first non-NotFound error (prioritize real API errors)
+	if errServer != nil && !errors.IsNotFound(errServer) {
+		ctxLogger.Error(errServer, "Failed to get MCPServer")
+		return nil, errServer
+	}
+	if errProxy != nil && !errors.IsNotFound(errProxy) {
 		ctxLogger.Error(errProxy, "Failed to get MCPRemoteProxy")
-		return ctrl.Result{}, errProxy
+		return nil, errProxy
 	}
 
-	// GroupRef filtering: Only process backends belonging to our MCPGroup
-	// This provides security isolation between vMCP servers
-	if currentGroupRef != r.GroupRef {
-		// Backend no longer belongs to this group - remove from registry
-		// Use name only (not namespace/name) to match how discoverer stores it
-		backendID := req.Name
-		ctxLogger.V(1).Info(
-			"Resource does not match groupRef, removing from registry",
-			"backendID", backendID,
-			"resourceGroupRef", currentGroupRef,
-			"watcherGroupRef", r.GroupRef,
-		)
+	// One is NotFound, the other is nil - should not happen in practice
+	// Handle gracefully by treating as deleted
+	return nil, nil
+}
 
-		if err := r.Registry.Remove(backendID); err != nil {
-			ctxLogger.Error(err, "Failed to remove backend from registry after groupRef mismatch")
-			return ctrl.Result{}, err
-		}
+// removeBackendFromRegistry removes a backend from the registry with consistent logging.
+// Safe to use name-only ID because BackendWatcher is namespace-scoped.
+func (r *BackendReconciler) removeBackendFromRegistry(ctx context.Context, backendID, reason string) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+	ctxLogger.Info("Removing backend from registry", "backendID", backendID, "reason", reason)
 
-		return ctrl.Result{}, nil
+	if err := r.Registry.Remove(backendID); err != nil {
+		ctxLogger.Error(err, "Failed to remove backend from registry")
+		return ctrl.Result{}, err
 	}
 
-	// Convert resource to vmcp.Backend using existing discoverer
-	// The discoverer handles auth resolution, URL discovery, and all backend conversion logic
-	var workload workloads.TypedWorkload
-	if isServer {
-		workload = workloads.TypedWorkload{
-			Name: mcpServer.Name,
-			Type: workloads.WorkloadTypeMCPServer,
-		}
-	} else if isProxy {
-		workload = workloads.TypedWorkload{
-			Name: mcpRemoteProxy.Name,
-			Type: workloads.WorkloadTypeMCPRemoteProxy,
-		}
+	return ctrl.Result{}, nil
+}
+
+// convertAndUpsertBackend converts a backend resource to vmcp.Backend and upserts to registry.
+func (r *BackendReconciler) convertAndUpsertBackend(
+	ctx context.Context,
+	backendID string,
+	resourceInfo *backendResourceInfo,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Build TypedWorkload for discoverer
+	workload := workloads.TypedWorkload{
+		Name: resourceInfo.Name,
+		Type: resourceInfo.Type,
 	}
 
+	// Convert to vmcp.Backend using discoverer (handles auth resolution, URL discovery)
 	backend, err := r.Discoverer.GetWorkloadAsVMCPBackend(ctx, workload)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to convert workload to backend", "workload", workload.Name)
 		// Remove from registry if conversion fails (could be auth failure)
-		// Use name only (not namespace/name) to match how discoverer stores it
-		backendID := req.Name
+		// Ignore removal errors and return the original conversion error for requeue
 		if removeErr := r.Registry.Remove(backendID); removeErr != nil {
 			ctxLogger.Error(removeErr, "Failed to remove backend after conversion error")
 		}
@@ -166,22 +208,11 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// backend is nil if auth resolution failed or workload not accessible
 	// This is a security-critical check - we MUST NOT add backends without valid auth
 	if backend == nil {
-		// Use name only (not namespace/name) to match how discoverer stores it
-		backendID := req.Name
-		ctxLogger.Info(
-			"Backend conversion returned nil (auth failure or no URL), removing from registry",
-			"backendID", backendID,
-		)
-		if err := r.Registry.Remove(backendID); err != nil {
-			ctxLogger.Error(err, "Failed to remove backend after nil conversion")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		ctxLogger.Info("Backend conversion returned nil (auth failure or no URL)", "backendID", backendID)
+		return r.removeBackendFromRegistry(ctx, backendID, "Auth failure or no URL")
 	}
 
 	// Upsert backend to registry (triggers version increment + cache invalidation)
-	// The DynamicRegistry's version-based invalidation ensures the discovery manager
-	// detects this change and invalidates cached capabilities on next access
 	if err := r.Registry.Upsert(*backend); err != nil {
 		ctxLogger.Error(err, "Failed to upsert backend to registry", "backendID", backend.ID)
 		return ctrl.Result{}, err
@@ -199,20 +230,26 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // SetupWithManager registers the BackendReconciler with the controller manager.
 //
 // This method configures the reconciler to watch:
-//   - MCPServers (primary resource, watched via For())
+//   - MCPServers (secondary watch via Watches() with groupRef filtering)
 //   - MCPRemoteProxies (mapped via event handler with groupRef filter)
 //   - MCPExternalAuthConfigs (mapped to servers/proxies that reference them)
+//
+// Note: We use Watches() instead of For() for MCPServer because MCPServerReconciler
+// is already the primary controller. Using For() in multiple controllers causes
+// reconciliation conflicts and race conditions.
 //
 // The reconciler does NOT watch Secrets directly for performance reasons.
 // Secrets change frequently for unrelated reasons (TLS certs, app configs, etc.).
 // Auth updates will trigger via ExternalAuthConfig changes or pod restarts.
 //
 // Watch Design:
-//  1. For(&MCPServer{}) - Primary resource, all changes trigger reconciliation
-//  2. Watches(&MCPRemoteProxy{}) - Secondary resource, filtered by groupRef
+//  1. Watches(&MCPServer{}) - Secondary watch with groupRef filter
+//  2. Watches(&MCPRemoteProxy{}) - Secondary watch with groupRef filter
 //  3. Watches(&ExternalAuthConfig{}) - Maps to servers/proxies that reference it
 //
 // All watches are scoped to the reconciler's namespace (configured in BackendWatcher).
+//
+//nolint:gocyclo // Event handlers and watch setup require multiple conditional paths
 func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Event handler for ExternalAuthConfig changes
 	// Maps ExternalAuthConfig → MCPServers/MCPRemoteProxies that reference it
@@ -277,6 +314,31 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// Event handler for MCPServer changes
+	// Maps MCPServer events → reconcile requests with groupRef filter
+	serverHandler := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, obj client.Object) []reconcile.Request {
+			server, ok := obj.(*mcpv1alpha1.MCPServer)
+			if !ok {
+				return nil
+			}
+
+			// Only reconcile if matches groupRef (security + performance)
+			if server.Spec.GroupRef != r.GroupRef {
+				return nil
+			}
+
+			return []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      server.Name,
+						Namespace: server.Namespace,
+					},
+				},
+			}
+		},
+	)
+
 	// Event handler for MCPRemoteProxy changes
 	// Maps MCPRemoteProxy events → reconcile requests with groupRef filter
 	proxyHandler := handler.EnqueueRequestsFromMapFunc(
@@ -305,8 +367,8 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	controllerName := "backend-reconciler-" + r.GroupRef
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
-		For(&mcpv1alpha1.MCPServer{}).                                            // Primary watch on MCPServer
-		Watches(&mcpv1alpha1.MCPRemoteProxy{}, proxyHandler).                     // Secondary watch on MCPRemoteProxy
+		Watches(&mcpv1alpha1.MCPServer{}, serverHandler).                         // Watch MCPServer as secondary controller
+		Watches(&mcpv1alpha1.MCPRemoteProxy{}, proxyHandler).                     // Watch MCPRemoteProxy
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler). // Watch auth configs
 		Complete(r)
 }

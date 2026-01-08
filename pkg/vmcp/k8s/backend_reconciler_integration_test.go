@@ -77,7 +77,6 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	cancel()
-	time.Sleep(100 * time.Millisecond)
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
@@ -91,10 +90,11 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 	)
 
 	var (
-		registry       vmcp.DynamicRegistry
-		reconcilerMgr  ctrl.Manager
-		reconcilerCtx  context.Context
-		reconcilerStop context.CancelFunc
+		registry         vmcp.DynamicRegistry
+		reconcilerMgr    ctrl.Manager
+		reconcilerCtx    context.Context
+		reconcilerStop   context.CancelFunc
+		reconcilerStopped chan struct{}
 	)
 
 	BeforeEach(func() {
@@ -129,8 +129,10 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 
 		// Start the manager in a goroutine
 		reconcilerCtx, reconcilerStop = context.WithCancel(ctx)
+		reconcilerStopped = make(chan struct{})
 		go func() {
 			defer GinkgoRecover()
+			defer close(reconcilerStopped)
 			err := reconcilerMgr.Start(reconcilerCtx)
 			Expect(err).NotTo(HaveOccurred())
 		}()
@@ -142,11 +144,17 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 	})
 
 	AfterEach(func() {
-		// Stop the reconciler manager
+		// Stop the reconciler manager and wait for it to finish
 		if reconcilerStop != nil {
 			reconcilerStop()
+			// Wait for manager to fully stop with timeout
+			select {
+			case <-reconcilerStopped:
+				// Manager stopped cleanly
+			case <-time.After(5 * time.Second):
+				Fail("Manager did not stop within timeout")
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	})
 
 	Context("MCPServer Lifecycle", func() {
@@ -203,7 +211,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 			}, time.Second*2, interval).Should(Equal(0))
 		})
 
-		It("should remove MCPServer from registry when deleted", func() {
+		It("should handle MCPServer deletion (no-op in envtest)", func() {
 			// Create MCPServer
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -219,16 +227,21 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait a bit for reconciliation
-			time.Sleep(time.Second)
+			// Note: Backend is never added because GetWorkloadAsVMCPBackend returns nil
+			// (no deployment/service exists in envtest). This test verifies reconciler
+			// handles creation/deletion without errors, but can't test actual removal
+			// since the backend was never added in the first place.
+			Consistently(func() int {
+				return registry.Count()
+			}, time.Second*2, interval).Should(Equal(0), "Backend should remain not added")
 
 			// Delete the MCPServer
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// Verify eventual deletion from registry (if it was ever added)
-			Eventually(func() int {
+			// Verify reconciler handles deletion without errors (still 0 backends)
+			Consistently(func() int {
 				return registry.Count()
-			}, timeout, interval).Should(Equal(0))
+			}, time.Second*2, interval).Should(Equal(0), "Backend count should remain 0")
 		})
 	})
 

@@ -439,7 +439,7 @@ func TestConfigTypesDocumentedInCRDAPI(t *testing.T) {
 			"To fix this:\n"+
 			"1. Add '// +gendoc' marker above the struct definition\n"+
 			"2. Ensure the package has a doc.go with '// +groupName=toolhive.stacklok.dev'\n"+
-			"3. Run 'task operator-manifests' from the repo root to regenerate docs",
+			"3. Run 'task crdref-gen' from cmd/thv-operator to regenerate CRD docs",
 			strings.Join(missingTypes, "\n  "))
 	}
 }

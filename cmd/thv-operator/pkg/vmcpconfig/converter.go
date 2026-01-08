@@ -130,7 +130,14 @@ func (c *Converter) Convert(
 		telemetryConfigFromEmbedded(vmcp.Spec.Config.Telemetry),
 		vmcp.Name,
 	)
-	config.Audit = spectoconfig.ConvertAuditConfig(ctx, vmcp.Spec.Audit, vmcp.Name)
+
+	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
+		config.Audit = vmcp.Spec.Config.Audit
+	}
+
+	if config.Audit != nil && config.Audit.Component == "" {
+		config.Audit.Component = vmcp.Name
+	}
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()

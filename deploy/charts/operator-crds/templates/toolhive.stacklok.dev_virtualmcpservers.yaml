@@ -719,8 +719,10 @@ spec:
                       In Kubernetes, the referenced MCPGroup must exist in the same namespace.
                     type: string
                   incomingAuth:
-                    description: IncomingAuth configures how clients authenticate
-                      to the virtual MCP server.
+                    description: |-
+                      IncomingAuth configures how clients authenticate to the virtual MCP server.
+                      When using the Kubernetes operator, this is populated by the converter from
+                      VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded.
                     properties:
                       authz:
                         description: Authz contains authorization configuration (optional).
@@ -1109,8 +1111,11 @@ spec:
                 x-kubernetes-preserve-unknown-fields: true
               incomingAuth:
                 description: |-
-                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-                  Must be explicitly set - use "anonymous" type when no authentication is required
+                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
+                  Must be explicitly set - use "anonymous" type when no authentication is required.
+                  This field takes precedence over config.IncomingAuth and should be preferred because it
+                  supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+                  dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
                 properties:
                   authzConfig:
                     description: |-

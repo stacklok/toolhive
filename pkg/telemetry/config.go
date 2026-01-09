@@ -20,6 +20,7 @@ import (
 
 // Config holds the configuration for OpenTelemetry instrumentation.
 // +kubebuilder:object:generate=true
+// +gendoc
 type Config struct {
 	// Endpoint is the OTLP endpoint URL
 	Endpoint string `json:"endpoint" yaml:"endpoint"`

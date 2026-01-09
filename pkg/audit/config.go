@@ -15,6 +15,7 @@ import (
 
 // Config represents the audit logging configuration.
 // +kubebuilder:object:generate=true
+// +gendoc
 type Config struct {
 	// Enabled controls whether audit logging is enabled.
 	// When true, enables audit logging with the configured options.

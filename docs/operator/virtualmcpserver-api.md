@@ -130,7 +130,7 @@ spec:
   - `external_auth_config_ref`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=external_auth_config_ref)
 
-### `.spec.aggregation` (optional)
+### `.spec.config.aggregation` (optional)
 
 Defines tool aggregation and conflict resolution strategies.
 
@@ -143,60 +143,68 @@ Defines tool aggregation and conflict resolution strategies.
   - `manual`: Explicitly define overrides for all conflicts
 - `conflictResolutionConfig` (ConflictResolutionConfig, optional): Configuration for the chosen strategy
 - `tools` ([]WorkloadToolConfig, optional): Per-workload tool filtering and overrides
+- `excludeAllTools` (bool, optional): Excludes all tools from aggregation when true
 
 **Example (prefix strategy)**:
 ```yaml
 spec:
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr"]
-      - workload: jira
-        toolConfigRef:
-          name: jira-tool-config
+  config:
+    groupRef: my-services
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr"]
+        - workload: jira
+          toolConfigRef:
+            name: jira-tool-config
 ```
 
 **Example (priority strategy)**:
 ```yaml
 spec:
-  aggregation:
-    conflictResolution: priority
-    conflictResolutionConfig:
-      priorityOrder: ["github", "jira", "slack"]
+  config:
+    groupRef: my-services
+    aggregation:
+      conflictResolution: priority
+      conflictResolutionConfig:
+        priorityOrder: ["github", "jira", "slack"]
 ```
 
 **Example (manual strategy)**:
 ```yaml
 spec:
-  aggregation:
-    conflictResolution: manual
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr", "list_repos"]
-        overrides:
-          create_pr:
-            name: github_create_pr
-            description: "Create a pull request in GitHub"
-      - workload: jira
-        filter: ["create_issue", "update_issue"]
-        overrides:
-          create_issue:
-            name: jira_create_issue
-            description: "Create an issue in Jira"
-      # All tool name conflicts must be explicitly resolved via overrides
-      # Runtime validation ensures no unresolved conflicts exist
+  config:
+    groupRef: my-services
+    aggregation:
+      conflictResolution: manual
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr", "list_repos"]
+          overrides:
+            create_pr:
+              name: github_create_pr
+              description: "Create a pull request in GitHub"
+        - workload: jira
+          filter: ["create_issue", "update_issue"]
+          overrides:
+            create_issue:
+              name: jira_create_issue
+              description: "Create an issue in Jira"
+        # All tool name conflicts must be explicitly resolved via overrides
+        # Runtime validation ensures no unresolved conflicts exist
 ```
 
 #### WorkloadToolConfig
 
 **Fields**:
 - `workload` (string, required): Name of the backend MCPServer workload
-- `toolConfigRef` (ToolConfigRef, optional): Reference to MCPToolConfig resource
+- `toolConfigRef` (ToolConfigRef, optional): Reference to MCPToolConfig resource for Kubernetes deployments
 - `filter` ([]string, optional): Inline list of tool names to allow (only used if toolConfigRef not specified)
 - `overrides` (map[string]ToolOverride, optional): Inline tool overrides (only used if toolConfigRef not specified)
+- `excludeAll` (bool, optional): Excludes all tools from this workload when true
 
 ### `.spec.compositeTools` (optional)
 
@@ -402,9 +410,20 @@ metadata:
   name: engineering-vmcp
   namespace: default
 spec:
-  # Reference to MCPGroup defining backend workloads
+  # Reference to MCPGroup defining backend workloads and tool aggregation
   config:
     groupRef: engineering-team
+    # Tool aggregation
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr"]
+        - workload: jira
+          toolConfigRef:
+            name: jira-tool-config
 
   # Client authentication
   incomingAuth:
@@ -436,18 +455,6 @@ spec:
           credentialsRef:
             name: slack-bot-token
             key: token
-
-  # Tool aggregation
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr"]
-      - workload: jira
-        toolConfigRef:
-          name: jira-tool-config
 
   # Composite tools
   compositeTools:

@@ -148,6 +148,11 @@ metadata:
 spec:
   config:
     groupRef: my-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
 
   incomingAuth:
     type: anonymous
@@ -164,12 +169,6 @@ spec:
   # Reference the composite tool definition
   compositeToolRefs:
     - name: fetch-and-validate
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
 
   operational:
     failureHandling:

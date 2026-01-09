@@ -27,6 +27,8 @@ spec:
           spec:
             config:
               groupRef: test-group
+              aggregation:
+                conflictResolution: prefix
             incomingAuth:
               type: oidc
               oidcConfig:
@@ -36,8 +38,6 @@ spec:
                   audience: virtual-mcp
             outgoingAuth:
               source: discovered
-            aggregation:
-              conflictResolution: prefix
     - assert:
         resource:
           apiVersion: toolhive.stacklok.dev/v1alpha1

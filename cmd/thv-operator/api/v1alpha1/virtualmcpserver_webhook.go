@@ -8,6 +8,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // SetupWebhookWithManager registers the webhook with the manager
@@ -61,7 +63,7 @@ func (r *VirtualMCPServer) Validate() error {
 	}
 
 	// Validate Aggregation configuration
-	if r.Spec.Aggregation != nil {
+	if r.Spec.Config.Aggregation != nil {
 		if err := r.validateAggregation(); err != nil {
 			return err
 		}
@@ -150,17 +152,17 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 // validateAggregation validates Aggregation configuration
 func (r *VirtualMCPServer) validateAggregation() error {
-	agg := r.Spec.Aggregation
+	agg := r.Spec.Config.Aggregation
 
 	// Validate conflict resolution strategy
 	if agg.ConflictResolution != "" {
-		validStrategies := map[string]bool{
-			ConflictResolutionPrefix:   true,
-			ConflictResolutionPriority: true,
-			ConflictResolutionManual:   true,
+		validStrategies := map[vmcp.ConflictResolutionStrategy]bool{
+			vmcp.ConflictStrategyPrefix:   true,
+			vmcp.ConflictStrategyPriority: true,
+			vmcp.ConflictStrategyManual:   true,
 		}
 		if !validStrategies[agg.ConflictResolution] {
-			return fmt.Errorf("spec.aggregation.conflictResolution must be one of: prefix, priority, manual")
+			return fmt.Errorf("config.aggregation.conflictResolution must be one of: prefix, priority, manual")
 		}
 	}
 
@@ -169,12 +171,16 @@ func (r *VirtualMCPServer) validateAggregation() error {
 		config := agg.ConflictResolutionConfig
 
 		switch agg.ConflictResolution {
-		case ConflictResolutionPriority:
+		case vmcp.ConflictStrategyPrefix:
+			// Prefix strategy uses PrefixFormat if specified, otherwise defaults
+			// No additional validation required
+
+		case vmcp.ConflictStrategyPriority:
 			if len(config.PriorityOrder) == 0 {
-				return fmt.Errorf("spec.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority")
+				return fmt.Errorf("config.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority")
 			}
 
-		case ConflictResolutionManual:
+		case vmcp.ConflictStrategyManual:
 			// For manual resolution, tools must define explicit overrides
 			// This will be validated at runtime when conflicts are detected
 		}
@@ -183,12 +189,12 @@ func (r *VirtualMCPServer) validateAggregation() error {
 	// Validate per-workload tool configurations
 	for i, toolConfig := range agg.Tools {
 		if toolConfig.Workload == "" {
-			return fmt.Errorf("spec.aggregation.tools[%d].workload is required", i)
+			return fmt.Errorf("config.aggregation.tools[%d].workload is required", i)
 		}
 
 		// If ToolConfigRef is specified, ensure it has a name
 		if toolConfig.ToolConfigRef != nil && toolConfig.ToolConfigRef.Name == "" {
-			return fmt.Errorf("spec.aggregation.tools[%d].toolConfigRef.name is required when toolConfigRef is specified", i)
+			return fmt.Errorf("config.aggregation.tools[%d].toolConfigRef.name is required when toolConfigRef is specified", i)
 		}
 	}
 

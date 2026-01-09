@@ -90,7 +90,9 @@ type Config struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
-	// Aggregation configures capability aggregation and conflict resolution.
+	// Aggregation defines tool aggregation and conflict resolution strategies.
+	// Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references.
+	// +optional
 	Aggregation *AggregationConfig `json:"aggregation,omitempty" yaml:"aggregation,omitempty"`
 
 	// CompositeTools defines inline composite tool workflows.
@@ -232,58 +234,96 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	return nil
 }
 
-// AggregationConfig configures capability aggregation.
+// AggregationConfig defines tool aggregation and conflict resolution strategies.
 // +kubebuilder:object:generate=true
 // +gendoc
 type AggregationConfig struct {
-	// ConflictResolution is the strategy: "prefix", "priority", "manual"
+	// ConflictResolution defines the strategy for resolving tool name conflicts.
+	// - prefix: Automatically prefix tool names with workload identifier
+	// - priority: First workload in priority order wins
+	// - manual: Explicitly define overrides for all conflicts
+	// +kubebuilder:validation:Enum=prefix;priority;manual
+	// +kubebuilder:default=prefix
+	// +optional
 	ConflictResolution vmcp.ConflictResolutionStrategy `json:"conflictResolution" yaml:"conflictResolution"`
 
-	// ConflictResolutionConfig contains strategy-specific configuration.
+	// ConflictResolutionConfig provides configuration for the chosen strategy.
+	// +optional
 	ConflictResolutionConfig *ConflictResolutionConfig `json:"conflictResolutionConfig,omitempty" yaml:"conflictResolutionConfig,omitempty"` //nolint:lll
 
-	// Tools contains per-workload tool configuration.
+	// Tools defines per-workload tool filtering and overrides.
+	// +optional
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
 
+	// ExcludeAllTools excludes all tools from aggregation when true.
+	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
 }
 
-// ConflictResolutionConfig contains conflict resolution settings.
+// ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ConflictResolutionConfig struct {
-	// PrefixFormat is the prefix format (for prefix strategy).
-	// Options: "{workload}", "{workload}_", "{workload}.", custom string
+	// PrefixFormat defines the prefix format for the "prefix" strategy.
+	// Supports placeholders: {workload}, {workload}_, {workload}.
+	// +kubebuilder:default="{workload}_"
+	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
-	// PriorityOrder is the explicit priority ordering (for priority strategy).
+	// PriorityOrder defines the workload priority order for the "priority" strategy.
+	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }
 
-// WorkloadToolConfig configures tool filtering/overrides for a workload.
+// WorkloadToolConfig defines tool filtering and overrides for a specific workload.
 // +kubebuilder:object:generate=true
 // +gendoc
 type WorkloadToolConfig struct {
-	// Workload is the workload name/ID.
+	// Workload is the name of the backend MCPServer workload.
+	// +kubebuilder:validation:Required
 	Workload string `json:"workload" yaml:"workload"`
 
-	// Filter is the list of tools to include (nil = include all).
+	// ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.
+	// If specified, Filter and Overrides are ignored.
+	// Only used when running in Kubernetes with the operator.
+	// +optional
+	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty" yaml:"toolConfigRef,omitempty"`
+
+	// Filter is an inline list of tool names to allow (allow list).
+	// Only used if ToolConfigRef is not specified.
+	// +optional
 	Filter []string `json:"filter,omitempty" yaml:"filter,omitempty"`
 
-	// Overrides maps tool names to override configurations.
+	// Overrides is an inline map of tool overrides.
+	// Only used if ToolConfigRef is not specified.
+	// +optional
 	Overrides map[string]*ToolOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
 
+	// ExcludeAll excludes all tools from this workload when true.
+	// +optional
 	ExcludeAll bool `json:"excludeAll,omitempty" yaml:"excludeAll,omitempty"`
 }
 
-// ToolOverride defines tool name/description overrides.
+// ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.
+// Only used when running in Kubernetes with the operator.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ToolConfigRef struct {
+	// Name is the name of the MCPToolConfig resource in the same namespace.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+}
+
+// ToolOverride defines tool name and description overrides.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolOverride struct {
 	// Name is the new tool name (for renaming).
+	// +optional
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	// Description is the new tool description (for updating).
+	// Description is the new tool description.
+	// +optional
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 

@@ -278,7 +278,7 @@ func TestConvertAggregation(t *testing.T) {
 
 	tests := []struct {
 		name                    string
-		aggregation             *mcpv1alpha1.AggregationConfig
+		aggregation             *vmcpconfig.AggregationConfig
 		expectedStrategy        vmcp.ConflictResolutionStrategy
 		hasPrefixFormat         bool
 		hasPriorityOrder        bool
@@ -286,9 +286,9 @@ func TestConvertAggregation(t *testing.T) {
 	}{
 		{
 			name: "prefix strategy",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 					PrefixFormat: "{workload}_",
 				},
 			},
@@ -297,9 +297,9 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "priority strategy",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPriority,
-				ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 					PriorityOrder: []string{"backend-1", "backend-2"},
 				},
 			},
@@ -308,16 +308,16 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "with tool configs",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				Tools: []mcpv1alpha1.WorkloadToolConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				Tools: []*vmcpconfig.WorkloadToolConfig{
 					{
 						Workload: "backend-1",
 						Filter:   []string{"tool1", "tool2"},
 					},
 					{
 						Workload: "backend-2",
-						Overrides: map[string]mcpv1alpha1.ToolOverride{
+						Overrides: map[string]*vmcpconfig.ToolOverride{
 							"tool3": {
 								Name:        "renamed_tool3",
 								Description: "Updated description",
@@ -338,8 +338,10 @@ func TestConvertAggregation(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:      vmcpconfig.Config{Group: "test-group"},
-					Aggregation: tt.aggregation,
+					Config: vmcpconfig.Config{
+						Group:       "test-group",
+						Aggregation: tt.aggregation,
+					},
 				},
 			}
 
@@ -571,7 +573,32 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				// Aggregation with tool overrides (map)
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPrefix,
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: "workload-1",
+							Overrides: map[string]*vmcpconfig.ToolOverride{
+								"tool-zebra": {
+									Name:        "renamed-zebra",
+									Description: "Zebra tool",
+								},
+								"tool-alpha": {
+									Name:        "renamed-alpha",
+									Description: "Alpha tool",
+								},
+								"tool-middle": {
+									Name:        "renamed-middle",
+									Description: "Middle tool",
+								},
+							},
+						},
+					},
+				},
+			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
@@ -584,29 +611,6 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 					},
 					"backend-middle": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
-				},
-			},
-			// Aggregation with tool overrides (map)
-			Aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				Tools: []mcpv1alpha1.WorkloadToolConfig{
-					{
-						Workload: "workload-1",
-						Overrides: map[string]mcpv1alpha1.ToolOverride{
-							"tool-zebra": {
-								Name:        "renamed-zebra",
-								Description: "Zebra tool",
-							},
-							"tool-alpha": {
-								Name:        "renamed-alpha",
-								Description: "Alpha tool",
-							},
-							"tool-middle": {
-								Name:        "renamed-middle",
-								Description: "Middle tool",
-							},
-						},
 					},
 				},
 			},

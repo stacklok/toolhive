@@ -75,12 +75,14 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				// Define a composite tool with a conditional step that has defaultResults
 				CompositeTools: []mcpv1alpha1.CompositeToolSpec{

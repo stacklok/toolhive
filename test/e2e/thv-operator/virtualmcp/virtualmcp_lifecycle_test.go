@@ -101,12 +101,14 @@ var _ = Describe("VirtualMCPServer Lifecycle - Dynamic Backend Discovery", Order
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 			},
@@ -666,15 +668,17 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered", // This triggers K8s manager creation
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 			},

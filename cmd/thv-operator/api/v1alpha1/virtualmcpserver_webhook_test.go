@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"testing"
 
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -143,11 +144,13 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid aggregation with prefix strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						ConflictResolution: ConflictResolutionPrefix,
-						ConflictResolutionConfig: &ConflictResolutionConfig{
-							PrefixFormat: "{workload}_",
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							ConflictResolution: vmcp.ConflictStrategyPrefix,
+							ConflictResolutionConfig: &config.ConflictResolutionConfig{
+								PrefixFormat: "{workload}_",
+							},
 						},
 					},
 				},
@@ -158,11 +161,13 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "valid aggregation with priority strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						ConflictResolution: ConflictResolutionPriority,
-						ConflictResolutionConfig: &ConflictResolutionConfig{
-							PriorityOrder: []string{"backend1", "backend2"},
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							ConflictResolution: vmcp.ConflictStrategyPriority,
+							ConflictResolutionConfig: &config.ConflictResolutionConfig{
+								PriorityOrder: []string{"backend1", "backend2"},
+							},
 						},
 					},
 				},
@@ -173,27 +178,31 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - priority strategy without priority order",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						ConflictResolution:       ConflictResolutionPriority,
-						ConflictResolutionConfig: &ConflictResolutionConfig{},
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							ConflictResolution:       vmcp.ConflictStrategyPriority,
+							ConflictResolutionConfig: &config.ConflictResolutionConfig{},
+						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority",
+			errMsg:  "config.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority",
 		},
 		{
 			name: "valid aggregation with tool config ref",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						Tools: []WorkloadToolConfig{
-							{
-								Workload: "backend1",
-								ToolConfigRef: &ToolConfigRef{
-									Name: "test-tool-config",
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							Tools: []*config.WorkloadToolConfig{
+								{
+									Workload: "backend1",
+									ToolConfigRef: &config.ToolConfigRef{
+										Name: "test-tool-config",
+									},
 								},
 							},
 						},
@@ -206,12 +215,14 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - missing workload name",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						Tools: []WorkloadToolConfig{
-							{
-								ToolConfigRef: &ToolConfigRef{
-									Name: "test-tool-config",
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							Tools: []*config.WorkloadToolConfig{
+								{
+									ToolConfigRef: &config.ToolConfigRef{
+										Name: "test-tool-config",
+									},
 								},
 							},
 						},
@@ -219,7 +230,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.aggregation.tools[0].workload is required",
+			errMsg:  "config.aggregation.tools[0].workload is required",
 		},
 		{
 			name: "valid composite tool",
@@ -438,14 +449,16 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			name: "invalid aggregation - invalid conflict resolution strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						ConflictResolution: "invalid-strategy",
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							ConflictResolution: "invalid-strategy",
+						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.aggregation.conflictResolution must be one of: prefix, priority, manual",
+			errMsg:  "config.aggregation.conflictResolution must be one of: prefix, priority, manual",
 		},
 	}
 

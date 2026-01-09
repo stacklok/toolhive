@@ -205,6 +205,11 @@ metadata:
 spec:
   config:
     groupRef: deployment-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
 
   incomingAuth:
     type: anonymous
@@ -221,12 +226,6 @@ spec:
   # Reference the composite tool definition with elicitations
   compositeToolRefs:
     - name: interactive-deploy
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
 
   operational:
     timeouts:

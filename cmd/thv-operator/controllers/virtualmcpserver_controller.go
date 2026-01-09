@@ -1934,11 +1934,11 @@ func (r *VirtualMCPServerReconciler) mapToolConfigToVirtualMCPServer(ctx context
 
 // vmcpReferencesToolConfig checks if a VirtualMCPServer references the given MCPToolConfig
 func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.VirtualMCPServer, toolConfigName string) bool {
-	if vmcp.Spec.Aggregation == nil || len(vmcp.Spec.Aggregation.Tools) == 0 {
+	if vmcp.Spec.Config.Aggregation == nil || len(vmcp.Spec.Config.Aggregation.Tools) == 0 {
 		return false
 	}
 
-	for _, tc := range vmcp.Spec.Aggregation.Tools {
+	for _, tc := range vmcp.Spec.Config.Aggregation.Tools {
 		if tc.ToolConfigRef != nil && tc.ToolConfigRef.Name == toolConfigName {
 			return true
 		}

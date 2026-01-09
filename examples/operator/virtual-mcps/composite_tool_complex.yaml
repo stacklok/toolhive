@@ -290,6 +290,11 @@ metadata:
 spec:
   config:
     groupRef: data-processing-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
 
   incomingAuth:
     type: anonymous
@@ -306,12 +311,6 @@ spec:
   # Reference the composite tool definition
   compositeToolRefs:
     - name: multi-source-data-processor
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
 
   operational:
     timeouts:

@@ -24,11 +24,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
-	// Aggregation defines tool aggregation and conflict resolution strategies
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Aggregation *AggregationConfig `json:"aggregation,omitempty"`
-
 	// CompositeTools defines inline composite tool definitions
 	// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
 	// TODO(jerm-dro): migrate to the Config field.
@@ -125,62 +120,6 @@ type BackendAuthConfig struct {
 	// Only used when Type is "external_auth_config_ref"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
-}
-
-// AggregationConfig defines tool aggregation and conflict resolution strategies
-type AggregationConfig struct {
-	// ConflictResolution defines the strategy for resolving tool name conflicts
-	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
-	// - manual: Explicitly define overrides for all conflicts
-	// +kubebuilder:validation:Enum=prefix;priority;manual
-	// +kubebuilder:default=prefix
-	// +optional
-	ConflictResolution string `json:"conflictResolution,omitempty"`
-
-	// ConflictResolutionConfig provides configuration for the chosen strategy
-	// +optional
-	ConflictResolutionConfig *ConflictResolutionConfig `json:"conflictResolutionConfig,omitempty"`
-
-	// Tools defines per-workload tool filtering and overrides
-	// References existing MCPToolConfig resources
-	// +optional
-	Tools []WorkloadToolConfig `json:"tools,omitempty"`
-}
-
-// ConflictResolutionConfig provides configuration for conflict resolution strategies
-type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy
-	// Supports placeholders: {workload}, {workload}_, {workload}.
-	// +kubebuilder:default="{workload}_"
-	// +optional
-	PrefixFormat string `json:"prefixFormat,omitempty"`
-
-	// PriorityOrder defines the workload priority order for the "priority" strategy
-	// +optional
-	PriorityOrder []string `json:"priorityOrder,omitempty"`
-}
-
-// WorkloadToolConfig defines tool filtering and overrides for a specific workload
-type WorkloadToolConfig struct {
-	// Workload is the name of the backend MCPServer workload
-	// +kubebuilder:validation:Required
-	Workload string `json:"workload"`
-
-	// ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming
-	// If specified, Filter and Overrides are ignored
-	// +optional
-	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
-
-	// Filter is an inline list of tool names to allow (allow list)
-	// Only used if ToolConfigRef is not specified
-	// +optional
-	Filter []string `json:"filter,omitempty"`
-
-	// Overrides is an inline map of tool overrides
-	// Only used if ToolConfigRef is not specified
-	// +optional
-	Overrides map[string]ToolOverride `json:"overrides,omitempty"`
 }
 
 // CompositeToolSpec defines an inline composite tool
@@ -604,18 +543,6 @@ const (
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
-)
-
-// Conflict resolution strategies
-const (
-	// ConflictResolutionPrefix prefixes tool names with workload identifier
-	ConflictResolutionPrefix = "prefix"
-
-	// ConflictResolutionPriority uses priority order to resolve conflicts
-	ConflictResolutionPriority = "priority"
-
-	// ConflictResolutionManual requires explicit overrides for all conflicts
-	ConflictResolutionManual = "manual"
 )
 
 // Workflow step types

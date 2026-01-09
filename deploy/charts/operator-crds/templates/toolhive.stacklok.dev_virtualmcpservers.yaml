@@ -67,94 +67,6 @@ spec:
           spec:
             description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
             properties:
-              aggregation:
-                description: Aggregation defines tool aggregation and conflict resolution
-                  strategies
-                properties:
-                  conflictResolution:
-                    default: prefix
-                    description: |-
-                      ConflictResolution defines the strategy for resolving tool name conflicts
-                      - prefix: Automatically prefix tool names with workload identifier
-                      - priority: First workload in priority order wins
-                      - manual: Explicitly define overrides for all conflicts
-                    enum:
-                    - prefix
-                    - priority
-                    - manual
-                    type: string
-                  conflictResolutionConfig:
-                    description: ConflictResolutionConfig provides configuration for
-                      the chosen strategy
-                    properties:
-                      prefixFormat:
-                        default: '{workload}_'
-                        description: |-
-                          PrefixFormat defines the prefix format for the "prefix" strategy
-                          Supports placeholders: {workload}, {workload}_, {workload}.
-                        type: string
-                      priorityOrder:
-                        description: PriorityOrder defines the workload priority order
-                          for the "priority" strategy
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  tools:
-                    description: |-
-                      Tools defines per-workload tool filtering and overrides
-                      References existing MCPToolConfig resources
-                    items:
-                      description: WorkloadToolConfig defines tool filtering and overrides
-                        for a specific workload
-                      properties:
-                        filter:
-                          description: |-
-                            Filter is an inline list of tool names to allow (allow list)
-                            Only used if ToolConfigRef is not specified
-                          items:
-                            type: string
-                          type: array
-                        overrides:
-                          additionalProperties:
-                            description: |-
-                              ToolOverride represents a tool override configuration.
-                              Both Name and Description can be overridden independently, but
-                              they can't be both empty.
-                            properties:
-                              description:
-                                description: Description is the redefined description
-                                  of the tool
-                                type: string
-                              name:
-                                description: Name is the redefined name of the tool
-                                type: string
-                            type: object
-                          description: |-
-                            Overrides is an inline map of tool overrides
-                            Only used if ToolConfigRef is not specified
-                          type: object
-                        toolConfigRef:
-                          description: |-
-                            ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming
-                            If specified, Filter and Overrides are ignored
-                          properties:
-                            name:
-                              description: Name is the name of the MCPToolConfig resource
-                                in the same namespace
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        workload:
-                          description: Workload is the name of the backend MCPServer
-                            workload
-                          type: string
-                      required:
-                      - workload
-                      type: object
-                    type: array
-                type: object
               compositeToolRefs:
                 description: |-
                   CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -403,69 +315,98 @@ spec:
                   NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
                 properties:
                   aggregation:
-                    description: Aggregation configures capability aggregation and
-                      conflict resolution.
+                    description: |-
+                      Aggregation defines tool aggregation and conflict resolution strategies.
+                      Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references.
                     properties:
                       conflictResolution:
-                        description: 'ConflictResolution is the strategy: "prefix",
-                          "priority", "manual"'
+                        default: prefix
+                        description: |-
+                          ConflictResolution defines the strategy for resolving tool name conflicts.
+                          - prefix: Automatically prefix tool names with workload identifier
+                          - priority: First workload in priority order wins
+                          - manual: Explicitly define overrides for all conflicts
+                        enum:
+                        - prefix
+                        - priority
+                        - manual
                         type: string
                       conflictResolutionConfig:
-                        description: ConflictResolutionConfig contains strategy-specific
-                          configuration.
+                        description: ConflictResolutionConfig provides configuration
+                          for the chosen strategy.
                         properties:
                           prefixFormat:
+                            default: '{workload}_'
                             description: |-
-                              PrefixFormat is the prefix format (for prefix strategy).
-                              Options: "{workload}", "{workload}_", "{workload}.", custom string
+                              PrefixFormat defines the prefix format for the "prefix" strategy.
+                              Supports placeholders: {workload}, {workload}_, {workload}.
                             type: string
                           priorityOrder:
-                            description: PriorityOrder is the explicit priority ordering
-                              (for priority strategy).
+                            description: PriorityOrder defines the workload priority
+                              order for the "priority" strategy.
                             items:
                               type: string
                             type: array
                         type: object
                       excludeAllTools:
+                        description: ExcludeAllTools excludes all tools from aggregation
+                          when true.
                         type: boolean
                       tools:
-                        description: Tools contains per-workload tool configuration.
+                        description: Tools defines per-workload tool filtering and
+                          overrides.
                         items:
-                          description: WorkloadToolConfig configures tool filtering/overrides
-                            for a workload.
+                          description: WorkloadToolConfig defines tool filtering and
+                            overrides for a specific workload.
                           properties:
                             excludeAll:
+                              description: ExcludeAll excludes all tools from this
+                                workload when true.
                               type: boolean
                             filter:
-                              description: Filter is the list of tools to include
-                                (nil = include all).
+                              description: |-
+                                Filter is an inline list of tool names to allow (allow list).
+                                Only used if ToolConfigRef is not specified.
                               items:
                                 type: string
                               type: array
                             overrides:
                               additionalProperties:
-                                description: ToolOverride defines tool name/description
+                                description: ToolOverride defines tool name and description
                                   overrides.
                                 properties:
                                   description:
-                                    description: Description is the new tool description
-                                      (for updating).
+                                    description: Description is the new tool description.
                                     type: string
                                   name:
                                     description: Name is the new tool name (for renaming).
                                     type: string
                                 type: object
-                              description: Overrides maps tool names to override configurations.
+                              description: |-
+                                Overrides is an inline map of tool overrides.
+                                Only used if ToolConfigRef is not specified.
+                              type: object
+                            toolConfigRef:
+                              description: |-
+                                ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.
+                                If specified, Filter and Overrides are ignored.
+                                Only used when running in Kubernetes with the operator.
+                              properties:
+                                name:
+                                  description: Name is the name of the MCPToolConfig
+                                    resource in the same namespace.
+                                  type: string
+                              required:
+                              - name
                               type: object
                             workload:
-                              description: Workload is the workload name/ID.
+                              description: Workload is the name of the backend MCPServer
+                                workload.
                               type: string
                           required:
                           - workload
                           type: object
                         type: array
-                    required:
-                    - conflictResolution
                     type: object
                   audit:
                     description: |-

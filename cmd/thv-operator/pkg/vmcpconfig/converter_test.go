@@ -1936,66 +1936,12 @@ func TestMergeToolConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestApplyInlineOverrides(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		inline   map[string]mcpv1alpha1.ToolOverride
-		existing map[string]*vmcpconfig.ToolOverride
-		expected map[string]*vmcpconfig.ToolOverride
-	}{
-		{
-			name:     "apply to empty workload",
-			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Inline description")},
-			existing: nil,
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Inline description")},
-		},
-		{
-			name:     "replace existing",
-			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("new_name", "New description")},
-			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("old_name", "Old description")},
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("new_name", "New description")},
-		},
-		{
-			name:     "no change when no inline",
-			inline:   nil,
-			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
-		},
-		{
-			name: "multiple overrides",
-			inline: map[string]mcpv1alpha1.ToolOverride{
-				"tool1": toolOverride("renamed_tool1", "Description 1"),
-				"tool2": toolOverride("renamed_tool2", "Description 2"),
-			},
-			existing: nil,
-			expected: map[string]*vmcpconfig.ToolOverride{
-				"tool1": vmcpToolOverride("renamed_tool1", "Description 1"),
-				"tool2": vmcpToolOverride("renamed_tool2", "Description 2"),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			wtc := &vmcpconfig.WorkloadToolConfig{Overrides: tt.existing}
-			toolConfig := mcpv1alpha1.WorkloadToolConfig{Overrides: tt.inline}
-			(&Converter{}).applyInlineOverrides(toolConfig, wtc)
-
-			assert.Equal(t, tt.expected, wtc.Overrides)
-		})
-	}
-}
-
-func TestConvertToolConfigs(t *testing.T) {
+func TestResolveToolConfigRefs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name             string
-		tools            []mcpv1alpha1.WorkloadToolConfig
+		tools            []*vmcpconfig.WorkloadToolConfig
 		existingConfig   *mcpv1alpha1.MCPToolConfig
 		expectedWorkload string
 		expectedFilter   []string
@@ -2003,10 +1949,10 @@ func TestConvertToolConfigs(t *testing.T) {
 	}{
 		{
 			name: "inline config only",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:  "backend1",
 				Filter:    []string{"tool1", "tool2"},
-				Overrides: map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Renamed")},
+				Overrides: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Renamed")},
 			}},
 			expectedWorkload: "backend1",
 			expectedFilter:   []string{"tool1", "tool2"},
@@ -2014,9 +1960,9 @@ func TestConvertToolConfigs(t *testing.T) {
 		},
 		{
 			name: "with MCPToolConfig reference",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"fetch"},
 				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("renamed_fetch", "Renamed fetch")}),
@@ -2026,11 +1972,11 @@ func TestConvertToolConfigs(t *testing.T) {
 		},
 		{
 			name: "inline takes precedence",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
 				Filter:        []string{"inline_tool"},
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
-				Overrides:     map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("inline_fetch", "Inline override")},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
+				Overrides:     map[string]*vmcpconfig.ToolOverride{"fetch": vmcpToolOverride("inline_fetch", "Inline override")},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"config_tool"},
 				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("config_fetch", "Config override")}),
@@ -2055,13 +2001,13 @@ func TestConvertToolConfigs(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
+			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
 			}
 
 			agg := &vmcpconfig.AggregationConfig{}
-			err := converter.convertToolConfigs(ctx, vmcp, agg)
+			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
 
 			require.NoError(t, err)
 			require.Len(t, agg.Tools, 1)
@@ -2072,24 +2018,24 @@ func TestConvertToolConfigs(t *testing.T) {
 	}
 }
 
-// TestConvertToolConfigs_FailClosed tests that MCPToolConfig resolution errors cause conversion to fail.
+// TestResolveToolConfigRefs_FailClosed tests that MCPToolConfig resolution errors cause conversion to fail.
 // This is a security feature: if a user explicitly references an MCPToolConfig (for tool filtering or
 // security policy enforcement), we should fail rather than deploy without the intended configuration.
-func TestConvertToolConfigs_FailClosed(t *testing.T) {
+func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name           string
-		tools          []mcpv1alpha1.WorkloadToolConfig
+		tools          []*vmcpconfig.WorkloadToolConfig
 		existingConfig *mcpv1alpha1.MCPToolConfig
 		expectError    bool
 		expectedErrMsg string
 	}{
 		{
 			name: "error when MCPToolConfig reference not found (fail closed)",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "nonexistent-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "nonexistent-config"},
 			}},
 			existingConfig: nil, // MCPToolConfig doesn't exist in cluster
 			expectError:    true,
@@ -2097,7 +2043,7 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "no error when no ToolConfigRef specified",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload: "backend1",
 				Filter:   []string{"tool1"},
 			}},
@@ -2106,9 +2052,9 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "successful when MCPToolConfig exists",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
 			}},
 			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
 			expectError:    false,
@@ -2130,13 +2076,13 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
+			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
 			}
 
 			agg := &vmcpconfig.AggregationConfig{}
-			err := converter.convertToolConfigs(ctx, vmcp, agg)
+			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -2165,12 +2111,14 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{{
-							Workload:      "backend1",
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "missing-config"},
-						}},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{{
+								Workload:      "backend1",
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "missing-config"},
+							}},
+						},
 					},
 				},
 			},
@@ -2183,12 +2131,14 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{{
-							Workload:      "backend1",
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
-						}},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{{
+								Workload:      "backend1",
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
+							}},
+						},
 					},
 				},
 			},

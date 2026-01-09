@@ -121,8 +121,7 @@ retrieve stored upstream IDP tokens.
 }
 ```
 
-The JWTS are signed using RSA or ECDSA keys, and the public keys are exposed
-via the JWKS endpoint for verification.
+JWTs are signed using ECDSA (ES256, preferred) or RSA (RS256) keys. The algorithm is auto-derived from the key type. ES256 is recommended for new deployments due to smaller signatures and faster operations; RS256 is supported for OIDC compliance per [Section 15.1](https://openid.net/specs/openid-connect-core-1_0.html#ServerMTI). Public keys are exposed via the JWKS endpoint for verification, with the OIDC discovery document dynamically advertising the configured algorithm.
 
 ### 5. Session Management
 
@@ -164,43 +163,11 @@ Storage is abstracted behind interfaces to support different backends. In-memory
 - `SessionStorage`: Stores complete session state including IDP tokens
 - `ClientStorage`: Stores registered client configurations
 
-## Package Interface
+## Integration
 
-The auth server is implemented as `pkg/authserver` and exposes a simple interface for embedding into `thv` or running standalone.
+The auth server is implemented as `pkg/authserver` and can be embedded into `thv` or run standalone.
 
-```go
-// Server is the OAuth authorization server.
-// It provides HTTP handlers that serve all OAuth/OIDC endpoints.
-type Server interface {
-    // Handler returns an http.Handler that serves all OAuth/OIDC endpoints:
-    //   - /.well-known/openid-configuration (OIDC Discovery)
-    //   - /.well-known/jwks.json (JSON Web Key Set)
-    //   - /oauth/authorize (Authorization endpoint)
-    //   - /oauth/token (Token endpoint)
-    //   - /oauth/callback (Upstream IDP callback)
-    //   - /oauth2/register (Dynamic Client Registration)
-    Handler() http.Handler
-
-    // IDPTokenStorage returns storage for upstream IDP tokens.
-    // Returns nil if no upstream IDP is configured.
-    IDPTokenStorage() storage.IDPTokenStorage
-
-    // Close releases resources held by the server.
-    Close() error
-}
-
-// New creates a new OAuth authorization server.
-func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error)
-```
-
-### Integration
-
-**Embedded Mode** (MVP): The auth server handler is mounted in the `thv` HTTP server:
-
-```go
-authServer, _ := authserver.New(ctx, cfg, stor)
-mux.Handle("/oauth/", authServer.Handler())
-```
+**Embedded Mode** (MVP): The auth server exposes an `http.Handler` that serves all OAuth/OIDC endpoints. This handler is mounted in the `thv` HTTP server under `/oauth/`.
 
 **Standalone Mode** (future): The auth server can run as a separate service with its own HTTP server.
 
@@ -258,8 +225,10 @@ auth_server:
     scopes: ["openid", "profile", "email"]
 
   signing:
+    # Optional: if omitted, a key is auto-generated and persisted to storage
     key_file: "/etc/toolhive/signing-key.pem"
-    algorithm: "RS256"
+    # Optional: auto-derived from key type (ES256 for EC, RS256 for RSA)
+    algorithm: "ES256"
 
   storage:
     type: "redis"  # or "memory"

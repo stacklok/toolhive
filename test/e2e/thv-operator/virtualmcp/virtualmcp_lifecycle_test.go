@@ -1450,9 +1450,11 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 
 		It("should have minimal ConfigMap in dynamic mode", func() {
 			By("Creating VirtualMCPServer with discovered source (dynamic mode)")
+			// Use local variable to avoid modifying Context-level vmcpServerName
+			localVmcpName := vmcpServerName + "-configmap"
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpServerName + "-configmap",
+					Name:      localVmcpName,
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
@@ -1467,13 +1469,25 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
-			vmcpServerName = vmcpServerName + "-configmap" // Update for cleanup
+
+			// Add explicit cleanup for this test's resource with the modified name
+			DeferCleanup(func() {
+				By("Cleaning up VirtualMCPServer with modified name")
+				_ = k8sClient.Delete(ctx, vmcpServer)
+				Eventually(func() bool {
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      localVmcpName,
+						Namespace: testNamespace,
+					}, vmcpServer)
+					return err != nil
+				}, timeout, pollingInterval).Should(BeTrue())
+			})
 
 			By("Waiting for VirtualMCPServer to be ready")
-			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+			WaitForVirtualMCPServerReady(ctx, k8sClient, localVmcpName, testNamespace, timeout, pollingInterval)
 
 			By("Verifying ConfigMap contains minimal content")
-			configMapName := fmt.Sprintf("%s-vmcp-config", vmcpServerName)
+			configMapName := fmt.Sprintf("%s-vmcp-config", localVmcpName)
 			configMap := &corev1.ConfigMap{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{

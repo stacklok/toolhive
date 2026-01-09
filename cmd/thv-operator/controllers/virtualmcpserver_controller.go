@@ -1573,10 +1573,11 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		outgoing.Default = defaultStrategy
 	}
 
-	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
-	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
-	}
+	// Discover ExternalAuthConfig from MCPServers to populate backend auth configs.
+	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
+	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
+	// this function is not called, keeping the ConfigMap minimal.
+	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {

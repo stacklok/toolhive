@@ -24,6 +24,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
+var (
+	// setLoggerOnce ensures the controller-runtime logger is set exactly once
+	// to avoid race conditions when multiple BackendWatcher instances are created
+	setLoggerOnce sync.Once
+)
+
 // BackendWatcher wraps a controller-runtime manager for vMCP dynamic mode.
 //
 // In K8s mode (outgoingAuth.source: discovered), this watcher runs informers
@@ -106,7 +112,11 @@ func NewBackendWatcher(
 	}
 
 	// Set controller-runtime logger to use ToolHive's structured logger
-	ctrl.SetLogger(logger.NewLogr())
+	// Use sync.Once to avoid race conditions in tests where multiple
+	// BackendWatcher instances are created concurrently
+	setLoggerOnce.Do(func() {
+		ctrl.SetLogger(logger.NewLogr())
+	})
 
 	// Create runtime scheme and register ToolHive CRDs + core Kubernetes types
 	scheme := runtime.NewScheme()

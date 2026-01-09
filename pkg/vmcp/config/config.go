@@ -182,6 +182,7 @@ type AuthzConfig struct {
 // StaticBackendConfig defines a pre-configured backend server for static mode.
 // This allows vMCP to operate without Kubernetes API access by embedding all backend
 // information directly in the configuration.
+// +gendoc
 // +kubebuilder:object:generate=true
 type StaticBackendConfig struct {
 	// Name is the backend identifier.
@@ -193,12 +194,16 @@ type StaticBackendConfig struct {
 	// +kubebuilder:validation:Required
 	URL string `json:"url" yaml:"url"`
 
-	// Transport is the MCP transport protocol: "stdio", "http", "sse", "streamable-http"
-	// +kubebuilder:validation:Enum=stdio;http;sse;streamable-http
+	// Transport is the MCP transport protocol: "sse" or "streamable-http"
+	// Only network transports supported by vMCP client are allowed.
+	// +kubebuilder:validation:Enum=sse;streamable-http
 	// +kubebuilder:validation:Required
 	Transport string `json:"transport" yaml:"transport"`
 
-	// Metadata stores additional backend information.
+	// Metadata is a custom key-value map for storing additional backend information
+	// such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
+	// This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
+	// Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
 	// +optional
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }

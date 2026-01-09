@@ -236,6 +236,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
 			cfg.Backends,
 			cfg.OutgoingAuth,
+			cfg.Group,
 		)
 	} else {
 		// Dynamic mode: Discover backends at runtime from K8s API

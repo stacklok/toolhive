@@ -1592,85 +1592,23 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	return outgoing, nil
 }
 
-// buildStaticBackends builds a list of StaticBackendConfig for static mode by discovering
-// backend URLs and transport types from workloads in the MCPGroup.
-// This allows vMCP to operate without K8s API access by embedding backend information in ConfigMap.
-func (r *VirtualMCPServerReconciler) buildStaticBackends(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	typedWorkloads []workloads.TypedWorkload,
-) ([]vmcpconfig.StaticBackendConfig, error) {
-	ctxLogger := log.FromContext(ctx)
-
-	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
-	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
-	}
-
-	staticBackends := make([]vmcpconfig.StaticBackendConfig, 0, len(typedWorkloads))
-
-	for _, workload := range typedWorkloads {
-		var url, transport string
-
-		switch workload.Type {
-		case workloads.WorkloadTypeMCPServer:
-			mcpServer, found := mcpServerMap[workload.Name]
-			if !found {
-				ctxLogger.V(1).Info("MCPServer not found in map, skipping",
-					"backend", workload.Name)
-				continue
-			}
-
-			// Build URL from service
-			serviceName := mcpServer.Name
-			namespace := mcpServer.Namespace
-			port := mcpServer.Spec.ProxyPort
-			url = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
-
-			// Get transport type
-			transport = string(mcpServer.Spec.Transport)
-
-		case workloads.WorkloadTypeMCPRemoteProxy:
-			mcpRemoteProxy, found := mcpRemoteProxyMap[workload.Name]
-			if !found {
-				ctxLogger.V(1).Info("MCPRemoteProxy not found in map, skipping",
-					"backend", workload.Name)
-				continue
-			}
-
-			// Use the remote URL
-			url = mcpRemoteProxy.Spec.RemoteURL
-
-			// Get transport type
-			transport = string(mcpRemoteProxy.Spec.Transport)
-
-		default:
-			ctxLogger.V(1).Info("Unknown workload type, skipping",
-				"backend", workload.Name,
-				"type", workload.Type)
+// convertDiscoveredToStaticBackends converts DiscoveredBackend objects to StaticBackendConfig
+// for embedding in ConfigMap for static mode. This allows vMCP to operate without K8s API access.
+func convertDiscoveredToStaticBackends(discovered []mcpv1alpha1.DiscoveredBackend) []vmcpconfig.StaticBackendConfig {
+	static := make([]vmcpconfig.StaticBackendConfig, 0, len(discovered))
+	for _, backend := range discovered {
+		// Only include backends that have a URL (skip unavailable backends)
+		if backend.URL == "" {
 			continue
 		}
 
-		staticBackend := vmcpconfig.StaticBackendConfig{
-			Name:      workload.Name,
-			URL:       url,
-			Transport: transport,
-		}
-
-		staticBackends = append(staticBackends, staticBackend)
-		ctxLogger.V(1).Info("Built static backend config",
-			"name", workload.Name,
-			"url", url,
-			"transport", transport)
+		static = append(static, vmcpconfig.StaticBackendConfig{
+			Name:      backend.Name,
+			URL:       backend.URL,
+			Transport: backend.Transport,
+		})
 	}
-
-	return staticBackends, nil
+	return static
 }
 
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
@@ -1814,6 +1752,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 			Status:          backendStatus,
 			LastHealthCheck: now,
 			URL:             backend.BaseURL,
+			Transport:       backend.TransportType,
 		}
 
 		discoveredBackends = append(discoveredBackends, discoveredBackend)

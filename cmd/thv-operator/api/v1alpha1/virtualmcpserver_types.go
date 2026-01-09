@@ -471,6 +471,10 @@ type DiscoveredBackend struct {
 	// URL is the URL of the backend MCPServer
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// Transport is the MCP transport protocol (http, sse, streamable-http, etc.)
+	// +optional
+	Transport string `json:"transport,omitempty"`
 }
 
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer

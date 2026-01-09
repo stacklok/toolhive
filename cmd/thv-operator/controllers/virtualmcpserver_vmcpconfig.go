@@ -57,12 +57,13 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 
 		// Build static backend configurations with URLs and transport types
 		// This allows vMCP to operate without K8s API access in static mode
-		staticBackends, err := r.buildStaticBackends(ctx, vmcp, typedWorkloads)
+		// Reuse existing discoverBackends() for consistency with status reporting
+		discoveredBackends, err := r.discoverBackends(ctx, vmcp)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to build static backends, using empty list",
+			ctxLogger.V(1).Info("Failed to discover backends for static mode, using empty list",
 				"error", err)
 		} else {
-			config.Backends = staticBackends
+			config.Backends = convertDiscoveredToStaticBackends(discoveredBackends)
 		}
 	}
 	// For discovered mode, keep the minimal OutgoingAuthConfig (source, defaults, overrides only)

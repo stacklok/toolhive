@@ -87,7 +87,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
-	serviceAccountName := r.getServiceAccountNameForVmcp(vmcp)
+	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

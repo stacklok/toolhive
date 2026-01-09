@@ -665,7 +665,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	assert.NotEmpty(t, firstResult)
 	assert.Greater(t, len(firstResult), 100, "YAML output should contain substantial content")
 
-	t.Logf("✅ All %d marshaling iterations produced identical output (%d bytes)",
+	t.Logf("All %d marshaling iterations produced identical output (%d bytes)",
 		iterations, len(results[0]))
 }
 
@@ -1041,12 +1041,14 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 
 	// In dynamic mode, ConfigMap should have minimal content:
 	// - OutgoingAuth with source: discovered
-	// - No backends in OutgoingAuth (vMCP discovers at runtime)
+	// - No auth backends in OutgoingAuth (vMCP discovers at runtime)
+	// - No static backends in Backends (vMCP discovers at runtime)
 	require.NotNil(t, config.OutgoingAuth)
 	assert.Equal(t, "discovered", config.OutgoingAuth.Source, "source should be discovered")
-	assert.Empty(t, config.OutgoingAuth.Backends, "backends should be empty in dynamic mode")
+	assert.Empty(t, config.OutgoingAuth.Backends, "auth backends should be empty in dynamic mode")
+	assert.Empty(t, config.Backends, "static backends should be empty in dynamic mode")
 
-	t.Log("✅ Dynamic mode ConfigMap contains minimal content without backends")
+	t.Log("Dynamic mode ConfigMap contains minimal content without backends")
 }
 
 // TestConfigMapContent_StaticMode_InlineOverrides tests that in static mode (inline),
@@ -1068,6 +1070,23 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 		Spec: mcpv1alpha1.MCPGroupSpec{},
 		Status: mcpv1alpha1.MCPGroupStatus{
 			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Create MCPServer in the group so static mode has something to discover
+	// This is needed because static mode validates that at least one backend exists
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-backend",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			GroupRef:  "test-group",
+			Transport: "sse", // Required for backend discovery
+		},
+		Status: mcpv1alpha1.MCPServerStatus{
+			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			URL:   "http://test-backend.default.svc.cluster.local:8080",
 		},
 	}
 
@@ -1095,7 +1114,8 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(vmcpServer, mcpGroup).
+		WithObjects(vmcpServer, mcpGroup, mcpServer).
+		WithStatusSubresource(mcpServer).
 		Build()
 
 	reconciler := &VirtualMCPServerReconciler{
@@ -1136,7 +1156,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 	_, exists := config.OutgoingAuth.Backends["test-backend"]
 	assert.True(t, exists, "inline backend from spec should be present in ConfigMap")
 
-	t.Log("✅ Static mode ConfigMap preserves inline backend overrides from spec")
+	t.Log("Static mode ConfigMap preserves inline backend overrides from spec")
 }
 
 // TestConfigMapContent_StaticModeWithDiscovery tests that in static mode (inline),
@@ -1170,17 +1190,22 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 		},
 	}
 
-	// Create MCPServer with ExternalAuthConfigRef
+	// Create MCPServer with ExternalAuthConfigRef and Status
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "discovered-backend",
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: "test-group",
+			GroupRef:  "test-group",
+			Transport: "sse", // Required for static mode backend discovery
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "test-auth-config",
 			},
+		},
+		Status: mcpv1alpha1.MCPServerStatus{
+			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
 		},
 	}
 
@@ -1204,6 +1229,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(vmcpServer, mcpGroup, mcpServer, externalAuthConfig).
+		WithStatusSubresource(mcpServer).
 		Build()
 
 	reconciler := &VirtualMCPServerReconciler{
@@ -1235,17 +1261,106 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	require.NoError(t, err)
 
 	// In static mode with discovery, ConfigMap should have:
-	// - OutgoingAuth with source: inline
-	// - Backends populated from discovered MCPServer ExternalAuthConfigRefs
+	// - OutgoingAuth with source: inline and auth configs
+	// - Backends populated with URLs and transport types for zero-K8s-access mode
 	require.NotNil(t, config.OutgoingAuth)
 	assert.Equal(t, "inline", config.OutgoingAuth.Source, "source should be inline")
 	require.NotEmpty(t, config.OutgoingAuth.Backends, "backends should be discovered in static mode")
 
-	// Verify the discovered backend is present
+	// Verify the discovered backend auth config is present
 	discoveredBackend, exists := config.OutgoingAuth.Backends["discovered-backend"]
 	require.True(t, exists, "discovered backend should be present in ConfigMap")
 	require.NotNil(t, discoveredBackend, "discovered backend should have auth strategy")
 	assert.Equal(t, "unauthenticated", discoveredBackend.Type, "backend should have correct auth type")
 
-	t.Log("✅ Static mode ConfigMap contains discovered backend auth configs")
+	// Verify static backend configurations (URLs + transport) are populated
+	require.NotEmpty(t, config.Backends, "static backends with URLs should be populated in static mode")
+
+	// Find the discovered backend in the static backend list
+	var foundBackend *vmcpconfig.StaticBackendConfig
+	for i := range config.Backends {
+		if config.Backends[i].Name == "discovered-backend" {
+			foundBackend = &config.Backends[i]
+			break
+		}
+	}
+	require.NotNil(t, foundBackend, "discovered backend should be in static backends list")
+	assert.NotEmpty(t, foundBackend.URL, "backend should have URL populated")
+	assert.NotEmpty(t, foundBackend.Transport, "backend should have transport type populated")
+
+	// Verify metadata is preserved (group, tool_type, workload_type, namespace)
+	require.NotNil(t, foundBackend.Metadata, "backend should have metadata")
+	assert.Equal(t, "test-group", foundBackend.Metadata["group"], "backend should have group metadata")
+	assert.Equal(t, "mcp", foundBackend.Metadata["tool_type"], "backend should have tool_type metadata")
+	assert.Equal(t, "mcp_server", foundBackend.Metadata["workload_type"], "backend should have workload_type metadata")
+	assert.Equal(t, "default", foundBackend.Metadata["namespace"], "backend should have namespace metadata")
+
+	t.Log("Static mode ConfigMap contains both auth configs, backend URLs/transports, and metadata")
+}
+
+// TestConvertBackendsToStaticBackends_SkipsInvalidBackends tests that backends
+// without URL or transport are skipped with appropriate logging
+func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	backends := []vmcp.Backend{
+		{
+			Name:          "valid-backend",
+			BaseURL:       "http://backend1:8080",
+			TransportType: "sse",
+			Metadata:      map[string]string{"key": "value"},
+		},
+		{
+			Name:          "no-url-backend",
+			BaseURL:       "", // Missing URL
+			TransportType: "sse",
+		},
+		{
+			Name:    "no-transport-backend",
+			BaseURL: "http://backend2:8080",
+			// Transport will be missing from map
+		},
+	}
+
+	transportMap := map[string]string{
+		"valid-backend":  "sse",
+		"no-url-backend": "streamable-http",
+		// "no-transport-backend" intentionally missing
+	}
+
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap)
+
+	// Should only include the valid backend
+	assert.Len(t, result, 1, "should only include backends with URL and transport")
+	assert.Equal(t, "valid-backend", result[0].Name)
+	assert.Equal(t, "http://backend1:8080", result[0].URL)
+	assert.Equal(t, "sse", result[0].Transport)
+	assert.Equal(t, "value", result[0].Metadata["key"])
+}
+
+// TestStaticModeTransportConstants verifies that the transport constants match the CRD enum.
+// This test ensures consistency between runtime validation and CRD schema validation.
+func TestStaticModeTransportConstants(t *testing.T) {
+	t.Parallel()
+
+	// Define the expected transports that should be in the CRD enum.
+	// If this test fails, it means the CRD enum in StaticBackendConfig.Transport
+	// is out of sync with vmcpconfig.StaticModeAllowedTransports.
+	expectedTransports := []string{vmcpconfig.TransportSSE, vmcpconfig.TransportStreamableHTTP}
+
+	// Verify the slice matches exactly
+	assert.ElementsMatch(t, expectedTransports, vmcpconfig.StaticModeAllowedTransports,
+		"StaticModeAllowedTransports must match the transport constants")
+
+	// Verify individual constants have expected values
+	assert.Equal(t, "sse", vmcpconfig.TransportSSE, "TransportSSE constant value")
+	assert.Equal(t, "streamable-http", vmcpconfig.TransportStreamableHTTP, "TransportStreamableHTTP constant value")
+
+	// NOTE: When updating allowed transports:
+	// 1. Update the constants in pkg/vmcp/config/config.go
+	// 2. Update the CRD enum in StaticBackendConfig.Transport: +kubebuilder:validation:Enum=...
+	// 3. Run: task operator-generate && task operator-manifests
+	// 4. This test will verify the constants match the expected values
 }

@@ -28,6 +28,7 @@ type backendDiscoverer struct {
 	groupsManager    groups.Manager
 	authConfig       *config.OutgoingAuthConfig
 	staticBackends   []config.StaticBackendConfig // Pre-configured backends for static mode
+	groupRef         string                       // Group reference for static mode metadata
 }
 
 // NewUnifiedBackendDiscoverer creates a unified backend discoverer that works with both
@@ -53,12 +54,14 @@ func NewUnifiedBackendDiscoverer(
 func NewUnifiedBackendDiscovererWithStaticBackends(
 	staticBackends []config.StaticBackendConfig,
 	authConfig *config.OutgoingAuthConfig,
+	groupRef string,
 ) BackendDiscoverer {
 	return &backendDiscoverer{
 		workloadsManager: nil, // Not needed in static mode
 		groupsManager:    nil, // Not needed in static mode
 		authConfig:       authConfig,
 		staticBackends:   staticBackends,
+		groupRef:         groupRef,
 	}
 }
 
@@ -248,6 +251,17 @@ func (d *backendDiscoverer) discoverFromStaticConfig() ([]vmcp.Backend, error) {
 
 		// Apply auth configuration from OutgoingAuthConfig
 		d.applyAuthConfigToBackend(&backend, staticBackend.Name)
+
+		// Set group metadata (reserved key, always overridden)
+		if backend.Metadata == nil {
+			backend.Metadata = make(map[string]string)
+		}
+		// Warn if user provided a conflicting group value
+		if existingGroup, exists := backend.Metadata["group"]; exists && existingGroup != d.groupRef {
+			logger.Warnf("Backend %s has user-provided group metadata '%s' which will be overridden with '%s'",
+				staticBackend.Name, existingGroup, d.groupRef)
+		}
+		backend.Metadata["group"] = d.groupRef
 
 		backends = append(backends, backend)
 		logger.Infof("Loaded static backend: %s (url=%s, transport=%s)",

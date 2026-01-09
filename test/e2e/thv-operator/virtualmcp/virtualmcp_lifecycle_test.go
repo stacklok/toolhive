@@ -1623,7 +1623,7 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 			}, timeout, pollingInterval).Should(BeTrue())
 		})
 
-		It("should clean up RBAC when switching from dynamic to static", func() {
+		It("should preserve RBAC resources when switching from dynamic to static", func() {
 			By("Creating VirtualMCPServer in dynamic mode")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1673,35 +1673,52 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				return k8sClient.Update(ctx, vmcpServer)
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-			By("Waiting for operator to reconcile and clean up RBAC")
-			// Wait for RBAC resources to be deleted
-			Eventually(func() bool {
+			By("Verifying RBAC resources remain after mode switch (left for garbage collection)")
+			// RBAC resources are NOT deleted during mode switching - they remain until VirtualMCPServer deletion
+			// This follows Kubernetes controller patterns: rely on owner references and garbage collection
+			Consistently(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serviceAccountName,
 					Namespace: testNamespace,
 				}, sa)
-				return err != nil // Should not exist after mode switch
-			}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "ServiceAccount should be deleted after switching to static mode")
+				return err
+			}, 15*time.Second, 2*time.Second).Should(Succeed(),
+				"ServiceAccount not actively deleted on mode switch - left for garbage collection via owner references")
 
-			By("Verifying Role was also deleted")
+			By("Verifying Role remains (left for garbage collection)")
 			role := &rbacv1.Role{}
-			Consistently(func() bool {
+			Consistently(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serviceAccountName,
 					Namespace: testNamespace,
 				}, role)
-				return err != nil
-			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "Role should not exist after mode switch")
+				return err
+			}, 15*time.Second, 2*time.Second).Should(Succeed(),
+				"Role not actively deleted on mode switch - left for garbage collection via owner references")
 
-			By("Verifying RoleBinding was also deleted")
+			By("Verifying RoleBinding remains (left for garbage collection)")
 			rb := &rbacv1.RoleBinding{}
-			Consistently(func() bool {
+			Consistently(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serviceAccountName,
 					Namespace: testNamespace,
 				}, rb)
-				return err != nil
-			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "RoleBinding should not exist after mode switch")
+				return err
+			}, 15*time.Second, 2*time.Second).Should(Succeed(),
+				"RoleBinding not actively deleted on mode switch - left for garbage collection via owner references")
+
+			By("Verifying Deployment uses default ServiceAccount in static mode")
+			Eventually(func() string {
+				deployment := &appsv1.Deployment{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, deployment)
+				if err != nil {
+					return "error"
+				}
+				return deployment.Spec.Template.Spec.ServiceAccountName
+			}, 30*time.Second, 2*time.Second).Should(BeEmpty(), "Deployment should use default ServiceAccount (empty string) in static mode")
 
 			By("Verifying VirtualMCPServer is still ready after mode switch")
 			Eventually(func() error {
@@ -1718,6 +1735,113 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				}
 				return nil
 			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "VirtualMCPServer should remain ready after mode switch")
+		})
+	})
+
+	Context("Garbage Collection", func() {
+		var vmcpServerName = "test-vmcp-gc"
+
+		It("should garbage collect RBAC resources when VirtualMCPServer is deleted", func() {
+			By("Creating VirtualMCPServer in dynamic mode")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: mcpGroupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered", // Dynamic mode - creates RBAC
+					},
+					ServiceType: "ClusterIP",
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+			By("Waiting for VirtualMCPServer to be ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			serviceAccountName := fmt.Sprintf("%s-vmcp", vmcpServerName)
+
+			By("Verifying RBAC resources exist")
+			sa := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "ServiceAccount should exist")
+
+			role := &rbacv1.Role{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, role)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Role should exist")
+
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, rb)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "RoleBinding should exist")
+
+			By("Verifying RBAC resources have owner references to VirtualMCPServer")
+			Expect(sa.OwnerReferences).NotTo(BeEmpty(), "ServiceAccount should have owner references")
+			Expect(sa.OwnerReferences[0].Kind).To(Equal("VirtualMCPServer"))
+			Expect(sa.OwnerReferences[0].Name).To(Equal(vmcpServerName))
+
+			Expect(role.OwnerReferences).NotTo(BeEmpty(), "Role should have owner references")
+			Expect(role.OwnerReferences[0].Kind).To(Equal("VirtualMCPServer"))
+			Expect(role.OwnerReferences[0].Name).To(Equal(vmcpServerName))
+
+			Expect(rb.OwnerReferences).NotTo(BeEmpty(), "RoleBinding should have owner references")
+			Expect(rb.OwnerReferences[0].Kind).To(Equal("VirtualMCPServer"))
+			Expect(rb.OwnerReferences[0].Name).To(Equal(vmcpServerName))
+
+			By("Deleting VirtualMCPServer")
+			Expect(k8sClient.Delete(ctx, vmcpServer)).To(Succeed())
+
+			By("Waiting for VirtualMCPServer to be fully deleted")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				return errors.IsNotFound(err)
+			}, timeout, pollingInterval).Should(BeTrue(), "VirtualMCPServer should be deleted")
+
+			By("Verifying ServiceAccount is garbage collected")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+				return errors.IsNotFound(err)
+			}, timeout, pollingInterval).Should(BeTrue(), "ServiceAccount should be garbage collected via owner reference")
+
+			By("Verifying Role is garbage collected")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, role)
+				return errors.IsNotFound(err)
+			}, timeout, pollingInterval).Should(BeTrue(), "Role should be garbage collected via owner reference")
+
+			By("Verifying RoleBinding is garbage collected")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, rb)
+				return errors.IsNotFound(err)
+			}, timeout, pollingInterval).Should(BeTrue(), "RoleBinding should be garbage collected via owner reference")
 		})
 	})
 })

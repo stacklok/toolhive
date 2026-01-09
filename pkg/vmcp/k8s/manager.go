@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -20,6 +21,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // BackendWatcher wraps a controller-runtime manager for vMCP dynamic mode.
@@ -103,10 +105,18 @@ func NewBackendWatcher(
 		return nil, fmt.Errorf("registry cannot be nil")
 	}
 
-	// Create runtime scheme and register ToolHive CRDs
+	// Set controller-runtime logger to use ToolHive's structured logger
+	ctrl.SetLogger(logger.NewLogr())
+
+	// Create runtime scheme and register ToolHive CRDs + core Kubernetes types
 	scheme := runtime.NewScheme()
 	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to register ToolHive CRDs to scheme: %w", err)
+	}
+
+	// Register core Kubernetes types (Secrets, ConfigMaps, etc.) needed by discoverer
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to register core Kubernetes types to scheme: %w", err)
 	}
 
 	// Create controller-runtime manager with namespace-scoped cache
@@ -165,11 +175,11 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 	logger.Info("Starting Kubernetes backend watcher for vMCP dynamic mode")
 	logger.Infof("Watching namespace: %s, group: %s", w.namespace, w.groupRef)
 
-	// TODO: Add backend watcher controller
-	// err := w.addBackendWatchController()
-	// if err != nil {
-	//     return fmt.Errorf("failed to add backend watch controller: %w", err)
-	// }
+	// Register backend watch controller to reconcile MCPServer/MCPRemoteProxy changes
+	err := w.addBackendWatchController()
+	if err != nil {
+		return fmt.Errorf("failed to add backend watch controller: %w", err)
+	}
 
 	// Start the manager (blocks until context cancelled)
 	if err := w.ctrlManager.Start(ctx); err != nil {
@@ -244,15 +254,46 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 	return true
 }
 
-// TODO: Add backend watch controller implementation in next phase
-// This will watch the MCPGroup and call registry.Upsert/Remove when backends change
-// func (w *BackendWatcher) addBackendWatchController() error {
-//     // Create reconciler that watches MCPGroup
-//     // On reconcile:
-//     //   1. Get MCPGroup spec
-//     //   2. Extract backend list
-//     //   3. Call registry.Upsert for new/updated backends
-//     //   4. Call registry.Remove for deleted backends
-//     // This triggers cache invalidation via version increment
-//     return nil
-// }
+// addBackendWatchController registers the BackendReconciler with the controller manager.
+//
+// This method creates and registers a reconciler that watches MCPServer and MCPRemoteProxy
+// resources in the configured namespace, filtering by groupRef to only process backends
+// belonging to this vMCP server's MCPGroup.
+//
+// When backends are added, updated, or removed, the reconciler:
+//  1. Converts K8s resources to vmcp.Backend structs
+//  2. Calls registry.Upsert() for new/updated backends
+//  3. Calls registry.Remove() for deleted backends
+//
+// This triggers version-based cache invalidation in the DynamicRegistry, ensuring
+// the discovery manager detects changes and invalidates cached capabilities.
+//
+// Returns:
+//   - nil: Reconciler registered successfully
+//   - error: Failed to create discoverer or register reconciler
+func (w *BackendWatcher) addBackendWatchController() error {
+	// Create K8s discoverer for backend conversion
+	// This reuses the existing workloads package conversion logic
+	discoverer := workloads.NewK8SDiscovererWithClient(
+		w.ctrlManager.GetClient(),
+		w.namespace,
+	)
+
+	// Create backend reconciler with references to namespace, groupRef, and registry
+	reconciler := &BackendReconciler{
+		Client:     w.ctrlManager.GetClient(),
+		Namespace:  w.namespace,
+		GroupRef:   w.groupRef,
+		Registry:   w.registry,
+		Discoverer: discoverer,
+	}
+
+	// Register reconciler with manager
+	// This sets up watches on MCPServer, MCPRemoteProxy, and ExternalAuthConfig
+	if err := reconciler.SetupWithManager(w.ctrlManager); err != nil {
+		return fmt.Errorf("failed to setup backend reconciler: %w", err)
+	}
+
+	logger.Info("Backend watch controller registered successfully")
+	return nil
+}

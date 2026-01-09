@@ -291,7 +291,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				backend.Spec.Image = "non-existent-image:invalid"
 				return k8sClient.Update(ctx, backend)
 			}, timeout, pollingInterval).Should(Succeed())
-			By("Waiting for MCPServer to transition to Pending state (proxy not ready)")
+			By("Waiting for MCPServer to transition to Failed state (proxy exits when can't connect)")
 			Eventually(func() mcpv1alpha1.MCPServerPhase {
 				backend := &mcpv1alpha1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -302,8 +302,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return ""
 				}
 				return backend.Status.Phase
-			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhasePending),
-				"MCPServer should be Pending when backend container has image pull issues but proxy is still running")
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhaseFailed),
+				"MCPServer should be Failed when backend container has image pull issues and proxy exits (PR #3183 behavior)")
 
 			By("Waiting for VirtualMCPServer to transition to Degraded phase")
 			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {

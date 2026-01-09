@@ -79,6 +79,9 @@ type Config struct {
 	Group string `json:"groupRef" yaml:"groupRef"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
+	// When using the Kubernetes operator, this is populated by the converter from
+	// VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded.
+	// +optional
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth,omitempty" yaml:"incomingAuth,omitempty"`
 
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
@@ -111,6 +114,14 @@ type Config struct {
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
+//
+// Note: When using the Kubernetes operator (VirtualMCPServer CRD), the
+// VirtualMCPServerSpec.IncomingAuth field is the authoritative source for
+// authentication configuration. The operator's converter will resolve the CRD's
+// IncomingAuth (which supports Kubernetes-native references like SecretKeyRef,
+// ConfigMapRef, etc.) and populate this IncomingAuthConfig with the resolved values.
+// Any values set here directly will be superseded by the CRD configuration.
+//
 // +kubebuilder:object:generate=true
 // +gendoc
 type IncomingAuthConfig struct {

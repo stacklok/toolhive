@@ -9,9 +9,11 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 type VirtualMCPServerSpec struct {
-	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-	// Must be explicitly set - use "anonymous" type when no authentication is required
-	// TODO(jerm-dro): migrate to the Config field.
+	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
+	// Must be explicitly set - use "anonymous" type when no authentication is required.
+	// This field takes precedence over config.IncomingAuth and should be preferred because it
+	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 

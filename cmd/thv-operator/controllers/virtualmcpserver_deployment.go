@@ -50,7 +50,8 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account
+// RBAC rules for VirtualMCPServer service account in dynamic mode
+// These rules allow vMCP to discover backends and configurations at runtime
 var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
@@ -59,8 +60,13 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"update", "patch"},
 	},
 }
 
@@ -81,6 +87,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
+	serviceAccountName := r.getServiceAccountNameForVmcp(vmcp)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -100,7 +107,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+					ServiceAccountName: serviceAccountName,
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,

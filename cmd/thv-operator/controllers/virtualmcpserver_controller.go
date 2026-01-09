@@ -496,14 +496,28 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer
+// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer.
+// RBAC resources are only created in dynamic mode (source: discovered) where vMCP needs K8s API access
+// to discover backends at runtime. In static mode (source: inline), no RBAC is needed.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
+	// Determine the outgoing auth source mode
+	source := OutgoingAuthSourceDiscovered // default
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		source = vmcp.Spec.OutgoingAuth.Source
+	}
+
+	// Static mode (inline): No RBAC needed, cleanup any existing RBAC resources
+	if source == OutgoingAuthSourceInline {
+		return r.cleanupRBACResources(ctx, vmcp)
+	}
+
+	// Dynamic mode (discovered): Ensure RBAC resources exist
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
-	// Ensure Role with minimal permissions
+	// Ensure Role with permissions to discover backends and update status
 	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
@@ -549,6 +563,54 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 			},
 		}
 	})
+}
+
+// cleanupRBACResources removes RBAC resources when switching from dynamic to static mode.
+// This is needed when a VirtualMCPServer switches from "discovered" to "inline" source mode.
+func (r *VirtualMCPServerReconciler) cleanupRBACResources(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
+
+	// Delete RoleBinding
+	roleBinding := &rbacv1.RoleBinding{}
+	roleBindingKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, roleBindingKey, roleBinding); err == nil {
+		ctxLogger.Info("Deleting RoleBinding for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, roleBinding); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete RoleBinding: %w", err)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get RoleBinding: %w", err)
+	}
+
+	// Delete Role
+	role := &rbacv1.Role{}
+	roleKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, roleKey, role); err == nil {
+		ctxLogger.Info("Deleting Role for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, role); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete Role: %w", err)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get Role: %w", err)
+	}
+
+	// Delete ServiceAccount
+	serviceAccount := &corev1.ServiceAccount{}
+	serviceAccountKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, serviceAccountKey, serviceAccount); err == nil {
+		ctxLogger.Info("Deleting ServiceAccount for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, serviceAccount); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete ServiceAccount: %w", err)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	return nil
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -1249,6 +1311,26 @@ func vmcpServiceAccountName(vmcpName string) string {
 	return fmt.Sprintf("%s-vmcp", vmcpName)
 }
 
+// getServiceAccountNameForVmcp returns the service account name for a VirtualMCPServer
+// based on its outgoing auth source mode.
+// - Dynamic mode (discovered): Returns the dedicated service account name
+// - Static mode (inline): Returns empty string (uses default service account)
+func (*VirtualMCPServerReconciler) getServiceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	// Determine the outgoing auth source mode
+	source := OutgoingAuthSourceDiscovered // default
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		source = vmcp.Spec.OutgoingAuth.Source
+	}
+
+	// Static mode: Use default service account (no RBAC resources)
+	if source == OutgoingAuthSourceInline {
+		return ""
+	}
+
+	// Dynamic mode: Use dedicated service account with K8s API permissions
+	return vmcpServiceAccountName(vmcp.Name)
+}
+
 // vmcpServiceName generates the service name for a VirtualMCPServer
 // Uses "vmcp-" prefix to distinguish from MCPServer's "mcp-{name}-proxy" pattern.
 // This allows VirtualMCPServer and MCPServer to coexist with the same base name.
@@ -1508,6 +1590,87 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	}
 
 	return outgoing, nil
+}
+
+// buildStaticBackends builds a list of StaticBackendConfig for static mode by discovering
+// backend URLs and transport types from workloads in the MCPGroup.
+// This allows vMCP to operate without K8s API access by embedding backend information in ConfigMap.
+func (r *VirtualMCPServerReconciler) buildStaticBackends(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]vmcpconfig.StaticBackendConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
+	}
+
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
+	staticBackends := make([]vmcpconfig.StaticBackendConfig, 0, len(typedWorkloads))
+
+	for _, workload := range typedWorkloads {
+		var url, transport string
+
+		switch workload.Type {
+		case workloads.WorkloadTypeMCPServer:
+			mcpServer, found := mcpServerMap[workload.Name]
+			if !found {
+				ctxLogger.V(1).Info("MCPServer not found in map, skipping",
+					"backend", workload.Name)
+				continue
+			}
+
+			// Build URL from service
+			serviceName := mcpServer.Name
+			namespace := mcpServer.Namespace
+			port := mcpServer.Spec.ProxyPort
+			url = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+
+			// Get transport type
+			transport = string(mcpServer.Spec.Transport)
+
+		case workloads.WorkloadTypeMCPRemoteProxy:
+			mcpRemoteProxy, found := mcpRemoteProxyMap[workload.Name]
+			if !found {
+				ctxLogger.V(1).Info("MCPRemoteProxy not found in map, skipping",
+					"backend", workload.Name)
+				continue
+			}
+
+			// Use the remote URL
+			url = mcpRemoteProxy.Spec.RemoteURL
+
+			// Get transport type
+			transport = string(mcpRemoteProxy.Spec.Transport)
+
+		default:
+			ctxLogger.V(1).Info("Unknown workload type, skipping",
+				"backend", workload.Name,
+				"type", workload.Type)
+			continue
+		}
+
+		staticBackend := vmcpconfig.StaticBackendConfig{
+			Name:      workload.Name,
+			URL:       url,
+			Transport: transport,
+		}
+
+		staticBackends = append(staticBackends, staticBackend)
+		ctxLogger.V(1).Info("Built static backend config",
+			"name", workload.Name,
+			"url", url,
+			"transport", transport)
+	}
+
+	return staticBackends, nil
 }
 
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns

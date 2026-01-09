@@ -13,7 +13,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1240,6 +1242,468 @@ var _ = Describe("VirtualMCPServer K8s Manager Infrastructure", Ordered, func() 
 			Expect(backend).To(HaveKey("name"))
 			Expect(backend).To(HaveKey("health"))
 			Expect(backend).To(HaveKey("transport"))
+		})
+	})
+})
+
+// VirtualMCPServer Dynamic vs Static Mode Tests
+// These tests verify the operator behavior for different outgoingAuth.source modes:
+// - discovered (dynamic): vMCP discovers backends at runtime via K8s API, requires RBAC
+// - inline (static): All backends are pre-configured in ConfigMap, no RBAC needed
+var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
+	var (
+		testNamespace   = "default"
+		mcpGroupName    = "test-mode-config-group"
+		backend1Name    = "backend-mode-fetch"
+		timeout         = 3 * time.Minute
+		pollingInterval = 2 * time.Second
+	)
+
+	BeforeAll(func() {
+		By("Creating MCPGroup for mode configuration tests")
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for mode configuration E2E tests", timeout, pollingInterval)
+
+		By("Creating backend MCPServer")
+		backend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.GofetchServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+			},
+		}
+		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
+
+		By("Waiting for backend MCPServer to be ready")
+		Eventually(func() error {
+			server := &mcpv1alpha1.MCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			}, server)
+			if err != nil {
+				return fmt.Errorf("failed to get server: %w", err)
+			}
+
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+				return nil
+			}
+			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
+		}, timeout, pollingInterval).Should(Succeed(), "Backend should be ready")
+	})
+
+	AfterAll(func() {
+		By("Cleaning up backend MCPServer")
+		backend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, backend)
+
+		By("Cleaning up MCPGroup")
+		group := &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mcpGroupName,
+				Namespace: testNamespace,
+			},
+		}
+		_ = k8sClient.Delete(ctx, group)
+	})
+
+	Context("Dynamic Mode (discovered)", func() {
+		var vmcpServerName = "test-vmcp-dynamic-mode"
+
+		AfterEach(func() {
+			By("Cleaning up VirtualMCPServer")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, vmcpServer)
+
+			By("Waiting for VirtualMCPServer deletion")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				return err != nil
+			}, timeout, pollingInterval).Should(BeTrue())
+		})
+
+		It("should create RBAC resources in dynamic mode", func() {
+			By("Creating VirtualMCPServer with discovered source (dynamic mode)")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: mcpGroupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered", // Dynamic mode - should create RBAC
+					},
+					ServiceType: "ClusterIP",
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+			By("Waiting for VirtualMCPServer to be ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			serviceAccountName := fmt.Sprintf("%s-vmcp", vmcpServerName)
+
+			By("Verifying ServiceAccount was created")
+			sa := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "ServiceAccount should exist in dynamic mode")
+
+			By("Verifying Role was created with K8s API permissions")
+			role := &rbacv1.Role{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, role)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Role should exist in dynamic mode")
+
+			// Verify Role has correct permissions
+			Expect(role.Rules).NotTo(BeEmpty())
+
+			// Check for ConfigMap and Secret permissions
+			hasConfigMapPerms := false
+			hasToolHivePerms := false
+			hasStatusPerms := false
+
+			for _, rule := range role.Rules {
+				// Check for ConfigMap/Secret read permissions
+				if len(rule.APIGroups) > 0 && rule.APIGroups[0] == "" {
+					for _, resource := range rule.Resources {
+						if resource == "configmaps" || resource == "secrets" {
+							hasConfigMapPerms = true
+						}
+					}
+				}
+
+				// Check for ToolHive resource read permissions
+				if len(rule.APIGroups) > 0 && rule.APIGroups[0] == "toolhive.stacklok.dev" {
+					for _, resource := range rule.Resources {
+						if resource == "mcpgroups" || resource == "mcpservers" {
+							hasToolHivePerms = true
+						}
+						if resource == "virtualmcpservers/status" {
+							hasStatusPerms = true
+						}
+					}
+				}
+			}
+
+			Expect(hasConfigMapPerms).To(BeTrue(), "Role should have ConfigMap/Secret read permissions")
+			Expect(hasToolHivePerms).To(BeTrue(), "Role should have ToolHive resource read permissions")
+			Expect(hasStatusPerms).To(BeTrue(), "Role should have status update permissions")
+
+			By("Verifying RoleBinding was created")
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, rb)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "RoleBinding should exist in dynamic mode")
+
+			// Verify RoleBinding references correct ServiceAccount and Role
+			Expect(rb.RoleRef.Name).To(Equal(serviceAccountName))
+			Expect(rb.RoleRef.Kind).To(Equal("Role"))
+			Expect(rb.Subjects).To(HaveLen(1))
+			Expect(rb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+			Expect(rb.Subjects[0].Name).To(Equal(serviceAccountName))
+
+			By("Verifying Deployment uses the ServiceAccount")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, deployment)
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(Equal(serviceAccountName),
+				"Deployment should use the created ServiceAccount in dynamic mode")
+		})
+
+		It("should have minimal ConfigMap in dynamic mode", func() {
+			By("Creating VirtualMCPServer with discovered source (dynamic mode)")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName + "-configmap",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: mcpGroupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered", // Dynamic mode
+					},
+					ServiceType: "ClusterIP",
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+			vmcpServerName = vmcpServerName + "-configmap" // Update for cleanup
+
+			By("Waiting for VirtualMCPServer to be ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			By("Verifying ConfigMap contains minimal content")
+			configMapName := fmt.Sprintf("%s-vmcp-config", vmcpServerName)
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: testNamespace,
+				}, configMap)
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("config.yaml"))
+			configYAML := configMap.Data["config.yaml"]
+
+			// In dynamic mode, ConfigMap should NOT contain backend URLs/details
+			// vMCP discovers these at runtime via K8s API
+			Expect(configYAML).To(ContainSubstring("source: discovered"))
+			Expect(configYAML).NotTo(ContainSubstring("url: http://"),
+				"Dynamic mode ConfigMap should not contain backend URLs")
+		})
+	})
+
+	Context("Static Mode (inline)", func() {
+		var vmcpServerName = "test-vmcp-static-mode"
+
+		AfterEach(func() {
+			By("Cleaning up VirtualMCPServer")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, vmcpServer)
+
+			By("Waiting for VirtualMCPServer deletion")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				return err != nil
+			}, timeout, pollingInterval).Should(BeTrue())
+		})
+
+		It("should NOT create RBAC resources in static mode", func() {
+			By("Creating VirtualMCPServer with inline source (static mode)")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: mcpGroupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "inline", // Static mode - should NOT create RBAC
+					},
+					ServiceType: "ClusterIP",
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+			By("Waiting for VirtualMCPServer to be ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			serviceAccountName := fmt.Sprintf("%s-vmcp", vmcpServerName)
+
+			By("Verifying ServiceAccount was NOT created")
+			sa := &corev1.ServiceAccount{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+				return err != nil // Should not exist
+			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "ServiceAccount should not exist in static mode")
+
+			By("Verifying Role was NOT created")
+			role := &rbacv1.Role{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, role)
+				return err != nil // Should not exist
+			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "Role should not exist in static mode")
+
+			By("Verifying RoleBinding was NOT created")
+			rb := &rbacv1.RoleBinding{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, rb)
+				return err != nil // Should not exist
+			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "RoleBinding should not exist in static mode")
+
+			By("Verifying Deployment uses default ServiceAccount")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, deployment)
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			// In static mode, ServiceAccountName should be empty (uses default)
+			Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(BeEmpty(),
+				"Deployment should use default ServiceAccount in static mode")
+		})
+	})
+
+	Context("Mode Switching", func() {
+		var vmcpServerName = "test-vmcp-mode-switch"
+
+		AfterEach(func() {
+			By("Cleaning up VirtualMCPServer")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, vmcpServer)
+
+			By("Waiting for all resources to be cleaned up")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				return err != nil
+			}, timeout, pollingInterval).Should(BeTrue())
+		})
+
+		It("should clean up RBAC when switching from dynamic to static", func() {
+			By("Creating VirtualMCPServer in dynamic mode")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: mcpGroupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered", // Start in dynamic mode
+					},
+					ServiceType: "ClusterIP",
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
+
+			By("Waiting for VirtualMCPServer to be ready with RBAC")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			serviceAccountName := fmt.Sprintf("%s-vmcp", vmcpServerName)
+
+			By("Verifying RBAC resources exist in dynamic mode")
+			sa := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "ServiceAccount should exist before mode switch")
+
+			By("Switching to static mode")
+			Eventually(func() error {
+				// Get latest version
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				if err != nil {
+					return err
+				}
+
+				// Update to static mode
+				vmcpServer.Spec.OutgoingAuth.Source = "inline"
+				return k8sClient.Update(ctx, vmcpServer)
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("Waiting for operator to reconcile and clean up RBAC")
+			// Wait for RBAC resources to be deleted
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, sa)
+				return err != nil // Should not exist after mode switch
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "ServiceAccount should be deleted after switching to static mode")
+
+			By("Verifying Role was also deleted")
+			role := &rbacv1.Role{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, role)
+				return err != nil
+			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "Role should not exist after mode switch")
+
+			By("Verifying RoleBinding was also deleted")
+			rb := &rbacv1.RoleBinding{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      serviceAccountName,
+					Namespace: testNamespace,
+				}, rb)
+				return err != nil
+			}, 10*time.Second, 2*time.Second).Should(BeTrue(), "RoleBinding should not exist after mode switch")
+
+			By("Verifying VirtualMCPServer is still ready after mode switch")
+			Eventually(func() error {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				if err != nil {
+					return err
+				}
+
+				if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady {
+					return fmt.Errorf("VirtualMCPServer not ready, phase: %s", vmcpServer.Status.Phase)
+				}
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "VirtualMCPServer should remain ready after mode switch")
 		})
 	})
 })

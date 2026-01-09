@@ -80,6 +80,14 @@ type Config struct {
 	// +kubebuilder:validation:Required
 	Group string `json:"groupRef" yaml:"groupRef"`
 
+	// Backends defines pre-configured backend servers for static mode.
+	// When OutgoingAuth.Source is "inline", this field contains the full list of backend
+	// servers with their URLs and transport types, eliminating the need for K8s API access.
+	// When OutgoingAuth.Source is "discovered", this field is empty and backends are
+	// discovered at runtime via Kubernetes API.
+	// +optional
+	Backends []StaticBackendConfig `json:"backends,omitempty" yaml:"backends,omitempty"`
+
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
 	// When using the Kubernetes operator, this is populated by the converter from
 	// VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded.
@@ -194,6 +202,30 @@ type AuthzConfig struct {
 
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
+}
+
+// StaticBackendConfig defines a pre-configured backend server for static mode.
+// This allows vMCP to operate without Kubernetes API access by embedding all backend
+// information directly in the configuration.
+// +kubebuilder:object:generate=true
+type StaticBackendConfig struct {
+	// Name is the backend identifier.
+	// Must match the backend name from the MCPGroup for auth config resolution.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+
+	// URL is the backend's MCP server base URL.
+	// +kubebuilder:validation:Required
+	URL string `json:"url" yaml:"url"`
+
+	// Transport is the MCP transport protocol: "stdio", "http", "sse", "streamable-http"
+	// +kubebuilder:validation:Enum=stdio;http;sse;streamable-http
+	// +kubebuilder:validation:Required
+	Transport string `json:"transport" yaml:"transport"`
+
+	// Metadata stores additional backend information.
+	// +optional
+	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // OutgoingAuthConfig configures backend authentication.

@@ -41,18 +41,32 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
-	// For dynamic mode (source: "discovered"), preserve the Source field so the vMCP pod
-	// can start BackendWatcher for runtime backend discovery.
-	// For inline mode, discover backends at reconcile time and include in ConfigMap.
-	if config.OutgoingAuth != nil && config.OutgoingAuth.Source != "discovered" {
+	// Only include backends in ConfigMap for static mode (source: inline)
+	// In dynamic mode (source: discovered), vMCP discovers backends at runtime via K8s API
+	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "inline" {
+		// Build OutgoingAuthConfig with full backend details for static mode
 		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to build discovered auth config, using spec-only config",
+			ctxLogger.V(1).Info("Failed to build auth config for inline mode, using spec-only config",
 				"error", err)
 		} else if discoveredAuthConfig != nil {
+			// Merge discovered config into the config
+			// The discovered config already includes inline overrides, so we can replace it
 			config.OutgoingAuth = discoveredAuthConfig
 		}
+
+		// Build static backend configurations with URLs and transport types
+		// This allows vMCP to operate without K8s API access in static mode
+		staticBackends, err := r.buildStaticBackends(ctx, vmcp, typedWorkloads)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to build static backends, using empty list",
+				"error", err)
+		} else {
+			config.Backends = staticBackends
+		}
 	}
+	// For discovered mode, keep the minimal OutgoingAuthConfig (source, defaults, overrides only)
+	// vMCP will discover backends and their auth configs at runtime using K8s API
 
 	// Validate the vmcp Config before creating the ConfigMap
 	validator := vmcpconfig.NewValidator()

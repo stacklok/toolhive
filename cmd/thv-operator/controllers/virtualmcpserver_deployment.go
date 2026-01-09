@@ -450,6 +450,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
+	case mcpv1alpha1.ExternalAuthTypeBearerToken:
+		// Bearer token secrets are handled differently (via RemoteAuthConfig in RunConfig)
+		// No environment variable mounting needed for bearer tokens
+		return nil, nil
+
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
 		return nil, nil

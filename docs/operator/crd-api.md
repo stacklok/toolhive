@@ -286,6 +286,7 @@ _Appears in:_
 | `status` _string_ | Status is the current status of the backend (ready, degraded, unavailable) |  |  |
 | `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
+| `transport` _string_ | Transport is the MCP transport protocol (http, sse, streamable-http, etc.) |  |  |
 
 
 #### ElicitationResponseHandler

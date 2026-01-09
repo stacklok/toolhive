@@ -572,6 +572,7 @@ func (r *VirtualMCPServerReconciler) cleanupRBACResources(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
+	deletedCount := 0
 
 	// Delete RoleBinding
 	roleBinding := &rbacv1.RoleBinding{}
@@ -581,6 +582,7 @@ func (r *VirtualMCPServerReconciler) cleanupRBACResources(
 		if err := r.Delete(ctx, roleBinding); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete RoleBinding: %w", err)
 		}
+		deletedCount++
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get RoleBinding: %w", err)
 	}
@@ -593,6 +595,7 @@ func (r *VirtualMCPServerReconciler) cleanupRBACResources(
 		if err := r.Delete(ctx, role); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete Role: %w", err)
 		}
+		deletedCount++
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get Role: %w", err)
 	}
@@ -605,8 +608,16 @@ func (r *VirtualMCPServerReconciler) cleanupRBACResources(
 		if err := r.Delete(ctx, serviceAccount); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete ServiceAccount: %w", err)
 		}
+		deletedCount++
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	// Log summary of cleanup operation
+	if deletedCount > 0 {
+		ctxLogger.Info("Cleaned up RBAC resources for static mode",
+			"deleted", deletedCount,
+			"serviceAccountName", serviceAccountName)
 	}
 
 	return nil

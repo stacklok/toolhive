@@ -85,6 +85,9 @@ type Config struct {
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth,omitempty" yaml:"incomingAuth,omitempty"`
 
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
+	// When using the Kubernetes operator, this is populated by the converter from
+	// VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
 	// Aggregation configures capability aggregation and conflict resolution.
@@ -183,6 +186,15 @@ type AuthzConfig struct {
 }
 
 // OutgoingAuthConfig configures backend authentication.
+//
+// Note: When using the Kubernetes operator (VirtualMCPServer CRD), the
+// VirtualMCPServerSpec.OutgoingAuth field is the authoritative source for
+// backend authentication configuration. The operator's converter will resolve
+// the CRD's OutgoingAuth (which supports Kubernetes-native references like
+// SecretKeyRef, ConfigMapRef, etc.) and populate this OutgoingAuthConfig with
+// the resolved values. Any values set here directly will be superseded by the
+// CRD configuration.
+//
 // +kubebuilder:object:generate=true
 // +gendoc
 type OutgoingAuthConfig struct {

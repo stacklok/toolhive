@@ -17,8 +17,10 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
-	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
-	// TODO(jerm-dro): migrate to the Config field.
+	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+	// This field takes precedence over config.OutgoingAuth and should be preferred because it
+	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 

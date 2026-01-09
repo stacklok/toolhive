@@ -218,7 +218,7 @@ _Appears in:_
 | `name` _string_ | Name is the virtual MCP server name. |  |  |
 | `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
 | `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  |  |
-| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends. |  |  |
+| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  |  |
 | `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation configures capability aggregation and conflict resolution. |  |  |
 | `compositeTools` _[vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig) array_ | CompositeTools defines inline composite tool workflows.<br />Full workflow definitions are embedded in the configuration.<br />For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs. |  |  |
 | `operational` _[vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)_ | Operational configures operational settings. |  |  |
@@ -355,6 +355,14 @@ _Appears in:_
 
 
 OutgoingAuthConfig configures backend authentication.
+
+Note: When using the Kubernetes operator (VirtualMCPServer CRD), the
+VirtualMCPServerSpec.OutgoingAuth field is the authoritative source for
+backend authentication configuration. The operator's converter will resolve
+the CRD's OutgoingAuth (which supports Kubernetes-native references like
+SecretKeyRef, ConfigMapRef, etc.) and populate this OutgoingAuthConfig with
+the resolved values. Any values set here directly will be superseded by the
+CRD configuration.
 
 
 
@@ -2603,7 +2611,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
-| `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
+| `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  |  |
 | `aggregation` _[api.v1alpha1.AggregationConfig](#apiv1alpha1aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
 | `compositeTools` _[api.v1alpha1.CompositeToolSpec](#apiv1alpha1compositetoolspec) array_ | CompositeTools defines inline composite tool definitions<br />For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead |  |  |
 | `compositeToolRefs` _[api.v1alpha1.CompositeToolDefinitionRef](#apiv1alpha1compositetooldefinitionref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows |  |  |

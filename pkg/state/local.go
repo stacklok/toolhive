@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/adrg/xdg"
+
 	"github.com/stacklok/toolhive/pkg/errors"
 )
 

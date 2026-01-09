@@ -134,10 +134,35 @@ components:
       type: object
     authz.ConfigType:
       description: Type is the type of authorization configuration.
+      enum:
+      - cedarv1
       type: string
       x-enum-varnames:
       - ConfigTypeCedarV1
     client.MCPClient:
+      description: ClientType is the type of MCP client
+      enum:
+      - roo-code
+      - cline
+      - cursor
+      - vscode-insider
+      - vscode
+      - claude-code
+      - windsurf
+      - windsurf-jetbrains
+      - amp-cli
+      - amp-vscode
+      - amp-cursor
+      - amp-vscode-insider
+      - amp-windsurf
+      - lm-studio
+      - goose
+      - trae
+      - continue
+      - opencode
+      - kiro
+      - antigravity
+      - zed
       type: string
       x-enum-varnames:
       - RooCode
@@ -164,30 +189,7 @@ components:
     client.MCPClientStatus:
       properties:
         client_type:
-          description: ClientType is the type of MCP client
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -452,14 +454,6 @@ components:
             type: string
           type: array
           uniqueItems: false
-        custom_metadata:
-          additionalProperties: {}
-          description: CustomMetadata allows for additional user-defined metadata
-          type: object
-        description:
-          description: Description is a human-readable description of the server's
-            purpose and functionality
-          type: string
         docker_tags:
           description: DockerTags lists the available Docker tags for this server
             image
@@ -477,67 +471,13 @@ components:
         image:
           description: Image is the Docker image reference for the MCP server
           type: string
-        metadata:
-          $ref: '#/components/schemas/registry.Metadata'
-        name:
-          description: |-
-            Name is the identifier for the MCP server, used when referencing the server in commands
-            If not provided, it will be auto-generated from the registry key
-          type: string
         permissions:
           $ref: '#/components/schemas/permissions.Profile'
         provenance:
           $ref: '#/components/schemas/registry.Provenance'
-        repository_url:
-          description: RepositoryURL is the URL to the source code repository for
-            the server
-          type: string
-        status:
-          description: Status indicates whether the server is currently active or
-            deprecated
-          type: string
-        tags:
-          description: Tags are categorization labels for the server to aid in discovery
-            and filtering
-          items:
-            type: string
-          type: array
-          uniqueItems: false
         target_port:
           description: TargetPort is the port for the container to expose (only applicable
             to SSE and Streamable HTTP transports)
-          type: integer
-        tier:
-          description: Tier represents the tier classification level of the server,
-            e.g., "Official" or "Community"
-          type: string
-        tools:
-          description: Tools is a list of tool names provided by this MCP server
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: |-
-            Transport defines the communication protocol for the server
-            For containers: stdio, sse, or streamable-http
-            For remote servers: sse or streamable-http (stdio not supported)
-          type: string
-      type: object
-    registry.Metadata:
-      description: Metadata contains additional information about the server such
-        as popularity metrics
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the server was last updated,
-            in RFC3339 format
-          type: string
-        pulls:
-          description: Pulls indicates how many times the server image has been downloaded
-          type: integer
-        stars:
-          description: Stars represents the popularity rating or number of stars for
-            the server
           type: integer
       type: object
     registry.OAuthConfig:
@@ -644,14 +584,6 @@ components:
     registry.RemoteServerMetadata:
       description: Remote server details (if it's a remote server)
       properties:
-        custom_metadata:
-          additionalProperties: {}
-          description: CustomMetadata allows for additional user-defined metadata
-          type: object
-        description:
-          description: Description is a human-readable description of the server's
-            purpose and functionality
-          type: string
         env_vars:
           description: |-
             EnvVars defines environment variables that can be passed to configure the client
@@ -668,46 +600,8 @@ components:
             $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
-        metadata:
-          $ref: '#/components/schemas/registry.Metadata'
-        name:
-          description: |-
-            Name is the identifier for the MCP server, used when referencing the server in commands
-            If not provided, it will be auto-generated from the registry key
-          type: string
         oauth_config:
           $ref: '#/components/schemas/registry.OAuthConfig'
-        repository_url:
-          description: RepositoryURL is the URL to the source code repository for
-            the server
-          type: string
-        status:
-          description: Status indicates whether the server is currently active or
-            deprecated
-          type: string
-        tags:
-          description: Tags are categorization labels for the server to aid in discovery
-            and filtering
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        tier:
-          description: Tier represents the tier classification level of the server,
-            e.g., "Official" or "Community"
-          type: string
-        tools:
-          description: Tools is a list of tool names provided by this MCP server
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: |-
-            Transport defines the communication protocol for the server
-            For containers: stdio, sse, or streamable-http
-            For remote servers: sse or streamable-http (stdio not supported)
-          type: string
         url:
           description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
           type: string
@@ -915,13 +809,7 @@ components:
             name and/or description
           type: object
         transport:
-          description: Transport is the transport mode (stdio, sse, or streamable-http)
-          type: string
-          x-enum-varnames:
-          - TransportTypeStdio
-          - TransportTypeSSE
-          - TransportTypeStreamableHTTP
-          - TransportTypeInspector
+          $ref: '#/components/schemas/types.TransportType'
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
             headers from reverse proxies
@@ -945,7 +833,17 @@ components:
           type: string
       type: object
     runtime.WorkloadStatus:
-      description: Status is the current status of the workload.
+      description: Current status of the workload
+      enum:
+      - running
+      - stopped
+      - error
+      - starting
+      - stopping
+      - unhealthy
+      - removing
+      - unknown
+      - unauthenticated
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning
@@ -1083,12 +981,20 @@ components:
       description: |-
         ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
         Note: "sse" is deprecated; use "streamable-http" instead.
+      enum:
+      - sse
+      - streamable-http
       type: string
       x-enum-varnames:
       - ProxyModeSSE
       - ProxyModeStreamableHTTP
     types.TransportType:
-      description: TransportType is the type of transport used for this workload.
+      description: Transport is the transport mode (stdio, sse, or streamable-http)
+      enum:
+      - stdio
+      - sse
+      - streamable-http
+      - inspector
       type: string
       x-enum-varnames:
       - TransportTypeStdio
@@ -1097,6 +1003,11 @@ components:
       - TransportTypeInspector
     v1.RegistryType:
       description: Type of registry (file, url, or default)
+      enum:
+      - file
+      - url
+      - api
+      - default
       type: string
       x-enum-varnames:
       - RegistryTypeFile
@@ -1140,29 +1051,7 @@ components:
         names:
           description: Names is the list of client names to operate on.
           items:
-            type: string
-            x-enum-varnames:
-            - RooCode
-            - Cline
-            - Cursor
-            - VSCodeInsider
-            - VSCode
-            - ClaudeCode
-            - Windsurf
-            - WindsurfJetBrains
-            - AmpCli
-            - AmpVSCode
-            - AmpCursor
-            - AmpVSCodeInsider
-            - AmpWindsurf
-            - LMStudio
-            - Goose
-            - Trae
-            - Continue
-            - OpenCode
-            - Kiro
-            - Antigravity
-            - Zed
+            $ref: '#/components/schemas/client.MCPClient'
           type: array
           uniqueItems: false
       type: object
@@ -1195,30 +1084,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          description: Name is the type of the client to register.
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     v1.createClientResponse:
       properties:
@@ -1229,30 +1095,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          description: Name is the type of the client that was registered.
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     v1.createGroupRequest:
       properties:
@@ -1401,13 +1244,7 @@ components:
             built-in)
           type: string
         type:
-          description: Type of registry (file, url, or default)
-          type: string
-          x-enum-varnames:
-          - RegistryTypeFile
-          - RegistryTypeURL
-          - RegistryTypeAPI
-          - RegistryTypeDefault
+          $ref: '#/components/schemas/v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string
@@ -1756,18 +1593,7 @@ components:
       description: Response containing workload status information
       properties:
         status:
-          description: Current status of the workload
-          type: string
-          x-enum-varnames:
-          - WorkloadStatusRunning
-          - WorkloadStatusStopped
-          - WorkloadStatusError
-          - WorkloadStatusStarting
-          - WorkloadStatusStopping
-          - WorkloadStatusUnhealthy
-          - WorkloadStatusRemoving
-          - WorkloadStatusUnknown
-          - WorkloadStatusUnauthenticated
+          $ref: '#/components/schemas/runtime.WorkloadStatus'
       type: object
 externalDocs:
   description: ""
@@ -1812,7 +1638,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createClientRequest'
+                description: Client to register
+                summary: client
         description: Client to register
         required: true
       responses:
@@ -1894,7 +1724,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkClientRequest'
+                description: Clients to register
+                summary: clients
         description: Clients to register
         required: true
       responses:
@@ -1922,7 +1756,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkClientRequest'
+                description: Clients to unregister
+                summary: clients
         description: Clients to unregister
         required: true
       responses:
@@ -1975,7 +1813,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createGroupRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createGroupRequest'
+                description: Group creation request
+                summary: group
         description: Group creation request
         required: true
       responses:
@@ -2169,7 +2011,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+                description: Registry configuration
+                summary: body
         description: Registry configuration
         required: true
       responses:
@@ -2259,7 +2105,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.setupSecretsRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.setupSecretsRequest'
+                description: Setup secrets provider request
+                summary: request
         description: Setup secrets provider request
         required: true
       responses:
@@ -2347,7 +2197,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createSecretRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createSecretRequest'
+                description: Create secret request
+                summary: request
         description: Create secret request
         required: true
       responses:
@@ -2442,7 +2296,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.updateSecretRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.updateSecretRequest'
+                description: Update secret request
+                summary: request
         description: Update secret request
         required: true
       responses:
@@ -2528,7 +2386,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createRequest'
+                description: Create workload request
+                summary: request
         description: Create workload request
         required: true
       responses:
@@ -2624,7 +2486,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.updateRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.updateRequest'
+                description: Update workload request
+                summary: request
         description: Update workload request
         required: true
       responses:
@@ -2688,22 +2554,19 @@ paths:
       responses:
         "200":
           content:
-            application/json:
-              schema:
-                type: string
             text/plain:
               schema:
                 type: string
           description: Logs for the specified workload
         "400":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Invalid workload name
         "404":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Not Found
@@ -2724,22 +2587,19 @@ paths:
       responses:
         "200":
           content:
-            application/json:
-              schema:
-                type: string
             text/plain:
               schema:
                 type: string
           description: Proxy logs for the specified workload
         "400":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Invalid workload name
         "404":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Proxy logs not found for workload
@@ -2843,7 +2703,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk delete request (names or group)
+                summary: request
         description: Bulk delete request (names or group)
         required: true
       responses:
@@ -2869,7 +2733,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk restart request (names or group)
+                summary: request
         description: Bulk restart request (names or group)
         required: true
       responses:
@@ -2895,7 +2763,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk stop request (names or group)
+                summary: request
         description: Bulk stop request (names or group)
         required: true
       responses:

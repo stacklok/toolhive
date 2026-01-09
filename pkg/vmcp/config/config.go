@@ -69,9 +69,12 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // +kubebuilder:validation:Type=object
 type Config struct {
 	// Name is the virtual MCP server name.
-	Name string `json:"name" yaml:"name"`
+	// +optional
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	// Group references the ToolHive group containing backend workloads.
+	// Group references an existing MCPGroup that defines backend workloads.
+	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+	// +kubebuilder:validation:Required
 	Group string `json:"groupRef" yaml:"groupRef"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
@@ -94,10 +97,15 @@ type Config struct {
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
-	// Telemetry configures telemetry settings.
+	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+	// +optional
 	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 
-	// Audit configures audit logging settings.
+	// Audit configures audit logging for the Virtual MCP server.
+	// When present, audit logs include MCP protocol operations.
+	// See audit.Config for available configuration options.
+	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 

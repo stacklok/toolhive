@@ -28,6 +28,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -41,9 +42,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -93,9 +92,7 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
@@ -108,9 +105,7 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					Operational: &mcpv1alpha1.OperationalConfig{
 						LogLevel: "debug",
 					},
@@ -142,9 +137,7 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -173,9 +166,7 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -291,9 +282,7 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 

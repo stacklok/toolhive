@@ -203,8 +203,8 @@ metadata:
   name: vmcp-interactive-deploy
   namespace: default
 spec:
-  groupRef:
-    name: deployment-services
+  config:
+    groupRef: deployment-services
 
   incomingAuth:
     type: anonymous

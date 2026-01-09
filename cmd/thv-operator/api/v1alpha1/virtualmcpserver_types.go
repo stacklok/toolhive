@@ -9,12 +9,6 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 type VirtualMCPServerSpec struct {
-	// GroupRef references an existing MCPGroup that defines backend workloads
-	// The referenced MCPGroup must exist in the same namespace
-	// TODO(jerm-dro): migrate to the Config field.
-	// +kubebuilder:validation:Required
-	GroupRef GroupRef `json:"groupRef"`
-
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
 	// Must be explicitly set - use "anonymous" type when no authentication is required
 	// TODO(jerm-dro): migrate to the Config field.
@@ -66,30 +60,11 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
-
-	// Audit configures audit logging for the Virtual MCP server
-	// When enabled, audit logs include MCP protocol operations
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Audit *AuditConfig `json:"audit,omitempty"`
-
 	// Config is the Virtual MCP server configuration
 	// NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
 	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
-}
-
-// GroupRef references an MCPGroup resource
-type GroupRef struct {
-	// Name is the name of the MCPGroup resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server

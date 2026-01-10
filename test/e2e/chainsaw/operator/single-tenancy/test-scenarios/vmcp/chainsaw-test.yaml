@@ -253,7 +253,7 @@ spec:
               tool: kubectl.apply
               onError:
                 action: retry
-                maxRetries: 3
+                retryCount: 3
               timeout: 5m
     - script:
         content: |
@@ -267,7 +267,7 @@ spec:
 
             # Verify error handling was stored correctly
             ERROR_ACTION=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.steps[0].onError.action}' 2>/dev/null || echo "")
-            MAX_RETRIES=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.steps[0].onError.maxRetries}' 2>/dev/null || echo "")
+            MAX_RETRIES=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.steps[0].onError.retryCount}' 2>/dev/null || echo "")
 
             echo "  Error action: $ERROR_ACTION"
             echo "  Max retries: $MAX_RETRIES"

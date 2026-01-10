@@ -64,244 +64,6 @@ spec:
           spec:
             description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
             properties:
-              compositeToolRefs:
-                description: |-
-                  CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
-                  for complex, reusable workflows
-                items:
-                  description: CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition
-                    resource
-                  properties:
-                    name:
-                      description: Name is the name of the VirtualMCPCompositeToolDefinition
-                        resource in the same namespace
-                      type: string
-                  required:
-                  - name
-                  type: object
-                type: array
-              compositeTools:
-                description: |-
-                  CompositeTools defines inline composite tool definitions
-                  For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-                items:
-                  description: |-
-                    CompositeToolSpec defines an inline composite tool
-                    For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-                  properties:
-                    description:
-                      description: Description describes the composite tool
-                      type: string
-                    name:
-                      description: Name is the name of the composite tool
-                      type: string
-                    output:
-                      description: |-
-                        Output defines the structured output schema for the composite tool.
-                        Specifies how to construct the final output from workflow step results.
-                        If not specified, the workflow returns the last step's output (backward compatible).
-                      properties:
-                        properties:
-                          additionalProperties:
-                            description: OutputPropertySpec defines a single output
-                              property
-                            properties:
-                              default:
-                                description: Default is the fallback value if template
-                                  expansion fails
-                                x-kubernetes-preserve-unknown-fields: true
-                              description:
-                                description: Description is a human-readable description
-                                  exposed to clients and models
-                                type: string
-                              properties:
-                                description: Properties defines nested properties
-                                  for object types
-                                x-kubernetes-preserve-unknown-fields: true
-                              type:
-                                description: 'Type is the JSON Schema type: "string",
-                                  "integer", "number", "boolean", "object", "array"'
-                                enum:
-                                - string
-                                - integer
-                                - number
-                                - boolean
-                                - object
-                                - array
-                                type: string
-                              value:
-                                description: |-
-                                  Value is a template string for constructing the runtime value
-                                  Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
-                                  For object types, this can be a JSON string that will be deserialized
-                                type: string
-                            required:
-                            - type
-                            type: object
-                          description: |-
-                            Properties defines the output properties
-                            Map key is the property name, value is the property definition
-                          type: object
-                        required:
-                          description: Required lists property names that must be
-                            present in the output
-                          items:
-                            type: string
-                          type: array
-                      type: object
-                    parameters:
-                      description: |-
-                        Parameters defines the input parameter schema in JSON Schema format.
-                        Should be a JSON Schema object with "type": "object" and "properties".
-                        Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
-                        Example:
-                          {
-                            "type": "object",
-                            "properties": {
-                              "param1": {"type": "string", "default": "value"},
-                              "param2": {"type": "integer"}
-                            },
-                            "required": ["param2"]
-                          }
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                    steps:
-                      description: Steps defines the workflow steps
-                      items:
-                        description: WorkflowStep defines a step in a composite tool
-                          workflow
-                        properties:
-                          arguments:
-                            description: |-
-                              Arguments is a map of argument values with template expansion support.
-                              Supports Go template syntax with .params and .steps for string values.
-                              Non-string values (integers, booleans, arrays, objects) are passed as-is.
-                              Note: the templating is only supported on the first level of the key-value pairs.
-                            type: object
-                            x-kubernetes-preserve-unknown-fields: true
-                          condition:
-                            description: Condition is a template expression that determines
-                              if the step should execute
-                            type: string
-                          defaultResults:
-                            description: |-
-                              DefaultResults provides fallback output values when this step is skipped
-                              (due to condition evaluating to false) or fails (when onError.action is "continue").
-                              Each key corresponds to an output field name referenced by downstream steps.
-                              Required if the step may be skipped AND downstream steps reference this step's output.
-                            x-kubernetes-preserve-unknown-fields: true
-                          dependsOn:
-                            description: DependsOn lists step IDs that must complete
-                              before this step
-                            items:
-                              type: string
-                            type: array
-                          id:
-                            description: ID is the unique identifier for this step
-                            type: string
-                          message:
-                            description: |-
-                              Message is the elicitation message
-                              Only used when Type is "elicitation"
-                            type: string
-                          onCancel:
-                            description: |-
-                              OnCancel defines the action to take when the user cancels/dismisses the elicitation
-                              Only used when Type is "elicitation"
-                            properties:
-                              action:
-                                default: abort
-                                description: |-
-                                  Action defines the action to take when the user declines or cancels
-                                  - skip_remaining: Skip remaining steps in the workflow
-                                  - abort: Abort the entire workflow execution
-                                  - continue: Continue to the next step
-                                enum:
-                                - skip_remaining
-                                - abort
-                                - continue
-                                type: string
-                            type: object
-                          onDecline:
-                            description: |-
-                              OnDecline defines the action to take when the user explicitly declines the elicitation
-                              Only used when Type is "elicitation"
-                            properties:
-                              action:
-                                default: abort
-                                description: |-
-                                  Action defines the action to take when the user declines or cancels
-                                  - skip_remaining: Skip remaining steps in the workflow
-                                  - abort: Abort the entire workflow execution
-                                  - continue: Continue to the next step
-                                enum:
-                                - skip_remaining
-                                - abort
-                                - continue
-                                type: string
-                            type: object
-                          onError:
-                            description: OnError defines error handling behavior
-                            properties:
-                              action:
-                                default: abort
-                                description: Action defines the action to take on
-                                  error
-                                enum:
-                                - abort
-                                - continue
-                                - retry
-                                type: string
-                              maxRetries:
-                                description: |-
-                                  MaxRetries is the maximum number of retries
-                                  Only used when Action is "retry"
-                                type: integer
-                              retryDelay:
-                                description: |-
-                                  RetryDelay is the delay between retry attempts
-                                  Only used when Action is "retry"
-                                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
-                                type: string
-                            type: object
-                          schema:
-                            description: Schema defines the expected response schema
-                              for elicitation
-                            type: object
-                            x-kubernetes-preserve-unknown-fields: true
-                          timeout:
-                            description: Timeout is the maximum execution time for
-                              this step
-                            type: string
-                          tool:
-                            description: |-
-                              Tool is the tool to call (format: "workload.tool_name")
-                              Only used when Type is "tool"
-                            type: string
-                          type:
-                            default: tool
-                            description: Type is the step type (tool, elicitation,
-                              etc.)
-                            enum:
-                            - tool
-                            - elicitation
-                            type: string
-                        required:
-                        - id
-                        type: object
-                      minItems: 1
-                      type: array
-                    timeout:
-                      default: 30m
-                      description: Timeout is the maximum execution time for the composite
-                        tool
-                      type: string
-                  required:
-                  - description
-                  - name
-                  - steps
-                  type: object
-                type: array
               config:
                 description: |-
                   Config is the Virtual MCP server configuration
@@ -454,6 +216,24 @@ spec:
                           data included in audit logs (in bytes).
                         type: integer
                     type: object
+                  compositeToolRefs:
+                    description: |-
+                      CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+                      for complex, reusable workflows. Only applicable when running in Kubernetes.
+                      Referenced resources must be in the same namespace as the VirtualMCPServer.
+                    items:
+                      description: |-
+                        CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
+                        The referenced resource must be in the same namespace as the VirtualMCPServer.
+                      properties:
+                        name:
+                          description: Name is the name of the VirtualMCPCompositeToolDefinition
+                            resource in the same namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
                   compositeTools:
                     description: |-
                       CompositeTools defines inline composite tool workflows.
@@ -490,7 +270,7 @@ spec:
                                     x-kubernetes-preserve-unknown-fields: true
                                   description:
                                     description: Description is a human-readable description
-                                      exposed to clients and models.
+                                      exposed to clients and models
                                     type: string
                                   properties:
                                     description: |-
@@ -500,7 +280,14 @@ spec:
                                     x-kubernetes-preserve-unknown-fields: true
                                   type:
                                     description: 'Type is the JSON Schema type: "string",
-                                      "integer", "number", "boolean", "object", "array".'
+                                      "integer", "number", "boolean", "object", "array"'
+                                    enum:
+                                    - string
+                                    - integer
+                                    - number
+                                    - boolean
+                                    - object
+                                    - array
                                     type: string
                                   value:
                                     description: |-
@@ -509,7 +296,6 @@ spec:
                                       Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
                                     type: string
                                 required:
-                                - description
                                 - type
                                 type: object
                               description: |-
@@ -554,98 +340,130 @@ spec:
                               This matches the proposal's step configuration (lines 180-255).
                             properties:
                               arguments:
-                                description: Arguments are the tool arguments (supports
-                                  template expansion).
+                                description: |-
+                                  Arguments is a map of argument values with template expansion support.
+                                  Supports Go template syntax with .params and .steps for string values.
+                                  Non-string values (integers, booleans, arrays, objects) are passed as-is.
+                                  Note: the templating is only supported on the first level of the key-value pairs.
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
                               condition:
-                                description: Condition is an optional execution condition
-                                  (template syntax).
+                                description: Condition is a template expression that
+                                  determines if the step should execute
                                 type: string
                               defaultResults:
                                 description: |-
                                   DefaultResults provides fallback output values when this step is skipped
                                   (due to condition evaluating to false) or fails (when onError.action is "continue").
                                   Each key corresponds to an output field name referenced by downstream steps.
-                                type: object
+                                  Required if the step may be skipped AND downstream steps reference this step's output.
                                 x-kubernetes-preserve-unknown-fields: true
                               dependsOn:
                                 description: DependsOn lists step IDs that must complete
-                                  first (for DAG execution).
+                                  before this step
                                 items:
                                   type: string
                                 type: array
                               id:
-                                description: ID uniquely identifies this step.
+                                description: ID is the unique identifier for this
+                                  step.
                                 type: string
                               message:
-                                description: Elicitation config (for elicitation steps).
+                                description: |-
+                                  Message is the elicitation message
+                                  Only used when Type is "elicitation"
                                 type: string
                               onCancel:
-                                description: ElicitationResponseConfig defines how
-                                  to handle elicitation responses.
+                                description: |-
+                                  OnCancel defines the action to take when the user cancels/dismisses the elicitation
+                                  Only used when Type is "elicitation"
                                 properties:
                                   action:
-                                    description: 'Action: "skip_remaining", "abort",
-                                      "continue"'
+                                    default: abort
+                                    description: |-
+                                      Action defines the action to take when the user declines or cancels
+                                      - skip_remaining: Skip remaining steps in the workflow
+                                      - abort: Abort the entire workflow execution
+                                      - continue: Continue to the next step
+                                    enum:
+                                    - skip_remaining
+                                    - abort
+                                    - continue
                                     type: string
-                                required:
-                                - action
                                 type: object
                               onDecline:
-                                description: Elicitation response handlers.
+                                description: |-
+                                  OnDecline defines the action to take when the user explicitly declines the elicitation
+                                  Only used when Type is "elicitation"
                                 properties:
                                   action:
-                                    description: 'Action: "skip_remaining", "abort",
-                                      "continue"'
+                                    default: abort
+                                    description: |-
+                                      Action defines the action to take when the user declines or cancels
+                                      - skip_remaining: Skip remaining steps in the workflow
+                                      - abort: Abort the entire workflow execution
+                                      - continue: Continue to the next step
+                                    enum:
+                                    - skip_remaining
+                                    - abort
+                                    - continue
                                     type: string
-                                required:
-                                - action
                                 type: object
                               onError:
-                                description: OnError defines error handling for this
-                                  step.
+                                description: OnError defines error handling behavior
                                 properties:
                                   action:
-                                    description: 'Action: "abort", "continue", "retry"'
+                                    default: abort
+                                    description: Action defines the action to take
+                                      on error
+                                    enum:
+                                    - abort
+                                    - continue
+                                    - retry
                                     type: string
                                   retryCount:
-                                    description: RetryCount is the number of retry
-                                      attempts (for retry action).
+                                    description: |-
+                                      RetryCount is the maximum number of retries
+                                      Only used when Action is "retry"
                                     type: integer
                                   retryDelay:
-                                    description: RetryDelay is the initial delay between
-                                      retries.
-                                    format: int64
-                                    type: integer
-                                required:
-                                - action
+                                    description: |-
+                                      RetryDelay is the delay between retry attempts
+                                      Only used when Action is "retry"
+                                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                    type: string
                                 type: object
                               schema:
+                                description: Schema defines the expected response
+                                  schema for elicitation
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
                               timeout:
-                                description: |-
-                                  Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
-                                  This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
-                                format: int64
-                                type: integer
+                                description: Timeout is the maximum execution time
+                                  for this step
+                                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                type: string
                               tool:
-                                description: Tool is the tool name to call (for tool
-                                  steps).
+                                description: |-
+                                  Tool is the tool to call (format: "workload.tool_name")
+                                  Only used when Type is "tool"
                                 type: string
                               type:
-                                description: 'Type is the step type: "tool", "elicitation"'
+                                default: tool
+                                description: Type is the step type (tool, elicitation,
+                                  etc.)
+                                enum:
+                                - tool
+                                - elicitation
                                 type: string
                             required:
                             - id
-                            - type
                             type: object
                           type: array
                         timeout:
                           description: Timeout is the maximum workflow execution time.
-                          format: int64
-                          type: integer
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
                       required:
                       - name
                       - steps
@@ -757,8 +575,8 @@ spec:
                                 type: integer
                               timeout:
                                 description: Timeout is how long to keep circuit open.
-                                format: int64
-                                type: integer
+                                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                type: string
                             required:
                             - enabled
                             - failureThreshold
@@ -767,8 +585,8 @@ spec:
                           healthCheckInterval:
                             description: HealthCheckInterval is how often to check
                               backend health.
-                            format: int64
-                            type: integer
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           partialFailureMode:
                             description: |-
                               PartialFailureMode defines behavior when some backends fail.
@@ -789,15 +607,12 @@ spec:
                           default:
                             description: Default is the default timeout for backend
                               requests.
-                            format: int64
-                            type: integer
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           perWorkload:
                             additionalProperties:
-                              description: |-
-                                Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
-                                This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
-                              format: int64
-                              type: integer
+                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                              type: string
                             description: PerWorkload contains per-workload timeout
                               overrides.
                             type: object

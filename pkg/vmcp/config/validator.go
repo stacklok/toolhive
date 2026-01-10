@@ -61,6 +61,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Validate composite tool references
+	if err := v.validateCompositeToolRefs(cfg.CompositeToolRefs); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	if len(errors) > 0 {
 		return fmt.Errorf("%w:\n  - %s", vmcp.ErrInvalidConfig, strings.Join(errors, "\n  - "))
 	}
@@ -346,14 +351,16 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 	return nil
 }
 
-func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) error {
+func (v *DefaultValidator) validateCompositeTools(tools []CompositeToolConfig) error {
 	if len(tools) == 0 {
 		return nil // Composite tools are optional
 	}
 
 	toolNames := make(map[string]bool)
 
-	for i, tool := range tools {
+	for i := range tools {
+		tool := &tools[i]
+
 		// Validate basic fields
 		if tool.Name == "" {
 			return fmt.Errorf("compositeTools[%d].name is required", i)
@@ -386,10 +393,35 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 	return nil
 }
 
-func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []*WorkflowStepConfig) error {
+func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) error {
+	if len(refs) == 0 {
+		return nil // Composite tool references are optional
+	}
+
+	refNames := make(map[string]bool)
+
+	for i := range refs {
+		ref := &refs[i]
+
+		if ref.Name == "" {
+			return fmt.Errorf("compositeToolRefs[%d].name is required", i)
+		}
+
+		if refNames[ref.Name] {
+			return fmt.Errorf("duplicate composite tool reference: %s", ref.Name)
+		}
+		refNames[ref.Name] = true
+	}
+
+	return nil
+}
+
+func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []WorkflowStepConfig) error {
 	stepIDs := make(map[string]bool)
 
-	for i, step := range steps {
+	for i := range steps {
+		step := &steps[i]
+
 		if err := v.validateStepBasics(step, i, stepIDs); err != nil {
 			return err
 		}

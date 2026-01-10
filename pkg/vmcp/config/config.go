@@ -19,6 +19,8 @@ import (
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
+// +kubebuilder:validation:Type=string
+// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 type Duration time.Duration
 
 // MarshalJSON implements json.Marshaler.
@@ -98,7 +100,14 @@ type Config struct {
 	// CompositeTools defines inline composite tool workflows.
 	// Full workflow definitions are embedded in the configuration.
 	// For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
-	CompositeTools []*CompositeToolConfig `json:"compositeTools,omitempty" yaml:"compositeTools,omitempty"`
+	// +optional
+	CompositeTools []CompositeToolConfig `json:"compositeTools,omitempty" yaml:"compositeTools,omitempty"`
+
+	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+	// for complex, reusable workflows. Only applicable when running in Kubernetes.
+	// Referenced resources must be in the same namespace as the VirtualMCPServer.
+	// +optional
+	CompositeToolRefs []CompositeToolRef `json:"compositeToolRefs,omitempty" yaml:"compositeToolRefs,omitempty"`
 
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
@@ -416,7 +425,7 @@ type CompositeToolConfig struct {
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
 	// Steps are the workflow steps to execute.
-	Steps []*WorkflowStepConfig `json:"steps" yaml:"steps"`
+	Steps []WorkflowStepConfig `json:"steps" yaml:"steps"`
 
 	// Output defines the structured output schema for this workflow.
 	// If not specified, the workflow returns the last step's output (backward compatible).
@@ -424,70 +433,125 @@ type CompositeToolConfig struct {
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
 }
 
+// CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
+// The referenced resource must be in the same namespace as the VirtualMCPServer.
+// +kubebuilder:object:generate=true
+// +gendoc
+type CompositeToolRef struct {
+	// Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+}
+
 // WorkflowStepConfig defines a single workflow step.
 // This matches the proposal's step configuration (lines 180-255).
 // +kubebuilder:object:generate=true
 // +gendoc
 type WorkflowStepConfig struct {
-	// ID uniquely identifies this step.
+	// ID is the unique identifier for this step.
+	// +kubebuilder:validation:Required
 	ID string `json:"id" yaml:"id"`
 
-	// Type is the step type: "tool", "elicitation"
-	Type string `json:"type" yaml:"type"`
+	// Type is the step type (tool, elicitation, etc.)
+	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:default=tool
+	// +optional
+	Type string `json:"type,omitempty" yaml:"type,omitempty"`
 
-	// Tool is the tool name to call (for tool steps).
+	// Tool is the tool to call (format: "workload.tool_name")
+	// Only used when Type is "tool"
+	// +optional
 	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
 
-	// Arguments are the tool arguments (supports template expansion).
+	// Arguments is a map of argument values with template expansion support.
+	// Supports Go template syntax with .params and .steps for string values.
+	// Non-string values (integers, booleans, arrays, objects) are passed as-is.
+	// Note: the templating is only supported on the first level of the key-value pairs.
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
 	Arguments thvjson.Map `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 
-	// Condition is an optional execution condition (template syntax).
+	// Condition is a template expression that determines if the step should execute
+	// +optional
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
 
-	// DependsOn lists step IDs that must complete first (for DAG execution).
+	// DependsOn lists step IDs that must complete before this step
+	// +optional
 	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 
-	// OnError defines error handling for this step.
+	// OnError defines error handling behavior
+	// +optional
 	OnError *StepErrorHandling `json:"onError,omitempty" yaml:"onError,omitempty"`
 
-	// Elicitation config (for elicitation steps).
-	Message string `json:"message,omitempty" yaml:"message,omitempty"`
+	// Message is the elicitation message
+	// Only used when Type is "elicitation"
 	// +optional
-	Schema  thvjson.Map `json:"schema,omitempty" yaml:"schema,omitempty"`
-	Timeout Duration    `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Message string `json:"message,omitempty" yaml:"message,omitempty"`
 
-	// Elicitation response handlers.
+	// Schema defines the expected response schema for elicitation
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Schema thvjson.Map `json:"schema,omitempty" yaml:"schema,omitempty"`
+
+	// Timeout is the maximum execution time for this step
+	// +optional
+	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+
+	// OnDecline defines the action to take when the user explicitly declines the elicitation
+	// Only used when Type is "elicitation"
+	// +optional
 	OnDecline *ElicitationResponseConfig `json:"onDecline,omitempty" yaml:"onDecline,omitempty"`
-	OnCancel  *ElicitationResponseConfig `json:"onCancel,omitempty" yaml:"onCancel,omitempty"`
+
+	// OnCancel defines the action to take when the user cancels/dismisses the elicitation
+	// Only used when Type is "elicitation"
+	// +optional
+	OnCancel *ElicitationResponseConfig `json:"onCancel,omitempty" yaml:"onCancel,omitempty"`
 
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
+	// Required if the step may be skipped AND downstream steps reference this step's output.
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
 	DefaultResults thvjson.Map `json:"defaultResults,omitempty" yaml:"defaultResults,omitempty"`
 }
 
-// StepErrorHandling defines error handling for a workflow step.
+// StepErrorHandling defines error handling behavior for workflow steps.
 // +kubebuilder:object:generate=true
 // +gendoc
 type StepErrorHandling struct {
-	// Action: "abort", "continue", "retry"
-	Action string `json:"action" yaml:"action"`
+	// Action defines the action to take on error
+	// +kubebuilder:validation:Enum=abort;continue;retry
+	// +kubebuilder:default=abort
+	// +optional
+	Action string `json:"action,omitempty" yaml:"action,omitempty"`
 
-	// RetryCount is the number of retry attempts (for retry action).
+	// RetryCount is the maximum number of retries
+	// Only used when Action is "retry"
+	// +optional
 	RetryCount int `json:"retryCount,omitempty" yaml:"retryCount,omitempty"`
 
-	// RetryDelay is the initial delay between retries.
+	// RetryDelay is the delay between retry attempts
+	// Only used when Action is "retry"
+	// +optional
 	RetryDelay Duration `json:"retryDelay,omitempty" yaml:"retryDelay,omitempty"`
 }
 
-// ElicitationResponseConfig defines how to handle elicitation responses.
+// ElicitationResponseConfig defines how to handle user responses to elicitation requests.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ElicitationResponseConfig struct {
-	// Action: "skip_remaining", "abort", "continue"
-	Action string `json:"action" yaml:"action"`
+	// Action defines the action to take when the user declines or cancels
+	// - skip_remaining: Skip remaining steps in the workflow
+	// - abort: Abort the entire workflow execution
+	// - continue: Continue to the next step
+	// +kubebuilder:validation:Enum=skip_remaining;abort;continue
+	// +kubebuilder:default=abort
+	// +optional
+	Action string `json:"action,omitempty" yaml:"action,omitempty"`
 }
 
 // OutputConfig defines the structured output schema for a composite tool workflow.
@@ -511,10 +575,13 @@ type OutputConfig struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type OutputProperty struct {
-	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array".
+	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=string;integer;number;boolean;object;array
 	Type string `json:"type" yaml:"type"`
 
-	// Description is a human-readable description exposed to clients and models.
+	// Description is a human-readable description exposed to clients and models
+	// +optional
 	Description string `json:"description" yaml:"description"`
 
 	// Value is a template string for constructing the runtime value.

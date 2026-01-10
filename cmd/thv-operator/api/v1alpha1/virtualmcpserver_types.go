@@ -24,18 +24,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
-	// CompositeTools defines inline composite tool definitions
-	// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	CompositeTools []CompositeToolSpec `json:"compositeTools,omitempty"`
-
-	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
-	// for complex, reusable workflows
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
-
 	// Operational defines operational settings like timeouts and health checks
 	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
@@ -120,51 +108,6 @@ type BackendAuthConfig struct {
 	// Only used when Type is "external_auth_config_ref"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
-}
-
-// CompositeToolSpec defines an inline composite tool
-// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-type CompositeToolSpec struct {
-	// Name is the name of the composite tool
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Description describes the composite tool
-	// +kubebuilder:validation:Required
-	Description string `json:"description"`
-
-	// Parameters defines the input parameter schema in JSON Schema format.
-	// Should be a JSON Schema object with "type": "object" and "properties".
-	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
-	// Example:
-	//   {
-	//     "type": "object",
-	//     "properties": {
-	//       "param1": {"type": "string", "default": "value"},
-	//       "param2": {"type": "integer"}
-	//     },
-	//     "required": ["param2"]
-	//   }
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
-
-	// Steps defines the workflow steps
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	Steps []WorkflowStep `json:"steps"`
-
-	// Timeout is the maximum execution time for the composite tool
-	// +kubebuilder:default="30m"
-	// +optional
-	Timeout string `json:"timeout,omitempty"`
-
-	// Output defines the structured output schema for the composite tool.
-	// Specifies how to construct the final output from workflow step results.
-	// If not specified, the workflow returns the last step's output (backward compatible).
-	// +optional
-	Output *OutputSpec `json:"output,omitempty"`
 }
 
 // OutputSpec defines the structured output schema for a composite tool workflow

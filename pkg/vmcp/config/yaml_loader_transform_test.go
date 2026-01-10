@@ -225,7 +225,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 						"input": map[string]any{"type": "string"},
 					},
 				}),
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Steps: []WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "parameters must have 'type' field",
@@ -240,7 +240,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 						"param1": map[string]any{"type": "string"},
 					},
 				}),
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Steps: []WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "'type' field must be a string",
@@ -250,7 +250,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 			tool: &CompositeToolConfig{
 				Name:       "bad",
 				Parameters: thvjson.NewMap(map[string]any{"type": "string"}),
-				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
+				Steps:      []WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "parameters 'type' must be 'object'",
@@ -265,7 +265,7 @@ func TestYAMLLoader_processCompositeTool(t *testing.T) {
 						"version": map[string]any{"type": "string", "default": "latest"},
 					},
 				}),
-				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+				Steps: []WorkflowStepConfig{{ID: "s1"}},
 			},
 			verify: func(t *testing.T, tool *CompositeToolConfig) {
 				t.Helper()

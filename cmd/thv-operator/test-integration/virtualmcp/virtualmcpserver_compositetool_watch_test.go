@@ -69,12 +69,14 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					Config: vmcpconfig.Config{
+						Group: mcpGroupName,
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: compositeToolDefName},
+						},
+					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
-					},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: compositeToolDefName},
 					},
 				},
 			}
@@ -268,12 +270,14 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					Config: vmcpconfig.Config{
+						Group: mcpGroupName,
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: compositeToolDefName},
+						},
+					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
-					},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: compositeToolDefName},
 					},
 				},
 			}

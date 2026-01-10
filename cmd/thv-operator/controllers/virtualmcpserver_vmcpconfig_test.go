@@ -951,3 +951,305 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 	require.Error(t, err, "should fail when referenced tool doesn't exist")
 	assert.Contains(t, err.Error(), "not found", "error should mention not found")
 }
+
+// TestConfigMapContent_DynamicMode tests that in dynamic mode (discovered),
+// the ConfigMap contains minimal content without backends
+func TestConfigMapContent_DynamicMode(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := createRunConfigTestScheme()
+
+	// Create MCPGroup for workload discovery
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Create VirtualMCPServer in dynamic mode (source: discovered)
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered", // Dynamic mode
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	// Discover workloads
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	require.NoError(t, err)
+
+	// Create ConfigMap
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	require.NoError(t, err)
+
+	// Verify ConfigMap was created
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	// Parse the YAML config
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	// In dynamic mode, ConfigMap should have minimal content:
+	// - OutgoingAuth with source: discovered
+	// - No auth backends in OutgoingAuth (vMCP discovers at runtime)
+	// - No static backends in Backends (vMCP discovers at runtime)
+	require.NotNil(t, config.OutgoingAuth)
+	assert.Equal(t, "discovered", config.OutgoingAuth.Source, "source should be discovered")
+	assert.Empty(t, config.OutgoingAuth.Backends, "auth backends should be empty in dynamic mode")
+	assert.Empty(t, config.Backends, "static backends should be empty in dynamic mode")
+
+	t.Log("✅ Dynamic mode ConfigMap contains minimal content without backends")
+}
+
+// TestConfigMapContent_StaticMode_InlineOverrides tests that in static mode (inline),
+// explicitly specified backends in the spec are preserved in the ConfigMap.
+// This tests inline overrides, not discovery. See TestConfigMapContent_StaticModeWithDiscovery
+// for testing actual backend discovery from MCPServers in the group.
+func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := createRunConfigTestScheme()
+
+	// Create MCPGroup for workload discovery
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Create VirtualMCPServer in static mode (source: inline)
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "inline", // Static mode
+				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+					"test-backend": {
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	// Discover workloads
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	require.NoError(t, err)
+
+	// Create ConfigMap
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	require.NoError(t, err)
+
+	// Verify ConfigMap was created
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	// Parse the YAML config
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	// In static mode with inline backends, ConfigMap should preserve them:
+	// - OutgoingAuth with source: inline
+	// - Backends from spec.outgoingAuth.backends are included
+	require.NotNil(t, config.OutgoingAuth)
+	assert.Equal(t, "inline", config.OutgoingAuth.Source, "source should be inline")
+	require.NotEmpty(t, config.OutgoingAuth.Backends, "backends should be present in static mode")
+
+	// Verify the inline backend from spec is present
+	_, exists := config.OutgoingAuth.Backends["test-backend"]
+	assert.True(t, exists, "inline backend from spec should be present in ConfigMap")
+
+	t.Log("✅ Static mode ConfigMap preserves inline backend overrides from spec")
+}
+
+// TestConfigMapContent_StaticModeWithDiscovery tests that in static mode (inline),
+// the ConfigMap contains discovered backend auth configs from MCPServer ExternalAuthConfigRefs
+func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := createRunConfigTestScheme()
+
+	// Create MCPGroup for workload discovery
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Create MCPExternalAuthConfig that will be referenced by MCPServer
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-auth-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		},
+	}
+
+	// Create MCPServer with ExternalAuthConfigRef and Status
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "discovered-backend",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			GroupRef: "test-group",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "test-auth-config",
+			},
+		},
+		Status: mcpv1alpha1.MCPServerStatus{
+			Phase: mcpv1alpha1.MCPServerPhaseRunning,
+			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
+		},
+	}
+
+	// Create VirtualMCPServer in static mode (source: inline) WITHOUT inline backends
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "inline", // Static mode - should discover backends
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, mcpServer, externalAuthConfig).
+		WithStatusSubresource(mcpServer).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	// Discover workloads
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	require.NoError(t, err)
+	require.NotEmpty(t, workloadNames, "should have discovered the MCPServer")
+
+	// Create ConfigMap
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	require.NoError(t, err)
+
+	// Verify ConfigMap was created
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	// Parse the YAML config
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	// In static mode with discovery, ConfigMap should have:
+	// - OutgoingAuth with source: inline and auth configs
+	// - Backends populated with URLs and transport types for zero-K8s-access mode
+	require.NotNil(t, config.OutgoingAuth)
+	assert.Equal(t, "inline", config.OutgoingAuth.Source, "source should be inline")
+	require.NotEmpty(t, config.OutgoingAuth.Backends, "backends should be discovered in static mode")
+
+	// Verify the discovered backend auth config is present
+	discoveredBackend, exists := config.OutgoingAuth.Backends["discovered-backend"]
+	require.True(t, exists, "discovered backend should be present in ConfigMap")
+	require.NotNil(t, discoveredBackend, "discovered backend should have auth strategy")
+	assert.Equal(t, "unauthenticated", discoveredBackend.Type, "backend should have correct auth type")
+
+	// Verify static backend configurations (URLs + transport) are populated
+	require.NotEmpty(t, config.Backends, "static backends with URLs should be populated in static mode")
+
+	// Find the discovered backend in the static backend list
+	var foundBackend *vmcpconfig.StaticBackendConfig
+	for i := range config.Backends {
+		if config.Backends[i].Name == "discovered-backend" {
+			foundBackend = &config.Backends[i]
+			break
+		}
+	}
+	require.NotNil(t, foundBackend, "discovered backend should be in static backends list")
+	assert.NotEmpty(t, foundBackend.URL, "backend should have URL populated")
+	assert.NotEmpty(t, foundBackend.Transport, "backend should have transport type populated")
+
+	t.Log("✅ Static mode ConfigMap contains both auth configs and backend URLs/transports")
+}

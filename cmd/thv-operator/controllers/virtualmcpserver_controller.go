@@ -495,14 +495,28 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer
+// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer.
+// RBAC resources are only created in dynamic mode (source: discovered) where vMCP needs K8s API access
+// to discover backends at runtime. In static mode (source: inline), no RBAC is needed.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
+	// Determine the outgoing auth source mode
+	source := OutgoingAuthSourceDiscovered // default
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		source = vmcp.Spec.OutgoingAuth.Source
+	}
+
+	// Static mode (inline): No RBAC needed, cleanup any existing RBAC resources
+	if source == OutgoingAuthSourceInline {
+		return r.cleanupRBACResources(ctx, vmcp)
+	}
+
+	// Dynamic mode (discovered): Ensure RBAC resources exist
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
-	// Ensure Role with minimal permissions
+	// Ensure Role with permissions to discover backends and update status
 	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
@@ -548,6 +562,65 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 			},
 		}
 	})
+}
+
+// cleanupRBACResources removes RBAC resources when switching from dynamic to static mode.
+// This is needed when a VirtualMCPServer switches from "discovered" to "inline" source mode.
+func (r *VirtualMCPServerReconciler) cleanupRBACResources(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
+	deletedCount := 0
+
+	// Delete RoleBinding
+	roleBinding := &rbacv1.RoleBinding{}
+	roleBindingKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, roleBindingKey, roleBinding); err == nil {
+		ctxLogger.Info("Deleting RoleBinding for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, roleBinding); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete RoleBinding: %w", err)
+		}
+		deletedCount++
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get RoleBinding: %w", err)
+	}
+
+	// Delete Role
+	role := &rbacv1.Role{}
+	roleKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, roleKey, role); err == nil {
+		ctxLogger.Info("Deleting Role for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, role); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete Role: %w", err)
+		}
+		deletedCount++
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get Role: %w", err)
+	}
+
+	// Delete ServiceAccount
+	serviceAccount := &corev1.ServiceAccount{}
+	serviceAccountKey := types.NamespacedName{Name: serviceAccountName, Namespace: vmcp.Namespace}
+	if err := r.Get(ctx, serviceAccountKey, serviceAccount); err == nil {
+		ctxLogger.Info("Deleting ServiceAccount for static mode", "name", serviceAccountName)
+		if err := r.Delete(ctx, serviceAccount); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete ServiceAccount: %w", err)
+		}
+		deletedCount++
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	// Log summary of cleanup operation
+	if deletedCount > 0 {
+		ctxLogger.Info("Cleaned up RBAC resources for static mode",
+			"deleted", deletedCount,
+			"serviceAccountName", serviceAccountName)
+	}
+
+	return nil
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -1248,6 +1321,26 @@ func vmcpServiceAccountName(vmcpName string) string {
 	return fmt.Sprintf("%s-vmcp", vmcpName)
 }
 
+// getServiceAccountNameForVmcp returns the service account name for a VirtualMCPServer
+// based on its outgoing auth source mode.
+// - Dynamic mode (discovered): Returns the dedicated service account name
+// - Static mode (inline): Returns empty string (uses default service account)
+func (*VirtualMCPServerReconciler) getServiceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	// Determine the outgoing auth source mode
+	source := OutgoingAuthSourceDiscovered // default
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		source = vmcp.Spec.OutgoingAuth.Source
+	}
+
+	// Static mode: Use default service account (no RBAC resources)
+	if source == OutgoingAuthSourceInline {
+		return ""
+	}
+
+	// Dynamic mode: Use dedicated service account with K8s API permissions
+	return vmcpServiceAccountName(vmcp.Name)
+}
+
 // vmcpServiceName generates the service name for a VirtualMCPServer
 // Uses "vmcp-" prefix to distinguish from MCPServer's "mcp-{name}-proxy" pattern.
 // This allows VirtualMCPServer and MCPServer to coexist with the same base name.
@@ -1490,10 +1583,11 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		outgoing.Default = defaultStrategy
 	}
 
-	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
-	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
-	}
+	// Discover ExternalAuthConfig from MCPServers to populate backend auth configs.
+	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
+	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
+	// this function is not called, keeping the ConfigMap minimal.
+	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -1507,6 +1601,25 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	}
 
 	return outgoing, nil
+}
+
+// convertDiscoveredToStaticBackends converts DiscoveredBackend objects to StaticBackendConfig
+// for embedding in ConfigMap for static mode. This allows vMCP to operate without K8s API access.
+func convertDiscoveredToStaticBackends(discovered []mcpv1alpha1.DiscoveredBackend) []vmcpconfig.StaticBackendConfig {
+	static := make([]vmcpconfig.StaticBackendConfig, 0, len(discovered))
+	for _, backend := range discovered {
+		// Only include backends that have a URL (skip unavailable backends)
+		if backend.URL == "" {
+			continue
+		}
+
+		static = append(static, vmcpconfig.StaticBackendConfig{
+			Name:      backend.Name,
+			URL:       backend.URL,
+			Transport: backend.Transport,
+		})
+	}
+	return static
 }
 
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
@@ -1650,6 +1763,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 			Status:          backendStatus,
 			LastHealthCheck: now,
 			URL:             backend.BaseURL,
+			Transport:       backend.TransportType,
 		}
 
 		discoveredBackends = append(discoveredBackends, discoveredBackend)

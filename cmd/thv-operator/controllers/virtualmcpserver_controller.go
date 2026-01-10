@@ -297,7 +297,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	ctxLogger := log.FromContext(ctx)
 
 	// If no composite tool refs, nothing to validate
-	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+	if len(vmcp.Spec.Config.CompositeToolRefs) == 0 {
 		// Set condition to indicate validation passed (no refs to validate)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		statusManager.SetCompositeToolRefsValidatedCondition(
@@ -309,7 +309,8 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	}
 
 	// Validate each referenced composite tool definition exists
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
 		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
 		err := r.Get(ctx, types.NamespacedName{
 			Name:      ref.Name,
@@ -361,7 +362,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	statusManager.SetObservedGeneration(vmcp.Generation)
 	statusManager.SetCompositeToolRefsValidatedCondition(
 		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
-		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.Config.CompositeToolRefs)),
 		metav1.ConditionTrue,
 	)
 
@@ -2088,12 +2089,12 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	compositeToolDefName string,
 ) bool {
-	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+	if len(vmcp.Spec.Config.CompositeToolRefs) == 0 {
 		return false
 	}
 
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
-		if ref.Name == compositeToolDefName {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		if vmcp.Spec.Config.CompositeToolRefs[i].Name == compositeToolDefName {
 			return true
 		}
 	}

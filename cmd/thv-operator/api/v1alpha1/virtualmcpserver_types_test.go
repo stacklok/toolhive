@@ -315,33 +315,33 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		steps   []WorkflowStep
+		steps   []config.WorkflowStepConfig
 		isValid bool
 		errMsg  string
 	}{
 		{
 			name: "valid_sequential_dependencies",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1"},
-				{ID: "step2", Tool: "backend.tool2", DependsOn: []string{"step1"}},
-				{ID: "step3", Tool: "backend.tool3", DependsOn: []string{"step2"}},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2", DependsOn: []string{"step1"}},
+				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step2"}},
 			},
 			isValid: true,
 		},
 		{
 			name: "valid_parallel_steps",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1"},
-				{ID: "step2", Tool: "backend.tool2"},
-				{ID: "step3", Tool: "backend.tool3", DependsOn: []string{"step1", "step2"}},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
+				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step1", "step2"}},
 			},
 			isValid: true,
 		},
 		{
 			name: "valid_forward_reference",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1", DependsOn: []string{"step2"}},
-				{ID: "step2", Tool: "backend.tool2"},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1", DependsOn: []string{"step2"}},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
 			},
 			isValid: true,
 		},
@@ -351,20 +351,22 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &VirtualMCPServer{
+			server := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					CompositeTools: []CompositeToolSpec{
-						{
-							Name:        "test-workflow",
-							Description: "Test workflow",
-							Steps:       tt.steps,
+					Config: config.Config{
+						Group: "test-group",
+						CompositeTools: []config.CompositeToolConfig{
+							{
+								Name:        "test-workflow",
+								Description: "Test workflow",
+								Steps:       tt.steps,
+							},
 						},
 					},
 				},
 			}
 
-			err := vmcp.Validate()
+			err := server.Validate()
 			if tt.isValid {
 				assert.NoError(t, err)
 			} else {

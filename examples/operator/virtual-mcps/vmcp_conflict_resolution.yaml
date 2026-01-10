@@ -143,20 +143,20 @@ metadata:
 spec:
   config:
     groupRef: my-services
-    # Priority strategy configuration
-    aggregation:
-      conflictResolution: priority
-      conflictResolutionConfig:
-        # Priority order for backends (first in list has highest priority)
-        priorityOrder:
-          # Yardstick SSE has highest priority (first in list)
-          - yardstick-sse
-          # Fetch is second priority
-          - fetch
-          # Yardstick Streamable is third priority
-          - yardstick-streamable
-        # Result: If multiple backends have the same tool, yardstick-sse wins
-        # because it's first in priorityOrder
+  # Priority strategy configuration
+  aggregation:
+    conflictResolution: priority
+    conflictResolutionConfig:
+      # Priority order for backends (first in list has highest priority)
+      priorityOrder:
+        # Yardstick SSE has highest priority (first in list)
+        - yardstick-sse
+        # Fetch is second priority
+        - fetch
+        # Yardstick Streamable is third priority
+        - yardstick-streamable
+      # Result: If multiple backends have the same tool, yardstick-sse wins
+      # because it's first in priorityOrder
 
   incomingAuth:
     type: anonymous
@@ -187,32 +187,32 @@ metadata:
 spec:
   config:
     groupRef: my-services
-    # Manual strategy configuration
-    # Manual strategy validates conflicts at runtime and requires
-    # per-workload tool configuration to resolve them
-    aggregation:
-      conflictResolution: manual
+  # Manual strategy configuration
+  # Manual strategy validates conflicts at runtime and requires
+  # per-workload tool configuration to resolve them
+  aggregation:
+    conflictResolution: manual
 
-      # Per-workload tool configuration
-      # This specifies which tools to expose from each backend
-      # NOTE: Actual tool names depend on what the MCP servers provide
-      tools:
-        # Yardstick SSE backend
-        - workload: yardstick-sse
-          filter:
-            - echo
-            - add
+    # Per-workload tool configuration
+    # This specifies which tools to expose from each backend
+    # NOTE: Actual tool names depend on what the MCP servers provide
+    tools:
+      # Yardstick SSE backend
+      - workload: yardstick-sse
+        filter:
+          - echo
+          - add
 
-        # Fetch backend
-        - workload: fetch
-          filter:
-            - fetch
+      # Fetch backend
+      - workload: fetch
+        filter:
+          - fetch
 
-        # Yardstick Streamable backend
-        - workload: yardstick-streamable
-          filter:
-            - longecho
-            - sampleLLM
+      # Yardstick Streamable backend
+      - workload: yardstick-streamable
+        filter:
+          - longecho
+          - sampleLLM
 
   incomingAuth:
     type: anonymous

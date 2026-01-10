@@ -150,16 +150,16 @@ Defines tool aggregation and conflict resolution strategies.
 spec:
   config:
     groupRef: my-services
-    aggregation:
-      conflictResolution: prefix
-      conflictResolutionConfig:
-        prefixFormat: "{workload}_"
-      tools:
-        - workload: github
-          filter: ["create_pr", "merge_pr"]
-        - workload: jira
-          toolConfigRef:
-            name: jira-tool-config
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+    tools:
+      - workload: github
+        filter: ["create_pr", "merge_pr"]
+      - workload: jira
+        toolConfigRef:
+          name: jira-tool-config
 ```
 
 **Example (priority strategy)**:
@@ -167,10 +167,10 @@ spec:
 spec:
   config:
     groupRef: my-services
-    aggregation:
-      conflictResolution: priority
-      conflictResolutionConfig:
-        priorityOrder: ["github", "jira", "slack"]
+  aggregation:
+    conflictResolution: priority
+    conflictResolutionConfig:
+      priorityOrder: ["github", "jira", "slack"]
 ```
 
 **Example (manual strategy)**:
@@ -178,23 +178,23 @@ spec:
 spec:
   config:
     groupRef: my-services
-    aggregation:
-      conflictResolution: manual
-      tools:
-        - workload: github
-          filter: ["create_pr", "merge_pr", "list_repos"]
-          overrides:
-            create_pr:
-              name: github_create_pr
-              description: "Create a pull request in GitHub"
-        - workload: jira
-          filter: ["create_issue", "update_issue"]
-          overrides:
-            create_issue:
-              name: jira_create_issue
-              description: "Create an issue in Jira"
-        # All tool name conflicts must be explicitly resolved via overrides
-        # Runtime validation ensures no unresolved conflicts exist
+  aggregation:
+    conflictResolution: manual
+    tools:
+      - workload: github
+        filter: ["create_pr", "merge_pr", "list_repos"]
+        overrides:
+          create_pr:
+            name: github_create_pr
+            description: "Create a pull request in GitHub"
+      - workload: jira
+        filter: ["create_issue", "update_issue"]
+        overrides:
+          create_issue:
+            name: jira_create_issue
+            description: "Create an issue in Jira"
+      # All tool name conflicts must be explicitly resolved via overrides
+      # Runtime validation ensures no unresolved conflicts exist
 ```
 
 #### WorkloadToolConfig

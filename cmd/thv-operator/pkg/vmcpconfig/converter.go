@@ -529,51 +529,19 @@ func (c *Converter) resolveMCPToolConfig(
 	return toolConfig, nil
 }
 
-// convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
-func (c *Converter) convertCompositeTools(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
-
-	for _, crdTool := range vmcp.Spec.CompositeTools {
-		tool, err := c.convertCompositeToolSpec(
-			ctx, crdTool.Name, crdTool.Description, crdTool.Timeout,
-			crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
-		if err != nil {
-			return nil, err
-		}
-		compositeTools = append(compositeTools, tool)
-	}
-
-	return compositeTools, nil
-}
-
-// convertAllCompositeTools converts both inline CompositeTools and referenced CompositeToolRefs,
-// merging them together and validating for duplicate names.
+// convertAllCompositeTools resolves CompositeToolRefs and merges them with inline CompositeTools.
 func (c *Converter) convertAllCompositeTools(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	// Convert inline composite tools
-	inlineTools, err := c.convertCompositeTools(ctx, vmcp)
+) ([]vmcpconfig.CompositeToolConfig, error) {
+	// Resolve referenced composite tools
+	referencedTools, err := c.resolveCompositeToolRefs(ctx, vmcp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert inline composite tools: %w", err)
-	}
-
-	// Convert referenced composite tools
-	var referencedTools []*vmcpconfig.CompositeToolConfig
-	if len(vmcp.Spec.CompositeToolRefs) > 0 {
-		referencedTools, err = c.convertReferencedCompositeTools(ctx, vmcp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert referenced composite tools: %w", err)
-		}
+		return nil, fmt.Errorf("failed to resolve composite tool references: %w", err)
 	}
 
 	// Merge inline and referenced tools
-	allTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(inlineTools)+len(referencedTools))
-	allTools = append(allTools, inlineTools...)
-	allTools = append(allTools, referencedTools...)
+	allTools := append(vmcp.Spec.Config.CompositeTools, referencedTools...)
 
 	// Validate for duplicate names
 	if err := validateCompositeToolNames(allTools); err != nil {
@@ -583,14 +551,15 @@ func (c *Converter) convertAllCompositeTools(
 	return allTools, nil
 }
 
-// convertReferencedCompositeTools fetches and converts referenced VirtualMCPCompositeToolDefinition resources.
-func (c *Converter) convertReferencedCompositeTools(
+// resolveCompositeToolRefs fetches and converts referenced VirtualMCPCompositeToolDefinition resources.
+func (c *Converter) resolveCompositeToolRefs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	referencedTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeToolRefs))
+) ([]vmcpconfig.CompositeToolConfig, error) {
+	referencedTools := make([]vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.Config.CompositeToolRefs))
 
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
 		// Fetch the referenced VirtualMCPCompositeToolDefinition
 		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
 		key := types.NamespacedName{
@@ -611,7 +580,7 @@ func (c *Converter) convertReferencedCompositeTools(
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert referenced tool %q: %w", ref.Name, err)
 		}
-		referencedTools = append(referencedTools, tool)
+		referencedTools = append(referencedTools, *tool)
 	}
 
 	return referencedTools, nil
@@ -640,7 +609,7 @@ func (c *Converter) convertCompositeToolSpec(
 	tool := &vmcpconfig.CompositeToolConfig{
 		Name:        name,
 		Description: description,
-		Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps)),
+		Steps:       make([]vmcpconfig.WorkflowStepConfig, 0, len(steps)),
 	}
 
 	// Parse timeout
@@ -691,8 +660,8 @@ func (*Converter) convertWorkflowSteps(
 	ctx context.Context,
 	steps []mcpv1alpha1.WorkflowStep,
 	toolNameForLogging string,
-) ([]*vmcpconfig.WorkflowStepConfig, error) {
-	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
+) ([]vmcpconfig.WorkflowStepConfig, error) {
+	workflowSteps := make([]vmcpconfig.WorkflowStepConfig, 0, len(steps))
 
 	for _, crdStep := range steps {
 		args, err := convertArguments(crdStep.Arguments)
@@ -700,7 +669,7 @@ func (*Converter) convertWorkflowSteps(
 			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
 		}
 
-		step := &vmcpconfig.WorkflowStepConfig{
+		step := vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
 			Type:      crdStep.Type,
 			Tool:      crdStep.Tool,
@@ -787,13 +756,13 @@ func (*Converter) convertWorkflowSteps(
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.
-func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
+func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 	seen := make(map[string]bool)
-	for _, tool := range tools {
-		if seen[tool.Name] {
-			return fmt.Errorf("duplicate composite tool name: %q", tool.Name)
+	for i := range tools {
+		if seen[tools[i].Name] {
+			return fmt.Errorf("duplicate composite tool name: %q", tools[i].Name)
 		}
-		seen[tool.Name] = true
+		seen[tools[i].Name] = true
 	}
 	return nil
 }

@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -48,16 +51,16 @@ func secretsRouterWithRoutes(routes *SecretsRoutes) http.Handler {
 	r := chi.NewRouter()
 
 	// Setup secrets provider
-	r.Post("/", routes.setupSecretsProvider)
+	r.Post("/", apierrors.ErrorHandler(routes.setupSecretsProvider))
 
 	// Default provider routes
 	r.Route("/default", func(r chi.Router) {
-		r.Get("/", routes.getSecretsProvider)
+		r.Get("/", apierrors.ErrorHandler(routes.getSecretsProvider))
 		r.Route("/keys", func(r chi.Router) {
-			r.Get("/", routes.listSecrets)
-			r.Post("/", routes.createSecret)
-			r.Put("/{key}", routes.updateSecret)
-			r.Delete("/{key}", routes.deleteSecret)
+			r.Get("/", apierrors.ErrorHandler(routes.listSecrets))
+			r.Post("/", apierrors.ErrorHandler(routes.createSecret))
+			r.Put("/{key}", apierrors.ErrorHandler(routes.updateSecret))
+			r.Delete("/{key}", apierrors.ErrorHandler(routes.deleteSecret))
 		})
 	})
 
@@ -78,12 +81,13 @@ func secretsRouterWithRoutes(routes *SecretsRoutes) http.Handler {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets [post]
-func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) error {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Validate provider type
@@ -96,13 +100,16 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	case string(secrets.NoneType):
 		providerType = secrets.NoneType
 	case "":
-		http.Error(w, "Provider type cannot be empty", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("provider type cannot be empty"),
+			http.StatusBadRequest,
+		)
 	default:
-		http.Error(w, fmt.Sprintf("Invalid secrets provider type: %s (valid types: %s, %s, %s)",
-			req.ProviderType, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
-			http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
+				req.ProviderType, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Check current secrets provider configuration for appropriate messaging
@@ -112,9 +119,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	if cfg.Secrets.SetupCompleted {
 		currentProviderType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
-			logger.Errorf("Failed to get current provider type: %v", err)
-			http.Error(w, "Failed to get current provider configuration", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("failed to get current provider configuration: %w", err)
 		}
 
 		// TODO Handle provider reconfiguration in a better way
@@ -139,9 +144,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 			// Generate a secure random password
 			generatedPassword, err := secrets.GenerateSecurePassword()
 			if err != nil {
-				logger.Errorf("Failed to generate secure password: %v", err)
-				http.Error(w, "Failed to generate secure password", http.StatusInternalServerError)
-				return
+				return fmt.Errorf("failed to generate secure password: %w", err)
 			}
 			passwordToUse = generatedPassword
 			logger.Infof("Generated secure random password for encrypted provider setup")
@@ -154,13 +157,10 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	ctx := context.Background()
 	result := secrets.ValidateProviderWithPassword(ctx, providerType, passwordToUse)
 	if !result.Success {
-		logger.Errorf("Provider validation failed: %v", result.Error)
 		if errors.Is(result.Error, secrets.ErrKeyringNotAvailable) {
-			http.Error(w, result.Error.Error(), http.StatusBadRequest)
-			return
+			return result.Error
 		}
-		http.Error(w, fmt.Sprintf("Provider validation failed: %v", result.Error), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("provider validation failed: %w", result.Error)
 	}
 
 	// For encrypted provider during initial setup or reconfiguration, ensure we create the provider
@@ -168,9 +168,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	if providerType == secrets.EncryptedType && (isInitialSetup || isReconfiguration) {
 		_, err := secrets.CreateSecretProviderWithPassword(providerType, passwordToUse)
 		if err != nil {
-			logger.Errorf("Failed to initialize encrypted provider: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to initialize encrypted provider: %v", err), http.StatusInternalServerError)
-			return
+			return fmt.Errorf("failed to initialize encrypted provider: %w", err)
 		}
 		logger.Info("Encrypted provider initialized and password saved to keyring")
 	}
@@ -181,9 +179,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		c.Secrets.SetupCompleted = true
 	})
 	if err != nil {
-		logger.Errorf("Failed to update configuration: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to update configuration: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	// Need to force the singleton to be reloaded so that SetupComplete is updated.
@@ -204,10 +200,9 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		Message:      message,
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode response: %w", err)
 	}
+	return nil
 }
 
 // getSecretsProvider
@@ -220,27 +215,22 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 //	@Failure		404	{string}	string	"Not Found - Provider not setup"
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
-func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) {
+func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) error {
 	cfg := s.configProvider.GetConfig()
 
 	// Check if secrets provider is setup
 	if !cfg.Secrets.SetupCompleted {
-		http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-		return
+		return secrets.ErrSecretsNotSetup
 	}
 
 	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
-		logger.Errorf("Failed to get provider type: %v", err)
-		http.Error(w, "Failed to get provider type", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to get provider type: %w", err)
 	}
 	// Get provider capabilities
 	provider, err := s.getSecretsManager()
 	if err != nil {
-		logger.Errorf("Failed to create secrets provider: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to access secrets provider: %w", err)
 	}
 
 	capabilities := provider.Capabilities()
@@ -258,10 +248,9 @@ func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Reques
 		},
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode response: %w", err)
 	}
+	return nil
 }
 
 // listSecrets
@@ -275,30 +264,23 @@ func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Reques
 //	@Failure		405	{string}	string	"Method Not Allowed - Provider doesn't support listing"
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default/keys [get]
-func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) {
-
+func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) error {
 	provider, err := s.getSecretsManager()
 	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
+		return err
 	}
 
 	// Check if provider supports listing
 	if !provider.Capabilities().CanList {
-		http.Error(w, "Secrets provider does not support listing keys", http.StatusMethodNotAllowed)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secrets provider does not support listing keys"),
+			http.StatusMethodNotAllowed,
+		)
 	}
 
 	secretDescriptions, err := provider.ListSecrets(r.Context())
 	if err != nil {
-		logger.Errorf("Failed to list secrets: %v", err)
-		http.Error(w, "Failed to list secrets", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to list secrets: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -312,10 +294,9 @@ func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode response: %w", err)
 	}
+	return nil
 }
 
 // createSecret
@@ -333,50 +314,49 @@ func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) {
 //	@Failure		409		{string}	string	"Conflict - Secret already exists"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default/keys [post]
-func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) error {
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if req.Key == "" || req.Value == "" {
-		http.Error(w, "Both 'key' and 'value' are required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("both 'key' and 'value' are required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	provider, err := s.getSecretsManager()
 	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
+		return err
 	}
 
 	// Check if provider supports writing
 	if !provider.Capabilities().CanWrite {
-		http.Error(w, "Secrets provider does not support creating secrets", http.StatusMethodNotAllowed)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secrets provider does not support creating secrets"),
+			http.StatusMethodNotAllowed,
+		)
 	}
 
 	// Check if secret already exists (if provider supports reading)
 	if provider.Capabilities().CanRead {
 		_, err := provider.GetSecret(r.Context(), req.Key)
 		if err == nil {
-			http.Error(w, "Secret already exists", http.StatusConflict)
-			return
+			return thverrors.WithCode(
+				fmt.Errorf("secret already exists"),
+				http.StatusConflict,
+			)
 		}
 	}
 
 	// Create the secret
 	if err := provider.SetSecret(r.Context(), req.Key, req.Value); err != nil {
-		logger.Errorf("Failed to create secret: %v", err)
-		http.Error(w, "Failed to create secret", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to create secret: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -386,10 +366,9 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) {
 		Message: "Secret created successfully",
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode response: %w", err)
 	}
+	return nil
 }
 
 // updateSecret
@@ -407,56 +386,57 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) {
 //	@Failure		405		{string}	string	"Method Not Allowed - Provider doesn't support writing"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default/keys/{key} [put]
-func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) error {
 	key := chi.URLParam(r, "key")
 	if key == "" {
-		http.Error(w, "Secret key is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secret key is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	var req updateSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if req.Value == "" {
-		http.Error(w, "Value is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("value is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	provider, err := s.getSecretsManager()
 	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
+		return err
 	}
 
 	// Check if provider supports writing
 	if !provider.Capabilities().CanWrite {
-		http.Error(w, "Secrets provider does not support updating secrets", http.StatusMethodNotAllowed)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secrets provider does not support updating secrets"),
+			http.StatusMethodNotAllowed,
+		)
 	}
 
 	// Check if secret exists (if provider supports reading)
 	if provider.Capabilities().CanRead {
 		_, err := provider.GetSecret(r.Context(), key)
 		if err != nil {
-			http.Error(w, "Secret not found", http.StatusNotFound)
-			return
+			return thverrors.WithCode(
+				fmt.Errorf("secret not found"),
+				http.StatusNotFound,
+			)
 		}
 	}
 
 	// Update the secret
 	if err := provider.SetSecret(r.Context(), key, req.Value); err != nil {
-		logger.Errorf("Failed to update secret: %v", err)
-		http.Error(w, "Failed to update secret", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to update secret: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -465,10 +445,9 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) {
 		Message: "Secret updated successfully",
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode response: %w", err)
 	}
+	return nil
 }
 
 // deleteSecret
@@ -482,43 +461,42 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) {
 //	@Failure		405	{string}	string	"Method Not Allowed - Provider doesn't support deletion"
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default/keys/{key} [delete]
-func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) error {
 	key := chi.URLParam(r, "key")
 	if key == "" {
-		http.Error(w, "Secret key is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secret key is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	provider, err := s.getSecretsManager()
 	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
+		return err
 	}
 
 	// Check if provider supports deletion
 	if !provider.Capabilities().CanDelete {
-		http.Error(w, "Secrets provider does not support deleting secrets", http.StatusMethodNotAllowed)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("secrets provider does not support deleting secrets"),
+			http.StatusMethodNotAllowed,
+		)
 	}
 
 	// Delete the secret
 	if err := provider.DeleteSecret(r.Context(), key); err != nil {
-		logger.Errorf("Failed to delete secret: %v", err)
 		// Check if it's a "not found" error
-		if err.Error() == "cannot delete non-existent secret: "+key {
-			http.Error(w, "Secret not found", http.StatusNotFound)
-			return
+		if strings.Contains(err.Error(), "cannot delete non-existent secret") {
+			return thverrors.WithCode(
+				fmt.Errorf("secret not found"),
+				http.StatusNotFound,
+			)
 		}
-		http.Error(w, "Failed to delete secret", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to delete secret: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // getSecretsManager is a helper function to get the secrets manager

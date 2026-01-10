@@ -8,9 +8,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -36,12 +38,12 @@ func ClientRouter(
 	}
 
 	r := chi.NewRouter()
-	r.Get("/", routes.listClients)
-	r.Post("/", routes.registerClient)
-	r.Delete("/{name}", routes.unregisterClient)
-	r.Delete("/{name}/groups/{group}", routes.unregisterClientFromGroup)
-	r.Post("/register", routes.registerClientsBulk)
-	r.Post("/unregister", routes.unregisterClientsBulk)
+	r.Get("/", apierrors.ErrorHandler(routes.listClients))
+	r.Post("/", apierrors.ErrorHandler(routes.registerClient))
+	r.Delete("/{name}", apierrors.ErrorHandler(routes.unregisterClient))
+	r.Delete("/{name}/groups/{group}", apierrors.ErrorHandler(routes.unregisterClientFromGroup))
+	r.Post("/register", apierrors.ErrorHandler(routes.registerClientsBulk))
+	r.Post("/unregister", apierrors.ErrorHandler(routes.unregisterClientsBulk))
 	return r
 }
 
@@ -53,20 +55,17 @@ func ClientRouter(
 //	@Produce		json
 //	@Success		200	{array}	client.RegisteredClient
 //	@Router			/api/v1beta/clients [get]
-func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) error {
 	clients, err := c.clientManager.ListClients(r.Context())
 	if err != nil {
-		logger.Errorf("Failed to list clients: %v", err)
-		http.Error(w, "Failed to list clients", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to list clients: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(clients)
-	if err != nil {
-		http.Error(w, "Failed to encode client list", http.StatusInternalServerError)
-		return
+	if err := json.NewEncoder(w).Encode(clients); err != nil {
+		return fmt.Errorf("failed to encode client list: %w", err)
 	}
+	return nil
 }
 
 // registerClient
@@ -80,13 +79,13 @@ func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) {
 //	@Success		200	{object}	createClientResponse
 //	@Failure		400	{string}	string	"Invalid request"
 //	@Router			/api/v1beta/clients [post]
-func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) error {
 	var newClient createClientRequest
-	err := json.NewDecoder(r.Body).Decode(&newClient)
-	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+	if err := json.NewDecoder(r.Body).Decode(&newClient); err != nil {
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Default groups to "default" group if it exists
@@ -100,19 +99,16 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	err = c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups)
-	if err != nil {
-		logger.Errorf("Failed to register client: %v", err)
-		http.Error(w, "Failed to register client", http.StatusInternalServerError)
-		return
+	if err := c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups); err != nil {
+		return fmt.Errorf("failed to register client: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	resp := createClientResponse(newClient)
-	if err = json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)
-		return
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		return fmt.Errorf("failed to marshal server details: %w", err)
 	}
+	return nil
 }
 
 // unregisterClient
@@ -124,21 +120,21 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 //	@Success		204
 //	@Failure		400	{string}	string	"Invalid request"
 //	@Router			/api/v1beta/clients/{name} [delete]
-func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) error {
 	clientName := chi.URLParam(r, "name")
 	if clientName == "" {
-		http.Error(w, "Client name is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("client name is required"),
+			http.StatusBadRequest,
+		)
 	}
 
-	err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil)
-	if err != nil {
-		logger.Errorf("Failed to unregister client: %v", err)
-		http.Error(w, "Failed to unregister client", http.StatusInternalServerError)
-		return
+	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil); err != nil {
+		return fmt.Errorf("failed to unregister client: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // unregisterClientFromGroup
@@ -152,28 +148,30 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 //	@Failure		400	{string}	string	"Invalid request"
 //	@Failure		404	{string}	string	"Client or group not found"
 //	@Router			/api/v1beta/clients/{name}/groups/{group} [delete]
-func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.Request) error {
 	clientName := chi.URLParam(r, "name")
 	if clientName == "" {
-		http.Error(w, "Client name is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("client name is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	groupName := chi.URLParam(r, "group")
 	if groupName == "" {
-		http.Error(w, "Group name is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("group name is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Remove client from the specific group
-	err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName})
-	if err != nil {
-		logger.Errorf("Failed to unregister client from group: %v", err)
-		http.Error(w, "Failed to unregister client from group", http.StatusInternalServerError)
-		return
+	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName}); err != nil {
+		return fmt.Errorf("failed to unregister client from group: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // registerClientsBulk
@@ -187,18 +185,20 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 //	@Success		200	{array}	createClientResponse
 //	@Failure		400	{string}	string	"Invalid request"
 //	@Router			/api/v1beta/clients/register [post]
-func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if len(req.Names) == 0 {
-		http.Error(w, "At least one client name is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("at least one client name is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	clients := make([]client.Client, len(req.Names))
@@ -206,11 +206,8 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 		clients[i] = client.Client{Name: name}
 	}
 
-	err = c.performClientRegistration(r.Context(), clients, req.Groups)
-	if err != nil {
-		logger.Errorf("Failed to register clients: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if err := c.performClientRegistration(r.Context(), clients, req.Groups); err != nil {
+		return fmt.Errorf("failed to register clients: %w", err)
 	}
 
 	responses := make([]createClientResponse, len(req.Names))
@@ -219,10 +216,10 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err = json.NewEncoder(w).Encode(responses); err != nil {
-		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
-		return
+	if err := json.NewEncoder(w).Encode(responses); err != nil {
+		return fmt.Errorf("failed to marshal response: %w", err)
 	}
+	return nil
 }
 
 // unregisterClientsBulk
@@ -235,18 +232,20 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 //	@Success		204
 //	@Failure		400	{string}	string	"Invalid request"
 //	@Router			/api/v1beta/clients/unregister [post]
-func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Request) {
+func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return thverrors.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if len(req.Names) == 0 {
-		http.Error(w, "At least one client name is required", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("at least one client name is required"),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Convert to client.Client slice
@@ -255,14 +254,12 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 		clients[i] = client.Client{Name: name}
 	}
 
-	err = c.removeClient(r.Context(), clients, req.Groups)
-	if err != nil {
-		logger.Errorf("Failed to unregister clients: %v", err)
-		http.Error(w, "Failed to unregister clients", http.StatusInternalServerError)
-		return
+	if err := c.removeClient(r.Context(), clients, req.Groups); err != nil {
+		return fmt.Errorf("failed to unregister clients: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 type createClientRequest struct {
@@ -353,13 +350,13 @@ func (c *ClientRoutes) removeClient(ctx context.Context, clients []client.Client
 	}
 
 	if len(groupNames) > 0 {
-		return c.removeClientFromGroup(ctx, clients, groupNames, runningWorkloads)
+		return c.removeClientFromGroupInternal(ctx, clients, groupNames, runningWorkloads)
 	}
 
 	return c.removeClientGlobally(ctx, clients, runningWorkloads)
 }
 
-func (c *ClientRoutes) removeClientFromGroup(
+func (c *ClientRoutes) removeClientFromGroupInternal(
 	ctx context.Context,
 	clients []client.Client,
 	groupNames []string,

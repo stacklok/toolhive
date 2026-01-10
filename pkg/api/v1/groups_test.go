@@ -59,7 +59,7 @@ func TestGroupsRouter(t *testing.T) {
 				gm.EXPECT().List(gomock.Any()).Return(nil, fmt.Errorf("database error"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to list groups",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:   "create group success",
@@ -103,7 +103,7 @@ func TestGroupsRouter(t *testing.T) {
 				// No mock setup needed as JSON parsing fails first
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid request body",
+			expectedBody:   "invalid request body",
 		},
 		{
 			name:   "get group success",
@@ -121,10 +121,10 @@ func TestGroupsRouter(t *testing.T) {
 			method: "GET",
 			path:   "/nonexistent",
 			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
-				gm.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, fmt.Errorf("group not found"))
+				gm.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, groups.ErrGroupNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Group not found",
+			expectedBody:   "group not found",
 		},
 		{
 			name:   "delete group success",
@@ -146,7 +146,7 @@ func TestGroupsRouter(t *testing.T) {
 				gm.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Group not found",
+			expectedBody:   "group not found",
 		},
 		{
 			name:   "delete default group protected",
@@ -156,7 +156,7 @@ func TestGroupsRouter(t *testing.T) {
 				// No mock setup needed as validation happens before manager call
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Cannot delete the default group",
+			expectedBody:   "cannot delete the default group",
 		},
 		{
 			name:   "delete group with workloads flag true",

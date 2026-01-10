@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
@@ -28,11 +30,20 @@ const (
 
 var (
 	// ErrBadProtocolScheme is returned when the provided serverOrImage is not a valid protocol scheme.
-	ErrBadProtocolScheme = errors.New("invalid protocol scheme provided for MCP server")
+	ErrBadProtocolScheme = thverrors.WithCode(
+		errors.New("invalid protocol scheme provided for MCP server"),
+		http.StatusBadRequest,
+	)
 	// ErrImageNotFound is returned when the specified image is not found in the registry.
-	ErrImageNotFound = errors.New("image not found in registry, please check the image name or tag")
+	ErrImageNotFound = thverrors.WithCode(
+		errors.New("image not found in registry, please check the image name or tag"),
+		http.StatusNotFound,
+	)
 	// ErrInvalidRunConfig is returned when the run configuration built by RunConfigBuilder is invalid
-	ErrInvalidRunConfig = errors.New("invalid run configuration provided")
+	ErrInvalidRunConfig = thverrors.WithCode(
+		errors.New("invalid run configuration provided"),
+		http.StatusBadRequest,
+	)
 )
 
 // Retriever is a function that retrieves the MCP server definition from the registry.

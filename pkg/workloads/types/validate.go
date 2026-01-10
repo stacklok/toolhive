@@ -3,14 +3,21 @@
 package types
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 )
 
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
-var ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
+var ErrInvalidWorkloadName = thverrors.WithCode(
+	errors.New("invalid workload name"),
+	http.StatusBadRequest,
+)
 
 // workloadNamePattern validates workload names to prevent path traversal attacks
 // and other security issues. Workload names should only contain alphanumeric

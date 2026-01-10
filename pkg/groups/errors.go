@@ -1,14 +1,28 @@
 package groups
 
-import "errors"
+import (
+	"errors"
+	"net/http"
+
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
+)
 
 var (
 	// ErrGroupAlreadyExists is returned when a group already exists
-	ErrGroupAlreadyExists = errors.New("group already exists")
+	ErrGroupAlreadyExists = thverrors.WithCode(
+		errors.New("group already exists"),
+		http.StatusConflict,
+	)
 
 	// ErrGroupNotFound is returned when a group is not found
-	ErrGroupNotFound = errors.New("group not found")
+	ErrGroupNotFound = thverrors.WithCode(
+		errors.New("group not found"),
+		http.StatusNotFound,
+	)
 
 	// ErrInvalidGroupName is returned when an invalid argument is provided
-	ErrInvalidGroupName = errors.New("invalid group name")
+	ErrInvalidGroupName = thverrors.WithCode(
+		errors.New("invalid group name"),
+		http.StatusBadRequest,
+	)
 )

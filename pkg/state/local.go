@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/adrg/xdg"
+
+	"github.com/stacklok/toolhive/pkg/errors"
 )
 
 const (
@@ -63,7 +66,7 @@ func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, e
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("state '%s' not found", name)
+			return nil, errors.WithCode(fmt.Errorf("state '%s' not found", name), http.StatusNotFound)
 		}
 		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}

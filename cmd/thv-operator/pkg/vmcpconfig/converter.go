@@ -95,7 +95,7 @@ func (c *Converter) Convert(
 	}
 
 	// Convert Aggregation - always set with defaults if not specified
-	if vmcp.Spec.Aggregation != nil {
+	if vmcp.Spec.Config.Aggregation != nil {
 		agg, err := c.convertAggregation(ctx, vmcp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert aggregation config: %w", err)
@@ -351,43 +351,44 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 	return strategy, nil
 }
 
-// convertAggregation converts AggregationConfig from CRD to vmcp config
+// convertAggregation converts AggregationConfig from config.Config, resolving ToolConfigRef references
 func (c *Converter) convertAggregation(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
-	agg := &vmcpconfig.AggregationConfig{}
+	// Start with a deep copy of the source config
+	srcAgg := vmcp.Spec.Config.Aggregation
+	agg := &vmcpconfig.AggregationConfig{
+		ConflictResolution: srcAgg.ConflictResolution,
+		ExcludeAllTools:    srcAgg.ExcludeAllTools,
+	}
 
-	c.convertConflictResolution(vmcp, agg)
-	if err := c.convertToolConfigs(ctx, vmcp, agg); err != nil {
+	// Apply defaults for conflict resolution
+	c.applyConflictResolutionDefaults(srcAgg, agg)
+
+	// Resolve ToolConfigRef references for each tool
+	if err := c.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg); err != nil {
 		return nil, err
 	}
 
 	return agg, nil
 }
 
-// convertConflictResolution converts conflict resolution strategy and config
-func (*Converter) convertConflictResolution(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+// applyConflictResolutionDefaults applies defaults for conflict resolution
+func (*Converter) applyConflictResolutionDefaults(
+	srcAgg *vmcpconfig.AggregationConfig,
 	agg *vmcpconfig.AggregationConfig,
 ) {
-	// Convert conflict resolution strategy
-	switch vmcp.Spec.Aggregation.ConflictResolution {
-	case mcpv1alpha1.ConflictResolutionPrefix:
+	// Apply default strategy if not set
+	if agg.ConflictResolution == "" {
 		agg.ConflictResolution = conflictResolutionPrefix
-	case mcpv1alpha1.ConflictResolutionPriority:
-		agg.ConflictResolution = "priority"
-	case mcpv1alpha1.ConflictResolutionManual:
-		agg.ConflictResolution = "manual"
-	default:
-		agg.ConflictResolution = conflictResolutionPrefix // default
 	}
 
-	// Convert conflict resolution config
-	if vmcp.Spec.Aggregation.ConflictResolutionConfig != nil {
+	// Copy or create conflict resolution config
+	if srcAgg.ConflictResolutionConfig != nil {
 		agg.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
-			PrefixFormat:  vmcp.Spec.Aggregation.ConflictResolutionConfig.PrefixFormat,
-			PriorityOrder: vmcp.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder,
+			PrefixFormat:  srcAgg.ConflictResolutionConfig.PrefixFormat,
+			PriorityOrder: srcAgg.ConflictResolutionConfig.PriorityOrder,
 		}
 	} else if agg.ConflictResolution == conflictResolutionPrefix {
 		// Provide default prefix format if using prefix strategy without explicit config
@@ -401,48 +402,64 @@ func (*Converter) convertConflictResolution(
 	}
 }
 
-// convertToolConfigs converts per-workload tool configurations
-func (c *Converter) convertToolConfigs(
+// resolveToolConfigRefs resolves ToolConfigRef references in tool configurations
+func (c *Converter) resolveToolConfigRefs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	srcAgg *vmcpconfig.AggregationConfig,
 	agg *vmcpconfig.AggregationConfig,
 ) error {
-	if len(vmcp.Spec.Aggregation.Tools) == 0 {
+	if len(srcAgg.Tools) == 0 {
 		return nil
 	}
 
 	ctxLogger := log.FromContext(ctx)
-	agg.Tools = make([]*vmcpconfig.WorkloadToolConfig, 0, len(vmcp.Spec.Aggregation.Tools))
+	agg.Tools = make([]*vmcpconfig.WorkloadToolConfig, 0, len(srcAgg.Tools))
 
-	for _, toolConfig := range vmcp.Spec.Aggregation.Tools {
+	for _, toolConfig := range srcAgg.Tools {
+		// Deep copy the tool config
 		wtc := &vmcpconfig.WorkloadToolConfig{
-			Workload: toolConfig.Workload,
-			Filter:   toolConfig.Filter,
+			Workload:   toolConfig.Workload,
+			Filter:     toolConfig.Filter,
+			ExcludeAll: toolConfig.ExcludeAll,
 		}
 
-		if err := c.applyToolConfigRef(ctx, ctxLogger, vmcp, toolConfig, wtc); err != nil {
+		// Copy inline overrides first
+		if len(toolConfig.Overrides) > 0 {
+			wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
+			for name, override := range toolConfig.Overrides {
+				if override != nil {
+					wtc.Overrides[name] = &vmcpconfig.ToolOverride{
+						Name:        override.Name,
+						Description: override.Description,
+					}
+				}
+			}
+		}
+
+		// Resolve ToolConfigRef if present (this may merge with inline config)
+		if err := c.resolveToolConfigRef(ctx, ctxLogger, vmcp.Namespace, toolConfig, wtc); err != nil {
 			return err
 		}
-		c.applyInlineOverrides(toolConfig, wtc)
 
 		agg.Tools = append(agg.Tools, wtc)
 	}
 	return nil
 }
 
-// applyToolConfigRef resolves and applies MCPToolConfig reference
-func (c *Converter) applyToolConfigRef(
+// resolveToolConfigRef resolves and applies MCPToolConfig reference
+func (c *Converter) resolveToolConfigRef(
 	ctx context.Context,
 	ctxLogger logr.Logger,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	toolConfig mcpv1alpha1.WorkloadToolConfig,
+	namespace string,
+	toolConfig *vmcpconfig.WorkloadToolConfig,
 	wtc *vmcpconfig.WorkloadToolConfig,
 ) error {
 	if toolConfig.ToolConfigRef == nil {
 		return nil
 	}
 
-	resolvedConfig, err := c.resolveMCPToolConfig(ctx, vmcp.Namespace, toolConfig.ToolConfigRef.Name)
+	resolvedConfig, err := c.resolveMCPToolConfig(ctx, namespace, toolConfig.ToolConfigRef.Name)
 	if err != nil {
 		ctxLogger.Error(err, "failed to resolve MCPToolConfig reference",
 			"workload", toolConfig.Workload,
@@ -495,26 +512,6 @@ func (*Converter) mergeToolConfigOverrides(
 }
 
 // applyInlineOverrides applies inline tool overrides
-func (*Converter) applyInlineOverrides(
-	toolConfig mcpv1alpha1.WorkloadToolConfig,
-	wtc *vmcpconfig.WorkloadToolConfig,
-) {
-	if len(toolConfig.Overrides) == 0 {
-		return
-	}
-
-	if wtc.Overrides == nil {
-		wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
-	}
-
-	for toolName, override := range toolConfig.Overrides {
-		wtc.Overrides[toolName] = &vmcpconfig.ToolOverride{
-			Name:        override.Name,
-			Description: override.Description,
-		}
-	}
-}
-
 // resolveMCPToolConfig fetches an MCPToolConfig resource by name and namespace
 func (c *Converter) resolveMCPToolConfig(
 	ctx context.Context,
@@ -532,51 +529,19 @@ func (c *Converter) resolveMCPToolConfig(
 	return toolConfig, nil
 }
 
-// convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
-func (c *Converter) convertCompositeTools(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
-
-	for _, crdTool := range vmcp.Spec.CompositeTools {
-		tool, err := c.convertCompositeToolSpec(
-			ctx, crdTool.Name, crdTool.Description, crdTool.Timeout,
-			crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
-		if err != nil {
-			return nil, err
-		}
-		compositeTools = append(compositeTools, tool)
-	}
-
-	return compositeTools, nil
-}
-
-// convertAllCompositeTools converts both inline CompositeTools and referenced CompositeToolRefs,
-// merging them together and validating for duplicate names.
+// convertAllCompositeTools resolves CompositeToolRefs and merges them with inline CompositeTools.
 func (c *Converter) convertAllCompositeTools(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	// Convert inline composite tools
-	inlineTools, err := c.convertCompositeTools(ctx, vmcp)
+) ([]vmcpconfig.CompositeToolConfig, error) {
+	// Resolve referenced composite tools
+	referencedTools, err := c.resolveCompositeToolRefs(ctx, vmcp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert inline composite tools: %w", err)
-	}
-
-	// Convert referenced composite tools
-	var referencedTools []*vmcpconfig.CompositeToolConfig
-	if len(vmcp.Spec.CompositeToolRefs) > 0 {
-		referencedTools, err = c.convertReferencedCompositeTools(ctx, vmcp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert referenced composite tools: %w", err)
-		}
+		return nil, fmt.Errorf("failed to resolve composite tool references: %w", err)
 	}
 
 	// Merge inline and referenced tools
-	allTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(inlineTools)+len(referencedTools))
-	allTools = append(allTools, inlineTools...)
-	allTools = append(allTools, referencedTools...)
+	allTools := append(vmcp.Spec.Config.CompositeTools, referencedTools...)
 
 	// Validate for duplicate names
 	if err := validateCompositeToolNames(allTools); err != nil {
@@ -586,14 +551,15 @@ func (c *Converter) convertAllCompositeTools(
 	return allTools, nil
 }
 
-// convertReferencedCompositeTools fetches and converts referenced VirtualMCPCompositeToolDefinition resources.
-func (c *Converter) convertReferencedCompositeTools(
+// resolveCompositeToolRefs fetches and converts referenced VirtualMCPCompositeToolDefinition resources.
+func (c *Converter) resolveCompositeToolRefs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]*vmcpconfig.CompositeToolConfig, error) {
-	referencedTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeToolRefs))
+) ([]vmcpconfig.CompositeToolConfig, error) {
+	referencedTools := make([]vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.Config.CompositeToolRefs))
 
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
 		// Fetch the referenced VirtualMCPCompositeToolDefinition
 		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
 		key := types.NamespacedName{
@@ -614,7 +580,7 @@ func (c *Converter) convertReferencedCompositeTools(
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert referenced tool %q: %w", ref.Name, err)
 		}
-		referencedTools = append(referencedTools, tool)
+		referencedTools = append(referencedTools, *tool)
 	}
 
 	return referencedTools, nil
@@ -643,7 +609,7 @@ func (c *Converter) convertCompositeToolSpec(
 	tool := &vmcpconfig.CompositeToolConfig{
 		Name:        name,
 		Description: description,
-		Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps)),
+		Steps:       make([]vmcpconfig.WorkflowStepConfig, 0, len(steps)),
 	}
 
 	// Parse timeout
@@ -694,8 +660,8 @@ func (*Converter) convertWorkflowSteps(
 	ctx context.Context,
 	steps []mcpv1alpha1.WorkflowStep,
 	toolNameForLogging string,
-) ([]*vmcpconfig.WorkflowStepConfig, error) {
-	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
+) ([]vmcpconfig.WorkflowStepConfig, error) {
+	workflowSteps := make([]vmcpconfig.WorkflowStepConfig, 0, len(steps))
 
 	for _, crdStep := range steps {
 		args, err := convertArguments(crdStep.Arguments)
@@ -703,7 +669,7 @@ func (*Converter) convertWorkflowSteps(
 			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
 		}
 
-		step := &vmcpconfig.WorkflowStepConfig{
+		step := vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
 			Type:      crdStep.Type,
 			Tool:      crdStep.Tool,
@@ -790,13 +756,13 @@ func (*Converter) convertWorkflowSteps(
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.
-func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
+func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 	seen := make(map[string]bool)
-	for _, tool := range tools {
-		if seen[tool.Name] {
-			return fmt.Errorf("duplicate composite tool name: %q", tool.Name)
+	for i := range tools {
+		if seen[tools[i].Name] {
+			return fmt.Errorf("duplicate composite tool name: %q", tools[i].Name)
 		}
-		seen[tool.Name] = true
+		seen[tools[i].Name] = true
 	}
 	return nil
 }

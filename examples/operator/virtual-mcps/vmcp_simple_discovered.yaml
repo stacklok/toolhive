@@ -55,6 +55,12 @@ spec:
   # Reference to the MCPGroup containing backend MCPServers
   config:
     groupRef: my-services
+    # Aggregation configuration
+    # Prefix strategy prevents tool name conflicts by adding workload name prefix
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
 
   # Incoming authentication (client -> vMCP)
   # Using anonymous auth for simplicity - replace with OIDC in production
@@ -70,13 +76,6 @@ spec:
   # "discovered" mode automatically finds auth configs from backend MCPServers
   outgoingAuth:
     source: discovered
-
-  # Aggregation configuration
-  # Prefix strategy prevents tool name conflicts by adding workload name prefix
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
 
   # Optional: Service type (default is ClusterIP)
   # serviceType: ClusterIP

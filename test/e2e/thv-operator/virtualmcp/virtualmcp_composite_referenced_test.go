@@ -110,18 +110,20 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+					// Reference the composite tool definition instead of defining inline
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{
+							Name: compositeToolDefName,
+						},
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-				},
-				// Reference the composite tool definition instead of defining inline
-				CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-					{
-						Name: compositeToolDefName,
-					},
 				},
 				ServiceType: "NodePort",
 			},
@@ -251,10 +253,10 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 			Expect(err).ToNot(HaveOccurred())
 
 			// Should use CompositeToolRefs, not inline CompositeTools
-			Expect(vmcpServer.Spec.CompositeTools).To(BeEmpty(), "Should not have inline composite tools")
-			Expect(vmcpServer.Spec.CompositeToolRefs).To(HaveLen(1), "Should have one composite tool reference")
+			Expect(vmcpServer.Spec.Config.CompositeTools).To(BeEmpty(), "Should not have inline composite tools")
+			Expect(vmcpServer.Spec.Config.CompositeToolRefs).To(HaveLen(1), "Should have one composite tool reference")
 
-			ref := vmcpServer.Spec.CompositeToolRefs[0]
+			ref := vmcpServer.Spec.Config.CompositeToolRefs[0]
 			Expect(ref.Name).To(Equal(compositeToolDefName))
 		})
 

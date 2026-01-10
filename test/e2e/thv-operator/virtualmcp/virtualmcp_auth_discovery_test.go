@@ -821,7 +821,13 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					// No TokenCache configured - tokens should be fetched on each request
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+				},
 				// OIDC incoming auth - clients must present valid OIDC tokens
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
@@ -846,10 +852,6 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				// Backend has token exchange configured, vMCP will discover and use it
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
-				},
-				// No TokenCache configured - tokens should be fetched on each request
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 				// Enable debug logging via PodTemplateSpec

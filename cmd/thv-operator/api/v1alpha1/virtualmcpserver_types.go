@@ -9,33 +9,20 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 type VirtualMCPServerSpec struct {
-	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-	// Must be explicitly set - use "anonymous" type when no authentication is required
-	// TODO(jerm-dro): migrate to the Config field.
+	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
+	// Must be explicitly set - use "anonymous" type when no authentication is required.
+	// This field takes precedence over config.IncomingAuth and should be preferred because it
+	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
-	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
-	// TODO(jerm-dro): migrate to the Config field.
+	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+	// This field takes precedence over config.OutgoingAuth and should be preferred because it
+	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
-
-	// Aggregation defines tool aggregation and conflict resolution strategies
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Aggregation *AggregationConfig `json:"aggregation,omitempty"`
-
-	// CompositeTools defines inline composite tool definitions
-	// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	CompositeTools []CompositeToolSpec `json:"compositeTools,omitempty"`
-
-	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
-	// for complex, reusable workflows
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
 	// Operational defines operational settings like timeouts and health checks
 	// TODO(jerm-dro): migrate to the Config field.
@@ -121,107 +108,6 @@ type BackendAuthConfig struct {
 	// Only used when Type is "external_auth_config_ref"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
-}
-
-// AggregationConfig defines tool aggregation and conflict resolution strategies
-type AggregationConfig struct {
-	// ConflictResolution defines the strategy for resolving tool name conflicts
-	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
-	// - manual: Explicitly define overrides for all conflicts
-	// +kubebuilder:validation:Enum=prefix;priority;manual
-	// +kubebuilder:default=prefix
-	// +optional
-	ConflictResolution string `json:"conflictResolution,omitempty"`
-
-	// ConflictResolutionConfig provides configuration for the chosen strategy
-	// +optional
-	ConflictResolutionConfig *ConflictResolutionConfig `json:"conflictResolutionConfig,omitempty"`
-
-	// Tools defines per-workload tool filtering and overrides
-	// References existing MCPToolConfig resources
-	// +optional
-	Tools []WorkloadToolConfig `json:"tools,omitempty"`
-}
-
-// ConflictResolutionConfig provides configuration for conflict resolution strategies
-type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy
-	// Supports placeholders: {workload}, {workload}_, {workload}.
-	// +kubebuilder:default="{workload}_"
-	// +optional
-	PrefixFormat string `json:"prefixFormat,omitempty"`
-
-	// PriorityOrder defines the workload priority order for the "priority" strategy
-	// +optional
-	PriorityOrder []string `json:"priorityOrder,omitempty"`
-}
-
-// WorkloadToolConfig defines tool filtering and overrides for a specific workload
-type WorkloadToolConfig struct {
-	// Workload is the name of the backend MCPServer workload
-	// +kubebuilder:validation:Required
-	Workload string `json:"workload"`
-
-	// ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming
-	// If specified, Filter and Overrides are ignored
-	// +optional
-	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
-
-	// Filter is an inline list of tool names to allow (allow list)
-	// Only used if ToolConfigRef is not specified
-	// +optional
-	Filter []string `json:"filter,omitempty"`
-
-	// Overrides is an inline map of tool overrides
-	// Only used if ToolConfigRef is not specified
-	// +optional
-	Overrides map[string]ToolOverride `json:"overrides,omitempty"`
-}
-
-// CompositeToolSpec defines an inline composite tool
-// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-type CompositeToolSpec struct {
-	// Name is the name of the composite tool
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Description describes the composite tool
-	// +kubebuilder:validation:Required
-	Description string `json:"description"`
-
-	// Parameters defines the input parameter schema in JSON Schema format.
-	// Should be a JSON Schema object with "type": "object" and "properties".
-	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
-	// Example:
-	//   {
-	//     "type": "object",
-	//     "properties": {
-	//       "param1": {"type": "string", "default": "value"},
-	//       "param2": {"type": "integer"}
-	//     },
-	//     "required": ["param2"]
-	//   }
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
-
-	// Steps defines the workflow steps
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	Steps []WorkflowStep `json:"steps"`
-
-	// Timeout is the maximum execution time for the composite tool
-	// +kubebuilder:default="30m"
-	// +optional
-	Timeout string `json:"timeout,omitempty"`
-
-	// Output defines the structured output schema for the composite tool.
-	// Specifies how to construct the final output from workflow step results.
-	// If not specified, the workflow returns the last step's output (backward compatible).
-	// +optional
-	Output *OutputSpec `json:"output,omitempty"`
 }
 
 // OutputSpec defines the structured output schema for a composite tool workflow
@@ -600,18 +486,6 @@ const (
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
-)
-
-// Conflict resolution strategies
-const (
-	// ConflictResolutionPrefix prefixes tool names with workload identifier
-	ConflictResolutionPrefix = "prefix"
-
-	// ConflictResolutionPriority uses priority order to resolve conflicts
-	ConflictResolutionPriority = "priority"
-
-	// ConflictResolutionManual requires explicit overrides for all conflicts
-	ConflictResolutionManual = "manual"
 )
 
 // Workflow step types

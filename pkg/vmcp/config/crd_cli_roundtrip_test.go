@@ -469,7 +469,7 @@ func TestConfigRoundtrip(t *testing.T) {
 				},
 			},
 		},
-		CompositeTools: []*CompositeToolConfig{
+		CompositeTools: []CompositeToolConfig{
 			{
 				Name:        "test-tool",
 				Description: "A test composite tool",
@@ -479,7 +479,7 @@ func TestConfigRoundtrip(t *testing.T) {
 						"input": map[string]any{"type": "string"},
 					},
 				}),
-				Steps: []*WorkflowStepConfig{
+				Steps: []WorkflowStepConfig{
 					{
 						ID:   "step1",
 						Type: "tool",

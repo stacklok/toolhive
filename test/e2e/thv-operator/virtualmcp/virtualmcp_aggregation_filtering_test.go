@@ -46,26 +46,28 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					// Tool filtering: only allow echo from backend1, nothing from backend2
-					// TODO(#2779): Currently there's no way to exclude all tools from a backend.
-					// Using a non-matching filter as a workaround until excludeAll is implemented.
-					// See: https://github.com/stacklok/toolhive/issues/2779
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backend1Name,
-							Filter:   []string{"echo"}, // Only expose echo tool
-						},
-						{
-							Workload: backend2Name,
-							Filter:   []string{"nonexistent_tool"}, // Filter out all tools (workaround)
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						// Tool filtering: only allow echo from backend1, nothing from backend2
+						// TODO(#2779): Currently there's no way to exclude all tools from a backend.
+						// Using a non-matching filter as a workaround until excludeAll is implemented.
+						// See: https://github.com/stacklok/toolhive/issues/2779
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backend1Name,
+								Filter:   []string{"echo"}, // Only expose echo tool
+							},
+							{
+								Workload: backend2Name,
+								Filter:   []string{"nonexistent_tool"}, // Filter out all tools (workaround)
+							},
 						},
 					},
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
 			},
@@ -170,18 +172,18 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(2))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Verify backend1 filter allows echo
-			var backend1Config *mcpv1alpha1.WorkloadToolConfig
-			var backend2Config *mcpv1alpha1.WorkloadToolConfig
-			for i := range vmcpServer.Spec.Aggregation.Tools {
-				if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend1Name {
-					backend1Config = &vmcpServer.Spec.Aggregation.Tools[i]
+			var backend1Config *vmcpconfig.WorkloadToolConfig
+			var backend2Config *vmcpconfig.WorkloadToolConfig
+			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
+				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
+					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 				}
-				if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend2Name {
-					backend2Config = &vmcpServer.Spec.Aggregation.Tools[i]
+				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend2Name {
+					backend2Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 				}
 			}
 

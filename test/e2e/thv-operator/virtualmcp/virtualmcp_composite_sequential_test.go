@@ -1,7 +1,6 @@
 package virtualmcp
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,10 +8,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -40,32 +39,6 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		CreateMCPServerAndWait(ctx, k8sClient, backendName, testNamespace, mcpGroupName,
 			images.YardstickServerImage, timeout, pollingInterval)
 
-		// JSON Schema for composite tool parameters
-		// Per MCP spec, inputSchema should be a JSON Schema object
-		parameterSchema := map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"message": map[string]interface{}{
-					"type":        "string",
-					"description": "The message to echo twice",
-				},
-			},
-			"required": []string{"message"},
-		}
-		paramSchemaBytes, err := json.Marshal(parameterSchema)
-		Expect(err).ToNot(HaveOccurred())
-
-		// Build arguments as JSON for runtime.RawExtension
-		firstEchoArgs, err := json.Marshal(map[string]any{
-			"input": "{{ .params.message }}",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		secondEchoArgs, err := json.Marshal(map[string]any{
-			"input": "{{ .steps.first_echo.result }}",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
 		By("Creating VirtualMCPServer with composite sequential workflow")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -73,42 +46,51 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+					// Define a composite tool that echoes input, then echoes the result again
+					CompositeTools: []vmcpconfig.CompositeToolConfig{
+						{
+							Name:        compositeToolName,
+							Description: "Echoes the input message twice in sequence",
+							Parameters: thvjson.NewMap(map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"message": map[string]any{
+										"type":        "string",
+										"description": "The message to echo twice",
+									},
+								},
+								"required": []any{"message"},
+							}),
+							Timeout: vmcpconfig.Duration(30 * time.Second),
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "first_echo",
+									Type: "tool",
+									Tool: fmt.Sprintf("%s.echo", backendName),
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "{{ .params.message }}",
+									}),
+								},
+								{
+									ID:        "second_echo",
+									Type:      "tool",
+									Tool:      fmt.Sprintf("%s.echo", backendName),
+									DependsOn: []string{"first_echo"},
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "{{ .steps.first_echo.result }}",
+									}),
+								},
+							},
+						},
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-				},
-				// Define a composite tool that echoes input, then echoes the result again
-				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-					{
-						Name:        compositeToolName,
-						Description: "Echoes the input message twice in sequence",
-						Parameters: &runtime.RawExtension{
-							Raw: paramSchemaBytes,
-						},
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "first_echo",
-								Type: "tool",
-								Tool: fmt.Sprintf("%s.echo", backendName),
-								Arguments: &runtime.RawExtension{
-									Raw: firstEchoArgs,
-								},
-							},
-							{
-								ID:        "second_echo",
-								Type:      "tool",
-								Tool:      fmt.Sprintf("%s.echo", backendName),
-								DependsOn: []string{"first_echo"},
-								Arguments: &runtime.RawExtension{
-									Raw: secondEchoArgs,
-								},
-							},
-						},
-						Timeout: "30s",
-					},
 				},
 				ServiceType: "NodePort",
 			},
@@ -228,9 +210,9 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.CompositeTools).To(HaveLen(1))
+			Expect(vmcpServer.Spec.Config.CompositeTools).To(HaveLen(1))
 
-			compositeTool := vmcpServer.Spec.CompositeTools[0]
+			compositeTool := vmcpServer.Spec.Config.CompositeTools[0]
 			Expect(compositeTool.Name).To(Equal(compositeToolName))
 			Expect(compositeTool.Steps).To(HaveLen(2))
 
@@ -243,13 +225,11 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			Expect(step2.ID).To(Equal("second_echo"))
 			Expect(step2.DependsOn).To(ContainElement("first_echo"))
 
-			// Verify template usage in arguments (unmarshal from RawExtension)
-			var step1Args map[string]any
-			Expect(json.Unmarshal(step1.Arguments.Raw, &step1Args)).To(Succeed())
+			// Verify template usage in arguments
+			step1Args := step1.Arguments.Value
 			Expect(step1Args["input"]).To(ContainSubstring(".params.message"))
 
-			var step2Args map[string]any
-			Expect(json.Unmarshal(step2.Arguments.Raw, &step2Args)).To(Succeed())
+			step2Args := step2.Arguments.Value
 			Expect(step2Args["input"]).To(ContainSubstring(".steps.first_echo"))
 		})
 	})

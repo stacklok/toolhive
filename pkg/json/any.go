@@ -32,8 +32,7 @@ type Data[T any] struct {
 
 // MarshalJSON implements json.Marshaler.
 func (d Data[T]) MarshalJSON() ([]byte, error) {
-	var zero T
-	if any(d.Value) == any(zero) {
+	if d.IsEmpty() {
 		return []byte("null"), nil
 	}
 	return stdjson.Marshal(d.Value)

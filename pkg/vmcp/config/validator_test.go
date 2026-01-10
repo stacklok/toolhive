@@ -415,7 +415,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		tools   []*CompositeToolConfig
+		tools   []CompositeToolConfig
 		wantErr bool
 		errMsg  string
 	}{
@@ -426,12 +426,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "valid composite tool",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -444,11 +444,11 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "missing tool name",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -462,12 +462,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "duplicate tool name",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "deploy",
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -479,7 +479,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 					Name:        "deploy",
 					Description: "Another deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -493,12 +493,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "type inferred from tool field",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "fetch_data",
 					Description: "Fetch data workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:        "fetch",
 							Type:      "tool", // Type would be inferred by loader from tool field
@@ -512,12 +512,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "timeout omitted uses default",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "no_timeout",
 					Description: "Workflow without explicit timeout",
 					Timeout:     0, // Omitted - should use default (30 minutes)
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: "tool", // Type would be inferred by loader from tool field
@@ -530,12 +530,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "elicitation requires explicit type",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "confirm_action",
 					Description: "Confirmation workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:      "confirm",
 							Message: "Proceed?", // Elicitation field present
@@ -550,12 +550,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "missing both type and identifying fields",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "invalid_step",
 					Description: "Invalid step workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID: "step1",
 							// No type, no tool, no message - cannot infer
@@ -568,12 +568,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "both tool and message fields present",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "ambiguous_step",
 					Description: "Step with both tool and message",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:      "step1",
 							Tool:    "some_tool",    // Tool field present

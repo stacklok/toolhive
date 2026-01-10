@@ -1146,11 +1146,13 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
 								},
 							},
@@ -1196,11 +1198,13 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
 								},
 							},
@@ -1213,16 +1217,18 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
-								},
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "other-tool-config",
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "other-tool-config",
+										},
 									},
 								},
 							},
@@ -1294,11 +1300,13 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "test-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "test-config",
+									},
 								},
 							},
 						},
@@ -1312,11 +1320,13 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer does not reference ToolConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "other-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "other-config",
+									},
 								},
 							},
 						},
@@ -1338,21 +1348,23 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig among multiple tools",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "other-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "other-config",
+									},
 								},
-							},
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "test-config",
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "test-config",
+									},
 								},
-							},
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "another-config",
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "another-config",
+									},
 								},
 							},
 						},

@@ -102,6 +102,17 @@ metadata:
 spec:
   config:
     groupRef: my-services
+    # Prefix strategy configuration
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        # Format string for prefixes
+        # Available variables: {workload}, {namespace}
+        prefixFormat: "{workload}_"
+        # Result: Tools from all backends are prefixed with their workload name:
+        # - yardstick-sse_echo
+        # - fetch_fetch
+        # - yardstick-streamable_longecho
 
   incomingAuth:
     type: anonymous
@@ -113,18 +124,6 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Prefix strategy configuration
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      # Format string for prefixes
-      # Available variables: {workload}, {namespace}
-      prefixFormat: "{workload}_"
-      # Result: Tools from all backends are prefixed with their workload name:
-      # - yardstick-sse_echo
-      # - fetch_fetch
-      # - yardstick-streamable_longecho
 
   operational:
     failureHandling:
@@ -144,18 +143,6 @@ metadata:
 spec:
   config:
     groupRef: my-services
-
-  incomingAuth:
-    type: anonymous
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - 'permit(principal, action, resource);'
-
-  outgoingAuth:
-    source: discovered
-
   # Priority strategy configuration
   aggregation:
     conflictResolution: priority
@@ -170,6 +157,17 @@ spec:
         - yardstick-streamable
       # Result: If multiple backends have the same tool, yardstick-sse wins
       # because it's first in priorityOrder
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
 
   operational:
     failureHandling:
@@ -189,18 +187,6 @@ metadata:
 spec:
   config:
     groupRef: my-services
-
-  incomingAuth:
-    type: anonymous
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - 'permit(principal, action, resource);'
-
-  outgoingAuth:
-    source: discovered
-
   # Manual strategy configuration
   # Manual strategy validates conflicts at runtime and requires
   # per-workload tool configuration to resolve them
@@ -227,6 +213,17 @@ spec:
         filter:
           - longecho
           - sampleLLM
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
 
   operational:
     failureHandling:

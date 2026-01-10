@@ -142,6 +142,15 @@ spec:
   # Reference to the MCPGroup containing backend MCPServers
   config:
     groupRef: production-services
+    # Aggregation configuration with priority conflict resolution
+    aggregation:
+      conflictResolution: priority
+      conflictResolutionConfig:
+        # Priority order for backends (first has highest priority)
+        priorityOrder:
+          - yardstick-streamable
+          - fetch
+          - yardstick-sse
 
   # Incoming authentication (client -> vMCP)
   # Using OIDC for secure authentication
@@ -184,16 +193,6 @@ spec:
   # Using discovered mode - automatically discovers auth from backend MCPServers
   outgoingAuth:
     source: discovered
-
-  # Aggregation configuration with priority conflict resolution
-  aggregation:
-    conflictResolution: priority
-    conflictResolutionConfig:
-      # Priority order for backends (first has highest priority)
-      priorityOrder:
-        - yardstick-streamable
-        - fetch
-        - yardstick-sse
 
   # Service configuration
   serviceType: LoadBalancer

@@ -112,6 +112,11 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
+// GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
+func (c *RunConfig) GetName() string {
+	return c.Name
+}
+
 // GetPort returns the port from the runner config (implements types.RunnerConfig)
 func (c *RunConfig) GetPort() int {
 	return c.Port

@@ -111,32 +111,12 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "authz.CedarConfig": {
-                "description": "Cedar is the Cedar-specific configuration.\nThis is only used when Type is ConfigTypeCedarV1.",
-                "properties": {
-                    "entities_json": {
-                        "description": "EntitiesJSON is the JSON string representing Cedar entities",
-                        "type": "string"
-                    },
-                    "policies": {
-                        "description": "Policies is a list of Cedar policy strings",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
             "authz.Config": {
                 "description": "AuthzConfig contains the authorization configuration",
                 "properties": {
-                    "cedar": {
-                        "$ref": "#/components/schemas/authz.CedarConfig"
-                    },
                     "type": {
-                        "$ref": "#/components/schemas/authz.ConfigType"
+                        "description": "Type is the type of authorization configuration (e.g., \"cedarv1\").",
+                        "type": "string"
                     },
                     "version": {
                         "description": "Version is the version of the configuration format.",
@@ -144,16 +124,6 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
-            },
-            "authz.ConfigType": {
-                "description": "Type is the type of authorization configuration.",
-                "enum": [
-                    "cedarv1"
-                ],
-                "type": "string",
-                "x-enum-varnames": [
-                    "ConfigTypeCedarV1"
-                ]
             },
             "client.MCPClient": {
                 "description": "ClientType is the type of MCP client",

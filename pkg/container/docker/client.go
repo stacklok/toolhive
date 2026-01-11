@@ -1796,7 +1796,7 @@ func (c *Client) GetWorkloadStats(ctx context.Context, workloadName string) (run
 	if err != nil {
 		return runtime.WorkloadStats{}, NewContainerError(err, containerID, fmt.Sprintf("failed to get container stats: %v", err))
 	}
-	defer containerStats.Body.Close()
+	defer func() { _ = containerStats.Body.Close() }()
 
 	var containerStatsData container.StatsResponse
 	decoder := json.NewDecoder(containerStats.Body)

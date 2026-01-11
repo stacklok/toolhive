@@ -115,35 +115,35 @@ func printStatusTextOutput(workload core.Workload, stats rt.WorkloadStats) {
 	}
 
 	// Print workload information in key-value format
-	fmt.Fprintf(w, "Name:\t%s\n", workload.Name)
-	fmt.Fprintf(w, "Status:\t%s\n", status)
+	_, _ = fmt.Fprintf(w, "Name:\t%s\n", workload.Name)
+	_, _ = fmt.Fprintf(w, "Status:\t%s\n", status)
 	if workload.StatusContext != "" {
-		fmt.Fprintf(w, "Health:\t%s\n", workload.StatusContext)
+		_, _ = fmt.Fprintf(w, "Health:\t%s\n", workload.StatusContext)
 	}
-	fmt.Fprintf(w, "Package:\t%s\n", workload.Package)
-	fmt.Fprintf(w, "URL:\t%s\n", workload.URL)
-	fmt.Fprintf(w, "Port:\t%d\n", workload.Port)
-	fmt.Fprintf(w, "Transport:\t%s\n", workload.TransportType)
+	_, _ = fmt.Fprintf(w, "Package:\t%s\n", workload.Package)
+	_, _ = fmt.Fprintf(w, "URL:\t%s\n", workload.URL)
+	_, _ = fmt.Fprintf(w, "Port:\t%d\n", workload.Port)
+	_, _ = fmt.Fprintf(w, "Transport:\t%s\n", workload.TransportType)
 	if workload.ProxyMode != "" {
-		fmt.Fprintf(w, "Proxy Mode:\t%s\n", workload.ProxyMode)
+		_, _ = fmt.Fprintf(w, "Proxy Mode:\t%s\n", workload.ProxyMode)
 	}
 	if workload.Group != "" {
-		fmt.Fprintf(w, "Group:\t%s\n", workload.Group)
+		_, _ = fmt.Fprintf(w, "Group:\t%s\n", workload.Group)
 	}
-	fmt.Fprintf(w, "Created:\t%s\n", workload.CreatedAt.Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(w, "Created:\t%s\n", workload.CreatedAt.Format("2006-01-02 15:04:05"))
 	if workload.Remote {
-		fmt.Fprintf(w, "Remote:\t%v\n", workload.Remote)
+		_, _ = fmt.Fprintf(w, "Remote:\t%v\n", workload.Remote)
 	}
 	if !workload.StartedAt.IsZero() {
-		fmt.Fprintf(w, "Uptime: \t%s\n", formatUptime(time.Since(workload.StartedAt)))
+		_, _ = fmt.Fprintf(w, "Uptime: \t%s\n", formatUptime(time.Since(workload.StartedAt)))
 	}
 
 	if workload.ProcessID != 0 {
-		fmt.Fprintf(w, "PID:\t%d\n", workload.ProcessID)
+		_, _ = fmt.Fprintf(w, "PID:\t%d\n", workload.ProcessID)
 	}
 
-	fmt.Fprintf(w, "CPU Usage:\t%.2f%%\n", stats.CPUPercent)
-	fmt.Fprintf(w, "Memory Usage:\t%s / %s\n", formatBytes(stats.MemoryUsage), formatBytes(stats.MemoryLimit))
+	_, _ = fmt.Fprintf(w, "CPU Usage:\t%.2f%%\n", stats.CPUPercent)
+	_, _ = fmt.Fprintf(w, "Memory Usage:\t%s / %s\n", formatBytes(stats.MemoryUsage), formatBytes(stats.MemoryLimit))
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {

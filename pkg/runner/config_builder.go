@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -227,6 +228,14 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
+// WithEndpointPrefix sets the path prefix for SSE endpoint URLs
+func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EndpointPrefix = prefix
 		return nil
 	}
 }
@@ -473,6 +482,9 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
+		// Add recovery middleware (always present, added last to be outermost wrapper)
+		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
+
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
 		return nil
@@ -647,6 +659,19 @@ func addAuditMiddleware(
 		middlewareConfigs = append(middlewareConfigs, *auditConfig)
 	}
 
+	return middlewareConfigs
+}
+
+// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
+// Middleware is applied in reverse order, so adding last means it executes first
+// and catches panics from all other middleware and handlers.
+func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		logger.Warnf("failed to create recovery middleware: %v", err)
+		return middlewareConfigs
+	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
 	return middlewareConfigs
 }
 

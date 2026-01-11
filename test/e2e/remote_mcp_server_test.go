@@ -42,7 +42,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("mcp-spec-remote-test")
+				serverName = e2e.GenerateUniqueServerName("mcp-spec-remote-test")
 			})
 
 			AfterEach(func() {
@@ -231,7 +231,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("mcp-spec-lifecycle-test")
+				serverName = e2e.GenerateUniqueServerName("mcp-spec-lifecycle-test")
 
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
@@ -297,7 +297,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("custom-remote-test")
+				serverName = e2e.GenerateUniqueServerName("custom-remote-test")
 			})
 
 			AfterEach(func() {

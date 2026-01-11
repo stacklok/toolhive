@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestVirtualMCPServerPhaseTransitions(t *testing.T) {
@@ -138,9 +140,7 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: VirtualMCPServerSpec{
-			GroupRef: GroupRef{
-				Name: "test-group",
-			},
+			Config: config.Config{Group: "test-group"},
 			OutgoingAuth: &OutgoingAuthConfig{
 				Source: "", // Should default to "discovered"
 			},
@@ -166,9 +166,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-a",
 		},
 		Spec: VirtualMCPServerSpec{
-			GroupRef: GroupRef{
-				Name: "backend-group", // Must be in team-a namespace
-			},
+			Config: config.Config{Group: "backend-group"}, // Must be in team-a namespace
 		},
 	}
 
@@ -179,9 +177,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-b",
 		},
 		Spec: VirtualMCPServerSpec{
-			GroupRef: GroupRef{
-				Name: "backend-group", // Different group in team-b namespace
-			},
+			Config: config.Config{Group: "backend-group"}, // Different group in team-b namespace
 		},
 	}
 
@@ -190,9 +186,9 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 	assert.Equal(t, "vmcp", vmcpTeamB.Name)
 	assert.NotEqual(t, vmcpTeamA.Namespace, vmcpTeamB.Namespace)
 
-	// GroupRef names can be the same but refer to different groups in different namespaces
-	assert.Equal(t, "backend-group", vmcpTeamA.Spec.GroupRef.Name)
-	assert.Equal(t, "backend-group", vmcpTeamB.Spec.GroupRef.Name)
+	// Group names can be the same but refer to different groups in different namespaces
+	assert.Equal(t, "backend-group", vmcpTeamA.Spec.Config.Group)
+	assert.Equal(t, "backend-group", vmcpTeamB.Spec.Config.Group)
 }
 
 func TestConflictResolutionStrategies(t *testing.T) {
@@ -234,7 +230,7 @@ func TestConflictResolutionStrategies(t *testing.T) {
 
 			vmcp := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					Aggregation: &AggregationConfig{
 						ConflictResolution:       tt.strategy,
 						ConflictResolutionConfig: tt.config,
@@ -287,7 +283,7 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 
 			vmcp := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Backends: map[string]BackendAuthConfig{
 							"test-backend": tt.authConfig,
@@ -352,7 +348,7 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 
 			vmcp := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
+					Config: config.Config{Group: "test-group"},
 					CompositeTools: []CompositeToolSpec{
 						{
 							Name:        "test-workflow",

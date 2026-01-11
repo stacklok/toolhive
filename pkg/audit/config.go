@@ -15,21 +15,37 @@ import (
 
 // Config represents the audit logging configuration.
 // +kubebuilder:object:generate=true
+// +gendoc
 type Config struct {
-	// Component is the component name to use in audit events
+	// Enabled controls whether audit logging is enabled.
+	// When true, enables audit logging with the configured options.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Component is the component name to use in audit events.
+	// +optional
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`
 	// EventTypes specifies which event types to audit. If empty, all events are audited.
+	// +optional
 	EventTypes []string `json:"eventTypes,omitempty" yaml:"eventTypes,omitempty"`
 	// ExcludeEventTypes specifies which event types to exclude from auditing.
 	// This takes precedence over EventTypes.
+	// +optional
 	ExcludeEventTypes []string `json:"excludeEventTypes,omitempty" yaml:"excludeEventTypes,omitempty"`
-	// IncludeRequestData determines whether to include request data in audit logs
+	// IncludeRequestData determines whether to include request data in audit logs.
+	// +kubebuilder:default=false
+	// +optional
 	IncludeRequestData bool `json:"includeRequestData,omitempty" yaml:"includeRequestData,omitempty"`
-	// IncludeResponseData determines whether to include response data in audit logs
+	// IncludeResponseData determines whether to include response data in audit logs.
+	// +kubebuilder:default=false
+	// +optional
 	IncludeResponseData bool `json:"includeResponseData,omitempty" yaml:"includeResponseData,omitempty"`
-	// MaxDataSize limits the size of request/response data included in audit logs (in bytes)
+	// MaxDataSize limits the size of request/response data included in audit logs (in bytes).
+	// +kubebuilder:default=1024
+	// +optional
 	MaxDataSize int `json:"maxDataSize,omitempty" yaml:"maxDataSize,omitempty"`
 	// LogFile specifies the file path for audit logs. If empty, logs to stdout.
+	// +optional
 	LogFile string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 }
 
@@ -51,6 +67,8 @@ func (c *Config) GetLogWriter() (io.Writer, error) {
 // DefaultConfig returns a default audit configuration.
 func DefaultConfig() *Config {
 	return &Config{
+		// Note, these defaults are also present on the kubebuilder annotations above.
+		// If you change these defaults, you must also change the kubebuilder annotations.
 		IncludeRequestData:  false, // Disabled by default for privacy
 		IncludeResponseData: false, // Disabled by default for privacy
 		MaxDataSize:         1024,  // 1KB default limit

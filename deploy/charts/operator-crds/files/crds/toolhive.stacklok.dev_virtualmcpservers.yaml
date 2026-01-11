@@ -152,18 +152,6 @@ spec:
                       type: object
                     type: array
                 type: object
-              audit:
-                description: |-
-                  Audit configures audit logging for the Virtual MCP server
-                  When enabled, audit logs include MCP protocol operations
-                properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled controls whether audit logging is enabled
-                      When true, enables audit logging with default configuration
-                    type: boolean
-                type: object
               compositeToolRefs:
                 description: |-
                   CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -405,7 +393,11 @@ spec:
               config:
                 description: |-
                   Config is the Virtual MCP server configuration
-                  NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
+                  The only field currently required within config is `config.groupRef`.
+                  GroupRef references an existing MCPGroup that defines backend workloads.
+                  The referenced MCPGroup must exist in the same namespace.
+                  The telemetry and audit config from here are also supported, but not required.
+                  NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
                 properties:
                   aggregation:
                     description: Aggregation configures capability aggregation and
@@ -473,12 +465,21 @@ spec:
                     - conflictResolution
                     type: object
                   audit:
-                    description: Audit configures audit logging settings.
+                    description: |-
+                      Audit configures audit logging for the Virtual MCP server.
+                      When present, audit logs include MCP protocol operations.
+                      See audit.Config for available configuration options.
                     properties:
                       component:
                         description: Component is the component name to use in audit
-                          events
+                          events.
                         type: string
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled controls whether audit logging is enabled.
+                          When true, enables audit logging with the configured options.
+                        type: boolean
                       eventTypes:
                         description: EventTypes specifies which event types to audit.
                           If empty, all events are audited.
@@ -493,20 +494,23 @@ spec:
                           type: string
                         type: array
                       includeRequestData:
+                        default: false
                         description: IncludeRequestData determines whether to include
-                          request data in audit logs
+                          request data in audit logs.
                         type: boolean
                       includeResponseData:
+                        default: false
                         description: IncludeResponseData determines whether to include
-                          response data in audit logs
+                          response data in audit logs.
                         type: boolean
                       logFile:
                         description: LogFile specifies the file path for audit logs.
                           If empty, logs to stdout.
                         type: string
                       maxDataSize:
+                        default: 1024
                         description: MaxDataSize limits the size of request/response
-                          data included in audit logs (in bytes)
+                          data included in audit logs (in bytes).
                         type: integer
                     type: object
                   compositeTools:
@@ -707,8 +711,9 @@ spec:
                       type: object
                     type: array
                   groupRef:
-                    description: Group references the ToolHive group containing backend
-                      workloads.
+                    description: |-
+                      Group references an existing MCPGroup that defines backend workloads.
+                      In Kubernetes, the referenced MCPGroup must exist in the same namespace.
                     type: string
                   incomingAuth:
                     description: IncomingAuth configures how clients authenticate
@@ -1025,7 +1030,9 @@ spec:
                     - source
                     type: object
                   telemetry:
-                    description: Telemetry configures telemetry settings.
+                    description: |-
+                      Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+                      including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
                     properties:
                       customAttributes:
                         additionalProperties:
@@ -1089,34 +1096,14 @@ spec:
                           When false, no tracer provider is created even if an endpoint is configured
                         type: boolean
                     required:
-                    - enablePrometheusMetricsPath
                     - endpoint
-                    - environmentVariables
-                    - headers
-                    - insecure
-                    - metricsEnabled
-                    - samplingRate
                     - serviceName
                     - serviceVersion
-                    - tracingEnabled
                     type: object
                 required:
                 - groupRef
-                - name
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
-              groupRef:
-                description: |-
-                  GroupRef references an existing MCPGroup that defines backend workloads
-                  The referenced MCPGroup must exist in the same namespace
-                properties:
-                  name:
-                    description: Name is the name of the MCPGroup resource in the
-                      same namespace
-                    type: string
-                required:
-                - name
-                type: object
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server
@@ -1499,75 +1486,7 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
-              telemetry:
-                description: |-
-                  Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-                  including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-                properties:
-                  openTelemetry:
-                    description: OpenTelemetry defines OpenTelemetry configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether OpenTelemetry is enabled
-                        type: boolean
-                      endpoint:
-                        description: Endpoint is the OTLP endpoint URL for tracing
-                          and metrics
-                        type: string
-                      headers:
-                        description: |-
-                          Headers contains authentication headers for the OTLP endpoint
-                          Specified as key=value pairs
-                        items:
-                          type: string
-                        type: array
-                      insecure:
-                        default: false
-                        description: Insecure indicates whether to use HTTP instead
-                          of HTTPS for the OTLP endpoint
-                        type: boolean
-                      metrics:
-                        description: Metrics defines OpenTelemetry metrics-specific
-                          configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP metrics are
-                              sent
-                            type: boolean
-                        type: object
-                      serviceName:
-                        description: |-
-                          ServiceName is the service name for telemetry
-                          If not specified, defaults to the MCPServer name
-                        type: string
-                      tracing:
-                        description: Tracing defines OpenTelemetry tracing configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP tracing is
-                              sent
-                            type: boolean
-                          samplingRate:
-                            default: "0.05"
-                            description: SamplingRate is the trace sampling rate (0.0-1.0)
-                            type: string
-                        type: object
-                    type: object
-                  prometheus:
-                    description: Prometheus defines Prometheus-specific configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether Prometheus metrics endpoint
-                          is exposed
-                        type: boolean
-                    type: object
-                type: object
             required:
-            - groupRef
             - incomingAuth
             type: object
           status:

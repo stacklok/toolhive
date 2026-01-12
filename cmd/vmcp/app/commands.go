@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -348,20 +349,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 
 		// Create K8s backend watcher to watch backend changes
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, cfg.Group, dynamicRegistry)
+		// Note: Pass nil for health monitor initially - it will be set after server creation
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, cfg.Group, dynamicRegistry, nil)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}
 
-		// Start K8s backend watcher in background goroutine
-		go func() {
-			logger.Info("Starting Kubernetes backend watcher in background")
-			if err := backendWatcher.Start(ctx); err != nil {
-				logger.Errorf("Backend watcher stopped with error: %v", err)
-			}
-		}()
-
-		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
+		logger.Info("Kubernetes backend watcher created (will start after server initialization)")
 	}
 
 	// Create router
@@ -418,6 +412,46 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Override health monitoring config from environment variables if present
+	// This allows the Kubernetes operator to inject configuration via env vars
+	if envInterval := os.Getenv("VMCP_HEALTH_CHECK_INTERVAL"); envInterval != "" {
+		if parsedInterval, err := time.ParseDuration(envInterval); err == nil {
+			if healthMonitorConfig == nil {
+				defaults := health.DefaultConfig()
+				healthMonitorConfig = &health.MonitorConfig{
+					CheckInterval:      parsedInterval,
+					UnhealthyThreshold: defaults.UnhealthyThreshold,
+					Timeout:            defaults.Timeout,
+					DegradedThreshold:  defaults.DegradedThreshold,
+				}
+			} else {
+				healthMonitorConfig.CheckInterval = parsedInterval
+			}
+			logger.Infof("Health check interval overridden from environment: %v", parsedInterval)
+		} else {
+			logger.Warnf("Failed to parse VMCP_HEALTH_CHECK_INTERVAL: %v", err)
+		}
+	}
+
+	if envThreshold := os.Getenv("VMCP_HEALTH_UNHEALTHY_THRESHOLD"); envThreshold != "" {
+		if parsedThreshold, err := strconv.Atoi(envThreshold); err == nil && parsedThreshold >= 1 {
+			if healthMonitorConfig == nil {
+				defaults := health.DefaultConfig()
+				healthMonitorConfig = &health.MonitorConfig{
+					CheckInterval:      defaults.CheckInterval,
+					UnhealthyThreshold: parsedThreshold,
+					Timeout:            defaults.Timeout,
+					DegradedThreshold:  defaults.DegradedThreshold,
+				}
+			} else {
+				healthMonitorConfig.UnhealthyThreshold = parsedThreshold
+			}
+			logger.Infof("Health unhealthy threshold overridden from environment: %d", parsedThreshold)
+		} else {
+			logger.Warnf("Failed to parse VMCP_HEALTH_UNHEALTHY_THRESHOLD or value < 1: %v", err)
+		}
+	}
+
 	// Create status reporter based on environment
 	// Detection: VMCP_NAME + VMCP_NAMESPACE env vars → K8s mode → K8sReporter
 	// Otherwise → CLI mode → NoOpReporter
@@ -459,6 +493,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
+	}
+
+	// If backend watcher is configured, set the health monitor and start it
+	if backendWatcher != nil {
+		// Set health monitor on watcher to enable dynamic health monitoring
+		healthMonitor := srv.GetHealthMonitor()
+		if healthMonitor != nil {
+			backendWatcher.SetHealthMonitor(healthMonitor)
+			logger.Info("Health monitor configured for dynamic backend watcher")
+		}
+
+		// Start K8s backend watcher in background goroutine
+		go func() {
+			logger.Info("Starting Kubernetes backend watcher in background")
+			if err := backendWatcher.Start(ctx); err != nil {
+				logger.Errorf("Backend watcher stopped with error: %v", err)
+			}
+		}()
+
+		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
 	}
 
 	// Start server (blocks until shutdown signal)

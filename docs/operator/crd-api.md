@@ -1093,6 +1093,23 @@ _Appears in:_
 | `valueSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
+#### api.v1alpha1.HealthMonitoringConfig
+
+
+
+HealthMonitoringConfig configures backend health check behavior
+
+
+
+_Appears in:_
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `checkInterval` _integer_ | CheckInterval is how often to perform health checks, in seconds<br />Default: 30 seconds |  | Maximum: 3600 <br />Minimum: 1 <br /> |
+| `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy<br />Default: 3 failures |  | Maximum: 10 <br />Minimum: 1 <br /> |
+
+
 #### api.v1alpha1.IncomingAuthConfig
 
 
@@ -2650,6 +2667,7 @@ _Appears in:_
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  |  |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br /> |
+| `healthMonitoring` _[api.v1alpha1.HealthMonitoringConfig](#apiv1alpha1healthmonitoringconfig)_ | HealthMonitoring configures backend health check behavior |  |  |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus
@@ -2671,7 +2689,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  |  |
 | `discoveredBackends` _[api.v1alpha1.DiscoveredBackend](#apiv1alpha1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  |  |
-| `backendCount` _integer_ | BackendCount is the number of discovered backends |  |  |
+| `backendCount` _integer_ | BackendCount is the number of healthy/ready backends<br />(excludes unavailable, degraded, and unknown backends) |  |  |
 
 
 #### api.v1alpha1.Volume

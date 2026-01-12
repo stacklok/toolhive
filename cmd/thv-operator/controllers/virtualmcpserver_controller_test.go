@@ -432,13 +432,15 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
+func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 	t.Parallel()
 
-	// Static mode: OutgoingAuth.Source set to "inline"
+	// Inline mode: OutgoingAuth.Source set to "inline"
+	// RBAC resources are still created because status reporting requires permissions
+	// to update the VirtualMCPServer status subresource, regardless of backend discovery mode.
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "static-vmcp",
+			Name:      "inline-vmcp",
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
@@ -466,33 +468,54 @@ func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	// Call ensureRBACResources in static mode - should return nil without creating resources
+	// Call ensureRBACResources in inline mode - should create RBAC resources for status reporting
 	err := r.ensureRBACResources(context.Background(), vmcp)
 	require.NoError(t, err)
 
 	saName := vmcpServiceAccountName(vmcp.Name)
 
-	// Verify NO RBAC resources were created in static mode
+	// Verify RBAC resources were created (needed for status reporting)
 	sa := &corev1.ServiceAccount{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, sa)
-	assert.Error(t, err, "ServiceAccount should not be created in static mode")
+	require.NoError(t, err, "ServiceAccount should be created for status reporting")
+	assert.Equal(t, saName, sa.Name)
 
 	role := &rbacv1.Role{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, role)
-	assert.Error(t, err, "Role should not be created in static mode")
+	require.NoError(t, err, "Role should be created for status reporting")
+	assert.Equal(t, saName, role.Name)
+	assert.NotEmpty(t, role.Rules, "Role should have RBAC rules")
+
+	// Verify Role includes status update permissions
+	var statusRule *rbacv1.PolicyRule
+	for i := range role.Rules {
+		if len(role.Rules[i].APIGroups) > 0 && role.Rules[i].APIGroups[0] == "toolhive.stacklok.dev" {
+			for _, resource := range role.Rules[i].Resources {
+				if resource == "virtualmcpservers/status" {
+					statusRule = &role.Rules[i]
+					break
+				}
+			}
+		}
+	}
+	require.NotNil(t, statusRule, "Role should have permissions for virtualmcpservers/status")
+	assert.Contains(t, statusRule.Verbs, "get", "Role should allow getting status")
+	assert.Contains(t, statusRule.Verbs, "update", "Role should allow updating status")
+	assert.Contains(t, statusRule.Verbs, "patch", "Role should allow patching status")
 
 	rb := &rbacv1.RoleBinding{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, rb)
-	assert.Error(t, err, "RoleBinding should not be created in static mode")
+	require.NoError(t, err, "RoleBinding should be created for status reporting")
+	assert.Equal(t, saName, rb.Name)
 }
 
 // TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources

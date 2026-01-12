@@ -60,6 +60,8 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+	// Status reporting may attempt to call List() before failure is detected
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{}).AnyTimes()
 
 	srv, err := server.New(
 		context.Background(),
@@ -90,6 +92,8 @@ func TestServerStopRunsReporterShutdown(t *testing.T) {
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+	// Status reporting runs in background and may call List() 0 or more times before shutdown
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{}).AnyTimes()
 
 	srv, err := server.New(
 		context.Background(),

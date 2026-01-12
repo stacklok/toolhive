@@ -210,10 +210,14 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
 		}
 		if port > 0 {
+			// For Kubernetes backends, use the service DNS name instead of localhost
+			// The service name follows the pattern: mcp-{serverName}-proxy
+			serviceName := fmt.Sprintf("mcp-%s-proxy", mcpServer.Name)
+			host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, d.namespace)
 			url = transport.GenerateMCPServerURL(
 				mcpServer.Spec.Transport,
 				mcpServer.Spec.ProxyMode,
-				transport.LocalhostIPv4,
+				host,
 				port,
 				mcpServer.Name,
 				"",
@@ -332,6 +336,11 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 	// Populate backend auth fields with typed strategy
 	backend.AuthConfig = strategy
 
+	// Preserve the auth config reference name for status reporting
+	if authConfigRef != nil {
+		backend.AuthConfigRef = authConfigRef.Name
+	}
+
 	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
 	return nil
 }
@@ -383,7 +392,11 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	if url == "" {
 		port := int(proxy.GetProxyPort())
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", transport.LocalhostIPv4, port, proxy.Name, "")
+			// For Kubernetes remote proxies, use the service DNS name instead of localhost
+			// The service name follows the pattern: mcp-{proxyName}-proxy
+			serviceName := fmt.Sprintf("mcp-%s-proxy", proxy.Name)
+			host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, d.namespace)
+			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", host, port, proxy.Name, "")
 		}
 	}
 

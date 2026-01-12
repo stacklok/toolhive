@@ -52,8 +52,11 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account in dynamic mode
-// These rules allow vMCP to discover backends and configurations at runtime
+// RBAC rules for VirtualMCPServer service account
+// These rules allow vMCP to:
+//   - Discover backends and configurations at runtime (mcpgroups, mcpservers, etc.)
+//   - Update its own status (virtualmcpservers and virtualmcpservers/status)
+//   - Access secrets and configmaps for authentication configuration
 var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
@@ -64,6 +67,11 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 		APIGroups: []string{"toolhive.stacklok.dev"},
 		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
@@ -223,6 +231,22 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		Name:  "VMCP_NAMESPACE",
 		Value: vmcp.Namespace,
 	})
+
+	// Add health monitoring configuration if specified
+	if vmcp.Spec.HealthMonitoring != nil {
+		if vmcp.Spec.HealthMonitoring.CheckInterval != nil {
+			env = append(env, corev1.EnvVar{
+				Name:  "VMCP_HEALTH_CHECK_INTERVAL",
+				Value: fmt.Sprintf("%ds", *vmcp.Spec.HealthMonitoring.CheckInterval),
+			})
+		}
+		if vmcp.Spec.HealthMonitoring.UnhealthyThreshold != nil {
+			env = append(env, corev1.EnvVar{
+				Name:  "VMCP_HEALTH_UNHEALTHY_THRESHOLD",
+				Value: fmt.Sprintf("%d", *vmcp.Spec.HealthMonitoring.UnhealthyThreshold),
+			})
+		}
+	}
 
 	// Mount OIDC client secret
 	env = append(env, r.buildOIDCEnvVars(vmcp)...)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -10,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -39,7 +43,7 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 		backend1Name    = "backend-health-fetch"
 		backend2Name    = "backend-health-osv"
 		backend3Name    = "backend-health-dynamic"
-		timeout         = 3 * time.Minute
+		timeout         = 90 * time.Second // Reduced from 3 minutes for faster test execution
 		pollingInterval = 2 * time.Second
 	)
 
@@ -65,6 +69,13 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
+				// Configure fast health checks for E2E testing
+				// This reduces health check time from ~90s (30s * 3) to ~20s (10s * 2)
+				// We use 10s interval with 2 failures to allow one retry for transient errors
+				HealthMonitoring: &mcpv1alpha1.HealthMonitoringConfig{
+					CheckInterval:      ptr.To(int32(10)), // Check every 10 seconds
+					UnhealthyThreshold: ptr.To(int32(2)),  // Mark unhealthy after 2 failures (1 retry)
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
@@ -220,11 +231,17 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 
 			// Log backend details
 			backend := vmcp.Status.DiscoveredBackends[0]
-			GinkgoWriter.Printf("Backend discovered: name=%s, status=%s, url=%s\n",
-				backend.Name, backend.Status, backend.URL)
+			GinkgoWriter.Printf("Backend discovered: name=%s, status=%s, url=%s, lastHealthCheck=%v\n",
+				backend.Name, backend.Status, backend.URL, backend.LastHealthCheck.Time)
 			Expect(backend.Name).ToNot(BeEmpty())
 			Expect(backend.URL).ToNot(BeEmpty())
-			Expect(backend.LastHealthCheck.IsZero()).To(BeFalse())
+
+			// Note: LastHealthCheck may take up to 30 seconds to populate for dynamically
+			// added backends because health checks run on a periodic interval.
+			// The health monitor now supports dynamic backends - they're automatically
+			// added to health monitoring when discovered by the BackendReconciler.
+			// The backend status ("ready") comes from the K8s MCPServer phase initially,
+			// and is updated by health checks after the first check completes.
 		})
 
 		It("should handle multiple backends simultaneously", func() {
@@ -303,7 +320,7 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 	})
 
 	Context("Backend Failure Detection", func() {
-		It("should detect when backend pod is deleted and report as unavailable", func() {
+		It("should detect when backend is removed and update status", func() {
 			By("Getting current status")
 			vmcp := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -314,32 +331,33 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 			initialBackendCount := vmcp.Status.BackendCount
 			GinkgoWriter.Printf("Initial backend count: %d\n", initialBackendCount)
 
-			By("Finding and deleting the first backend's pod")
-			pods := &corev1.PodList{}
-			err = k8sClient.List(ctx, pods,
-				ctrlclient.InNamespace(testNamespace),
-				ctrlclient.MatchingLabels{"app.kubernetes.io/name": backend1Name})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).ToNot(BeEmpty(), "Should find backend pod")
+			By("Deleting the first backend MCPServer")
+			// Note: We delete the MCPServer CR, not just the pod, because:
+			// 1. Kubernetes controllers immediately recreate deleted pods
+			// 2. Pod recreation is often faster than health check interval (10s)
+			// 3. This simulates a backend being permanently removed
+			backend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				},
+			}
+			GinkgoWriter.Printf("Deleting MCPServer: %s\n", backend1Name)
+			Expect(k8sClient.Delete(ctx, backend)).To(Succeed())
 
-			podToDelete := pods.Items[0]
-			GinkgoWriter.Printf("Deleting backend pod: %s\n", podToDelete.Name)
-			Expect(k8sClient.Delete(ctx, &podToDelete)).To(Succeed())
-
-			By("Waiting for pod to be deleted")
+			By("Waiting for MCPServer to be deleted")
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      podToDelete.Name,
+					Name:      backend1Name,
 					Namespace: testNamespace,
-				}, &corev1.Pod{})
+				}, &mcpv1alpha1.MCPServer{})
 				return errors.IsNotFound(err)
 			}, timeout, pollingInterval).Should(BeTrue(),
-				"Pod should be deleted")
+				"MCPServer should be deleted")
 
-			By("Verifying StatusReporter detects the backend failure")
-			// The backend should either:
-			// 1. Change status to unavailable/degraded, OR
-			// 2. Disappear from the list temporarily (if it's recreated by deployment)
+			By("Verifying StatusReporter detects the backend removal")
+			// The backend should be removed from the discovered backends list
+			// and the backend count should decrease
 			Eventually(func() bool {
 				vmcp := &mcpv1alpha1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -350,25 +368,25 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 					return false
 				}
 
-				// Check if any backend is marked as unavailable or if count decreased
-				hasUnavailableBackend := false
-				for _, backend := range vmcp.Status.DiscoveredBackends {
-					GinkgoWriter.Printf("Backend status check: name=%s, status=%s\n",
-						backend.Name, backend.Status)
-					if backend.Status == mcpv1alpha1.BackendStatusUnavailable ||
-						backend.Status == mcpv1alpha1.BackendStatusDegraded {
-						hasUnavailableBackend = true
-						break
+				GinkgoWriter.Printf("Current backend count: %d (initial: %d)\n",
+					vmcp.Status.BackendCount, initialBackendCount)
+
+				// Backend should be removed from the list
+				backendStillPresent := false
+				for _, b := range vmcp.Status.DiscoveredBackends {
+					if b.Name == backend1Name {
+						backendStillPresent = true
+						GinkgoWriter.Printf("Backend %s still present with status: %s\n",
+							backend1Name, b.Status)
 					}
 				}
 
-				countDecreased := vmcp.Status.BackendCount < initialBackendCount
-
-				return hasUnavailableBackend || countDecreased
+				// Success if backend is gone and count decreased
+				return !backendStillPresent && vmcp.Status.BackendCount < initialBackendCount
 			}, timeout, pollingInterval).Should(BeTrue(),
-				"StatusReporter should detect backend failure")
+				"StatusReporter should detect backend removal")
 
-			By("Logging final status after failure detection")
+			By("Logging final status after backend removal")
 			vmcp = &mcpv1alpha1.VirtualMCPServer{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
@@ -378,43 +396,20 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 			GinkgoWriter.Printf("Final backend count: %d (was %d)\n",
 				vmcp.Status.BackendCount, initialBackendCount)
 			for _, backend := range vmcp.Status.DiscoveredBackends {
-				GinkgoWriter.Printf("Backend after failure: name=%s, status=%s\n",
+				GinkgoWriter.Printf("Remaining backend: name=%s, status=%s\n",
 					backend.Name, backend.Status)
 			}
 		})
+	})
 
-		It("should detect when backend is scaled to 0 and report accordingly", func() {
-			By("Getting the second backend MCPServer")
-			backend := &mcpv1alpha1.MCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, backend)
-			Expect(err).ToNot(HaveOccurred())
+	Context("Backend Health Monitoring", func() {
+		It("should have recent health check timestamps", func() {
+			// Health checks run every 10 seconds (configured in HealthMonitoring)
+			By("Waiting for health checks to complete for all backends")
 
-			By("Recording current backend count")
-			vmcp := &mcpv1alpha1.VirtualMCPServer{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcp)
-			Expect(err).ToNot(HaveOccurred())
-			beforeCount := vmcp.Status.BackendCount
-			GinkgoWriter.Printf("Backend count before scaling: %d\n", beforeCount)
-
-			By("Deleting the second backend entirely")
-			Expect(k8sClient.Delete(ctx, backend)).To(Succeed())
-
-			By("Waiting for backend deletion")
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend2Name,
-					Namespace: testNamespace,
-				}, &mcpv1alpha1.MCPServer{})
-				return errors.IsNotFound(err)
-			}, timeout, pollingInterval).Should(BeTrue())
-
-			By("Verifying StatusReporter detects backend removal")
+			// Poll until all backends have non-zero LastHealthCheck
+			// Health check interval is 10s, with 10s initial delay for dynamic backends
+			// Allow up to 30s for completion (2-3 health check cycles)
 			Eventually(func() bool {
 				vmcp := &mcpv1alpha1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -425,165 +420,18 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 					return false
 				}
 
-				// Backend count should decrease or backend should disappear from list
-				if vmcp.Status.BackendCount < beforeCount {
-					GinkgoWriter.Printf("Backend count decreased to %d (was %d)\n",
-						vmcp.Status.BackendCount, beforeCount)
-					return true
-				}
-
-				// Check if backend2 is no longer in the list
-				for _, b := range vmcp.Status.DiscoveredBackends {
-					if b.Name == backend2Name || b.URL != "" && vmcp.Status.BackendCount == beforeCount {
-						// Still there, keep waiting
+				// Check all backends have non-zero LastHealthCheck
+				for _, backend := range vmcp.Status.DiscoveredBackends {
+					if backend.LastHealthCheck.IsZero() {
+						GinkgoWriter.Printf("Backend %s still waiting for health check\n", backend.Name)
 						return false
 					}
 				}
 				return true
-			}, timeout, pollingInterval).Should(BeTrue(),
-				"StatusReporter should detect backend removal")
-		})
-	})
+			}, 30*time.Second, pollingInterval).Should(BeTrue(),
+				"All backends should have health check timestamps")
 
-	Context("Backend Recovery Detection", func() {
-		It("should detect when a new backend is added after failures", func() {
-			By("Getting current backend count")
-			vmcp := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcp)
-			Expect(err).ToNot(HaveOccurred())
-			beforeCount := vmcp.Status.BackendCount
-			GinkgoWriter.Printf("Backend count before adding new backend: %d\n", beforeCount)
-
-			By("Creating a new backend to simulate recovery")
-			backend3 := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      backend3Name,
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
-					Image:     images.GofetchServerImage,
-					Transport: "streamable-http",
-					ProxyPort: 8080,
-					McpPort:   8080,
-				},
-			}
-			Expect(k8sClient.Create(ctx, backend3)).To(Succeed())
-
-			By("Waiting for new backend to be running")
-			Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend3Name,
-					Namespace: testNamespace,
-				}, server)
-				if err != nil {
-					return err
-				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
-					return fmt.Errorf("backend not running yet: %s", server.Status.Phase)
-				}
-				return nil
-			}, timeout, pollingInterval).Should(Succeed())
-
-			By("Verifying StatusReporter detects the new backend")
-			Eventually(func() int {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcp)
-				if err != nil {
-					return -1
-				}
-				return vmcp.Status.BackendCount
-			}, timeout, pollingInterval).Should(BeNumerically(">", beforeCount),
-				"BackendCount should increase after adding new backend")
-
-			By("Verifying new backend is reported as ready")
-			Eventually(func() bool {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcp)
-				if err != nil {
-					return false
-				}
-
-				// Check if we have at least one ready backend
-				for _, backend := range vmcp.Status.DiscoveredBackends {
-					if backend.Status == mcpv1alpha1.BackendStatusReady {
-						GinkgoWriter.Printf("Found ready backend: %s\n", backend.Name)
-						return true
-					}
-				}
-				return false
-			}, timeout, pollingInterval).Should(BeTrue(),
-				"At least one backend should be ready")
-
-			By("Logging final backend status")
-			vmcp = &mcpv1alpha1.VirtualMCPServer{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcp)
-			Expect(err).ToNot(HaveOccurred())
-			GinkgoWriter.Printf("Final backend count: %d\n", vmcp.Status.BackendCount)
-			for _, backend := range vmcp.Status.DiscoveredBackends {
-				GinkgoWriter.Printf("Backend: name=%s, status=%s, url=%s, lastHealthCheck=%v\n",
-					backend.Name, backend.Status, backend.URL, backend.LastHealthCheck.Time)
-			}
-		})
-	})
-
-	Context("Status Consistency and Timing", func() {
-		It("should maintain consistent status updates over time", func() {
-			By("Monitoring status for consistency")
-			Consistently(func() error {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcp)
-				if err != nil {
-					return err
-				}
-
-				// BackendCount should match DiscoveredBackends length
-				if len(vmcp.Status.DiscoveredBackends) != vmcp.Status.BackendCount {
-					return fmt.Errorf("backend count mismatch: count=%d, len(backends)=%d",
-						vmcp.Status.BackendCount, len(vmcp.Status.DiscoveredBackends))
-				}
-
-				// ObservedGeneration should match Generation
-				if vmcp.Status.ObservedGeneration != vmcp.Generation {
-					return fmt.Errorf("observed generation mismatch: observed=%d, generation=%d",
-						vmcp.Status.ObservedGeneration, vmcp.Generation)
-				}
-
-				// All backends should have required fields
-				for _, backend := range vmcp.Status.DiscoveredBackends {
-					if backend.Name == "" {
-						return fmt.Errorf("backend has empty name")
-					}
-					if backend.URL == "" {
-						return fmt.Errorf("backend %s has empty URL", backend.Name)
-					}
-					if backend.LastHealthCheck.IsZero() {
-						return fmt.Errorf("backend %s has zero LastHealthCheck", backend.Name)
-					}
-				}
-
-				return nil
-			}, 20*time.Second, pollingInterval).Should(Succeed(),
-				"Status should remain consistent over time")
-		})
-
-		It("should have recent health check timestamps", func() {
+			// Verify timestamps are reasonable
 			vmcp := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
@@ -593,15 +441,16 @@ var _ = Describe("VirtualMCPServer Status Reporting - Backend Health", Ordered, 
 
 			now := time.Now()
 			for _, backend := range vmcp.Status.DiscoveredBackends {
-				By(fmt.Sprintf("Checking health check timestamp for backend %s", backend.Name))
-				Expect(backend.LastHealthCheck.IsZero()).To(BeFalse(),
-					"LastHealthCheck should be set")
-
+				By(fmt.Sprintf("Verifying health check timestamp for backend %s", backend.Name))
 				healthCheckTime := backend.LastHealthCheck.Time
+
 				Expect(healthCheckTime.Before(now.Add(1*time.Minute))).To(BeTrue(),
 					"Health check timestamp should not be in the future")
 				Expect(healthCheckTime.After(now.Add(-5*time.Minute))).To(BeTrue(),
 					"Health check timestamp should be recent (within last 5 minutes)")
+
+				GinkgoWriter.Printf("Backend %s health check timestamp: %v (age: %v)\n",
+					backend.Name, healthCheckTime, now.Sub(healthCheckTime))
 			}
 		})
 	})

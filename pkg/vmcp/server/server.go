@@ -211,6 +211,10 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+
+	// wg tracks background goroutines (e.g., periodic status reporting).
+	// Must call wg.Wait() during shutdown to ensure clean termination.
+	wg sync.WaitGroup
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -540,6 +544,11 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to start status reporter: %w", err)
 		}
 		s.shutdownFuncs = append(s.shutdownFuncs, shutdown)
+
+		// Start periodic status reporting in background
+		s.wg.Add(1)
+		go s.periodicStatusReporting(ctx)
+		logger.Info("Periodic status reporting started")
 	}
 
 	// Wait for either context cancellation or server error
@@ -604,6 +613,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.discoveryMgr.Stop()
 	}
 
+	// Wait for all background goroutines (e.g., status reporting) to finish
+	logger.Debug("Waiting for background goroutines to complete")
+	s.wg.Wait()
+	logger.Debug("All background goroutines completed")
+
 	if len(errs) > 0 {
 		logger.Errorf("Errors during shutdown: %v", errs)
 		return errors.Join(errs...)
@@ -623,6 +637,15 @@ func (s *Server) Address() string {
 		return s.listener.Addr().String()
 	}
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+}
+
+// GetHealthMonitor returns the health monitor instance.
+// Returns nil if health monitoring is disabled.
+// This method is safe for concurrent access.
+func (s *Server) GetHealthMonitor() *health.Monitor {
+	s.healthMonitorMu.RLock()
+	defer s.healthMonitorMu.RUnlock()
+	return s.healthMonitor
 }
 
 // handleHealth handles /health and /ping HTTP requests.

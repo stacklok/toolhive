@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -67,30 +68,37 @@ func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReport
 }
 
 // ReportStatus sends a status update to the VirtualMCPServer/status subresource.
-// This method is non-blocking and returns quickly.
+// This method uses optimistic concurrency control with automatic retries on conflicts.
 func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status) error {
 	if status == nil {
-		return fmt.Errorf("status cannot be nil")
+		return nil
 	}
 
-	// Get the VirtualMCPServer resource
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 	namespacedName := types.NamespacedName{
 		Name:      r.name,
 		Namespace: r.namespace,
 	}
 
-	if err := r.client.Get(ctx, namespacedName, vmcpServer); err != nil {
-		logger.Errorf("Failed to get VirtualMCPServer %s/%s: %v", r.namespace, r.name, err)
-		return fmt.Errorf("failed to get VirtualMCPServer: %w", err)
-	}
+	// Use retry logic to handle concurrent updates gracefully.
+	// If the resource is modified between Get() and Update(), Kubernetes will reject
+	// the update with a conflict error, and retry.RetryOnConflict will automatically retry.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get the latest version of the VirtualMCPServer resource
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		if err := r.client.Get(ctx, namespacedName, vmcpServer); err != nil {
+			return fmt.Errorf("failed to get VirtualMCPServer: %w", err)
+		}
 
-	// Convert vmcp.Status to VirtualMCPServerStatus
-	r.updateStatus(vmcpServer, status)
+		// Convert vmcp.Status to VirtualMCPServerStatus
+		r.updateStatus(vmcpServer, status)
 
-	// Update the status subresource
-	if err := r.client.Status().Update(ctx, vmcpServer); err != nil {
-		logger.Errorf("Failed to update VirtualMCPServer status for %s/%s: %v", r.namespace, r.name, err)
+		// Update the status subresource (may return conflict error if resource was modified)
+		return r.client.Status().Update(ctx, vmcpServer)
+	})
+
+	if err != nil {
+		logger.Errorf("Failed to update VirtualMCPServer status for %s/%s after retries: %v",
+			r.namespace, r.name, err)
 		return fmt.Errorf("failed to update status: %w", err)
 	}
 
@@ -104,10 +112,10 @@ func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status
 // Start initializes the reporter.
 // Returns a shutdown function for cleanup (no-op for K8sReporter since it's stateless).
 func (*K8sReporter) Start(_ context.Context) (func(context.Context) error, error) {
-	logger.Debug("K8sReporter: starting (no background processes)")
+	logger.Debug("status reporter: starting (K8s mode - updates VirtualMCPServer/status)")
 
 	shutdown := func(_ context.Context) error {
-		logger.Debug("K8sReporter: stopping")
+		logger.Debug("status reporter: stopping (K8s mode)")
 		return nil
 	}
 
@@ -122,8 +130,8 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 	// Update message
 	vmcpServer.Status.Message = status.Message
 
-	// Update backend count
-	vmcpServer.Status.BackendCount = len(status.DiscoveredBackends)
+	// Update backend count (only counts healthy/ready backends)
+	vmcpServer.Status.BackendCount = status.BackendCount
 
 	// Update discovered backends
 	vmcpServer.Status.DiscoveredBackends = make([]mcpv1alpha1.DiscoveredBackend, 0, len(status.DiscoveredBackends))

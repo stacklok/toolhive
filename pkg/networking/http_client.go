@@ -15,6 +15,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// HTTPClient is an interface for making HTTP requests.
+// This interface is satisfied by *http.Client and allows for dependency injection in testing.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 var privateIPBlocks []*net.IPNet
 
 // HttpTimeout is the timeout for outgoing HTTP requests

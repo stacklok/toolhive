@@ -94,7 +94,7 @@ func optimizerIngestCmdFunc(_ *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get home directory: %w", err)
 		}
-		dbPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
+		optimizerDBPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
 	}
 
 	// Validate model path
@@ -134,7 +134,7 @@ func optimizerIngestCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create ingestion service: %w", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	// Run ingestion
 	if optimizerPollInterval > 0 {
@@ -179,7 +179,7 @@ func optimizerQueryCmdFunc(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get home directory: %w", err)
 		}
-		dbPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
+		optimizerDBPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
 	}
 
 	// Validate model path
@@ -211,7 +211,7 @@ func optimizerStatusCmdFunc(_ *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get home directory: %w", err)
 		}
-		dbPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
+		optimizerDBPath = filepath.Join(homeDir, ".toolhive", "optimizer.db")
 	}
 
 	// Check if database exists
@@ -228,7 +228,7 @@ func optimizerStatusCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	// Query statistics
 	ctx := context.Background()

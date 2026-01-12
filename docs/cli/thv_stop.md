@@ -35,7 +35,7 @@ thv stop [workload-name...] [flags]
 ### Options
 
 ```
-      --all            Stop all running MCP servers
+  -a, --all            Stop all running MCP servers
   -g, --group string   Stop all MCP servers in a specific group
   -h, --help           help for stop
       --timeout int    Timeout in seconds before forcibly stopping the workload (default 30)

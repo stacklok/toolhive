@@ -37,7 +37,7 @@ thv rm [workload-name...] [flags]
 
 ```
       --all            Delete all workloads
-      --group string   Delete all workloads in the specified group
+  -g, --group string   Delete all workloads in the specified group
   -h, --help           help for rm
 ```
 

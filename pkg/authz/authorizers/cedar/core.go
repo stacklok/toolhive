@@ -1,5 +1,5 @@
-// Package authz provides authorization utilities using Cedar policies.
-package authz
+// Package cedar provides authorization utilities using Cedar policies.
+package cedar
 
 import (
 	"context"
@@ -13,8 +13,87 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+// ConfigType is the configuration type identifier for Cedar authorization.
+const ConfigType = "cedarv1"
+
+func init() {
+	// Register the Cedar authorizer factory with the authorizers registry.
+	authorizers.Register(ConfigType, &Factory{})
+}
+
+// Config represents the complete authorization configuration file structure
+// for Cedar authorization. This includes the common version/type fields plus
+// the Cedar-specific "cedar" field. This maintains backwards compatibility
+// with the v1.0 configuration schema.
+type Config struct {
+	Version string         `json:"version"`
+	Type    string         `json:"type"`
+	Options *ConfigOptions `json:"cedar"`
+}
+
+// ExtractConfig extracts the Cedar configuration from an authorizers.Config.
+// This is useful for tests and other code that needs to inspect the Cedar configuration
+// after it has been loaded into the generic Config structure.
+// To access the Cedar-specific options (policies, entities), use the returned Config's Cedar field.
+func ExtractConfig(authzConfig *authorizers.Config) (*Config, error) {
+	if authzConfig == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	rawConfig := authzConfig.RawConfig()
+	if len(rawConfig) == 0 {
+		return nil, fmt.Errorf("config has no raw data")
+	}
+
+	var config Config
+	if err := json.Unmarshal(rawConfig, &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	if config.Options == nil {
+		return nil, fmt.Errorf("cedar config is nil")
+	}
+	return &config, nil
+}
+
+// Factory implements the authorizers.AuthorizerFactory interface for Cedar.
+type Factory struct{}
+
+// ValidateConfig validates the Cedar-specific configuration.
+// It receives the full raw config and extracts the Cedar-specific portion.
+func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
+	var config Config
+	if err := json.Unmarshal(rawConfig, &config); err != nil {
+		return fmt.Errorf("failed to parse configuration: %w", err)
+	}
+
+	if config.Options == nil {
+		return fmt.Errorf("cedar configuration is required (missing 'cedar' field)")
+	}
+
+	if len(config.Options.Policies) == 0 {
+		return fmt.Errorf("at least one policy is required for Cedar authorization")
+	}
+
+	return nil
+}
+
+// CreateAuthorizer creates a Cedar Authorizer from the configuration.
+// It receives the full raw config and extracts the Cedar-specific portion.
+func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, _ string) (authorizers.Authorizer, error) {
+	var config Config
+	if err := json.Unmarshal(rawConfig, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse configuration: %w", err)
+	}
+
+	if config.Options == nil {
+		return nil, fmt.Errorf("cedar configuration is required (missing 'cedar' field)")
+	}
+
+	return NewCedarAuthorizer(*config.Options)
+}
 
 // Common errors for Cedar authorization
 var (
@@ -30,43 +109,8 @@ var (
 // ClientIDContextKey is the key used to store client ID in the context.
 type ClientIDContextKey struct{}
 
-// MCPFeature represents an MCP feature type.
-// In the MCP protocol, there are three main features:
-// - Tools: Allow models to call functions in external systems
-// - Prompts: Provide structured templates for interacting with language models
-// - Resources: Share data that provides context to language models
-type MCPFeature string
-
-const (
-	// MCPFeatureTool represents the MCP tool feature.
-	MCPFeatureTool MCPFeature = "tool"
-	// MCPFeaturePrompt represents the MCP prompt feature.
-	MCPFeaturePrompt MCPFeature = "prompt"
-	// MCPFeatureResource represents the MCP resource feature.
-	MCPFeatureResource MCPFeature = "resource"
-)
-
-// MCPOperation represents an operation on an MCP feature.
-// Each feature supports different operations:
-// - List: Get a list of available items (tools, prompts, resources)
-// - Get: Get a specific prompt
-// - Call: Call a specific tool
-// - Read: Read a specific resource
-type MCPOperation string
-
-const (
-	// MCPOperationList represents a list operation.
-	MCPOperationList MCPOperation = "list"
-	// MCPOperationGet represents a get operation.
-	MCPOperationGet MCPOperation = "get"
-	// MCPOperationCall represents a call operation.
-	MCPOperationCall MCPOperation = "call"
-	// MCPOperationRead represents a read operation.
-	MCPOperationRead MCPOperation = "read"
-)
-
-// CedarAuthorizer authorizes MCP operations using Cedar policies.
-type CedarAuthorizer struct {
+// Authorizer authorizes MCP operations using Cedar policies.
+type Authorizer struct {
 	// Cedar policy set
 	policySet *cedar.PolicySet
 	// Cedar entities
@@ -77,28 +121,29 @@ type CedarAuthorizer struct {
 	mu sync.RWMutex
 }
 
-// CedarAuthorizerConfig contains configuration for the Cedar authorizer.
-type CedarAuthorizerConfig struct {
+// ConfigOptions represents the Cedar-specific authorization configuration options.
+type ConfigOptions struct {
 	// Policies is a list of Cedar policy strings
-	Policies []string
+	Policies []string `json:"policies" yaml:"policies"`
+
 	// EntitiesJSON is the JSON string representing Cedar entities
-	EntitiesJSON string
+	EntitiesJSON string `json:"entities_json" yaml:"entities_json"`
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
-func NewCedarAuthorizer(config CedarAuthorizerConfig) (*CedarAuthorizer, error) {
-	authorizer := &CedarAuthorizer{
+func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
+	authorizer := &Authorizer{
 		policySet:     cedar.NewPolicySet(),
 		entities:      cedar.EntityMap{},
 		entityFactory: NewEntityFactory(),
 	}
 
 	// Load policies
-	if len(config.Policies) == 0 {
+	if len(options.Policies) == 0 {
 		return nil, ErrNoPolicies
 	}
 
-	for i, policyStr := range config.Policies {
+	for i, policyStr := range options.Policies {
 		var policy cedar.Policy
 		if err := policy.UnmarshalCedar([]byte(policyStr)); err != nil {
 			return nil, fmt.Errorf("failed to parse policy %d: %w", i, err)
@@ -109,8 +154,8 @@ func NewCedarAuthorizer(config CedarAuthorizerConfig) (*CedarAuthorizer, error) 
 	}
 
 	// Load entities if provided
-	if config.EntitiesJSON != "" {
-		if err := json.Unmarshal([]byte(config.EntitiesJSON), &authorizer.entities); err != nil {
+	if options.EntitiesJSON != "" {
+		if err := json.Unmarshal([]byte(options.EntitiesJSON), &authorizer.entities); err != nil {
 			return nil, fmt.Errorf("failed to parse entities JSON: %w", err)
 		}
 	}
@@ -119,7 +164,7 @@ func NewCedarAuthorizer(config CedarAuthorizerConfig) (*CedarAuthorizer, error) 
 }
 
 // UpdatePolicies updates the Cedar policies.
-func (a *CedarAuthorizer) UpdatePolicies(policies []string) error {
+func (a *Authorizer) UpdatePolicies(policies []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -144,7 +189,7 @@ func (a *CedarAuthorizer) UpdatePolicies(policies []string) error {
 }
 
 // UpdateEntities updates the Cedar entities.
-func (a *CedarAuthorizer) UpdateEntities(entitiesJSON string) error {
+func (a *Authorizer) UpdateEntities(entitiesJSON string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -158,7 +203,7 @@ func (a *CedarAuthorizer) UpdateEntities(entitiesJSON string) error {
 }
 
 // AddEntity adds or updates an entity in the authorizer's entity store.
-func (a *CedarAuthorizer) AddEntity(entity cedar.Entity) {
+func (a *Authorizer) AddEntity(entity cedar.Entity) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -166,7 +211,7 @@ func (a *CedarAuthorizer) AddEntity(entity cedar.Entity) {
 }
 
 // RemoveEntity removes an entity from the authorizer's entity store.
-func (a *CedarAuthorizer) RemoveEntity(uid cedar.EntityUID) {
+func (a *Authorizer) RemoveEntity(uid cedar.EntityUID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -174,7 +219,7 @@ func (a *CedarAuthorizer) RemoveEntity(uid cedar.EntityUID) {
 }
 
 // GetEntity retrieves an entity from the authorizer's entity store.
-func (a *CedarAuthorizer) GetEntity(uid cedar.EntityUID) (cedar.Entity, bool) {
+func (a *Authorizer) GetEntity(uid cedar.EntityUID) (cedar.Entity, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -183,7 +228,7 @@ func (a *CedarAuthorizer) GetEntity(uid cedar.EntityUID) (cedar.Entity, bool) {
 }
 
 // GetEntityFactory returns the entity factory associated with this authorizer.
-func (a *CedarAuthorizer) GetEntityFactory() *EntityFactory {
+func (a *Authorizer) GetEntityFactory() *EntityFactory {
 	return a.entityFactory
 }
 
@@ -195,7 +240,7 @@ func (a *CedarAuthorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 // - entities: Optional Cedar entity map with attributes
-func (a *CedarAuthorizer) IsAuthorized(
+func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
 	contextMap map[string]interface{},
 	entities ...cedar.EntityMap,
@@ -341,7 +386,7 @@ func mergeContexts(contextMaps ...map[string]interface{}) map[string]interface{}
 // authorizeToolCall authorizes a tool call operation.
 // This method is used when a client tries to call a specific tool.
 // It checks if the client is authorized to call the tool with the given context.
-func (a *CedarAuthorizer) authorizeToolCall(
+func (a *Authorizer) authorizeToolCall(
 	clientID, toolName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
@@ -377,7 +422,7 @@ func (a *CedarAuthorizer) authorizeToolCall(
 // authorizePromptGet authorizes a prompt get operation.
 // This method is used when a client tries to get a specific prompt.
 // It checks if the client is authorized to access the prompt with the given context.
-func (a *CedarAuthorizer) authorizePromptGet(
+func (a *Authorizer) authorizePromptGet(
 	clientID, promptName string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
@@ -413,7 +458,7 @@ func (a *CedarAuthorizer) authorizePromptGet(
 // authorizeResourceRead authorizes a resource read operation.
 // This method is used when a client tries to read a specific resource.
 // It checks if the client is authorized to read the resource.
-func (a *CedarAuthorizer) authorizeResourceRead(
+func (a *Authorizer) authorizeResourceRead(
 	clientID, resourceURI string,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
@@ -451,9 +496,9 @@ func (a *CedarAuthorizer) authorizeResourceRead(
 // authorizeFeatureList authorizes a list operation for a feature.
 // This method is used when a client tries to list available tools, prompts, or resources.
 // It checks if the client is authorized to list the specified feature type.
-func (a *CedarAuthorizer) authorizeFeatureList(
+func (a *Authorizer) authorizeFeatureList(
 	clientID string,
-	feature MCPFeature,
+	feature authorizers.MCPFeature,
 	claimsMap map[string]interface{},
 	attrsMap map[string]interface{},
 ) (bool, error) {
@@ -521,10 +566,10 @@ func sanitizeURIForCedar(uri string) string {
 // 3. Includes the JWT claims in the Cedar context
 // 4. Creates entities with appropriate attributes
 // 5. Authorizes the operation using the client ID and claims
-func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
+func (a *Authorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
-	feature MCPFeature,
-	operation MCPOperation,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
 	resourceID string,
 	arguments map[string]interface{},
 ) (bool, error) {
@@ -547,19 +592,19 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 
 	// Authorize based on the feature and operation
 	switch {
-	case feature == MCPFeatureTool && operation == MCPOperationCall:
+	case feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationCall:
 		// Use the authorizeToolCall function for tool call operations
 		return a.authorizeToolCall(clientID, resourceID, processedClaims, processedArgs)
 
-	case feature == MCPFeaturePrompt && operation == MCPOperationGet:
+	case feature == authorizers.MCPFeaturePrompt && operation == authorizers.MCPOperationGet:
 		// Use the authorizePromptGet function for prompt get operations
 		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
 
-	case feature == MCPFeatureResource && operation == MCPOperationRead:
+	case feature == authorizers.MCPFeatureResource && operation == authorizers.MCPOperationRead:
 		// Use the authorizeResourceRead function for resource read operations
 		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
 
-	case operation == MCPOperationList:
+	case operation == authorizers.MCPOperationList:
 		// Use the authorizeFeatureList function for list operations
 		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
 

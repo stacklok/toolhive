@@ -42,8 +42,8 @@ var (
 
 func init() {
 	stopCmd.Flags().IntVar(&stopTimeout, "timeout", 30, "Timeout in seconds before forcibly stopping the workload")
-	stopCmd.Flags().BoolVar(&stopAll, "all", false, "Stop all running MCP servers")
-	stopCmd.Flags().StringVarP(&stopGroup, "group", "g", "", "Stop all MCP servers in a specific group")
+	AddAllFlag(stopCmd, &stopAll, true, "Stop all running MCP servers")
+	AddGroupFlag(stopCmd, &stopGroup, true)
 
 	// Mark the flags as mutually exclusive
 	stopCmd.MarkFlagsMutuallyExclusive("all", "group")

@@ -17,7 +17,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -131,12 +130,6 @@ type UserInfoSubjectValidator interface {
 // that does not match the expected subject from the ID Token.
 // This validation is required per OIDC Core Section 5.3.4 to prevent user impersonation.
 var ErrUserInfoSubjectMismatch = fmt.Errorf("userinfo subject does not match expected subject")
-
-// HTTPClient is an interface for HTTP client operations.
-// This allows for mocking in tests.
-type HTTPClient interface {
-	Do(req *http.Request) (*http.Response, error)
-}
 
 // Config contains configuration for connecting to an upstream
 // Identity Provider (e.g., Google, Okta, Auth0).

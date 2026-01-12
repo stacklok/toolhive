@@ -169,13 +169,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
+	// Process secrets if provided (regular secrets or RemoteAuthConfig secrets in CLI format)
 	hasRegularSecrets := len(r.Config.Secrets) > 0
-	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
+		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
 
 	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
 	if hasRemoteAuthSecret {
-		logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		if r.Config.RemoteAuthConfig.ClientSecret != "" {
+			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		}
+		if r.Config.RemoteAuthConfig.BearerToken != "" {
+			logger.Debugf("RemoteAuthConfig.BearerToken: %s", r.Config.RemoteAuthConfig.BearerToken)
+		}
 	}
 
 	if hasRegularSecrets || hasRemoteAuthSecret {
@@ -193,7 +199,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error instantiating secret manager %w", err)
 		}
 
-		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
+		// Process secrets (including RemoteAuthConfig.ClientSecret and BearerToken resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}

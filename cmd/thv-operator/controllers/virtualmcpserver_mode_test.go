@@ -265,6 +265,12 @@ func TestReconcile_DynamicMode_SkipsDiscovery(t *testing.T) {
 	assert.Equal(t, "backend-from-vmcp", updatedVMCP.Status.DiscoveredBackends[0].Name,
 		"should preserve backend name from vMCP status")
 	assert.Equal(t, 1, updatedVMCP.Status.BackendCount, "should preserve backend count")
+
+	// In dynamic mode, the operator should NOT set the BackendsDiscovered condition
+	// The vMCP server owns this condition and reports it via StatusReporter
+	backendsDiscoveredCondition := findCondition(updatedVMCP.Status.Conditions, "BackendsDiscovered")
+	assert.Nil(t, backendsDiscoveredCondition,
+		"BackendsDiscovered condition should not be set by operator in dynamic mode")
 }
 
 // TestReconcile_StaticMode_PerformsDiscovery tests that static mode discovers backends

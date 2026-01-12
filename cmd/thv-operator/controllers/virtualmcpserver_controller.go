@@ -233,12 +233,11 @@ func (r *VirtualMCPServerReconciler) handleBackendDiscovery(
 
 	if r.isDynamicMode(vmcp) {
 		// Dynamic mode: vMCP server owns backend discovery and reports status
-		// Operator only observes and sets infrastructure-only conditions
+		// Operator does not discover backends or set BackendsDiscovered condition
 		ctxLogger.V(1).Info("Dynamic mode: reading vMCP-reported backend status")
 
 		// In dynamic mode, preserve the existing status that vMCP has reported
-		// The operator does not discover backends itself
-		// Note: BackendsDiscovered condition is infrastructure-only and remains managed by operator
+		// The vMCP server will report backend status via StatusReporter (or HTTP polling)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 	} else {
 		// Static mode: operator discovers backends from MCPGroup

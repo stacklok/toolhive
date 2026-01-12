@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/validation"
 )
@@ -37,7 +36,7 @@ func NewCRDManager(k8sClient client.Client, namespace string) Manager {
 func (m *crdManager) Create(ctx context.Context, name string) error {
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		return thverrors.NewInvalidArgumentError(err.Error(), err)
+		return fmt.Errorf("%w: %w", ErrInvalidGroupName, err)
 	}
 
 	// Check if group already exists
@@ -46,7 +45,7 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
+		return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
 	}
 
 	// Create the MCPGroup CRD
@@ -76,7 +75,7 @@ func (m *crdManager) Get(ctx context.Context, name string) (*Group, error) {
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return nil, thverrors.NewGroupNotFoundError(fmt.Sprintf("group '%s' not found", name), err)
+			return nil, fmt.Errorf("%w: %s - %w", ErrGroupNotFound, name, err)
 		}
 		return nil, fmt.Errorf("failed to get MCPGroup: %w", err)
 	}
@@ -114,7 +113,7 @@ func (m *crdManager) Delete(ctx context.Context, name string) error {
 	err := m.k8sClient.Delete(ctx, mcpGroup)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return thverrors.NewGroupNotFoundError(fmt.Sprintf("group '%s' not found", name), err)
+			return fmt.Errorf("%w: %s - %w", ErrGroupNotFound, name, err)
 		}
 		return fmt.Errorf("failed to delete MCPGroup: %w", err)
 	}
@@ -141,13 +140,13 @@ func (m *crdManager) Exists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 func (*crdManager) RegisterClients(context.Context, []string, []string) error {
+	// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 	return nil
 }
 
-// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 func (*crdManager) UnregisterClients(context.Context, []string, []string) error {
+	// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 	return nil
 }
 

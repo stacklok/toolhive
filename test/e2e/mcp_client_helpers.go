@@ -220,7 +220,10 @@ func TestMCPServerBasicFunctionality(config *TestConfig, serverURL string) error
 	if err != nil {
 		return fmt.Errorf("failed to create MCP client: %w", err)
 	}
-	defer mcpClient.Close()
+	defer func() {
+		// Error ignored in test cleanup - the test may have already closed the connection
+		_ = mcpClient.Close()
+	}()
 
 	// Initialize the connection
 	if err := mcpClient.Initialize(ctx); err != nil {

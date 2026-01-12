@@ -51,13 +51,15 @@ type Manager interface {
 
 // cacheEntry represents a cached capability discovery result.
 type cacheEntry struct {
-	capabilities *aggregator.AggregatedCapabilities
-	expiresAt    time.Time
+	capabilities    *aggregator.AggregatedCapabilities
+	expiresAt       time.Time
+	registryVersion uint64 // Version when this entry was computed
 }
 
 // DefaultManager is the default implementation of Manager.
 type DefaultManager struct {
 	aggregator aggregator.Aggregator
+	registry   vmcp.DynamicRegistry // Optional: enables version-based cache invalidation
 	cache      map[string]*cacheEntry
 	cacheMu    sync.RWMutex
 	stopCh     chan struct{}
@@ -66,6 +68,7 @@ type DefaultManager struct {
 }
 
 // NewManager creates a new discovery manager with the given aggregator.
+// For static backends (immutable registry), use this constructor.
 func NewManager(agg aggregator.Aggregator) (Manager, error) {
 	if agg == nil {
 		return nil, ErrAggregatorNil
@@ -73,6 +76,42 @@ func NewManager(agg aggregator.Aggregator) (Manager, error) {
 
 	m := &DefaultManager{
 		aggregator: agg,
+		registry:   nil, // No version-based invalidation for static mode
+		cache:      make(map[string]*cacheEntry),
+		stopCh:     make(chan struct{}),
+	}
+
+	// Start background cleanup goroutine
+	m.wg.Add(1)
+	go m.cleanupExpiredEntries()
+
+	return m, nil
+}
+
+// NewManagerWithRegistry creates a new discovery manager with version-based cache invalidation.
+// For dynamic backends (DynamicRegistry), use this constructor to enable lazy cache invalidation
+// when backends change.
+//
+// Parameters:
+//   - agg: The aggregator to use for capability discovery
+//   - registry: The dynamic registry to track version changes (can be nil for static mode)
+//
+// Returns:
+//   - Manager: The discovery manager instance
+//   - error: Returns ErrAggregatorNil if aggregator is nil
+//
+// Example:
+//
+//	registry := vmcp.NewDynamicRegistry(nil)
+//	manager, err := discovery.NewManagerWithRegistry(agg, registry)
+func NewManagerWithRegistry(agg aggregator.Aggregator, registry vmcp.DynamicRegistry) (Manager, error) {
+	if agg == nil {
+		return nil, ErrAggregatorNil
+	}
+
+	m := &DefaultManager{
+		aggregator: agg,
+		registry:   registry, // Enables version-based cache invalidation
 		cache:      make(map[string]*cacheEntry),
 		stopCh:     make(chan struct{}),
 	}
@@ -150,7 +189,8 @@ func (*DefaultManager) generateCacheKey(userID string, backends []vmcp.Backend) 
 	return fmt.Sprintf("%s:%s", userID, backendHash)
 }
 
-// getCachedCapabilities retrieves capabilities from cache if valid and not expired.
+// getCachedCapabilities retrieves capabilities from cache if valid, not expired,
+// and registry version matches (for dynamic registries).
 func (m *DefaultManager) getCachedCapabilities(key string) *aggregator.AggregatedCapabilities {
 	m.cacheMu.RLock()
 	defer m.cacheMu.RUnlock()
@@ -165,10 +205,21 @@ func (m *DefaultManager) getCachedCapabilities(key string) *aggregator.Aggregate
 		return nil
 	}
 
+	// Check registry version if using dynamic registry
+	// Cache is stale if registry version changed (lazy invalidation)
+	if m.registry != nil {
+		currentVersion := m.registry.Version()
+		if entry.registryVersion != currentVersion {
+			logger.Debugf("Cache entry stale (registry version %d != entry version %d)", currentVersion, entry.registryVersion)
+			return nil
+		}
+	}
+
 	return entry.capabilities
 }
 
 // cacheCapabilities stores capabilities in cache if under size limit.
+// Tags the entry with the current registry version for lazy invalidation.
 func (m *DefaultManager) cacheCapabilities(key string, caps *aggregator.AggregatedCapabilities) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
@@ -182,9 +233,16 @@ func (m *DefaultManager) cacheCapabilities(key string, caps *aggregator.Aggregat
 		}
 	}
 
+	// Get current registry version if available
+	var registryVersion uint64
+	if m.registry != nil {
+		registryVersion = m.registry.Version()
+	}
+
 	m.cache[key] = &cacheEntry{
-		capabilities: caps,
-		expiresAt:    time.Now().Add(cacheTTL),
+		capabilities:    caps,
+		expiresAt:       time.Now().Add(cacheTTL),
+		registryVersion: registryVersion,
 	}
 }
 

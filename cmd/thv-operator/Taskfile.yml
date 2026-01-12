@@ -178,7 +178,7 @@ tasks:
         platforms: [windows]
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
-      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..."
+      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..." paths="./pkg/json/..." paths="./pkg/vmcp/config/..." paths="./pkg/vmcp/auth/types/..." paths="./pkg/telemetry/..." paths="./pkg/audit/..."
 
   operator-manifests:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
@@ -290,10 +290,16 @@ tasks:
     desc: Generate CRD API docs via crd-ref-docs
     deps: [crdref-install]
     cmds:
-      - crd-ref-docs --source-path=. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
+      # Run from repo root to include types from pkg/vmcp/config, pkg/telemetry, pkg/audit
+      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --templates-dir=../../docs/operator/templates/markdown --output-path {{ .DOCS_OUT }}
     sources:
       - 'config/crd/bases/**/*.yaml'
       - 'api/**/*.go'
+      - '../../pkg/vmcp/config/*.go'
+      - '../../pkg/vmcp/auth/types/*.go'
+      - '../../pkg/telemetry/*.go'
+      - '../../pkg/audit/*.go'
+      - '../../docs/operator/templates/markdown/*.tpl'
     generates:
       - '{{ .DOCS_OUT }}'
 

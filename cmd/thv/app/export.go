@@ -73,7 +73,10 @@ func exportCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer outputFile.Close()
+	defer func() {
+		// Non-fatal: file cleanup failure after successful write
+		_ = outputFile.Close()
+	}()
 
 	// Write the configuration based on format
 	switch exportFormat {

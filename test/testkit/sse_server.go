@@ -80,7 +80,10 @@ func (s *sseEventStreamClient) ToolsList() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	_, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -124,7 +127,10 @@ func (s *sseEventStreamClient) ToolsCall(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	_, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -207,7 +213,10 @@ func NewSSETestServer(
 		if err != nil {
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			// Error ignored in test cleanup
+			_ = resp.Body.Close()
+		}()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {

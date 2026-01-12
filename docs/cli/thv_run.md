@@ -115,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --authz-config string                        Path to the authorization configuration file
       --ca-cert string                             Path to a custom CA certificate file to use for container builds
       --enable-audit                               Enable audit logging with default configuration
+      --endpoint-prefix string                     Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
   -e, --env stringArray                            Environment variables to pass to the MCP server (format: KEY=VALUE)
       --env-file string                            Load environment variables from a single file
       --env-file-dir string                        Load environment variables from all files in a directory
@@ -155,6 +156,8 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --remote-auth-bearer-token string            Bearer token for remote server authentication (alternative to OAuth)
+      --remote-auth-bearer-token-file string       Path to file containing bearer token (alternative to --remote-auth-bearer-token)
       --remote-auth-callback-port int              Port for OAuth callback server during remote authentication (default 8666)
       --remote-auth-client-id string               OAuth client ID for remote server authentication
       --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)

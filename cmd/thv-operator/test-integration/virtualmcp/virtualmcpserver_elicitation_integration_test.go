@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
@@ -132,9 +133,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: mcpGroupName,
-					},
+					Config: vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -339,9 +338,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: mcpGroupName,
-					},
+					Config: vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -527,9 +524,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: mcpGroupName,
-					},
+					Config: vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},

@@ -3,15 +3,16 @@ package types
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // minimalRunConfig represents just the fields we need from a run configuration
@@ -33,7 +34,7 @@ func loadRunConfigFields(ctx context.Context, name string) (*minimalRunConfig, e
 		return &config, nil
 	})
 	if err != nil {
-		if errors.IsRunConfigNotFound(err) {
+		if errors.Is(err, werr.ErrRunConfigNotFound) {
 			return &minimalRunConfig{}, nil
 		}
 		return nil, err

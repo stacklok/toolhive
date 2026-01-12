@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -820,9 +821,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				// OIDC incoming auth - clients must present valid OIDC tokens
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
@@ -1095,6 +1094,16 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		var vmcpNodePort int32
 
 		BeforeAll(func() {
+			By("Verifying VirtualMCPServer is still ready")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+			By("Verifying vMCP pods are still running and ready")
+			vmcpLabels := map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout, pollingInterval)
+
 			By("Getting NodePort for VirtualMCPServer")
 			Eventually(func() error {
 				service := &corev1.Service{}

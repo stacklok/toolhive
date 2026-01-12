@@ -109,7 +109,12 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
 	if needsInit {
 		if err := initializeMCPClient(ctx, mcpClient); err != nil {
@@ -162,7 +167,12 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
 	if needsInit {
 		if err := initializeMCPClient(ctx, mcpClient); err != nil {
@@ -193,7 +203,12 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
 	if needsInit {
 		if err := initializeMCPClient(ctx, mcpClient); err != nil {
@@ -224,7 +239,12 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
 	if needsInit {
 		if err := initializeMCPClient(ctx, mcpClient); err != nil {
@@ -465,12 +485,23 @@ func outputMCPTools(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "TOOLS:")
-	fmt.Fprintln(w, "NAME\tDESCRIPTION")
-	for _, tool := range tools {
-		fmt.Fprintf(w, "%s\t%s\n", tool.Name, tool.Description)
+	if _, err := fmt.Fprintln(w, "TOOLS:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	for _, tool := range tools {
+		if _, err := fmt.Fprintf(w, "%s\t%s\n", tool.Name, tool.Description); err != nil {
+			logger.Debugf("Failed to write tool information: %v", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
 	return true
 }
 
@@ -481,13 +512,23 @@ func outputMCPResources(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "RESOURCES:")
-	fmt.Fprintln(w, "NAME\tURI\tDESCRIPTION\tMIME_TYPE")
-	for _, resource := range resources {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			resource.Name, resource.URI, resource.Description, resource.MIMEType)
+	if _, err := fmt.Fprintln(w, "RESOURCES:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, "NAME\tURI\tDESCRIPTION\tMIME_TYPE"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	for _, resource := range resources {
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			resource.Name, resource.URI, resource.Description, resource.MIMEType); err != nil {
+			logger.Debugf("Failed to write resource information: %v", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Debugf("Failed to write blank line: %v", err)
+	}
 	return true
 }
 
@@ -498,13 +539,23 @@ func outputMCPPrompts(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "PROMPTS:")
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tARGUMENTS")
+	if _, err := fmt.Fprintln(w, "PROMPTS:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION\tARGUMENTS"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
 	for _, prompt := range prompts {
 		argStr := formatPromptArguments(prompt.Arguments)
-		fmt.Fprintf(w, "%s\t%s\t%s\n", prompt.Name, prompt.Description, argStr)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", prompt.Name, prompt.Description, argStr); err != nil {
+			logger.Debugf("Failed to write prompt information: %v", err)
+		}
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Debugf("Failed to write blank line: %v", err)
+	}
 	return true
 }
 

@@ -204,7 +204,10 @@ func getPodLogs(ctx context.Context, namespace, podName, containerName string, p
 	if err != nil {
 		return "", fmt.Errorf("failed to get log stream: %w", err)
 	}
-	defer podLogs.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = podLogs.Close()
+	}()
 
 	// Read logs
 	buf := new(bytes.Buffer)
@@ -857,7 +860,10 @@ func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("health check failed for port %d: %w", nodePort, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check returned status %d for port %d", resp.StatusCode, nodePort)
@@ -903,7 +909,8 @@ func TestToolListingAndCall(vmcpNodePort int32, clientName string, toolNamePatte
 	gomega.Expect(result).ToNot(gomega.BeNil())
 	gomega.Expect(result.Content).ToNot(gomega.BeEmpty(), "Should have content in response")
 
-	fmt.Fprintf(ginkgo.GinkgoWriter, "✓ Successfully called tool %s\n", targetToolName)
+	// Error ignored in test output
+	_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "✓ Successfully called tool %s\n", targetToolName)
 }
 
 // TestToolListing is a shared helper that creates an MCP client and lists tools.
@@ -920,7 +927,8 @@ func TestToolListing(vmcpNodePort int32, clientName string) []mcp.Tool {
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	gomega.Expect(toolsResult.Tools).ToNot(gomega.BeEmpty())
 
-	fmt.Fprintf(ginkgo.GinkgoWriter, "Listed %d tools from VirtualMCPServer\n", len(toolsResult.Tools))
+	// Error ignored in test output
+	_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "Listed %d tools from VirtualMCPServer\n", len(toolsResult.Tools))
 	return toolsResult.Tools
 }
 

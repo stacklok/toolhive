@@ -690,3 +690,168 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthenticate_BearerToken tests bearer token authentication
+func TestAuthenticate_BearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      *Config
+		remoteURL   string
+		expectError bool
+		expectToken bool
+		tokenValue  string
+	}{
+		{
+			name: "bearer token authentication succeeds",
+			config: &Config{
+				BearerToken: "my-bearer-token-123",
+			},
+			remoteURL:   "https://example.com/mcp",
+			expectError: false,
+			expectToken: true,
+			tokenValue:  "my-bearer-token-123",
+		},
+		{
+			name: "empty bearer token returns nil token source",
+			config: &Config{
+				BearerToken: "",
+			},
+			remoteURL:   "https://example.com/mcp",
+			expectError: false,
+			expectToken: false,
+		},
+		{
+			name: "bearer token takes priority over OAuth client secret",
+			config: &Config{
+				BearerToken:  "my-token",
+				ClientSecret: "client-secret",
+			},
+			remoteURL:   "https://example.com/mcp",
+			expectError: false,
+			expectToken: true,
+			tokenValue:  "my-token",
+		},
+		{
+			name: "bearer token takes priority over OAuth issuer",
+			config: &Config{
+				BearerToken: "my-token",
+				Issuer:      "https://issuer.example.com",
+			},
+			remoteURL:   "https://example.com/mcp",
+			expectError: false,
+			expectToken: true,
+			tokenValue:  "my-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := NewHandler(tt.config)
+			ctx := context.Background()
+
+			tokenSource, err := handler.Authenticate(ctx, tt.remoteURL)
+
+			require.NoError(t, err)
+
+			if tt.expectToken {
+				require.NotNil(t, tokenSource, "Expected token source but got nil")
+				token, err := tokenSource.Token()
+				require.NoError(t, err)
+				assert.Equal(t, tt.tokenValue, token.AccessToken)
+				assert.Equal(t, "Bearer", token.TokenType)
+			} else {
+				assert.Nil(t, tokenSource, "Expected nil token source but got one")
+			}
+		})
+	}
+}
+
+// TestAuthenticate_BearerTokenPriority tests that bearer token takes priority over OAuth detection
+func TestAuthenticate_BearerTokenPriority(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock server that would normally trigger OAuth detection
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Return WWW-Authenticate header that would trigger OAuth detection
+		w.Header().Set("WWW-Authenticate", `Bearer realm="https://auth.example.com", resource_metadata="https://metadata.example.com"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mockServer.Close()
+
+	handler := NewHandler(&Config{
+		BearerToken: "my-bearer-token",
+	})
+
+	ctx := context.Background()
+	tokenSource, err := handler.Authenticate(ctx, mockServer.URL)
+
+	// Should use bearer token, not attempt OAuth detection
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "my-bearer-token", token.AccessToken)
+	assert.Equal(t, "Bearer", token.TokenType)
+}
+
+// TestAuthenticate_BearerTokenDiscovery tests that bearer token discovery works correctly
+func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bearer token discovery returns helpful error when token not configured", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a mock server that requires simple bearer token (no OAuth flow)
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// Handle both GET and POST requests for discovery
+			// Return WWW-Authenticate header with just "Bearer" (no realm/resource_metadata)
+			w.Header().Set("WWW-Authenticate", `Bearer`)
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer mockServer.Close()
+
+		handler := NewHandler(&Config{
+			BearerToken: "", // No bearer token configured
+		})
+
+		ctx := context.Background()
+		tokenSource, err := handler.Authenticate(ctx, mockServer.URL)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "server requires bearer token authentication")
+		assert.Contains(t, err.Error(), "--remote-auth-bearer-token")
+		assert.Contains(t, err.Error(), "TOOLHIVE_REMOTE_AUTH_BEARER_TOKEN")
+		assert.Nil(t, tokenSource)
+	})
+
+	t.Run("bearer token discovery succeeds when token is configured", func(t *testing.T) {
+		t.Parallel()
+
+		handler := NewHandler(&Config{
+			BearerToken: "my-configured-token",
+		})
+
+		// Create a mock server - but token is configured so discovery won't be called
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("WWW-Authenticate", `Bearer`)
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer mockServer.Close()
+
+		ctx := context.Background()
+		tokenSource, err := handler.Authenticate(ctx, mockServer.URL)
+
+		require.NoError(t, err)
+		require.NotNil(t, tokenSource)
+
+		token, err := tokenSource.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "my-configured-token", token.AccessToken)
+		assert.Equal(t, "Bearer", token.TokenType)
+	})
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -55,6 +56,17 @@ const (
 	// Sessions that are inactive for this duration will be automatically cleaned up.
 	defaultSessionTTL = 30 * time.Minute
 )
+
+//go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
+
+// Watcher is the interface for Kubernetes backend watcher integration.
+// Used in dynamic mode (outgoingAuth.source: discovered) to gate readiness
+// on controller-runtime cache sync before serving requests.
+type Watcher interface {
+	// WaitForCacheSync waits for the Kubernetes informer caches to sync.
+	// Returns true if caches synced successfully, false on timeout or error.
+	WaitForCacheSync(ctx context.Context) bool
+}
 
 // Config holds the Virtual MCP Server configuration.
 type Config struct {
@@ -102,6 +114,11 @@ type Config struct {
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
+
+	// Watcher is the optional Kubernetes backend watcher for dynamic mode.
+	// Only set when running in K8s with outgoingAuth.source: discovered.
+	// Used for /readyz endpoint to gate readiness on cache sync.
+	Watcher Watcher
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -130,8 +147,10 @@ type Server struct {
 	// Discovery manager for lazy per-user capability discovery
 	discoveryMgr discovery.Manager
 
-	// Backends for capability discovery
-	backends []vmcp.Backend
+	// Backend registry for capability discovery
+	// For static mode (CLI), this is an immutable registry created from initial backends.
+	// For dynamic mode (K8s), this is a DynamicRegistry updated by the operator.
+	backendRegistry vmcp.BackendRegistry
 
 	// Session manager for tracking MCP protocol sessions
 	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
@@ -172,6 +191,10 @@ type Server struct {
 
 // New creates a new Virtual MCP Server instance.
 //
+// The backendRegistry parameter provides the list of available backends:
+// - For static mode (CLI), pass an immutable registry created from initial backends
+// - For dynamic mode (K8s), pass a DynamicRegistry that will be updated by the operator
+//
 //nolint:gocyclo // Complexity from hook logic is acceptable
 func New(
 	ctx context.Context,
@@ -179,7 +202,7 @@ func New(
 	rt router.Router,
 	backendClient vmcp.BackendClient,
 	discoveryMgr discovery.Manager,
-	backends []vmcp.Backend,
+	backendRegistry vmcp.BackendRegistry,
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (*Server, error) {
 	// Apply defaults
@@ -226,11 +249,13 @@ func New(
 	// backend calls are instrumented when they occur during workflow execution.
 	if cfg.TelemetryProvider != nil {
 		var err error
+		// Get initial backends list from registry for telemetry setup
+		initialBackends := backendRegistry.List(ctx)
 		backendClient, err = monitorBackends(
 			ctx,
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
-			backends,
+			initialBackends,
 			backendClient,
 		)
 		if err != nil {
@@ -286,7 +311,9 @@ func New(
 	// Create health monitor if configured
 	var healthMon *health.Monitor
 	if cfg.HealthMonitorConfig != nil {
-		healthMon, err = health.NewMonitor(backendClient, backends, *cfg.HealthMonitorConfig)
+		// Get initial backends list from registry for health monitoring setup
+		initialBackends := backendRegistry.List(ctx)
+		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
@@ -307,7 +334,7 @@ func New(
 		backendClient:     backendClient,
 		handlerFactory:    handlerFactory,
 		discoveryMgr:      discoveryMgr,
-		backends:          backends,
+		backendRegistry:   backendRegistry,
 		sessionManager:    sessionManager,
 		capabilityAdapter: capabilityAdapter,
 		workflowDefs:      workflowDefs,
@@ -381,7 +408,8 @@ func New(
 		}
 
 		vmcpSess.SetRoutingTable(caps.RoutingTable)
-		logger.Debugw("routing table stored in VMCPSession",
+		vmcpSess.SetTools(caps.Tools)
+		logger.Debugw("routing table and tools stored in VMCPSession",
 			"session_id", sessionID,
 			"tool_count", len(caps.RoutingTable.Tools),
 			"resource_count", len(caps.RoutingTable.Resources),
@@ -426,6 +454,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Unauthenticated health endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleReadiness)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/api/backends/health", s.handleBackendHealth)
 
@@ -466,7 +495,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Apply discovery middleware (runs after audit/auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
+	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
@@ -487,6 +517,10 @@ func (s *Server) Start(ctx context.Context) error {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
 		logger.Info("Authentication middleware enabled for MCP endpoints")
 	}
+
+	// Apply recovery middleware last (so it executes first and catches panics from all other middleware)
+	mcpHandler = recovery.Middleware(mcpHandler)
+	logger.Info("Recovery middleware enabled for MCP endpoints")
 
 	mux.Handle("/", mcpHandler)
 
@@ -647,6 +681,76 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	// the 200 OK status has already been sent above.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode health response: %v", err)
+	}
+}
+
+// handleReadiness handles /readyz HTTP requests for Kubernetes readiness probes.
+//
+// In dynamic mode (K8s with outgoingAuth.source: discovered), this endpoint gates
+// readiness on the controller-runtime manager's cache sync status. The pod will
+// not be marked ready until the manager has populated its cache with current
+// backend information from the MCPGroup.
+//
+// In static mode (CLI or K8s with inline backends), this always returns 200 OK
+// since there's no cache to sync.
+//
+// Design Pattern:
+// This follows the same readiness gating pattern used by cert-manager and ArgoCD:
+// - /health: Always returns 200 if server is responding (liveness probe)
+// - /readyz: Returns 503 until caches synced, then 200 (readiness probe)
+//
+// K8s Configuration:
+//
+//	readinessProbe:
+//	  httpGet:
+//	    path: /readyz
+//	    port: 4483
+//	  initialDelaySeconds: 5
+//	  periodSeconds: 5
+//	  timeoutSeconds: 5
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	// Static mode: always ready (no watcher, no cache to sync)
+	if s.config.Watcher == nil {
+		response := map[string]string{
+			"status": "ready",
+			"mode":   "static",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Errorf("Failed to encode readiness response: %v", err)
+		}
+		return
+	}
+
+	// Dynamic mode: gate readiness on cache sync
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if !s.config.Watcher.WaitForCacheSync(ctx) {
+		// Cache not synced yet - return 503 Service Unavailable
+		response := map[string]string{
+			"status": "not_ready",
+			"mode":   "dynamic",
+			"reason": "cache_sync_pending",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Errorf("Failed to encode readiness response: %v", err)
+		}
+		return
+	}
+
+	// Cache synced - ready to serve requests
+	response := map[string]string{
+		"status": "ready",
+		"mode":   "dynamic",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode readiness response: %v", err)
 	}
 }
 

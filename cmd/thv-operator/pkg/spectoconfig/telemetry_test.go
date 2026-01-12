@@ -12,6 +12,8 @@ import (
 )
 
 func TestNormalizeTelemetryConfig(t *testing.T) {
+	t.Parallel()
+
 	// Get the expected build version for tests
 	buildVersion := telemetry.DefaultConfig().ServiceVersion
 
@@ -149,6 +151,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := NormalizeTelemetryConfig(tt.input, tt.defaultName)
 			if tt.expected == nil {
 				assert.Nil(t, result)
@@ -161,6 +165,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 }
 
 func TestNormalizeTelemetryConfig_DoesNotModifyInput(t *testing.T) {
+	t.Parallel()
+
 	input := &telemetry.Config{
 		Endpoint:    "https://otlp-collector:4317",
 		ServiceName: "",
@@ -182,6 +188,8 @@ func TestNormalizeTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 }
 
 func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
+	t.Parallel()
+
 	// Get the expected build version for tests
 	buildVersion := telemetry.DefaultConfig().ServiceVersion
 
@@ -249,6 +257,8 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			ctx := context.Background()
 			result := ConvertTelemetryConfig(ctx, tt.input, tt.serverName)
 

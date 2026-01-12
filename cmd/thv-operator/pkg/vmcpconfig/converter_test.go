@@ -1287,6 +1287,8 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 // This is a regression test for https://github.com/stacklok/toolhive/issues/XXX where
 // CustomAttributes, ServiceVersion, and EnvironmentVariables were being dropped.
 func TestConverter_TelemetryConfigPreserved(t *testing.T) {
+	t.Parallel()
+
 	inputTelemetry := &telemetry.Config{
 		Endpoint:                    "otlp-collector:4317",
 		EnablePrometheusMetricsPath: true,
@@ -1339,6 +1341,8 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 // - ServiceName defaults to VirtualMCPServer name when not specified
 // - ServiceVersion defaults to ServiceName when not specified
 func TestConverter_TelemetryDefaults(t *testing.T) {
+	t.Parallel()
+
 	// Get the expected build version for tests
 	buildVersion := telemetry.DefaultConfig().ServiceVersion
 
@@ -1411,6 +1415,8 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-vmcp-server",
@@ -1441,6 +1447,8 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 
 // TestConverter_TelemetryNil tests that nil telemetry config is handled correctly.
 func TestConverter_TelemetryNil(t *testing.T) {
+	t.Parallel()
+
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
@@ -1470,6 +1478,8 @@ func TestConverter_TelemetryNil(t *testing.T) {
 // are stripped from the endpoint, as the OTLP client expects host:port format.
 // This matches the behavior of spectoconfig.ConvertTelemetryConfig.
 func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name             string
 		inputEndpoint    string
@@ -1499,6 +1509,8 @@ func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",

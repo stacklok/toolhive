@@ -42,7 +42,7 @@ thv list [flags]
 ```
   -a, --all                 Show all workloads (default shows just running)
       --format string       Output format (json, text, mcpservers) (default "text")
-      --group string        Filter workloads by group
+      --group string        Filter by group
   -h, --help                help for list
   -l, --label stringArray   Filter workloads by labels (format: key=value)
 ```

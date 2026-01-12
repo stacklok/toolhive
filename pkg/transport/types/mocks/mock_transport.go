@@ -170,6 +170,20 @@ func (m *MockRunnerConfig) EXPECT() *MockRunnerConfigMockRecorder {
 	return m.recorder
 }
 
+// GetName mocks base method.
+func (m *MockRunnerConfig) GetName() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetName")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetName indicates an expected call of GetName.
+func (mr *MockRunnerConfigMockRecorder) GetName() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetName", reflect.TypeOf((*MockRunnerConfig)(nil).GetName))
+}
+
 // GetPort mocks base method.
 func (m *MockRunnerConfig) GetPort() int {
 	m.ctrl.T.Helper()

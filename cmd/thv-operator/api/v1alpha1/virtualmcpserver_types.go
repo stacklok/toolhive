@@ -61,7 +61,11 @@ type VirtualMCPServerSpec struct {
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
 	// Config is the Virtual MCP server configuration
-	// NOTE: THIS IS NOT CURRENTLY USED AND IS DUPLICATED FROM THE SPEC FIELDS ABOVE.
+	// The only field currently required within config is `config.groupRef`.
+	// GroupRef references an existing MCPGroup that defines backend workloads.
+	// The referenced MCPGroup must exist in the same namespace.
+	// The telemetry and audit config from here are also supported, but not required.
+	// NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
 	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
 	// +optional
 	Config config.Config `json:"config,omitempty"`

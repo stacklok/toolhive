@@ -46,12 +46,15 @@ var (
 )
 
 func init() {
-	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows just running)")
+	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
-	listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
+	AddGroupFlag(listCmd, &listGroupFilter, false)
 
-	listCmd.PreRunE = validateGroupFlag()
+	listCmd.PreRunE = chainPreRunE(
+		validateGroupFlag(),
+		ValidateFormat(&listFormat, FormatJSON, FormatText, "mcpservers"),
+	)
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {

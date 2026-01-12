@@ -21,7 +21,7 @@ require (
 	github.com/google/go-containerregistry v0.20.7
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.3
-	github.com/lestrrat-go/jwx/v3 v3.0.12
+	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/modelcontextprotocol/registry v1.4.0
 	github.com/olekukonko/tablewriter v1.1.2

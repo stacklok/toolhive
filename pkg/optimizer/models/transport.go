@@ -109,5 +109,3 @@ func (s *MCPStatus) Scan(value interface{}) error {
 
 	return nil
 }
-
-

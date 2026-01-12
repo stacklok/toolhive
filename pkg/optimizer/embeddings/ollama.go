@@ -54,7 +54,7 @@ func NewOllamaBackend(baseURL, model string) (*OllamaBackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Ollama at %s: %w (is 'ollama serve' running?)", baseURL, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	logger.Info("Successfully connected to Ollama")
 	return backend, nil
@@ -80,11 +80,11 @@ func (o *OllamaBackend) Embed(text string) ([]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to call Ollama API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("ollama API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var embedResp ollamaEmbedResponse
@@ -122,8 +122,7 @@ func (o *OllamaBackend) Dimension() int {
 }
 
 // Close releases any resources
-func (o *OllamaBackend) Close() error {
+func (*OllamaBackend) Close() error {
 	// HTTP client doesn't need explicit cleanup
 	return nil
 }
-

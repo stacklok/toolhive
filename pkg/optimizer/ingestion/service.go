@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
@@ -44,10 +45,10 @@ type Config struct {
 
 // Service handles ingestion of MCP workloads and their tools
 type Service struct {
-	config           *Config
-	database         *db.DB
-	embeddingManager *embeddings.Manager
-	tokenCounter     *tokens.Counter
+	config            *Config
+	database          *db.DB
+	embeddingManager  *embeddings.Manager
+	tokenCounter      *tokens.Counter
 	workloadServerOps *db.WorkloadServerOps
 	workloadToolOps   *db.WorkloadToolOps
 }
@@ -84,7 +85,7 @@ func NewService(config *Config) (*Service, error) {
 	// Initialize embedding manager
 	embeddingManager, err := embeddings.NewManager(config.EmbeddingConfig)
 	if err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("failed to initialize embedding manager: %w", err)
 	}
 
@@ -92,10 +93,10 @@ func NewService(config *Config) (*Service, error) {
 	tokenCounter := tokens.NewCounter()
 
 	svc := &Service{
-		config:           config,
-		database:         database,
-		embeddingManager: embeddingManager,
-		tokenCounter:     tokenCounter,
+		config:            config,
+		database:          database,
+		embeddingManager:  embeddingManager,
+		tokenCounter:      tokenCounter,
 		workloadServerOps: db.NewWorkloadServerOps(database),
 		workloadToolOps:   db.NewWorkloadToolOps(database),
 	}
@@ -105,12 +106,12 @@ func NewService(config *Config) (*Service, error) {
 }
 
 // IngestWorkloads discovers and ingests workloads from ToolHive
-func (s *Service) IngestWorkloads(ctx context.Context) error {
+func (*Service) IngestWorkloads(_ context.Context) error {
 	logger.Info("Starting workload ingestion")
 
 	// TODO: Implement actual workload discovery from Docker or Kubernetes
 	// For now, this is a placeholder implementation
-	
+
 	// Example workflow:
 	// 1. Discover workloads from Docker/K8s
 	// 2. For each workload:
@@ -124,22 +125,6 @@ func (s *Service) IngestWorkloads(ctx context.Context) error {
 
 	logger.Info("Workload ingestion completed (placeholder)")
 	return nil
-}
-
-// mapWorkloadStatus maps a workload status string to MCPStatus
-func (s *Service) mapWorkloadStatus(status string) (models.MCPStatus, error) {
-	if status == "" {
-		return "", ErrWorkloadStatusNil
-	}
-
-	switch strings.ToLower(status) {
-	case "running":
-		return models.StatusRunning, nil
-	case "stopped", "pending", "failed", "unknown":
-		return models.StatusStopped, nil
-	default:
-		return models.StatusStopped, nil
-	}
 }
 
 // shouldSkipWorkload checks if a workload should be skipped
@@ -158,7 +143,7 @@ func (s *Service) shouldSkipWorkload(workloadName string) bool {
 }
 
 // createToolTextToEmbed creates the text representation for a tool embedding
-func (s *Service) createToolTextToEmbed(tool mcp.Tool, serverName string) string {
+func (*Service) createToolTextToEmbed(tool mcp.Tool, serverName string) string {
 	parts := []string{fmt.Sprintf("Server: %s", serverName)}
 
 	if tool.Name != "" {
@@ -200,7 +185,7 @@ func (s *Service) syncWorkloadTools(ctx context.Context, serverID string, server
 		texts[i] = s.createToolTextToEmbed(tool, serverName)
 	}
 
-	embeddings, err := s.embeddingManager.GenerateEmbedding(texts)
+	toolEmbeddings, err := s.embeddingManager.GenerateEmbedding(texts)
 	if err != nil {
 		return 0, fmt.Errorf("failed to generate embeddings: %w", err)
 	}
@@ -212,7 +197,7 @@ func (s *Service) syncWorkloadTools(ctx context.Context, serverID string, server
 				ID:               uuid.New().String(),
 				MCPServerID:      serverID,
 				Details:          tool,
-				DetailsEmbedding: embeddings[i],
+				DetailsEmbedding: toolEmbeddings[i],
 				CreatedAt:        time.Now(),
 				LastUpdated:      time.Now(),
 			},
@@ -272,4 +257,3 @@ func (s *Service) StartPolling(ctx context.Context, interval time.Duration) {
 		}
 	}
 }
-

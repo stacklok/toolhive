@@ -7,10 +7,12 @@ import (
 	"testing"
 )
 
+const testEmbeddingsEndpoint = "/v1/embeddings"
+
 func TestOpenAICompatibleBackend(t *testing.T) {
 	// Create a test server that mimics OpenAI-compatible API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/embeddings" {
+		if r.URL.Path == testEmbeddingsEndpoint {
 			var req openaiEmbedRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("Failed to decode request: %v", err)
@@ -94,7 +96,7 @@ func TestOpenAICompatibleBackendErrors(t *testing.T) {
 func TestManagerWithVLLM(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/embeddings" {
+		if r.URL.Path == testEmbeddingsEndpoint {
 			resp := openaiEmbedResponse{
 				Object: "list",
 				Data: []struct {
@@ -149,7 +151,7 @@ func TestManagerWithVLLM(t *testing.T) {
 func TestManagerWithUnified(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/embeddings" {
+		if r.URL.Path == testEmbeddingsEndpoint {
 			resp := openaiEmbedResponse{
 				Object: "list",
 				Data: []struct {
@@ -226,4 +228,3 @@ func TestManagerFallbackBehavior(t *testing.T) {
 		t.Errorf("Expected dimension 384, got %d", len(embeddings[0]))
 	}
 }
-

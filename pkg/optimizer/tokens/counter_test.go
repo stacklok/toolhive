@@ -134,4 +134,3 @@ func TestEstimateText(t *testing.T) {
 		})
 	}
 }
-

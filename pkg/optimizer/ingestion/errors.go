@@ -1,3 +1,4 @@
+// Package ingestion provides services for ingesting MCP tools into the database.
 package ingestion
 
 import "errors"
@@ -18,5 +19,3 @@ var (
 	// ErrInvalidRuntimeMode is returned for invalid runtime mode
 	ErrInvalidRuntimeMode = errors.New("invalid runtime mode: must be 'docker' or 'k8s'")
 )
-
-

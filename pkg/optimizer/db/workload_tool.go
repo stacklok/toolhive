@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
@@ -43,7 +44,7 @@ func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadToo
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Insert into tools_workload table
 	query := `
@@ -115,7 +116,7 @@ func (ops *WorkloadToolOps) GetByServerID(ctx context.Context, serverID string) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workload tools: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tools []*models.WorkloadTool
 	for rows.Next() {
@@ -164,7 +165,7 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Get tool IDs before deletion for cleanup
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM tools_workload WHERE mcpserver_id = ?", serverID)
@@ -176,12 +177,12 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, fmt.Errorf("failed to scan tool ID: %w", err)
 		}
 		toolIDs = append(toolIDs, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	// Delete from vector and FTS tables
 	// Note: vec0 virtual tables use tool_id as primary key
@@ -214,7 +215,11 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 }
 
 // SearchByEmbedding searches for tools by embedding similarity
-func (ops *WorkloadToolOps) SearchByEmbedding(ctx context.Context, embedding []float32, limit int) ([]*models.WorkloadToolWithMetadata, error) {
+func (ops *WorkloadToolOps) SearchByEmbedding(
+	ctx context.Context,
+	embedding []float32,
+	limit int,
+) ([]*models.WorkloadToolWithMetadata, error) {
 	query := `
 		SELECT 
 			t.id, t.mcpserver_id, t.details, t.details_embedding, t.token_count,
@@ -237,7 +242,7 @@ func (ops *WorkloadToolOps) SearchByEmbedding(ctx context.Context, embedding []f
 	if err != nil {
 		return nil, fmt.Errorf("failed to search workload tools: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*models.WorkloadToolWithMetadata
 	for rows.Next() {
@@ -295,4 +300,3 @@ func (ops *WorkloadToolOps) SearchByEmbedding(ctx context.Context, embedding []f
 
 	return results, nil
 }
-

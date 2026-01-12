@@ -267,4 +267,3 @@ func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
 		})
 	}
 }
-

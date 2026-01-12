@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
@@ -22,7 +23,7 @@ import (
 func TestServiceCreationAndIngestion(t *testing.T) {
 	// Create database in persistent location for inspection
 	dbPath := "/tmp/optimizer-test.db"
-	
+
 	// Clean up old database if it exists
 	os.Remove(dbPath)
 	os.Remove(dbPath + "-shm")
@@ -58,7 +59,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	serverID := uuid.New().String()
 	serverName := "test-server"
 	description := "Test MCP server"
-	
+
 	server := &models.WorkloadServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          serverID,
@@ -249,7 +250,7 @@ func TestServiceWithOllama(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: "ollama",
 			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",  // Use 384-dim model to match database schema
+			Model:       "all-minilm", // Use 384-dim model to match database schema
 			Dimension:   384,
 			EnableCache: true,
 		},
@@ -377,4 +378,3 @@ func TestShouldSkipWorkload(t *testing.T) {
 		})
 	}
 }
-

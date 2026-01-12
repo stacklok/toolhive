@@ -18,9 +18,9 @@ func TestOllamaBackend_Placeholder(t *testing.T) {
 func TestManagerWithOllama(t *testing.T) {
 	// Test that Manager falls back to placeholder when Ollama is not available or model not pulled
 	config := &Config{
-		BackendType: "ollama",
-		Dimension:   384,
-		EnableCache: true,
+		BackendType:  "ollama",
+		Dimension:    384,
+		EnableCache:  true,
 		MaxCacheSize: 100,
 	}
 
@@ -33,7 +33,7 @@ func TestManagerWithOllama(t *testing.T) {
 	// Should work with placeholder backend fallback
 	// (Ollama might not have model pulled, so it falls back to placeholder)
 	embeddings, err := manager.GenerateEmbedding([]string{"test text"})
-	
+
 	// If Ollama is available with the model, great!
 	// If not, it should have fallen back to placeholder
 	if err != nil {
@@ -101,4 +101,3 @@ func TestManagerWithPlaceholder(t *testing.T) {
 		}
 	}
 }
-

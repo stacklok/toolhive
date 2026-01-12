@@ -1,3 +1,5 @@
+// Package models defines domain models for the optimizer.
+// It includes structures for MCP servers, tools, and related metadata.
 package models
 
 import "errors"
@@ -12,5 +14,3 @@ var (
 	// ErrInvalidTokenMetrics is returned when token metrics are inconsistent
 	ErrInvalidTokenMetrics = errors.New("invalid token metrics: calculated values don't match")
 )
-
-

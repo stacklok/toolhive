@@ -83,10 +83,10 @@ func TestTransportType_Value(t *testing.T) {
 
 func TestTransportType_Scan(t *testing.T) {
 	tests := []struct {
-		name      string
-		value     interface{}
-		want      TransportType
-		wantErr   bool
+		name    string
+		value   interface{}
+		want    TransportType
+		wantErr bool
 	}{
 		{
 			name:    "Scan SSE transport",
@@ -259,5 +259,3 @@ func TestMCPStatus_Scan(t *testing.T) {
 		})
 	}
 }
-
-

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
@@ -39,7 +40,7 @@ func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.Workloa
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Insert into mcpservers_workload table
 	query := `
@@ -214,7 +215,7 @@ func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadSe
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workload servers: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var servers []*models.WorkloadServer
 	for rows.Next() {
@@ -277,7 +278,7 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	query := `
 		UPDATE mcpservers_workload
@@ -343,7 +344,7 @@ func (ops *WorkloadServerOps) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Delete from vector table
 	_, err = tx.ExecContext(ctx, "DELETE FROM workload_server_vector WHERE server_id = ?", id)
@@ -400,5 +401,3 @@ func bytesToEmbedding(bytes []byte) []float32 {
 	}
 	return embedding
 }
-
-

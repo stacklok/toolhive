@@ -1,3 +1,5 @@
+// Package tokens provides token counting utilities for LLM cost estimation.
+// It estimates token counts for MCP tools and their metadata.
 package tokens
 
 import (
@@ -36,15 +38,15 @@ func (c *Counter) CountToolTokens(tool mcp.Tool) int {
 // estimateFromTool provides a fallback estimation from tool fields
 func (c *Counter) estimateFromTool(tool mcp.Tool) int {
 	totalChars := len(tool.Name)
-	
+
 	if tool.Description != "" {
 		totalChars += len(tool.Description)
 	}
-	
+
 	// Estimate input schema size
 	schemaJSON, _ := json.Marshal(tool.InputSchema)
 	totalChars += len(schemaJSON)
-	
+
 	return int(float64(totalChars) / c.charsPerToken)
 }
 
@@ -61,4 +63,3 @@ func (c *Counter) CountToolsTokens(tools []mcp.Tool) int {
 func (c *Counter) EstimateText(text string) int {
 	return int(float64(len(text)) / c.charsPerToken)
 }
-

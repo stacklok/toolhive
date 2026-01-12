@@ -51,11 +51,11 @@
 //
 // The optimizer can be used in two ways:
 //
-// 1. **Standalone Command**: Run as a separate `thv optimizer` command for testing
-//    and development.
+//  1. **Standalone Command**: Run as a separate `thv optimizer` command for testing
+//     and development.
 //
-// 2. **Integrated Service**: Run as a goroutine within the vMCP process for production
-//    use, enabling semantic tool discovery and routing.
+//  2. **Integrated Service**: Run as a goroutine within the vMCP process for production
+//     use, enabling semantic tool discovery and routing.
 //
 // Example standalone usage:
 //
@@ -78,5 +78,3 @@
 //	// Run as goroutine with periodic polling
 //	go svc.StartPolling(ctx, 30*time.Second)
 package optimizer
-
-

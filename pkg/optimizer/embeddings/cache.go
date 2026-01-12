@@ -1,3 +1,4 @@
+// Package embeddings provides caching for embedding vectors.
 package embeddings
 
 import (
@@ -98,5 +99,3 @@ func (c *cache) Clear() {
 	c.hits = 0
 	c.misses = 0
 }
-
-

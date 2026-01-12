@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
@@ -83,7 +84,7 @@ func newOptimizerStatusCommand() *cobra.Command {
 	}
 }
 
-func optimizerIngestCmdFunc(cmd *cobra.Command, _ []string) error {
+func optimizerIngestCmdFunc(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
 
 	// Get default DB path if not provided
@@ -117,7 +118,8 @@ func optimizerIngestCmdFunc(cmd *cobra.Command, _ []string) error {
 			DBPath: dbPath,
 		},
 		EmbeddingConfig: &embeddings.Config{
-			ModelPath:    optimizerModelPath,
+			BackendType:  embeddings.BackendTypePlaceholder, // Default to placeholder for testing
+			Model:        "all-minilm",
 			Dimension:    384, // BAAI/bge-small-en-v1.5
 			EnableCache:  true,
 			MaxCacheSize: 1000,
@@ -250,5 +252,3 @@ func optimizerStatusCmdFunc(_ *cobra.Command, _ []string) error {
 
 	return nil
 }
-
-

@@ -64,7 +64,7 @@ func NewOpenAICompatibleBackend(baseURL, model string, dimension int) (*OpenAICo
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", baseURL, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	logger.Info("Successfully connected to OpenAI-compatible service")
 	return backend, nil
@@ -91,7 +91,7 @@ func (o *OpenAICompatibleBackend) Embed(text string) ([]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to call embeddings API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -131,8 +131,7 @@ func (o *OpenAICompatibleBackend) Dimension() int {
 }
 
 // Close releases any resources
-func (o *OpenAICompatibleBackend) Close() error {
+func (*OpenAICompatibleBackend) Close() error {
 	// HTTP client doesn't need explicit cleanup
 	return nil
 }
-

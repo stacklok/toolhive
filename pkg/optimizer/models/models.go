@@ -9,15 +9,15 @@ import (
 
 // BaseMCPServer represents the common fields for MCP servers.
 type BaseMCPServer struct {
-	ID               string        `json:"id"`
-	Name             string        `json:"name"`
-	Remote           bool          `json:"remote"`
-	Transport        TransportType `json:"transport"`
-	Description      *string       `json:"description,omitempty"`
-	ServerEmbedding  []float32     `json:"-"` // Excluded from JSON, stored as BLOB
-	Group            string        `json:"group"`
-	LastUpdated      time.Time     `json:"last_updated"`
-	CreatedAt        time.Time     `json:"created_at"`
+	ID              string        `json:"id"`
+	Name            string        `json:"name"`
+	Remote          bool          `json:"remote"`
+	Transport       TransportType `json:"transport"`
+	Description     *string       `json:"description,omitempty"`
+	ServerEmbedding []float32     `json:"-"` // Excluded from JSON, stored as BLOB
+	Group           string        `json:"group"`
+	LastUpdated     time.Time     `json:"last_updated"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 
 // RegistryServer represents an MCP server from the registry catalog.
@@ -42,21 +42,21 @@ func (r *RegistryServer) Validate() error {
 // WorkloadServer represents a running MCP server workload.
 type WorkloadServer struct {
 	BaseMCPServer
-	URL                  string     `json:"url"`
-	WorkloadIdentifier   string     `json:"workload_identifier"`
-	Status               MCPStatus  `json:"status"`
-	RegistryServerID     *string    `json:"registry_server_id,omitempty"`     // NULL if autonomous
-	RegistryServerName   *string    `json:"registry_server_name,omitempty"`   // Cached for tool embedding
+	URL                string    `json:"url"`
+	WorkloadIdentifier string    `json:"workload_identifier"`
+	Status             MCPStatus `json:"status"`
+	RegistryServerID   *string   `json:"registry_server_id,omitempty"`   // NULL if autonomous
+	RegistryServerName *string   `json:"registry_server_name,omitempty"` // Cached for tool embedding
 }
 
 // BaseTool represents the common fields for tools.
 type BaseTool struct {
-	ID                string    `json:"id"`
-	MCPServerID       string    `json:"mcpserver_id"`
-	Details           mcp.Tool  `json:"details"`
-	DetailsEmbedding  []float32 `json:"-"` // Excluded from JSON, stored as BLOB
-	LastUpdated       time.Time `json:"last_updated"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID               string    `json:"id"`
+	MCPServerID      string    `json:"mcpserver_id"`
+	Details          mcp.Tool  `json:"details"`
+	DetailsEmbedding []float32 `json:"-"` // Excluded from JSON, stored as BLOB
+	LastUpdated      time.Time `json:"last_updated"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // RegistryTool represents a tool from a registry MCP server.
@@ -70,7 +70,7 @@ type WorkloadTool struct {
 	TokenCount int `json:"token_count"` // Token count for LLM consumption
 }
 
-// ToolDetails converts mcp.Tool to JSON for storage
+// ToolDetailsToJSON converts mcp.Tool to JSON for storage in the database.
 func ToolDetailsToJSON(tool mcp.Tool) (string, error) {
 	data, err := json.Marshal(tool)
 	if err != nil {
@@ -162,5 +162,3 @@ func (t *TokenMetrics) Validate() error {
 
 	return nil
 }
-
-

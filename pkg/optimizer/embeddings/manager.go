@@ -7,6 +7,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+const (
+	// BackendTypePlaceholder is the placeholder backend type
+	BackendTypePlaceholder = "placeholder"
+)
+
 // Config holds configuration for the embedding manager
 type Config struct {
 	// BackendType specifies which backend to use:
@@ -96,7 +101,7 @@ func NewManager(config *Config) (*Manager, error) {
 			return nil, fmt.Errorf("BaseURL is required for %s backend", config.BackendType)
 		}
 		if config.Model == "" {
-			return nil, fmt.Errorf("Model is required for %s backend", config.BackendType)
+			return nil, fmt.Errorf("model is required for %s backend", config.BackendType)
 		}
 		backend, err = NewOpenAICompatibleBackend(config.BaseURL, config.Model, config.Dimension)
 		if err != nil {
@@ -105,7 +110,7 @@ func NewManager(config *Config) (*Manager, error) {
 			backend = &PlaceholderBackend{dimension: config.Dimension}
 		}
 
-	case "placeholder":
+	case BackendTypePlaceholder:
 		// Use placeholder for testing
 		backend = &PlaceholderBackend{dimension: config.Dimension}
 
@@ -174,10 +179,12 @@ type PlaceholderBackend struct {
 	dimension int
 }
 
+// Embed generates a deterministic hash-based embedding for the given text.
 func (p *PlaceholderBackend) Embed(text string) ([]float32, error) {
 	return p.generatePlaceholderEmbedding(text), nil
 }
 
+// EmbedBatch generates embeddings for multiple texts.
 func (p *PlaceholderBackend) EmbedBatch(texts []string) ([][]float32, error) {
 	embeddings := make([][]float32, len(texts))
 	for i, text := range texts {
@@ -186,29 +193,31 @@ func (p *PlaceholderBackend) EmbedBatch(texts []string) ([][]float32, error) {
 	return embeddings, nil
 }
 
+// Dimension returns the embedding dimension.
 func (p *PlaceholderBackend) Dimension() int {
 	return p.dimension
 }
 
-func (p *PlaceholderBackend) Close() error {
+// Close closes the backend (no-op for placeholder).
+func (*PlaceholderBackend) Close() error {
 	return nil
 }
 
 func (p *PlaceholderBackend) generatePlaceholderEmbedding(text string) []float32 {
 	embedding := make([]float32, p.dimension)
-	
+
 	// Simple hash-based generation for testing
 	hash := 0
 	for _, c := range text {
-		hash = (hash * 31 + int(c)) % 1000000
+		hash = (hash*31 + int(c)) % 1000000
 	}
-	
+
 	// Generate deterministic values
 	for i := range embedding {
-		hash = (hash * 1103515245 + 12345) % 1000000
+		hash = (hash*1103515245 + 12345) % 1000000
 		embedding[i] = float32(hash) / 1000000.0
 	}
-	
+
 	// Normalize the embedding (L2 normalization)
 	var norm float32
 	for _, v := range embedding {
@@ -220,7 +229,7 @@ func (p *PlaceholderBackend) generatePlaceholderEmbedding(text string) []float32
 			embedding[i] *= norm
 		}
 	}
-	
+
 	return embedding
 }
 
@@ -233,11 +242,11 @@ func (m *Manager) GetCacheStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"enabled":  true,
-		"hits":     m.cache.hits,
-		"misses":   m.cache.misses,
-		"size":     m.cache.Size(),
-		"maxsize":  m.config.MaxCacheSize,
+		"enabled": true,
+		"hits":    m.cache.hits,
+		"misses":  m.cache.misses,
+		"size":    m.cache.Size(),
+		"maxsize": m.config.MaxCacheSize,
 	}
 }
 
@@ -257,7 +266,7 @@ func (m *Manager) Close() error {
 	if m.backend != nil {
 		return m.backend.Close()
 	}
-	
+
 	return nil
 }
 
@@ -268,4 +277,3 @@ func (m *Manager) Dimension() int {
 	}
 	return m.config.Dimension
 }
-

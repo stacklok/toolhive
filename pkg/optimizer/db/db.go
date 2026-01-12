@@ -1,3 +1,5 @@
+// Package db provides database operations for the optimizer.
+// It manages SQLite connections, migrations, and CRUD operations for MCP servers and tools.
 package db
 
 import (
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -52,13 +55,13 @@ func NewDB(config *Config) (*DB, error) {
 
 	// Load sqlite-vec extension
 	if err := db.loadExtensions(); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to load extensions: %w", err)
 	}
 
 	// Run migrations
 	if err := db.runMigrations(); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
@@ -95,26 +98,26 @@ func (db *DB) loadExtensions() error {
 
 	// Use the raw connection to enable extension loading
 	// This is required for go-sqlite3
-	conn, err := db.DB.Conn(context.Background())
+	conn, err := db.Conn(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get connection: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	err = conn.Raw(func(driverConn interface{}) error {
 		type sqliteConn interface {
 			LoadExtension(file string, entryPoint string) error
 		}
-		
+
 		c, ok := driverConn.(sqliteConn)
 		if !ok {
 			return fmt.Errorf("connection does not support LoadExtension")
 		}
-		
+
 		// Load the extension with the sqlite-vec entry point
 		return c.LoadExtension(vecPath, "sqlite3_vec_init")
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to load sqlite-vec extension: %w", err)
 	}
@@ -198,5 +201,3 @@ func (db *DB) BeginTx(ctx context.Context) (*sql.Tx, error) {
 func (db *DB) Close() error {
 	return db.DB.Close()
 }
-
-

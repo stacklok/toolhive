@@ -1,3 +1,4 @@
+//go:build cgo
 // +build cgo
 
 package db
@@ -15,4 +16,3 @@ import (
 	// Import with specific build requirements
 	_ "github.com/mattn/go-sqlite3"
 )
-

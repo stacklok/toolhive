@@ -162,5 +162,3 @@ func TestCache_Clear(t *testing.T) {
 		t.Error("key1 should be gone after clear")
 	}
 }
-
-

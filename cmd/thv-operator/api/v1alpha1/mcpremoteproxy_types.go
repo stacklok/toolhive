@@ -44,7 +44,14 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
+	// Deprecated: Use ProxyPort instead
 	Port int32 `json:"port,omitempty"`
+
+	// ProxyPort is the port to expose the MCP proxy on
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8080
+	ProxyPort int32 `json:"proxyPort,omitempty"`
 
 	// Transport is the transport method for the remote proxy (sse or streamable-http)
 	// +kubebuilder:validation:Enum=sse;streamable-http
@@ -266,6 +273,12 @@ func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetProxyPort() int32 {
+	if m.Spec.ProxyPort > 0 {
+		return m.Spec.ProxyPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
 	if m.Spec.Port > 0 {
 		return m.Spec.Port
 	}

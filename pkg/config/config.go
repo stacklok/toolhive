@@ -32,8 +32,9 @@ type Config struct {
 	AllowPrivateRegistryIp bool                `yaml:"allow_private_registry_ip"`
 	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
 	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
-	DefaultGroupMigration  bool                `yaml:"default_group_migration,omitempty"`
-	DisableUsageMetrics    bool                `yaml:"disable_usage_metrics,omitempty"`
+	DefaultGroupMigration     bool                `yaml:"default_group_migration,omitempty"`
+	TelemetryConfigMigration  bool                `yaml:"telemetry_config_migration,omitempty"`
+	DisableUsageMetrics       bool                `yaml:"disable_usage_metrics,omitempty"`
 	BuildEnv               map[string]string   `yaml:"build_env,omitempty"`
 	BuildEnvFromSecrets    map[string]string   `yaml:"build_env_from_secrets,omitempty"`
 	BuildEnvFromShell      []string            `yaml:"build_env_from_shell,omitempty"`
@@ -107,9 +108,10 @@ func createNewConfigWithDefaults() Config {
 			SetupCompleted: false,
 		},
 		RegistryUrl:            "",
-		RegistryApiUrl:         "",
-		AllowPrivateRegistryIp: false,
-		DefaultGroupMigration:  false,
+		RegistryApiUrl:           "",
+		AllowPrivateRegistryIp:   false,
+		DefaultGroupMigration:    false,
+		TelemetryConfigMigration: false,
 	}
 }
 

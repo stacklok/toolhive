@@ -3,13 +3,11 @@ package vmcpconfig
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -18,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
-	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -576,183 +573,21 @@ func (c *Converter) resolveCompositeToolRefs(
 		}
 
 		// Convert the referenced definition to CompositeToolConfig
-		tool, err := c.convertCompositeToolDefinition(ctx, compositeToolDef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert referenced tool %q: %w", ref.Name, err)
-		}
-		referencedTools = append(referencedTools, *tool)
+		tool := c.convertCompositeToolDefinition(compositeToolDef)
+		referencedTools = append(referencedTools, tool)
 	}
 
 	return referencedTools, nil
 }
 
 // convertCompositeToolDefinition converts a VirtualMCPCompositeToolDefinition to CompositeToolConfig.
-func (c *Converter) convertCompositeToolDefinition(
-	ctx context.Context,
+// Since VirtualMCPCompositeToolDefinitionSpec embeds config.CompositeToolConfig directly,
+// this is a simple copy operation.
+func (*Converter) convertCompositeToolDefinition(
 	def *mcpv1alpha1.VirtualMCPCompositeToolDefinition,
-) (*vmcpconfig.CompositeToolConfig, error) {
-	return c.convertCompositeToolSpec(
-		ctx, def.Spec.Name, def.Spec.Description, def.Spec.Timeout,
-		def.Spec.Parameters, def.Spec.Steps, def.Spec.Output, def.Name)
-}
-
-// convertCompositeToolSpec is a shared helper that converts common composite tool fields to CompositeToolConfig.
-// This eliminates code duplication between convertCompositeTools and convertCompositeToolDefinition.
-func (c *Converter) convertCompositeToolSpec(
-	ctx context.Context,
-	name, description, timeout string,
-	parameters *runtime.RawExtension,
-	steps []mcpv1alpha1.WorkflowStep,
-	output *mcpv1alpha1.OutputSpec,
-	toolNameForLogging string,
-) (*vmcpconfig.CompositeToolConfig, error) {
-	tool := &vmcpconfig.CompositeToolConfig{
-		Name:        name,
-		Description: description,
-		Steps:       make([]vmcpconfig.WorkflowStepConfig, 0, len(steps)),
-	}
-
-	// Parse timeout
-	if timeout != "" {
-		if duration, err := time.ParseDuration(timeout); err != nil {
-			// Log error but continue with default - validation should have caught this at admission time
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to parse composite tool timeout, using default",
-				"tool", toolNameForLogging, "timeout", timeout)
-			// Use default timeout of 30m (matches CRD default)
-			if defaultDuration, defaultErr := time.ParseDuration("30m"); defaultErr == nil {
-				tool.Timeout = vmcpconfig.Duration(defaultDuration)
-			}
-		} else {
-			tool.Timeout = vmcpconfig.Duration(duration)
-		}
-	}
-
-	// Convert parameters from runtime.RawExtension to json.Map
-	if parameters != nil && len(parameters.Raw) > 0 {
-		params, err := thvjson.MapFromRawExtension(*parameters)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to convert parameters", "tool", toolNameForLogging)
-		} else {
-			tool.Parameters = params
-		}
-	}
-
-	// Convert steps
-	workflowSteps, err := c.convertWorkflowSteps(ctx, steps, toolNameForLogging)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert steps for tool %q: %w", toolNameForLogging, err)
-	}
-	tool.Steps = workflowSteps
-
-	// Convert output configuration
-	if output != nil {
-		tool.Output = convertOutputSpec(ctx, output)
-	}
-
-	return tool, nil
-}
-
-// convertWorkflowSteps converts a slice of WorkflowStep CRD objects to WorkflowStepConfig.
-// nolint:gocyclo // the workflow steps contain a lot of information that needs to be converted to the vmcp config.
-func (*Converter) convertWorkflowSteps(
-	ctx context.Context,
-	steps []mcpv1alpha1.WorkflowStep,
-	toolNameForLogging string,
-) ([]vmcpconfig.WorkflowStepConfig, error) {
-	workflowSteps := make([]vmcpconfig.WorkflowStepConfig, 0, len(steps))
-
-	for _, crdStep := range steps {
-		args, err := convertArguments(crdStep.Arguments)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
-		}
-
-		step := vmcpconfig.WorkflowStepConfig{
-			ID:        crdStep.ID,
-			Type:      crdStep.Type,
-			Tool:      crdStep.Tool,
-			Arguments: args,
-			Message:   crdStep.Message,
-			Condition: crdStep.Condition,
-			DependsOn: crdStep.DependsOn,
-		}
-
-		// Convert Schema from runtime.RawExtension to json.Map (for elicitation steps)
-		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
-			schema, err := thvjson.MapFromRawExtension(*crdStep.Schema)
-			if err != nil {
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "failed to convert schema", "tool", toolNameForLogging, "step", crdStep.ID)
-			} else {
-				step.Schema = schema
-			}
-		}
-
-		// Parse timeout
-		if crdStep.Timeout != "" {
-			if duration, err := time.ParseDuration(crdStep.Timeout); err != nil {
-				// Log error but continue without step timeout - step will use tool-level timeout or no timeout
-				// Validation should have caught this at admission time
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "failed to parse step timeout, step will use tool-level timeout",
-					"tool", toolNameForLogging, "step", crdStep.ID, "timeout", crdStep.Timeout)
-			} else {
-				step.Timeout = vmcpconfig.Duration(duration)
-			}
-		}
-
-		// Convert error handling
-		if crdStep.OnError != nil {
-			stepError := &vmcpconfig.StepErrorHandling{
-				Action:     crdStep.OnError.Action,
-				RetryCount: crdStep.OnError.MaxRetries,
-			}
-			if crdStep.OnError.RetryDelay != "" {
-				if duration, err := time.ParseDuration(crdStep.OnError.RetryDelay); err != nil {
-					ctxLogger := log.FromContext(ctx)
-					ctxLogger.Error(err, "failed to parse retry delay",
-						"step", crdStep.ID, "retryDelay", crdStep.OnError.RetryDelay)
-				} else {
-					stepError.RetryDelay = vmcpconfig.Duration(duration)
-				}
-			}
-			step.OnError = stepError
-		}
-
-		// Convert elicitation response handlers
-		if crdStep.OnDecline != nil {
-			step.OnDecline = &vmcpconfig.ElicitationResponseConfig{
-				Action: crdStep.OnDecline.Action,
-			}
-		}
-
-		if crdStep.OnCancel != nil {
-			step.OnCancel = &vmcpconfig.ElicitationResponseConfig{
-				Action: crdStep.OnCancel.Action,
-			}
-		}
-
-		// Convert default results from map[string]runtime.RawExtension to thvjson.Map
-		if len(crdStep.DefaultResults) > 0 {
-			defaultResults := make(map[string]any, len(crdStep.DefaultResults))
-			for key, rawExt := range crdStep.DefaultResults {
-				if len(rawExt.Raw) > 0 {
-					var value any
-					if err := json.Unmarshal(rawExt.Raw, &value); err != nil {
-						return nil, fmt.Errorf("failed to unmarshal default result %q: %w", key, err)
-					}
-					defaultResults[key] = value
-				}
-			}
-			step.DefaultResults = thvjson.NewMap(defaultResults)
-		}
-
-		workflowSteps = append(workflowSteps, step)
-	}
-
-	return workflowSteps, nil
+) vmcpconfig.CompositeToolConfig {
+	// The spec directly embeds CompositeToolConfig, so we can return it directly
+	return def.Spec.CompositeToolConfig
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.
@@ -765,69 +600,6 @@ func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 		seen[tools[i].Name] = true
 	}
 	return nil
-}
-
-// convertArguments converts arguments from runtime.RawExtension to json.Map.
-// This preserves the original types (integers, booleans, arrays, objects) from the CRD.
-// Returns an empty json.Map if no arguments are specified.
-func convertArguments(args *runtime.RawExtension) (thvjson.Map, error) {
-	if args == nil || len(args.Raw) == 0 {
-		return thvjson.Map{}, nil
-	}
-	return thvjson.MapFromRawExtension(*args)
-}
-
-// convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
-func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
-	if crdOutput == nil {
-		return nil
-	}
-
-	output := &vmcpconfig.OutputConfig{
-		Properties: make(map[string]vmcpconfig.OutputProperty, len(crdOutput.Properties)),
-		Required:   crdOutput.Required,
-	}
-
-	// Convert properties
-	for propName, propSpec := range crdOutput.Properties {
-		output.Properties[propName] = convertOutputProperty(ctx, propName, propSpec)
-	}
-
-	return output
-}
-
-// convertOutputProperty converts OutputPropertySpec from CRD to vmcp config OutputProperty
-func convertOutputProperty(
-	ctx context.Context, propName string, crdProp mcpv1alpha1.OutputPropertySpec,
-) vmcpconfig.OutputProperty {
-	prop := vmcpconfig.OutputProperty{
-		Type:        crdProp.Type,
-		Description: crdProp.Description,
-		Value:       crdProp.Value,
-	}
-
-	// Convert nested properties for object types
-	if len(crdProp.Properties) > 0 {
-		prop.Properties = make(map[string]vmcpconfig.OutputProperty, len(crdProp.Properties))
-		for nestedName, nestedSpec := range crdProp.Properties {
-			prop.Properties[nestedName] = convertOutputProperty(ctx, propName+"."+nestedName, nestedSpec)
-		}
-	}
-
-	// Convert default value from runtime.RawExtension to json.Any
-	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
-		defaultVal, err := thvjson.FromRawExtension(*crdProp.Default)
-		if err != nil {
-			// Log warning but continue - invalid defaults will be caught at runtime
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to unmarshal output property default value",
-				"property", propName, "raw", string(crdProp.Default.Raw))
-		} else {
-			prop.Default = defaultVal
-		}
-	}
-
-	return prop
 }
 
 // convertOperational converts OperationalConfig from CRD to vmcp config

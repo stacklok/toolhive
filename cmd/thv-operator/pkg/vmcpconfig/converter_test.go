@@ -402,13 +402,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced composite tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -461,13 +463,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.referenced-tool",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced composite tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.referenced-tool",
+								},
 							},
 						},
 					},
@@ -542,13 +546,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "duplicate-tool", // Same name as inline tool
-						Description: "A referenced tool with duplicate name",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool2",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "duplicate-tool", // Same name as inline tool
+							Description: "A referenced tool with duplicate name",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool2",
+								},
 							},
 						},
 					},
@@ -597,13 +603,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "tool1",
-						Description: "First referenced tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "tool1",
+							Description: "First referenced tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -614,13 +622,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "tool2",
-						Description: "Second referenced tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool2",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "tool2",
+							Description: "Second referenced tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool2",
+								},
 							},
 						},
 					},
@@ -661,17 +671,22 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced tool with parameters",
-						Parameters: &runtime.RawExtension{
-							Raw: []byte(`{"type":"object","properties":{"param1":{"type":"string"}}}`),
-						},
-						Timeout: "5m",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced tool with parameters",
+							Parameters: thvjson.NewMap(map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"param1": map[string]any{"type": "string"},
+								},
+							}),
+							Timeout: vmcpconfig.Duration(5 * time.Minute),
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -750,95 +765,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 	t.Parallel()
 
-	// Create a VirtualMCPCompositeToolDefinition with all fields populated
-	compositeDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "comprehensive-tool",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-			Name:        "comprehensive-tool",
-			Description: "A comprehensive composite tool with all fields",
-			Parameters: &runtime.RawExtension{
-				Raw: []byte(`{"type":"object","properties":{"input":{"type":"string"},"count":{"type":"integer"}},"required":["input"]}`),
-			},
-			Timeout: "2m30s",
-			Steps: []mcpv1alpha1.WorkflowStep{
-				{
-					ID:   "step1",
-					Type: "tool",
-					Tool: "backend.first-tool",
-					Arguments: &runtime.RawExtension{
-						Raw: []byte(`{"arg1":"{{ .params.input }}"}`),
-					},
-					Timeout: "30s",
-					OnError: &mcpv1alpha1.ErrorHandling{
-						Action:     "retry",
-						MaxRetries: 3,
-						RetryDelay: "5s",
-					},
-				},
-				{
-					ID:        "step2",
-					Type:      "tool",
-					Tool:      "backend.second-tool",
-					DependsOn: []string{"step1"},
-					Condition: "{{ .steps.step1.success }}",
-					Arguments: &runtime.RawExtension{
-						Raw: []byte(`{"data":"{{ .steps.step1.result }}"}`),
-					},
-					OnError: &mcpv1alpha1.ErrorHandling{
-						Action: "continue",
-					},
-				},
-			},
-			Output: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"result": {
-						Type:        "string",
-						Description: "The final result",
-						Value:       "{{ .steps.step2.result }}",
-					},
-				},
-				Required: []string{"result"},
-			},
-		},
-	}
-
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{
-				Group: "test-group",
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-					{Name: "comprehensive-tool"},
-				},
-			},
-		},
-	}
-
-	// Setup fake Kubernetes client
-	testScheme := createTestScheme()
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(testScheme).
-		WithObjects(vmcpServer, compositeDef).
-		Build()
-
-	resolver := newNoOpMockResolver(t)
-	converter, err := NewConverter(resolver, fakeClient)
-	require.NoError(t, err)
-
-	ctx := log.IntoContext(context.Background(), logr.Discard())
-	cfg, err := converter.Convert(ctx, vmcpServer)
-	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	require.Len(t, cfg.CompositeTools, 1)
-
-	// Build the expected tool structure
-	expected := vmcpconfig.CompositeToolConfig{
+	// Create the expected CompositeToolConfig that will be embedded in the CRD spec
+	expectedConfig := vmcpconfig.CompositeToolConfig{
 		Name:        "comprehensive-tool",
 		Description: "A comprehensive composite tool with all fields",
 		Timeout:     vmcpconfig.Duration(2*time.Minute + 30*time.Second),
@@ -887,7 +815,51 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 		},
 	}
 
-	require.Equal(t, expected, cfg.CompositeTools[0])
+	// Create a VirtualMCPCompositeToolDefinition with all fields populated
+	compositeDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "comprehensive-tool",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+			CompositeToolConfig: expectedConfig,
+		},
+	}
+
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					{Name: "comprehensive-tool"},
+				},
+			},
+		},
+	}
+
+	// Setup fake Kubernetes client
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, compositeDef).
+		Build()
+
+	resolver := newNoOpMockResolver(t)
+	converter, err := NewConverter(resolver, fakeClient)
+	require.NoError(t, err)
+
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+	cfg, err := converter.Convert(ctx, vmcpServer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.CompositeTools, 1)
+
+	// Since the spec embeds CompositeToolConfig directly, the converted result should match
+	require.Equal(t, expectedConfig, cfg.CompositeTools[0])
 }
 
 // Test helpers for MCPToolConfig tests

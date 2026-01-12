@@ -12,6 +12,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // SetupWebhookWithManager registers the webhook with the manager
@@ -74,23 +76,7 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 		errors = append(errors, err.Error())
 	}
 
-	// Validate timeout format
-	if r.Spec.Timeout != "" {
-		if err := validateDuration(r.Spec.Timeout); err != nil {
-			errors = append(errors, fmt.Sprintf("spec.timeout: %v", err))
-		}
-	}
-
-	// Validate failure mode
-	if r.Spec.FailureMode != "" {
-		validModes := map[string]bool{
-			ErrorActionAbort:    true,
-			ErrorActionContinue: true,
-		}
-		if !validModes[r.Spec.FailureMode] {
-			errors = append(errors, "spec.failureMode must be one of: abort, continue")
-		}
-	}
+	// Timeout validation: config.Duration handles parsing, no additional validation needed
 
 	if len(errors) > 0 {
 		return fmt.Errorf("validation failed: %v", errors)
@@ -101,14 +87,13 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 
 // validateParameters validates the parameter schema using JSON Schema validation
 func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
-	if r.Spec.Parameters == nil || len(r.Spec.Parameters.Raw) == 0 {
+	if r.Spec.Parameters.IsEmpty() {
 		return nil // No parameters to validate
 	}
 
-	// Parameters should be a JSON Schema object in RawExtension format
-	// Unmarshal to validate structure
-	var params map[string]interface{}
-	if err := json.Unmarshal(r.Spec.Parameters.Raw, &params); err != nil {
+	// Parameters is a thvjson.Map - get the underlying map
+	params, err := r.Spec.Parameters.ToMap()
+	if err != nil {
 		return fmt.Errorf("spec.parameters: invalid JSON: %w", err)
 	}
 
@@ -130,7 +115,11 @@ func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
 	}
 
 	// Validate using JSON Schema validator
-	if err := validateJSONSchema(r.Spec.Parameters.Raw); err != nil {
+	schemaBytes, err := r.Spec.Parameters.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("spec.parameters: failed to marshal: %w", err)
+	}
+	if err := validateJSONSchema(schemaBytes); err != nil {
 		return fmt.Errorf("spec.parameters: invalid JSON Schema: %w", err)
 	}
 
@@ -173,7 +162,9 @@ func (r *VirtualMCPCompositeToolDefinition) validateSteps() error {
 }
 
 // validateStep validates a single workflow step
-func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step WorkflowStep, stepIDs map[string]bool) error {
+func (r *VirtualMCPCompositeToolDefinition) validateStep(
+	index int, step config.WorkflowStepConfig, stepIDs map[string]bool,
+) error {
 	if err := r.validateStepType(index, step); err != nil {
 		return err
 	}
@@ -192,17 +183,13 @@ func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step Workflo
 		}
 	}
 
-	if step.Timeout != "" {
-		if err := validateDuration(step.Timeout); err != nil {
-			return fmt.Errorf("spec.steps[%d].timeout: %w", index, err)
-		}
-	}
+	// Timeout is already a Duration, no string validation needed
 
 	return nil
 }
 
 // validateStepType validates step type and type-specific required fields
-func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step WorkflowStep) error {
+func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step config.WorkflowStepConfig) error {
 	stepType := step.Type
 	if stepType == "" {
 		stepType = WorkflowStepTypeToolCall // default
@@ -233,18 +220,16 @@ func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step Workf
 }
 
 // validateStepTemplates validates all template fields in a step
-func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step WorkflowStep) error {
-	return validateWorkflowStepTemplates("spec.steps", index, step)
+func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step config.WorkflowStepConfig) error {
+	return validateConfigWorkflowStepTemplates("spec.steps", index, step)
 }
 
-// validateWorkflowStepTemplates validates all template fields in a workflow step.
-// This is a shared validation function used by both VirtualMCPServer and VirtualMCPCompositeToolDefinition webhooks.
-// The pathPrefix parameter allows customizing error message paths (e.g., "spec.steps" or "spec.compositeTools[0].steps").
-func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowStep) error {
+// validateConfigWorkflowStepTemplates validates all template fields in a config workflow step.
+func validateConfigWorkflowStepTemplates(pathPrefix string, index int, step config.WorkflowStepConfig) error {
 	// Validate template syntax in arguments (only for string values)
-	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
-		var args map[string]any
-		if err := json.Unmarshal(step.Arguments.Raw, &args); err != nil {
+	if !step.Arguments.IsEmpty() {
+		args, err := step.Arguments.ToMap()
+		if err != nil {
 			return fmt.Errorf("%s[%d].arguments: invalid JSON: %w", pathPrefix, index, err)
 		}
 		for argName, argValue := range args {
@@ -270,8 +255,12 @@ func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowSt
 	}
 
 	// Validate JSON Schema for elicitation steps
-	if step.Schema != nil {
-		if err := validateJSONSchema(step.Schema.Raw); err != nil {
+	if !step.Schema.IsEmpty() {
+		schemaBytes, err := step.Schema.MarshalJSON()
+		if err != nil {
+			return fmt.Errorf("%s[%d].schema: failed to marshal: %w", pathPrefix, index, err)
+		}
+		if err := validateJSONSchema(schemaBytes); err != nil {
 			return fmt.Errorf("%s[%d].schema: invalid JSON Schema: %w", pathPrefix, index, err)
 		}
 	}
@@ -280,7 +269,9 @@ func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowSt
 }
 
 // validateStepDependencies validates step dependencies reference existing steps
-func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(index int, step WorkflowStep, stepIDs map[string]bool) error {
+func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(
+	index int, step config.WorkflowStepConfig, stepIDs map[string]bool,
+) error {
 	for _, depID := range step.DependsOn {
 		if !stepIDs[depID] {
 			return fmt.Errorf("spec.steps[%d].dependsOn references unknown step %q", index, depID)
@@ -290,7 +281,7 @@ func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(index int, st
 }
 
 // validateErrorHandling validates error handling configuration
-func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *ErrorHandling) error {
+func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *config.StepErrorHandling) error {
 	if errorHandling.Action == "" {
 		return nil // Action is optional, defaults to ErrorActionAbort
 	}
@@ -305,8 +296,8 @@ func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, e
 	}
 
 	if errorHandling.Action == ErrorActionRetry {
-		if errorHandling.MaxRetries < 1 {
-			return fmt.Errorf("spec.steps[%d].onError.maxRetries must be at least 1 when action is retry", stepIndex)
+		if errorHandling.RetryCount < 1 {
+			return fmt.Errorf("spec.steps[%d].onError.retryCount must be at least 1 when action is retry", stepIndex)
 		}
 	}
 
@@ -394,20 +385,6 @@ func validateJSONSchema(schemaBytes []byte) error {
 	return nil
 }
 
-// validateDuration validates duration format (e.g., "30s", "5m", "1h")
-func validateDuration(duration string) error {
-	// Pattern: one or more segments of number + unit (ms, s, m, h)
-	pattern := `^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	matched, err := regexp.MatchString(pattern, duration)
-	if err != nil {
-		return err
-	}
-	if !matched {
-		return fmt.Errorf("invalid duration format %q, expected format like '30s', '5m', '1h', '1h30m'", duration)
-	}
-	return nil
-}
-
 // isValidToolReference validates tool reference format (workload.tool_name)
 func isValidToolReference(tool string) bool {
 	// Tool reference must be in format: workload.tool_name
@@ -443,11 +420,7 @@ func (r *VirtualMCPCompositeToolDefinition) GetValidationErrors() []string {
 		errors = append(errors, err.Error())
 	}
 
-	if r.Spec.Timeout != "" {
-		if err := validateDuration(r.Spec.Timeout); err != nil {
-			errors = append(errors, fmt.Sprintf("spec.timeout: %v", err))
-		}
-	}
+	// Timeout is now config.Duration - validation happens at unmarshal time
 
 	return errors
 }

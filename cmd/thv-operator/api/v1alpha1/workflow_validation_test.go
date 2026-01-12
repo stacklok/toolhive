@@ -1,12 +1,13 @@
 package v1alpha1
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/runtime"
+
+	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestValidateDefaultResultsForSteps(t *testing.T) {
@@ -14,46 +15,46 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		steps       []WorkflowStep
-		output      *OutputSpec
+		steps       []config.WorkflowStepConfig
+		output      *config.OutputConfig
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "no skippable steps - no validation needed",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{ID: "step1"},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
 			},
 			expectError: false,
 		},
 		{
 			name: "conditional step with defaultResults - valid",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"result": {}},
+					DefaultResults: thvjson.NewMap(map[string]any{"result": nil}),
 				},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
 			},
 			expectError: false,
 		},
 		{
 			name: "conditional step without defaultResults - referenced downstream - invalid",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:        "step1",
 					Condition: "{{.params.runStep1}}",
 				},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
 			},
 			expectError: true,
 			errorMsg:    "defaultResults[data] is required",
 		},
 		{
 			name: "conditional step without defaultResults - not referenced - valid",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:        "step1",
 					Condition: "{{.params.runStep1}}",
@@ -64,7 +65,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "status reference does not require defaultResults",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:        "step1",
 					Condition: "{{.params.runStep1}}",
@@ -75,50 +76,50 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "continue-on-error step with defaultResults - valid",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:             "step1",
-					OnError:        &ErrorHandling{Action: ErrorActionContinue},
-					DefaultResults: map[string]runtime.RawExtension{"result": {}},
+					OnError:        &config.StepErrorHandling{Action: ErrorActionContinue},
+					DefaultResults: thvjson.NewMap(map[string]any{"result": nil}),
 				},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
 			},
 			expectError: false,
 		},
 		{
 			name: "continue-on-error step without defaultResults - referenced - invalid",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:      "step1",
-					OnError: &ErrorHandling{Action: ErrorActionContinue},
+					OnError: &config.StepErrorHandling{Action: ErrorActionContinue},
 				},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
 			},
 			expectError: true,
 			errorMsg:    "defaultResults[data] is required",
 		},
 		{
 			name: "retry step without defaultResults - referenced - valid (retry is not skippable)",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:      "step1",
-					OnError: &ErrorHandling{Action: ErrorActionRetry, MaxRetries: 3},
+					OnError: &config.StepErrorHandling{Action: ErrorActionRetry, RetryCount: 3},
 				},
-				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
+				{ID: "step2", Arguments: thvjson.NewMap(map[string]any{"input": "{{.steps.step1.output.data}}"})},
 			},
 			expectError: false,
 		},
 		{
 			name: "conditional step referenced in output - valid with defaults",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"data": {}},
+					DefaultResults: thvjson.NewMap(map[string]any{"data": nil}),
 				},
 			},
-			output: &OutputSpec{
-				Properties: map[string]OutputPropertySpec{
+			output: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
 					"result": {Value: "{{.steps.step1.output.data}}"},
 				},
 			},
@@ -126,14 +127,14 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "conditional step referenced in output - invalid without defaults",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:        "step1",
 					Condition: "{{.params.runStep1}}",
 				},
 			},
-			output: &OutputSpec{
-				Properties: map[string]OutputPropertySpec{
+			output: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
 					"result": {Value: "{{.steps.step1.output.data}}"},
 				},
 			},
@@ -142,11 +143,11 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "reference in condition - valid with defaults",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"success": {}},
+					DefaultResults: thvjson.NewMap(map[string]any{"success": nil}),
 				},
 				{
 					ID:        "step2",
@@ -157,11 +158,11 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "reference in message (elicitation) - valid with defaults",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"summary": {}},
+					DefaultResults: thvjson.NewMap(map[string]any{"summary": nil}),
 				},
 				{
 					ID:      "step2",
@@ -173,7 +174,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 		},
 		{
 			name: "multiple skippable steps - all need defaults if referenced",
-			steps: []WorkflowStep{
+			steps: []config.WorkflowStepConfig{
 				{
 					ID:        "step1",
 					Condition: "{{.params.a}}",
@@ -184,7 +185,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				},
 				{
 					ID:        "step3",
-					Arguments: rawExtensionFromMap(map[string]any{"a": "{{.steps.step1.output.data}}", "b": "{{.steps.step2.output.data}}"}),
+					Arguments: thvjson.NewMap(map[string]any{"a": "{{.steps.step1.output.data}}", "b": "{{.steps.step2.output.data}}"}),
 				},
 			},
 			expectError: true,
@@ -213,37 +214,37 @@ func TestStepMayBeSkipped(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		step     WorkflowStep
+		step     config.WorkflowStepConfig
 		expected bool
 	}{
 		{
 			name:     "step without condition or error handling",
-			step:     WorkflowStep{ID: "step1"},
+			step:     config.WorkflowStepConfig{ID: "step1"},
 			expected: false,
 		},
 		{
 			name:     "step with condition",
-			step:     WorkflowStep{ID: "step1", Condition: "{{.params.run}}"},
+			step:     config.WorkflowStepConfig{ID: "step1", Condition: "{{.params.run}}"},
 			expected: true,
 		},
 		{
 			name:     "step with continue-on-error",
-			step:     WorkflowStep{ID: "step1", OnError: &ErrorHandling{Action: ErrorActionContinue}},
+			step:     config.WorkflowStepConfig{ID: "step1", OnError: &config.StepErrorHandling{Action: ErrorActionContinue}},
 			expected: true,
 		},
 		{
 			name:     "step with abort error handling",
-			step:     WorkflowStep{ID: "step1", OnError: &ErrorHandling{Action: ErrorActionAbort}},
+			step:     config.WorkflowStepConfig{ID: "step1", OnError: &config.StepErrorHandling{Action: ErrorActionAbort}},
 			expected: false,
 		},
 		{
 			name:     "step with retry error handling",
-			step:     WorkflowStep{ID: "step1", OnError: &ErrorHandling{Action: ErrorActionRetry, MaxRetries: 3}},
+			step:     config.WorkflowStepConfig{ID: "step1", OnError: &config.StepErrorHandling{Action: ErrorActionRetry, RetryCount: 3}},
 			expected: false,
 		},
 		{
 			name:     "step with both condition and continue-on-error",
-			step:     WorkflowStep{ID: "step1", Condition: "{{.params.run}}", OnError: &ErrorHandling{Action: ErrorActionContinue}},
+			step:     config.WorkflowStepConfig{ID: "step1", Condition: "{{.params.run}}", OnError: &config.StepErrorHandling{Action: ErrorActionContinue}},
 			expected: true,
 		},
 	}
@@ -337,10 +338,4 @@ func TestExtractStepFieldRefsFromTemplate(t *testing.T) {
 			assert.ElementsMatch(t, tt.expected, result)
 		})
 	}
-}
-
-// Helper function to create a RawExtension from a map
-func rawExtensionFromMap(m map[string]any) *runtime.RawExtension {
-	data, _ := json.Marshal(m)
-	return &runtime.RawExtension{Raw: data}
 }

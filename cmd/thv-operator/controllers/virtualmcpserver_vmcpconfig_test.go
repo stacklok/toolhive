@@ -32,6 +32,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -684,19 +685,22 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-			Name:        "test-composite-tool",
-			Description: "A test composite tool definition",
-			Parameters: &runtime.RawExtension{
-				Raw: []byte(`{"type":"object","properties":{"message":{"type":"string"}}}`),
-			},
-			Timeout: "30s",
-			Steps: []mcpv1alpha1.WorkflowStep{
-				{
-					ID:   "step1",
-					Type: "tool",
-					Tool: "backend.echo",
-					Arguments: &runtime.RawExtension{
-						Raw: []byte(`{"input": "{{ .params.message }}"}`),
+			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+				Name:        "test-composite-tool",
+				Description: "A test composite tool definition",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
+					},
+				}),
+				Timeout: vmcpconfig.Duration(30 * time.Second),
+				Steps: []vmcpconfig.WorkflowStepConfig{
+					{
+						ID:        "step1",
+						Type:      "tool",
+						Tool:      "backend.echo",
+						Arguments: thvjson.NewMap(map[string]any{"input": "{{ .params.message }}"}),
 					},
 				},
 			},
@@ -802,13 +806,15 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-			Name:        "referenced-tool",
-			Description: "A referenced composite tool",
-			Steps: []mcpv1alpha1.WorkflowStep{
-				{
-					ID:   "step1",
-					Type: "tool",
-					Tool: "backend.referenced",
+			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+				Name:        "referenced-tool",
+				Description: "A referenced composite tool",
+				Steps: []vmcpconfig.WorkflowStepConfig{
+					{
+						ID:   "step1",
+						Type: "tool",
+						Tool: "backend.referenced",
+					},
 				},
 			},
 		},

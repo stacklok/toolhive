@@ -1,11 +1,11 @@
 package v1alpha1
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/templates"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // stepFieldRef represents a reference to a specific field on a step's output.
@@ -21,7 +21,7 @@ type stepFieldRef struct {
 // This is a shared validation function used by both VirtualMCPServer and VirtualMCPCompositeToolDefinition webhooks.
 // The pathPrefix parameter allows customizing error message paths (e.g., "spec.steps" or "spec.compositeTools[0].steps").
 // nolint:gocyclo // multiple passes of the workflow are required to validate references are safe.
-func validateDefaultResultsForSteps(pathPrefix string, steps []WorkflowStep, output *OutputSpec) error {
+func validateDefaultResultsForSteps(pathPrefix string, steps []config.WorkflowStepConfig, output *config.OutputConfig) error {
 	// 1. Compute all skippable step IDs
 	skippableStepIDs := make(map[string]struct{})
 	for _, step := range steps {
@@ -40,8 +40,14 @@ func validateDefaultResultsForSteps(pathPrefix string, steps []WorkflowStep, out
 	for _, step := range steps {
 		if _, ok := skippableStepIDs[step.ID]; ok {
 			skippableStepDefaults[step.ID] = make(map[string]struct{})
-			for key := range step.DefaultResults {
-				skippableStepDefaults[step.ID][key] = struct{}{}
+			// DefaultResults is a thvjson.Map - get keys from it
+			if !step.DefaultResults.IsEmpty() {
+				defaultsMap, err := step.DefaultResults.ToMap()
+				if err == nil {
+					for key := range defaultsMap {
+						skippableStepDefaults[step.ID][key] = struct{}{}
+					}
+				}
 			}
 		}
 	}
@@ -97,7 +103,7 @@ func validateDefaultResultsForSteps(pathPrefix string, steps []WorkflowStep, out
 // A step may be skipped if:
 // - It has a condition (may evaluate to false)
 // - It has onError.action == "continue" (may fail and be skipped)
-func stepMayBeSkipped(step WorkflowStep) bool {
+func stepMayBeSkipped(step config.WorkflowStepConfig) bool {
 	// Step has a condition that may evaluate to false
 	if step.Condition != "" {
 		return true
@@ -112,7 +118,7 @@ func stepMayBeSkipped(step WorkflowStep) bool {
 }
 
 // extractStepFieldRefsFromStep extracts step field references from a step's templates.
-func extractStepFieldRefsFromStep(step WorkflowStep) ([]stepFieldRef, error) {
+func extractStepFieldRefsFromStep(step config.WorkflowStepConfig) ([]stepFieldRef, error) {
 	var allRefs []stepFieldRef
 
 	// Extract from condition
@@ -124,10 +130,10 @@ func extractStepFieldRefsFromStep(step WorkflowStep) ([]stepFieldRef, error) {
 		allRefs = append(allRefs, refs...)
 	}
 
-	// Extract from arguments
-	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
-		var args map[string]any
-		if err := json.Unmarshal(step.Arguments.Raw, &args); err == nil {
+	// Extract from arguments (thvjson.Map)
+	if !step.Arguments.IsEmpty() {
+		args, err := step.Arguments.ToMap()
+		if err == nil {
 			for _, argValue := range args {
 				if strValue, ok := argValue.(string); ok {
 					refs, err := extractStepFieldRefsFromTemplate(strValue)
@@ -153,7 +159,7 @@ func extractStepFieldRefsFromStep(step WorkflowStep) ([]stepFieldRef, error) {
 }
 
 // extractStepFieldRefsFromOutput extracts step field references from output templates.
-func extractStepFieldRefsFromOutput(output *OutputSpec) ([]stepFieldRef, error) {
+func extractStepFieldRefsFromOutput(output *config.OutputConfig) ([]stepFieldRef, error) {
 	if output == nil {
 		return nil, nil
 	}
@@ -171,7 +177,7 @@ func extractStepFieldRefsFromOutput(output *OutputSpec) ([]stepFieldRef, error) 
 
 		// Recursively check nested properties
 		if len(prop.Properties) > 0 {
-			nestedOutput := &OutputSpec{Properties: prop.Properties}
+			nestedOutput := &config.OutputConfig{Properties: prop.Properties}
 			nestedRefs, err := extractStepFieldRefsFromOutput(nestedOutput)
 			if err != nil {
 				return nil, err

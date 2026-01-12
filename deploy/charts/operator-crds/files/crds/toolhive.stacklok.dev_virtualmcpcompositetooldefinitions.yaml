@@ -67,50 +67,44 @@ spec:
           metadata:
             type: object
           spec:
-            description: VirtualMCPCompositeToolDefinitionSpec defines the desired
-              state of VirtualMCPCompositeToolDefinition
+            description: |-
+              VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition.
+              This embeds the CompositeToolConfig from pkg/vmcp/config to share the configuration model
+              between CLI and operator usage.
             properties:
               description:
-                description: Description is a human-readable description of the workflow
-                minLength: 1
-                type: string
-              failureMode:
-                default: abort
-                description: |-
-                  FailureMode defines the failure handling strategy
-                  - abort: Stop execution on first failure (default)
-                  - continue: Continue executing remaining steps
-                enum:
-                - abort
-                - continue
+                description: Description describes what the workflow does.
                 type: string
               name:
-                description: Name is the workflow name exposed as a composite tool
-                maxLength: 64
-                minLength: 1
-                pattern: ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$
+                description: Name is the workflow name (unique identifier).
                 type: string
               output:
                 description: |-
-                  Output defines the structured output schema for the composite tool.
-                  Specifies how to construct the final output from workflow step results.
+                  Output defines the structured output schema for this workflow.
                   If not specified, the workflow returns the last step's output (backward compatible).
                 properties:
                   properties:
                     additionalProperties:
-                      description: OutputPropertySpec defines a single output property
+                      description: |-
+                        OutputProperty defines a single output property.
+                        For non-object types, Value is required.
+                        For object types, either Value or Properties must be specified (but not both).
                       properties:
                         default:
-                          description: Default is the fallback value if template expansion
-                            fails
+                          description: |-
+                            Default is the fallback value if template expansion fails.
+                            Type coercion is applied to match the declared Type.
+                          type: object
                           x-kubernetes-preserve-unknown-fields: true
                         description:
                           description: Description is a human-readable description
                             exposed to clients and models
                           type: string
                         properties:
-                          description: Properties defines nested properties for object
-                            types
+                          description: |-
+                            Properties defines nested properties for object types.
+                            Each nested property has full metadata (type, description, value/properties).
+                          type: object
                           x-kubernetes-preserve-unknown-fields: true
                         type:
                           description: 'Type is the JSON Schema type: "string", "integer",
@@ -125,29 +119,30 @@ spec:
                           type: string
                         value:
                           description: |-
-                            Value is a template string for constructing the runtime value
+                            Value is a template string for constructing the runtime value.
+                            For object types, this can be a JSON string that will be deserialized.
                             Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
-                            For object types, this can be a JSON string that will be deserialized
                           type: string
                       required:
                       - type
                       type: object
                     description: |-
-                      Properties defines the output properties
-                      Map key is the property name, value is the property definition
+                      Properties defines the output properties.
+                      Map key is the property name, value is the property definition.
                     type: object
                   required:
                     description: Required lists property names that must be present
-                      in the output
+                      in the output.
                     items:
                       type: string
                     type: array
+                required:
+                - properties
                 type: object
               parameters:
                 description: |-
-                  Parameters defines the input parameter schema for the workflow in JSON Schema format.
+                  Parameters defines input parameter schema in JSON Schema format.
                   Should be a JSON Schema object with "type": "object" and "properties".
-                  Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
                   Example:
                     {
                       "type": "object",
@@ -157,15 +152,20 @@ spec:
                       },
                       "required": ["param2"]
                     }
+
+                  We use json.Map rather than a typed struct because JSON Schema is highly
+                  flexible with many optional fields (default, enum, minimum, maximum, pattern,
+                  items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map
+                  allows full JSON Schema compatibility without needing to define every possible
+                  field, and matches how the MCP SDK handles inputSchema.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               steps:
-                description: |-
-                  Steps defines the workflow step definitions
-                  Steps are executed sequentially in Phase 1
-                  Phase 2 will support DAG execution via dependsOn
+                description: Steps are the workflow steps to execute.
                 items:
-                  description: WorkflowStep defines a step in a composite tool workflow
+                  description: |-
+                    WorkflowStepConfig defines a single workflow step.
+                    This matches the proposal's step configuration (lines 180-255).
                   properties:
                     arguments:
                       description: |-
@@ -193,7 +193,7 @@ spec:
                         type: string
                       type: array
                     id:
-                      description: ID is the unique identifier for this step
+                      description: ID is the unique identifier for this step.
                       type: string
                     message:
                       description: |-
@@ -247,16 +247,16 @@ spec:
                           - continue
                           - retry
                           type: string
-                        maxRetries:
+                        retryCount:
                           description: |-
-                            MaxRetries is the maximum number of retries
+                            RetryCount is the maximum number of retries
                             Only used when Action is "retry"
                           type: integer
                         retryDelay:
                           description: |-
                             RetryDelay is the delay between retry attempts
                             Only used when Action is "retry"
-                          pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                           type: string
                       type: object
                     schema:
@@ -267,6 +267,7 @@ spec:
                     timeout:
                       description: Timeout is the maximum execution time for this
                         step
+                      pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                       type: string
                     tool:
                       description: |-
@@ -283,17 +284,12 @@ spec:
                   required:
                   - id
                   type: object
-                minItems: 1
                 type: array
               timeout:
-                default: 30m
-                description: |-
-                  Timeout is the overall workflow timeout
-                  Defaults to 30m if not specified
-                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                description: Timeout is the maximum workflow execution time.
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                 type: string
             required:
-            - description
             - name
             - steps
             type: object

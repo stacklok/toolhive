@@ -7,10 +7,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -67,59 +67,56 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "interactive_workflow",
-					Description: "Workflow with user interactions via elicitations",
-					Timeout:     "15m",
-					FailureMode: "abort",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						// Step 1: Tool call
-						{
-							ID:      "prepare",
-							Type:    mcpv1alpha1.WorkflowStepTypeToolCall,
-							Tool:    "echo",
-							Timeout: "1m",
-						},
-						// Step 2: Elicitation with OnDecline and OnCancel handlers
-						{
-							ID:      "confirm_deploy",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Proceed with deployment?",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object","properties":{"proceed":{"type":"boolean"}}}`),
+					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						Name:        "interactive_workflow",
+						Description: "Workflow with user interactions via elicitations",
+						Timeout:     vmcpconfig.Duration(15 * time.Minute),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							// Step 1: Tool call
+							{
+								ID:      "prepare",
+								Type:    mcpv1alpha1.WorkflowStepTypeToolCall,
+								Tool:    "echo",
+								Timeout: vmcpconfig.Duration(1 * time.Minute),
 							},
-							DependsOn: []string{"prepare"},
-							Timeout:   "5m",
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "skip_remaining",
+							// Step 2: Elicitation with OnDecline and OnCancel handlers
+							{
+								ID:        "confirm_deploy",
+								Type:      mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message:   "Proceed with deployment?",
+								Schema:    thvjson.NewMap(map[string]any{"type": "object", "properties": map[string]any{"proceed": map[string]any{"type": "boolean"}}}),
+								DependsOn: []string{"prepare"},
+								Timeout:   vmcpconfig.Duration(5 * time.Minute),
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "skip_remaining",
+								},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
 							},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
+							// Step 3: Another elicitation with different handlers
+							{
+								ID:        "select_env",
+								Type:      mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message:   "Select target environment",
+								Schema:    thvjson.NewMap(map[string]any{"type": "object", "properties": map[string]any{"environment": map[string]any{"type": "string", "enum": []any{"staging", "production"}}}}),
+								DependsOn: []string{"confirm_deploy"},
+								Timeout:   vmcpconfig.Duration(5 * time.Minute),
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "continue",
+								},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
 							},
-						},
-						// Step 3: Another elicitation with different handlers
-						{
-							ID:      "select_env",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Select target environment",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object","properties":{"environment":{"type":"string","enum":["staging","production"]}}}`),
+							// Step 4: Final tool call
+							{
+								ID:        "deploy",
+								Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
+								Tool:      "deploy_app",
+								DependsOn: []string{"select_env"},
+								Timeout:   vmcpconfig.Duration(2 * time.Minute),
 							},
-							DependsOn: []string{"confirm_deploy"},
-							Timeout:   "5m",
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "continue",
-							},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
-							},
-						},
-						// Step 4: Final tool call
-						{
-							ID:        "deploy",
-							Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
-							Tool:      "deploy_app",
-							DependsOn: []string{"select_env"},
-							Timeout:   "2m",
 						},
 					},
 				},
@@ -280,52 +277,48 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "all_handlers_workflow",
-					Description: "Test all valid elicitation handler actions",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						// Test skip_remaining
-						{
-							ID:      "elicit_skip",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Test skip_remaining",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object"}`),
+					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						Name:        "all_handlers_workflow",
+						Description: "Test all valid elicitation handler actions",
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							// Test skip_remaining
+							{
+								ID:      "elicit_skip",
+								Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message: "Test skip_remaining",
+								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "skip_remaining",
+								},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "skip_remaining",
+								},
 							},
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "skip_remaining",
+							// Test abort
+							{
+								ID:      "elicit_abort",
+								Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message: "Test abort",
+								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
 							},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "skip_remaining",
-							},
-						},
-						// Test abort
-						{
-							ID:      "elicit_abort",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Test abort",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object"}`),
-							},
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
-							},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
-							},
-						},
-						// Test continue
-						{
-							ID:      "elicit_continue",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Test continue",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object"}`),
-							},
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "continue",
-							},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "continue",
+							// Test continue
+							{
+								ID:      "elicit_continue",
+								Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message: "Test continue",
+								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "continue",
+								},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "continue",
+								},
 							},
 						},
 					},
@@ -467,54 +460,52 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "mixed_steps_workflow",
-					Description: "Workflow with alternating tool calls and elicitations",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						// Tool call
-						{
-							ID:   "tool1",
-							Type: mcpv1alpha1.WorkflowStepTypeToolCall,
-							Tool: "prepare",
-						},
-						// Elicitation
-						{
-							ID:      "elicit1",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Confirm step 1?",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object"}`),
+					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						Name:        "mixed_steps_workflow",
+						Description: "Workflow with alternating tool calls and elicitations",
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							// Tool call
+							{
+								ID:   "tool1",
+								Type: mcpv1alpha1.WorkflowStepTypeToolCall,
+								Tool: "prepare",
 							},
-							DependsOn: []string{"tool1"},
-							OnDecline: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
+							// Elicitation
+							{
+								ID:        "elicit1",
+								Type:      mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message:   "Confirm step 1?",
+								Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
+								DependsOn: []string{"tool1"},
+								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
 							},
-						},
-						// Tool call
-						{
-							ID:        "tool2",
-							Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
-							Tool:      "execute",
-							DependsOn: []string{"elicit1"},
-						},
-						// Elicitation
-						{
-							ID:      "elicit2",
-							Type:    mcpv1alpha1.WorkflowStepTypeElicitation,
-							Message: "Confirm step 2?",
-							Schema: &runtime.RawExtension{
-								Raw: []byte(`{"type":"object"}`),
+							// Tool call
+							{
+								ID:        "tool2",
+								Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
+								Tool:      "execute",
+								DependsOn: []string{"elicit1"},
 							},
-							DependsOn: []string{"tool2"},
-							OnCancel: &mcpv1alpha1.ElicitationResponseHandler{
-								Action: "abort",
+							// Elicitation
+							{
+								ID:        "elicit2",
+								Type:      mcpv1alpha1.WorkflowStepTypeElicitation,
+								Message:   "Confirm step 2?",
+								Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
+								DependsOn: []string{"tool2"},
+								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+									Action: "abort",
+								},
 							},
-						},
-						// Final tool call
-						{
-							ID:        "tool3",
-							Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
-							Tool:      "finalize",
-							DependsOn: []string{"elicit2"},
+							// Final tool call
+							{
+								ID:        "tool3",
+								Type:      mcpv1alpha1.WorkflowStepTypeToolCall,
+								Tool:      "finalize",
+								DependsOn: []string{"elicit2"},
+							},
 						},
 					},
 				},

@@ -186,6 +186,7 @@ This matches the YAML structure from the proposal (lines 173-255).
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -406,6 +407,7 @@ MCP output schema (type, description) and runtime value construction (value, def
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -518,6 +520,7 @@ This matches the proposal's step configuration (lines 180-255).
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -676,8 +679,6 @@ _Appears in:_
 | `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  |  |
 
 
-
-
 #### api.v1alpha1.AuditConfig
 
 
@@ -750,8 +751,6 @@ _Appears in:_
 | `timeout` _string_ | Timeout is the duration to wait before attempting to close the circuit | 60s |  |
 
 
-
-
 #### api.v1alpha1.ConfigMapAuthzRef
 
 
@@ -807,24 +806,6 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
-#### api.v1alpha1.ElicitationResponseHandler
-
-
-
-ElicitationResponseHandler defines how to handle user responses to elicitation requests
-
-
-
-_Appears in:_
-- [api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br /> |
-
-
-
-
 #### api.v1alpha1.EnvVar
 
 
@@ -841,24 +822,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the environment variable |  | Required: \{\} <br /> |
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
-
-
-#### api.v1alpha1.ErrorHandling
-
-
-
-ErrorHandling defines error handling behavior for workflow steps
-
-
-
-_Appears in:_
-- [api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action defines the action to take on error | abort | Enum: [abort continue retry] <br /> |
-| `maxRetries` _integer_ | MaxRetries is the maximum number of retries<br />Only used when Action is "retry" |  |  |
-| `retryDelay` _string_ | RetryDelay is the delay between retry attempts<br />Only used when Action is "retry" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
 
 
 #### api.v1alpha1.ExternalAuthConfigRef
@@ -1945,44 +1908,6 @@ _Appears in:_
 | `backends` _object (keys:string, values:[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  |  |
 
 
-#### api.v1alpha1.OutputPropertySpec
-
-
-
-OutputPropertySpec defines a single output property
-
-
-
-_Appears in:_
-- [api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec)
-- [api.v1alpha1.OutputSpec](#apiv1alpha1outputspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array" |  | Enum: [string integer number boolean object array] <br />Required: \{\} <br /> |
-| `description` _string_ | Description is a human-readable description exposed to clients and models |  |  |
-| `value` _string_ | Value is a template string for constructing the runtime value<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\}<br />For object types, this can be a JSON string that will be deserialized |  |  |
-| `properties` _object (keys:string, values:[api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec))_ | Properties defines nested properties for object types |  | Schemaless: \{\} <br /> |
-| `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Schemaless: \{\} <br /> |
-
-
-#### api.v1alpha1.OutputSpec
-
-
-
-OutputSpec defines the structured output schema for a composite tool workflow
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `properties` _object (keys:string, values:[api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec))_ | Properties defines the output properties<br />Map key is the property name, value is the property definition |  |  |
-| `required` _string array_ | Required lists property names that must be present in the output |  |  |
-
-
 #### api.v1alpha1.PVCSource
 
 
@@ -2141,26 +2066,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `limits` _[api.v1alpha1.ResourceList](#apiv1alpha1resourcelist)_ | Limits describes the maximum amount of compute resources allowed |  |  |
 | `requests` _[api.v1alpha1.ResourceList](#apiv1alpha1resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
-
-
-#### api.v1alpha1.RetryPolicy
-
-
-
-RetryPolicy defines retry behavior for workflow steps
-
-
-
-_Appears in:_
-- [api.v1alpha1.AdvancedWorkflowStep](#apiv1alpha1advancedworkflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `maxRetries` _integer_ | MaxRetries is the maximum number of retry attempts | 3 | Maximum: 10 <br />Minimum: 1 <br /> |
-| `backoffStrategy` _string_ | BackoffStrategy defines the backoff strategy<br />- fixed: Fixed delay between retries<br />- exponential: Exponential backoff | exponential | Enum: [fixed exponential] <br /> |
-| `initialDelay` _string_ | InitialDelay is the initial delay before first retry | 1s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
-| `maxDelay` _string_ | MaxDelay is the maximum delay between retries | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
-| `retryableErrors` _string array_ | RetryableErrors defines which errors should trigger retry<br />If empty, all errors are retryable<br />Supports regex patterns |  |  |
 
 
 #### api.v1alpha1.SecretKeyRef
@@ -2458,7 +2363,9 @@ VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeTool
 
 
 
-VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition
+VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition.
+This embeds the CompositeToolConfig from pkg/vmcp/config to share the configuration model
+between CLI and operator usage.
 
 
 
@@ -2467,13 +2374,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name is the workflow name exposed as a composite tool |  | MaxLength: 64 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
-| `description` _string_ | Description is a human-readable description of the workflow |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema for the workflow in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
-| `steps` _[api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
-| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |
-| `output` _[api.v1alpha1.OutputSpec](#apiv1alpha1outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
+| `name` _string_ | Name is the workflow name (unique identifier). |  |  |
+| `description` _string_ | Description describes what the workflow does. |  |  |
+| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
+| `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
 #### api.v1alpha1.VirtualMCPCompositeToolDefinitionStatus
@@ -2619,33 +2525,5 @@ _Appears in:_
 | `hostPath` _string_ | HostPath is the path on the host to mount |  | Required: \{\} <br /> |
 | `mountPath` _string_ | MountPath is the path in the container to mount to |  | Required: \{\} <br /> |
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false |  |
-
-
-#### api.v1alpha1.WorkflowStep
-
-
-
-WorkflowStep defines a step in a composite tool workflow
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `id` _string_ | ID is the unique identifier for this step |  | Required: \{\} <br /> |
-| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br /> |
-| `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  |  |
-| `arguments` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br /> |
-| `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
-| `schema` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |
-| `onDecline` _[api.v1alpha1.ElicitationResponseHandler](#apiv1alpha1elicitationresponsehandler)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  |  |
-| `onCancel` _[api.v1alpha1.ElicitationResponseHandler](#apiv1alpha1elicitationresponsehandler)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  |  |
-| `dependsOn` _string array_ | DependsOn lists step IDs that must complete before this step |  |  |
-| `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
-| `onError` _[api.v1alpha1.ErrorHandling](#apiv1alpha1errorhandling)_ | OnError defines error handling behavior |  |  |
-| `timeout` _string_ | Timeout is the maximum execution time for this step |  |  |
-| `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 

@@ -35,7 +35,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -133,7 +133,7 @@ type Config struct {
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
 	// In CLI mode: NoOpReporter (no persistent status)
 	// If nil, status reporting is disabled.
-	StatusReporter vmcpstatus.Reporter
+	StatusReporter status.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -205,7 +205,7 @@ type Server struct {
 
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
-	statusReporter vmcpstatus.Reporter
+	statusReporter status.Reporter
 
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed

@@ -30,7 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
-	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -418,8 +418,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
-	// Create logging status reporter for CLI mode (always logs)
-	statusReporter := vmcpstatus.NewLoggingReporter()
+	// Create status reporter for CLI mode
+	// For CLI mode, we use NoOpReporter since status reporting is not needed
+	// For K8s mode, this would be replaced with K8sReporter in the future
+	statusReporter := status.NewNoOpReporter()
+	logger.Debug("Status reporter initialized (NoOpReporter for CLI mode)")
 
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,

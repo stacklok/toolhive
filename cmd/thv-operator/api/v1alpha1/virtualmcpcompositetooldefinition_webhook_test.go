@@ -213,7 +213,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			errMsg:  "spec.steps[0].tool is required when type is tool",
 		},
 		{
-			name: "invalid tool reference format",
+			name: "invalid tool reference with special characters",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					CompositeToolConfig: config.CompositeToolConfig{
@@ -223,14 +223,14 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 							{
 								ID:   "step1",
 								Type: WorkflowStepTypeToolCall,
-								Tool: "invalid-tool-reference",
+								Tool: "invalid@tool!",
 							},
 						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.steps[0].tool must be in format 'workload.tool_name'",
+			errMsg:  "spec.steps[0].tool must be a valid tool name",
 		},
 		{
 			name: "valid elicitation step",
@@ -498,7 +498,7 @@ func TestIsValidToolReference(t *testing.T) {
 		wantValid bool
 	}{
 		{
-			name:      "valid tool reference",
+			name:      "valid tool reference with dot",
 			tool:      "kubectl.apply",
 			wantValid: true,
 		},
@@ -513,28 +513,38 @@ func TestIsValidToolReference(t *testing.T) {
 			wantValid: true,
 		},
 		{
-			name:      "invalid - missing dot",
-			tool:      "kubectl-apply",
-			wantValid: false,
+			name:      "valid simple name without dot",
+			tool:      "kubectl",
+			wantValid: true,
 		},
 		{
-			name:      "invalid - empty workload",
+			name:      "valid with multiple dots",
+			tool:      "kubectl.apply.extra",
+			wantValid: true,
+		},
+		{
+			name:      "valid with trailing dot",
+			tool:      "kubectl.",
+			wantValid: true,
+		},
+		{
+			name:      "invalid - starts with dot",
 			tool:      ".apply",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - empty tool",
-			tool:      "kubectl.",
+			name:      "invalid - empty string",
+			tool:      "",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - multiple dots",
-			tool:      "kubectl.apply.extra",
+			name:      "invalid - special characters",
+			tool:      "invalid@tool!",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - no dot",
-			tool:      "kubectl",
+			name:      "invalid - contains spaces",
+			tool:      "my tool",
 			wantValid: false,
 		},
 	}

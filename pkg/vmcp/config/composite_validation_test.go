@@ -392,16 +392,16 @@ func TestValidateCompositeToolConfig(t *testing.T) {
 			errorMsg:    "steps must have at least one step",
 		},
 		{
-			name: "invalid tool reference format",
+			name: "invalid tool reference with special characters",
 			tool: &CompositeToolConfig{
 				Name:        "test-tool",
 				Description: "A test tool",
 				Steps: []WorkflowStepConfig{
-					{ID: "step1", Type: "tool", Tool: "invalid"},
+					{ID: "step1", Type: "tool", Tool: "invalid@tool!"},
 				},
 			},
 			expectError: true,
-			errorMsg:    "must be in format 'workload.tool_name'",
+			errorMsg:    "must be a valid tool name",
 		},
 		{
 			name: "duplicate step IDs",

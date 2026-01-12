@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -402,6 +403,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Create status reporter for CLI mode
+	// For CLI mode, we use NoOpReporter since status reporting is not needed
+	// For K8s mode, this would be replaced with K8sReporter in the future
+	statusReporter := status.NewNoOpReporter()
+	logger.Debug("Status reporter initialized (NoOpReporter for CLI mode)")
+
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,
 		Version:             getVersion(),
@@ -414,6 +421,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
 		Watcher:             backendWatcher,
+		StatusReporter:      statusReporter,
 	}
 
 	// Convert composite tool configurations to workflow definitions

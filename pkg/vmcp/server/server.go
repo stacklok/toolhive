@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -119,6 +120,11 @@ type Config struct {
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
+
+	// StatusReporter is the optional status reporter for reporting runtime status.
+	// For CLI mode: typically nil or NoOpReporter (status reporting not needed)
+	// For K8s mode: K8sReporter that updates VirtualMCPServer/status subresource
+	StatusReporter status.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -187,6 +193,10 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// statusReporter reports runtime status to appropriate destination (logs, K8s status, etc.).
+	// Nil if status reporting is disabled.
+	statusReporter status.Reporter
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -341,6 +351,7 @@ func New(
 		workflowExecutors: workflowExecutors,
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
+		statusReporter:    cfg.StatusReporter,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -582,6 +593,13 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start status reporter if configured
+	// TODO: Implement periodic status reporting with statusFunc
+	// For now, reporter is initialized but not started (will be implemented when needed)
+	if s.statusReporter != nil {
+		logger.Debug("Status reporter configured (not yet started)")
+	}
+
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
@@ -630,6 +648,12 @@ func (s *Server) Stop(ctx context.Context) error {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
 		}
+	}
+
+	// Stop status reporter if configured
+	if s.statusReporter != nil {
+		s.statusReporter.Stop()
+		logger.Debug("Status reporter stopped")
 	}
 
 	// Stop discovery manager to clean up background goroutines

@@ -22,6 +22,9 @@ import (
 	"time"
 )
 
+// pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
+const pkceChallengeMethodS256 = "S256"
+
 // tokenExpirationBuffer is the time buffer before actual expiration to consider a token expired.
 // This accounts for clock skew and network latency.
 const tokenExpirationBuffer = 30 * time.Second

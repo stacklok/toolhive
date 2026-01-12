@@ -62,6 +62,11 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"get", "update", "patch"},
+	},
 }
 
 // deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object

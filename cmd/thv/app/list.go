@@ -46,10 +46,10 @@ var (
 )
 
 func init() {
-	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
+	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows just running)")
 	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
-	listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
+	AddGroupFlag(listCmd, &listGroupFilter, false)
 
 	listCmd.PreRunE = chainPreRunE(
 		validateGroupFlag(),

@@ -38,8 +38,8 @@ var (
 )
 
 func init() {
-	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all workloads")
-	rmCmd.Flags().StringVarP(&rmGroup, "group", "g", "", "Delete all workloads in the specified group")
+	AddAllFlag(rmCmd, &rmAll, false, "Delete all workloads")
+	AddGroupFlag(rmCmd, &rmGroup, true)
 
 	// Mark the flags as mutually exclusive
 	rmCmd.MarkFlagsMutuallyExclusive("all", "group")

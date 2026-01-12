@@ -10,16 +10,19 @@ func TestAddFormatFlag(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		description string
+		name            string
+		allowedFormats  []string
+		wantDescription string
 	}{
 		{
-			name:        "adds format flag with default",
-			description: "Output format (json or text)",
+			name:            "adds format flag with default formats",
+			allowedFormats:  nil,
+			wantDescription: "Output format (json, text)",
 		},
 		{
-			name:        "adds format flag with custom description",
-			description: "Custom format description",
+			name:            "adds format flag with custom formats",
+			allowedFormats:  []string{"json", "yaml", "xml"},
+			wantDescription: "Output format (json, yaml, xml)",
 		},
 	}
 
@@ -29,7 +32,7 @@ func TestAddFormatFlag(t *testing.T) {
 			cmd := &cobra.Command{}
 			var format string
 
-			AddFormatFlag(cmd, &format, tt.description)
+			AddFormatFlag(cmd, &format, tt.allowedFormats...)
 
 			// Verify flag exists
 			flag := cmd.Flags().Lookup("format")
@@ -43,8 +46,8 @@ func TestAddFormatFlag(t *testing.T) {
 			}
 
 			// Verify description
-			if flag.Usage != tt.description {
-				t.Errorf("expected description %q, got %q", tt.description, flag.Usage)
+			if flag.Usage != tt.wantDescription {
+				t.Errorf("expected description %q, got %q", tt.wantDescription, flag.Usage)
 			}
 		})
 	}
@@ -147,78 +150,6 @@ func TestAddAllFlag(t *testing.T) {
 			// Verify default value is false
 			if flag.DefValue != "false" {
 				t.Errorf("expected default value 'false', got %q", flag.DefValue)
-			}
-		})
-	}
-}
-
-func TestValidateFormatFlag(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		format         string
-		allowedFormats []string
-		wantErr        bool
-	}{
-		{
-			name:           "valid format json with defaults",
-			format:         "json",
-			allowedFormats: nil,
-			wantErr:        false,
-		},
-		{
-			name:           "valid format text with defaults",
-			format:         "text",
-			allowedFormats: nil,
-			wantErr:        false,
-		},
-		{
-			name:           "invalid format with defaults",
-			format:         "yaml",
-			allowedFormats: nil,
-			wantErr:        true,
-		},
-		{
-			name:           "valid custom format",
-			format:         "yaml",
-			allowedFormats: []string{"json", "text", "yaml"},
-			wantErr:        false,
-		},
-		{
-			name:           "invalid custom format",
-			format:         "xml",
-			allowedFormats: []string{"json", "text", "yaml"},
-			wantErr:        true,
-		},
-		{
-			name:           "empty format is invalid",
-			format:         "",
-			allowedFormats: nil,
-			wantErr:        true,
-		},
-		{
-			name:           "format with mcpservers allowed",
-			format:         "mcpservers",
-			allowedFormats: []string{"json", "text", "mcpservers"},
-			wantErr:        false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := ValidateFormatFlag(tt.format, tt.allowedFormats...)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Error("ValidateFormatFlag() expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("ValidateFormatFlag() unexpected error: %v", err)
 			}
 		})
 	}

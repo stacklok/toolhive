@@ -609,7 +609,8 @@ spec:
                       logLevel:
                         description: |-
                           LogLevel sets the logging level for the Virtual MCP server.
-                          Set to "debug" to enable debug logging. When not set, defaults to info level.
+                          The only valid value is "debug" to enable debug logging.
+                          When omitted or empty, the server uses info level logging.
                         enum:
                         - debug
                         type: string
@@ -812,14 +813,13 @@ spec:
                           CustomAttributes contains custom resource attributes to be added to all telemetry signals.
                           These are parsed from CLI flags (--otel-custom-attributes) or environment variables
                           (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
-                          We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
-                          which doesn't marshal/unmarshal correctly.
                         type: object
                       enablePrometheusMetricsPath:
+                        default: false
                         description: |-
-                          EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
-                          The metrics are served on the main transport port at /metrics
-                          This is separate from OTLP metrics which are sent to the Endpoint
+                          EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+                          The metrics are served on the main transport port at /metrics.
+                          This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
                       endpoint:
                         description: Endpoint is the OTLP endpoint URL
@@ -829,7 +829,7 @@ spec:
                           EnvironmentVariables is a list of environment variable names that should be
                           included in telemetry spans as attributes. Only variables in this list will
                           be read from the host machine and included in spans for observability.
-                          Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+                          Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
                         items:
                           type: string
                         type: array
@@ -837,39 +837,43 @@ spec:
                         additionalProperties:
                           type: string
                         description: Headers contains authentication headers for the
-                          OTLP endpoint
+                          OTLP endpoint.
                         type: object
                       insecure:
+                        default: false
                         description: Insecure indicates whether to use HTTP instead
-                          of HTTPS for the OTLP endpoint
+                          of HTTPS for the OTLP endpoint.
                         type: boolean
                       metricsEnabled:
+                        default: false
                         description: |-
-                          MetricsEnabled controls whether OTLP metrics are enabled
-                          When false, OTLP metrics are not sent even if an endpoint is configured
-                          This is independent of EnablePrometheusMetricsPath
+                          MetricsEnabled controls whether OTLP metrics are enabled.
+                          When false, OTLP metrics are not sent even if an endpoint is configured.
+                          This is independent of EnablePrometheusMetricsPath.
                         type: boolean
                       samplingRate:
+                        default: "0.05"
                         description: |-
                           SamplingRate is the trace sampling rate (0.0-1.0) as a string.
                           Only used when TracingEnabled is true.
                           Example: "0.05" for 5% sampling.
                         type: string
                       serviceName:
-                        description: ServiceName is the service name for telemetry
+                        description: |-
+                          ServiceName is the service name for telemetry.
+                          When omitted, defaults to the server name (e.g., VirtualMCPServer name).
                         type: string
                       serviceVersion:
-                        description: ServiceVersion is the service version for telemetry
+                        description: |-
+                          ServiceVersion is the service version for telemetry.
+                          When omitted, defaults to the ToolHive version.
                         type: string
                       tracingEnabled:
+                        default: false
                         description: |-
-                          TracingEnabled controls whether distributed tracing is enabled
-                          When false, no tracer provider is created even if an endpoint is configured
+                          TracingEnabled controls whether distributed tracing is enabled.
+                          When false, no tracer provider is created even if an endpoint is configured.
                         type: boolean
-                    required:
-                    - endpoint
-                    - serviceName
-                    - serviceVersion
                     type: object
                 required:
                 - groupRef

@@ -281,7 +281,8 @@ Test coverage includes:
 
 - [Virtual MCP Proposal](../../../docs/proposals/THV-2106-virtual-mcp-server.md)
 - [vMCP Package Overview](../doc.go)
-- [GitHub Issue #2854](https://github.com/stacklok/toolhive/issues/2854)
+- [GitHub Issue #3147](https://github.com/stacklok/toolhive/issues/3147) - This implementation (StatusReporter abstraction)
+- [GitHub Issue #2854](https://github.com/stacklok/toolhive/issues/2854) - Related: Add StatusReporter for vMCP runtime status reporting
 
 ## Contributing
 

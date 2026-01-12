@@ -138,29 +138,8 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Discover backends from the MCPGroup
-	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to discover backends")
-		// Don't fail reconciliation if backend discovery fails, but log the error
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
-			fmt.Sprintf("Failed to discover backends: %v", err),
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-	} else {
-		statusManager.SetDiscoveredBackends(discoveredBackends)
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
-			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
-			metav1.ConditionTrue,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
-	}
+	// Handle backend discovery based on mode (dynamic vs static)
+	r.handleBackendDiscovery(ctx, vmcp, statusManager)
 
 	// Fetch the latest version before updating status to ensure we use the current Generation
 	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
@@ -228,6 +207,66 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 	}
 
 	return nil
+}
+
+// isDynamicMode returns true if the VirtualMCPServer is in dynamic mode.
+// Dynamic mode means outgoingAuth.source is "discovered", where the vMCP server
+// owns backend discovery and reports status. Static mode ("inline") means the
+// operator discovers backends from the MCPGroup.
+func (*VirtualMCPServerReconciler) isDynamicMode(vmcp *mcpv1alpha1.VirtualMCPServer) bool {
+	// Default to discovered (dynamic) mode if not specified
+	if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Source == "" {
+		return true
+	}
+	return vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered
+}
+
+// handleBackendDiscovery handles backend discovery based on the discovery mode.
+// In dynamic mode, the vMCP server owns discovery and the operator preserves its status.
+// In static mode, the operator discovers backends from the MCPGroup.
+func (r *VirtualMCPServerReconciler) handleBackendDiscovery(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	ctxLogger := log.FromContext(ctx)
+
+	if r.isDynamicMode(vmcp) {
+		// Dynamic mode: vMCP server owns backend discovery and reports status
+		// Operator only observes and sets infrastructure-only conditions
+		ctxLogger.V(1).Info("Dynamic mode: reading vMCP-reported backend status")
+
+		// In dynamic mode, preserve the existing status that vMCP has reported
+		// The operator does not discover backends itself
+		// Note: BackendsDiscovered condition is infrastructure-only and remains managed by operator
+		statusManager.SetObservedGeneration(vmcp.Generation)
+	} else {
+		// Static mode: operator discovers backends from MCPGroup
+		ctxLogger.V(1).Info("Static mode: operator discovering backends from MCPGroup")
+
+		discoveredBackends, err := r.discoverBackends(ctx, vmcp)
+		if err != nil {
+			ctxLogger.Error(err, "Failed to discover backends")
+			// Don't fail reconciliation if backend discovery fails, but log the error
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+				mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
+				fmt.Sprintf("Failed to discover backends: %v", err),
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+		} else {
+			statusManager.SetDiscoveredBackends(discoveredBackends)
+			statusManager.SetCondition(
+				mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+				mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
+				fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
+				metav1.ConditionTrue,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
+		}
+	}
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready

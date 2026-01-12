@@ -1,0 +1,404 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"encoding/binary"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stacklok/toolhive/pkg/optimizer/models"
+)
+
+// WorkloadServerOps provides database operations for workload servers
+type WorkloadServerOps struct {
+	db *DB
+}
+
+// NewWorkloadServerOps creates a new WorkloadServerOps instance
+func NewWorkloadServerOps(db *DB) *WorkloadServerOps {
+	return &WorkloadServerOps{db: db}
+}
+
+// Create creates a new workload server
+func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.WorkloadServer) error {
+	// Generate ID if not provided
+	if server.ID == "" {
+		server.ID = uuid.New().String()
+	}
+
+	// Set timestamps
+	now := time.Now()
+	server.CreatedAt = now
+	server.LastUpdated = now
+
+	// Start transaction
+	tx, err := ops.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Insert into mcpservers_workload table
+	query := `
+		INSERT INTO mcpservers_workload (
+			id, name, url, workload_identifier, remote, transport, status,
+			registry_server_id, registry_server_name, description, server_embedding,
+			"group", last_updated, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err = tx.ExecContext(ctx, query,
+		server.ID,
+		server.Name,
+		server.URL,
+		server.WorkloadIdentifier,
+		server.Remote,
+		server.Transport.String(),
+		server.Status.String(),
+		server.RegistryServerID,
+		server.RegistryServerName,
+		server.Description,
+		embeddingToBytes(server.ServerEmbedding),
+		server.Group,
+		server.LastUpdated,
+		server.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert workload server: %w", err)
+	}
+
+	// Insert embedding into vector table if present
+	if len(server.ServerEmbedding) > 0 {
+		vecQuery := `INSERT INTO workload_server_vector (server_id, embedding) VALUES (?, ?)`
+		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
+		if err != nil {
+			return fmt.Errorf("failed to insert server embedding: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetByID retrieves a workload server by ID
+func (ops *WorkloadServerOps) GetByID(ctx context.Context, id string) (*models.WorkloadServer, error) {
+	query := `
+		SELECT id, name, url, workload_identifier, remote, transport, status,
+		       registry_server_id, registry_server_name, description, server_embedding,
+		       "group", last_updated, created_at
+		FROM mcpservers_workload
+		WHERE id = ?
+	`
+
+	var server models.WorkloadServer
+	var embeddingBytes []byte
+	var description sql.NullString
+	var registryServerID, registryServerName sql.NullString
+
+	err := ops.db.QueryRowContext(ctx, query, id).Scan(
+		&server.ID,
+		&server.Name,
+		&server.URL,
+		&server.WorkloadIdentifier,
+		&server.Remote,
+		&server.Transport,
+		&server.Status,
+		&registryServerID,
+		&registryServerName,
+		&description,
+		&embeddingBytes,
+		&server.Group,
+		&server.LastUpdated,
+		&server.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("workload server not found: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query workload server: %w", err)
+	}
+
+	// Set nullable fields
+	if description.Valid {
+		server.Description = &description.String
+	}
+	if registryServerID.Valid {
+		server.RegistryServerID = &registryServerID.String
+	}
+	if registryServerName.Valid {
+		server.RegistryServerName = &registryServerName.String
+	}
+
+	// Convert embedding bytes to float32 slice
+	if len(embeddingBytes) > 0 {
+		server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
+	}
+
+	return &server, nil
+}
+
+// GetByName retrieves a workload server by name
+func (ops *WorkloadServerOps) GetByName(ctx context.Context, name string) (*models.WorkloadServer, error) {
+	query := `
+		SELECT id, name, url, workload_identifier, remote, transport, status,
+		       registry_server_id, registry_server_name, description, server_embedding,
+		       "group", last_updated, created_at
+		FROM mcpservers_workload
+		WHERE name = ?
+	`
+
+	var server models.WorkloadServer
+	var embeddingBytes []byte
+	var description sql.NullString
+	var registryServerID, registryServerName sql.NullString
+
+	err := ops.db.QueryRowContext(ctx, query, name).Scan(
+		&server.ID,
+		&server.Name,
+		&server.URL,
+		&server.WorkloadIdentifier,
+		&server.Remote,
+		&server.Transport,
+		&server.Status,
+		&registryServerID,
+		&registryServerName,
+		&description,
+		&embeddingBytes,
+		&server.Group,
+		&server.LastUpdated,
+		&server.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil // Not found, return nil without error
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query workload server: %w", err)
+	}
+
+	// Set nullable fields
+	if description.Valid {
+		server.Description = &description.String
+	}
+	if registryServerID.Valid {
+		server.RegistryServerID = &registryServerID.String
+	}
+	if registryServerName.Valid {
+		server.RegistryServerName = &registryServerName.String
+	}
+
+	// Convert embedding bytes to float32 slice
+	if len(embeddingBytes) > 0 {
+		server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
+	}
+
+	return &server, nil
+}
+
+// ListAll retrieves all workload servers
+func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadServer, error) {
+	query := `
+		SELECT id, name, url, workload_identifier, remote, transport, status,
+		       registry_server_id, registry_server_name, description, server_embedding,
+		       "group", last_updated, created_at
+		FROM mcpservers_workload
+		ORDER BY name
+	`
+
+	rows, err := ops.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query workload servers: %w", err)
+	}
+	defer rows.Close()
+
+	var servers []*models.WorkloadServer
+	for rows.Next() {
+		var server models.WorkloadServer
+		var embeddingBytes []byte
+		var description sql.NullString
+		var registryServerID, registryServerName sql.NullString
+
+		err := rows.Scan(
+			&server.ID,
+			&server.Name,
+			&server.URL,
+			&server.WorkloadIdentifier,
+			&server.Remote,
+			&server.Transport,
+			&server.Status,
+			&registryServerID,
+			&registryServerName,
+			&description,
+			&embeddingBytes,
+			&server.Group,
+			&server.LastUpdated,
+			&server.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan workload server: %w", err)
+		}
+
+		// Set nullable fields
+		if description.Valid {
+			server.Description = &description.String
+		}
+		if registryServerID.Valid {
+			server.RegistryServerID = &registryServerID.String
+		}
+		if registryServerName.Valid {
+			server.RegistryServerName = &registryServerName.String
+		}
+
+		// Convert embedding bytes to float32 slice
+		if len(embeddingBytes) > 0 {
+			server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
+		}
+
+		servers = append(servers, &server)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating workload servers: %w", err)
+	}
+
+	return servers, nil
+}
+
+// Update updates a workload server
+func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.WorkloadServer) error {
+	server.LastUpdated = time.Now()
+
+	tx, err := ops.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+		UPDATE mcpservers_workload
+		SET name = ?, url = ?, workload_identifier = ?, remote = ?, transport = ?,
+		    status = ?, registry_server_id = ?, registry_server_name = ?,
+		    description = ?, server_embedding = ?, "group" = ?, last_updated = ?
+		WHERE id = ?
+	`
+
+	result, err := tx.ExecContext(ctx, query,
+		server.Name,
+		server.URL,
+		server.WorkloadIdentifier,
+		server.Remote,
+		server.Transport.String(),
+		server.Status.String(),
+		server.RegistryServerID,
+		server.RegistryServerName,
+		server.Description,
+		embeddingToBytes(server.ServerEmbedding),
+		server.Group,
+		server.LastUpdated,
+		server.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update workload server: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("workload server not found: %s", server.ID)
+	}
+
+	// Update embedding in vector table
+	if len(server.ServerEmbedding) > 0 {
+		// Delete old embedding
+		_, err = tx.ExecContext(ctx, "DELETE FROM workload_server_vector WHERE server_id = ?", server.ID)
+		if err != nil {
+			return fmt.Errorf("failed to delete old server embedding: %w", err)
+		}
+
+		// Insert new embedding
+		vecQuery := `INSERT INTO workload_server_vector (server_id, embedding) VALUES (?, ?)`
+		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
+		if err != nil {
+			return fmt.Errorf("failed to insert server embedding: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// Delete deletes a workload server and its tools
+func (ops *WorkloadServerOps) Delete(ctx context.Context, id string) error {
+	tx, err := ops.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete from vector table
+	_, err = tx.ExecContext(ctx, "DELETE FROM workload_server_vector WHERE server_id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete server embedding: %w", err)
+	}
+
+	// Delete from main table (CASCADE will delete tools)
+	result, err := tx.ExecContext(ctx, "DELETE FROM mcpservers_workload WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete workload server: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("workload server not found: %s", id)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// Helper functions for embedding conversion
+
+// embeddingToBytes converts a float32 slice to bytes for storage
+func embeddingToBytes(embedding []float32) []byte {
+	if len(embedding) == 0 {
+		return nil
+	}
+
+	bytes := make([]byte, len(embedding)*4)
+	for i, f := range embedding {
+		binary.LittleEndian.PutUint32(bytes[i*4:], math.Float32bits(f))
+	}
+	return bytes
+}
+
+// bytesToEmbedding converts bytes to a float32 slice
+func bytesToEmbedding(bytes []byte) []float32 {
+	if len(bytes) == 0 {
+		return nil
+	}
+
+	embedding := make([]float32, len(bytes)/4)
+	for i := range embedding {
+		bits := binary.LittleEndian.Uint32(bytes[i*4:])
+		embedding[i] = math.Float32frombits(bits)
+	}
+	return embedding
+}
+
+

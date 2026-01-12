@@ -142,6 +142,11 @@ tasks:
       - task: test-e2e-windows
         platforms: [windows]
 
+  test-optimizer:
+    desc: Run optimizer integration tests with sqlite-vec
+    cmds:
+      - ./scripts/test-optimizer-with-sqlite-vec.sh
+
   test-all:
     desc: Run all tests (unit and e2e)
     deps: [test, test-e2e]

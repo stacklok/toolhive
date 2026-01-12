@@ -351,7 +351,7 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 	return nil
 }
 
-func (v *DefaultValidator) validateCompositeTools(tools []CompositeToolConfig) error {
+func (*DefaultValidator) validateCompositeTools(tools []CompositeToolConfig) error {
 	if len(tools) == 0 {
 		return nil // Composite tools are optional
 	}
@@ -361,32 +361,15 @@ func (v *DefaultValidator) validateCompositeTools(tools []CompositeToolConfig) e
 	for i := range tools {
 		tool := &tools[i]
 
-		// Validate basic fields
-		if tool.Name == "" {
-			return fmt.Errorf("compositeTools[%d].name is required", i)
-		}
-
+		// Check for duplicate tool names
 		if toolNames[tool.Name] {
 			return fmt.Errorf("duplicate composite tool name: %s", tool.Name)
 		}
 		toolNames[tool.Name] = true
 
-		if tool.Description == "" {
-			return fmt.Errorf("compositeTools[%d].description is required", i)
-		}
-
-		// Timeout can be 0 (uses default) or positive (explicit timeout)
-		if tool.Timeout < 0 {
-			return fmt.Errorf("compositeTools[%d].timeout cannot be negative", i)
-		}
-
-		// Validate steps
-		if len(tool.Steps) == 0 {
-			return fmt.Errorf("compositeTools[%d] must have at least one step", i)
-		}
-
-		if err := v.validateWorkflowSteps(tool.Name, tool.Steps); err != nil {
-			return fmt.Errorf("compositeTools[%d]: %w", i, err)
+		// Use shared validation
+		if err := ValidateCompositeToolConfig(fmt.Sprintf("compositeTools[%d]", i), tool); err != nil {
+			return err
 		}
 	}
 
@@ -416,111 +399,8 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 	return nil
 }
 
-func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []WorkflowStepConfig) error {
-	stepIDs := make(map[string]bool)
-
-	for i := range steps {
-		step := &steps[i]
-
-		if err := v.validateStepBasics(step, i, stepIDs); err != nil {
-			return err
-		}
-
-		if err := v.validateStepType(step, i); err != nil {
-			return err
-		}
-
-		if err := v.validateStepDependencies(step, i, stepIDs); err != nil {
-			return err
-		}
-
-		if err := v.validateStepErrorHandling(step, i); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// validateStepBasics validates basic step requirements (ID uniqueness)
-func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
-	if step.ID == "" {
-		return fmt.Errorf("step[%d].id is required", index)
-	}
-
-	if stepIDs[step.ID] {
-		return fmt.Errorf("duplicate step ID: %s", step.ID)
-	}
-	stepIDs[step.ID] = true
-
-	return nil
-}
-
-// validateStepType validates step type and type-specific requirements.
-// The type should have been inferred during loading if the 'tool' field is present.
-// Elicitation steps must always specify type explicitly for clarity.
-func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
-	// Check for ambiguous configuration: both tool and message fields present
-	if step.Tool != "" && step.Message != "" {
-		return fmt.Errorf("step[%d] cannot have both tool and message fields - use explicit type to clarify intent", index)
-	}
-
-	// Type is required at this point (should have been inferred during loading)
-	if step.Type == "" {
-		return fmt.Errorf("step[%d].type is required (or omit for tool steps with 'tool' field present)", index)
-	}
-
-	validTypes := []string{"tool", "elicitation"}
-	if !contains(validTypes, step.Type) {
-		return fmt.Errorf("step[%d].type must be one of: %s", index, strings.Join(validTypes, ", "))
-	}
-
-	switch step.Type {
-	case "tool":
-		if step.Tool == "" {
-			return fmt.Errorf("step[%d].tool is required for tool steps", index)
-		}
-
-	case "elicitation":
-		if step.Message == "" {
-			return fmt.Errorf("step[%d].message is required for elicitation steps", index)
-		}
-		if step.Schema.IsEmpty() {
-			return fmt.Errorf("step[%d].schema is required for elicitation steps", index)
-		}
-		// Note: timeout validation is optional - defaults are set during loading
-	}
-
-	return nil
-}
-
-// validateStepDependencies validates step dependency references
-func (*DefaultValidator) validateStepDependencies(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
-	for _, depID := range step.DependsOn {
-		if !stepIDs[depID] {
-			return fmt.Errorf("step[%d].dependsOn references non-existent step: %s", index, depID)
-		}
-	}
-	return nil
-}
-
-// validateStepErrorHandling validates step error handling configuration
-func (*DefaultValidator) validateStepErrorHandling(step *WorkflowStepConfig, index int) error {
-	if step.OnError == nil {
-		return nil
-	}
-
-	validActions := []string{"abort", "continue", "retry"}
-	if !contains(validActions, step.OnError.Action) {
-		return fmt.Errorf("step[%d].onError.action must be one of: %s", index, strings.Join(validActions, ", "))
-	}
-
-	if step.OnError.Action == "retry" && step.OnError.RetryCount <= 0 {
-		return fmt.Errorf("step[%d].onError.retryCount must be positive for retry action", index)
-	}
-
-	return nil
-}
+// Note: Workflow step validation is now handled by the shared ValidateWorkflowSteps function
+// in composite_validation.go, which is called by ValidateCompositeToolConfig.
 
 // Helper functions
 

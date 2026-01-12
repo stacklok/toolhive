@@ -601,6 +601,8 @@ type OutputProperty struct {
 	// Default is the fallback value if template expansion fails.
 	// Type coercion is applied to match the declared Type.
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
 	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
 }
 

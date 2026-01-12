@@ -97,7 +97,6 @@ spec:
                           description: |-
                             Default is the fallback value if template expansion fails.
                             Type coercion is applied to match the declared Type.
-                          type: object
                           x-kubernetes-preserve-unknown-fields: true
                         description:
                           description: Description is a human-readable description

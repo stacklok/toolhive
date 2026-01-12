@@ -202,177 +202,27 @@ func (r *VirtualMCPServer) validateAggregation() error {
 	return nil
 }
 
-// validateCompositeTools validates composite tool definitions in spec.config.compositeTools
+// validateCompositeTools validates composite tool definitions in spec.config.compositeTools.
+// Uses shared validation from pkg/vmcp/config/composite_validation.go.
 func (r *VirtualMCPServer) validateCompositeTools() error {
 	toolNames := make(map[string]bool)
 
 	for i := range r.Spec.Config.CompositeTools {
-		if err := r.validateConfigCompositeTool(i, &r.Spec.Config.CompositeTools[i], toolNames); err != nil {
+		tool := &r.Spec.Config.CompositeTools[i]
+
+		// Check for duplicate tool names
+		if toolNames[tool.Name] {
+			return fmt.Errorf("spec.config.compositeTools[%d].name %q is duplicated", i, tool.Name)
+		}
+		toolNames[tool.Name] = true
+
+		// Use shared validation
+		if err := config.ValidateCompositeToolConfig(
+			fmt.Sprintf("spec.config.compositeTools[%d]", i), tool,
+		); err != nil {
 			return err
 		}
 	}
 
-	return nil
-}
-
-// validateConfigCompositeTool validates a single composite tool from config
-func (*VirtualMCPServer) validateConfigCompositeTool(
-	index int, tool *config.CompositeToolConfig, toolNames map[string]bool,
-) error {
-	// Check for required fields
-	if tool.Name == "" {
-		return fmt.Errorf("spec.config.compositeTools[%d].name is required", index)
-	}
-	if tool.Description == "" {
-		return fmt.Errorf("spec.config.compositeTools[%d].description is required", index)
-	}
-	if len(tool.Steps) == 0 {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps must have at least one step", index)
-	}
-
-	// Check for duplicate tool names
-	if toolNames[tool.Name] {
-		return fmt.Errorf("spec.config.compositeTools[%d].name %q is duplicated", index, tool.Name)
-	}
-	toolNames[tool.Name] = true
-
-	// Validate steps
-	return validateConfigCompositeToolSteps(index, tool.Steps)
-}
-
-// validateConfigCompositeToolSteps validates all steps in a config composite tool
-func validateConfigCompositeToolSteps(toolIndex int, steps []config.WorkflowStepConfig) error {
-	stepIDs := make(map[string]bool)
-
-	for j := range steps {
-		if err := validateConfigCompositeToolStep(toolIndex, j, &steps[j], steps, stepIDs); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// validateConfigCompositeToolStep validates a single workflow step from config
-// nolint:gocyclo // validation functions have inherent complexity from multiple checks
-func validateConfigCompositeToolStep(
-	toolIndex, stepIndex int, step *config.WorkflowStepConfig, allSteps []config.WorkflowStepConfig, stepIDs map[string]bool,
-) error {
-	if step.ID == "" {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps[%d].id is required", toolIndex, stepIndex)
-	}
-
-	// Check for duplicate step IDs
-	if stepIDs[step.ID] {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps[%d].id %q is duplicated", toolIndex, stepIndex, step.ID)
-	}
-	stepIDs[step.ID] = true
-
-	// Validate step type
-	stepType := step.Type
-	if stepType == "" {
-		stepType = WorkflowStepTypeToolCall // default
-	}
-
-	if stepType != WorkflowStepTypeToolCall && stepType != WorkflowStepTypeElicitation {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps[%d].type must be tool or elicitation", toolIndex, stepIndex)
-	}
-
-	if stepType == WorkflowStepTypeToolCall && step.Tool == "" {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps[%d].tool is required when type is tool", toolIndex, stepIndex)
-	}
-
-	if stepType == WorkflowStepTypeElicitation && step.Message == "" {
-		return fmt.Errorf("spec.config.compositeTools[%d].steps[%d].message is required when type is elicitation", toolIndex, stepIndex)
-	}
-
-	// Validate dependsOn references
-	for _, depID := range step.DependsOn {
-		found := false
-		for i := range allSteps {
-			if allSteps[i].ID == depID {
-				found = true
-				break
-			}
-		}
-		if !found && !stepIDs[depID] {
-			return fmt.Errorf(
-				"spec.config.compositeTools[%d].steps[%d].dependsOn references unknown step ID %q",
-				toolIndex, stepIndex, depID)
-		}
-	}
-
-	// Validate error handling
-	if step.OnError != nil {
-		if err := validateConfigStepErrorHandling(toolIndex, stepIndex, step.OnError); err != nil {
-			return err
-		}
-	}
-
-	// Validate elicitation response handlers (only for elicitation steps)
-	if stepType == WorkflowStepTypeElicitation {
-		if step.OnDecline != nil {
-			if err := validateConfigElicitationResponseHandler(toolIndex, stepIndex, "onDecline", step.OnDecline); err != nil {
-				return err
-			}
-		}
-		if step.OnCancel != nil {
-			if err := validateConfigElicitationResponseHandler(toolIndex, stepIndex, "onCancel", step.OnCancel); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// validateConfigStepErrorHandling validates error handling configuration for a config step
-func validateConfigStepErrorHandling(toolIndex, stepIndex int, onError *config.StepErrorHandling) error {
-	validActions := []string{"abort", "continue", "retry"}
-	actionValid := false
-	for _, a := range validActions {
-		if onError.Action == a {
-			actionValid = true
-			break
-		}
-	}
-	if !actionValid {
-		return fmt.Errorf(
-			"spec.config.compositeTools[%d].steps[%d].onError.action must be one of: abort, continue, retry",
-			toolIndex, stepIndex)
-	}
-
-	if onError.Action == "retry" && onError.RetryCount == 0 {
-		return fmt.Errorf(
-			"spec.config.compositeTools[%d].steps[%d].onError.retryCount is required for action retry",
-			toolIndex, stepIndex)
-	}
-
-	if onError.Action != "retry" && (onError.RetryCount != 0 || onError.RetryDelay != 0) {
-		return fmt.Errorf(
-			"spec.config.compositeTools[%d].steps[%d].onError.retryCount/retryDelay invalid for action %q",
-			toolIndex, stepIndex, onError.Action)
-	}
-
-	return nil
-}
-
-// validateConfigElicitationResponseHandler validates an elicitation response handler from config
-func validateConfigElicitationResponseHandler(
-	toolIndex, stepIndex int, field string, handler *config.ElicitationResponseConfig,
-) error {
-	validActions := []string{"skip_remaining", "abort", "continue"}
-	actionValid := false
-	for _, a := range validActions {
-		if handler.Action == a {
-			actionValid = true
-			break
-		}
-	}
-	if !actionValid {
-		return fmt.Errorf(
-			"spec.config.compositeTools[%d].steps[%d].%s.action must be one of: skip_remaining, abort, continue",
-			toolIndex, stepIndex, field)
-	}
 	return nil
 }

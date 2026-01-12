@@ -542,9 +542,9 @@ func TestIsValidToolReference(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			valid := isValidToolReference(tt.tool)
+			valid := config.IsValidToolReference(tt.tool)
 			if valid != tt.wantValid {
-				t.Errorf("isValidToolReference() = %v, want %v", valid, tt.wantValid)
+				t.Errorf("config.IsValidToolReference() = %v, want %v", valid, tt.wantValid)
 			}
 		})
 	}

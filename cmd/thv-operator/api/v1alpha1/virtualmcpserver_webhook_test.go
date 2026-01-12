@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -465,7 +466,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.config.compositeTools[0].steps[0].type must be tool or elicitation",
+			errMsg:  "spec.config.compositeTools[0].steps[0].type must be one of: tool, elicitation",
 		},
 		{
 			name: "invalid aggregation - invalid conflict resolution strategy",
@@ -493,8 +494,8 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if tt.wantErr && err != nil && err.Error() != tt.errMsg {
-				t.Errorf("Validate() error message = %v, want %v", err.Error(), tt.errMsg)
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("Validate() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 			}
 		})
 	}
@@ -630,7 +631,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.config.compositeTools[0].steps[0].onError.retryCount is required for action retry",
+			errMsg:  "retryCount must be at least 1 when action is retry",
 		},
 		{
 			name: "valid error handling with retryDelay",
@@ -711,7 +712,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.config.compositeTools[0].steps[0].dependsOn references unknown step ID \"unknown-step\"",
+			errMsg:  "references unknown step \"unknown-step\"",
 		},
 		{
 			name: "valid elicitation with OnDecline skip_remaining",
@@ -931,7 +932,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.config.compositeTools[0].steps[0].onDecline.action must be one of: skip_remaining, abort, continue",
+			errMsg:  "onDecline.action must be one of: abort, continue, skip_remaining",
 		},
 		{
 			name: "invalid elicitation - OnCancel with invalid action",
@@ -959,7 +960,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.config.compositeTools[0].steps[0].onCancel.action must be one of: skip_remaining, abort, continue",
+			errMsg:  "onCancel.action must be one of: abort, continue, skip_remaining",
 		},
 	}
 
@@ -972,8 +973,8 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if tt.wantErr && err != nil && err.Error() != tt.errMsg {
-				t.Errorf("Validate() error message = %v, want %v", err.Error(), tt.errMsg)
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("Validate() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 			}
 		})
 	}

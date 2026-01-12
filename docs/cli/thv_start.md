@@ -29,7 +29,7 @@ thv start [workload-name] [flags]
 ```
   -a, --all            Restart all MCP servers
   -f, --foreground     Run the restarted workload in foreground mode
-  -g, --group string   Restart all MCP servers in a specific group
+  -g, --group string   Filter by group
   -h, --help           help for start
 ```
 

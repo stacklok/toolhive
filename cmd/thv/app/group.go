@@ -273,13 +273,13 @@ func deleteWorkloadsInGroup(
 	}
 
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
 	// Wait for the deletion to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 

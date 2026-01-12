@@ -1,4 +1,4 @@
-package authz
+package cedar
 
 import (
 	"testing"

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -31,9 +30,9 @@ Supports both container-based and remote MCP servers.`,
 }
 
 func init() {
-	restartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "Restart all MCP servers")
+	AddAllFlag(restartCmd, &restartAll, true, "Restart all MCP servers")
 	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the restarted workload in foreground mode")
-	restartCmd.Flags().StringVarP(&restartGroup, "group", "g", "", "Restart all MCP servers in a specific group")
+	AddGroupFlag(restartCmd, &restartGroup, true)
 
 	// Mark the flags as mutually exclusive
 	restartCmd.MarkFlagsMutuallyExclusive("all", "group")
@@ -70,13 +69,13 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Restart single workload
 	workloadName := args[0]
-	restartGroup, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, restartForeground)
+	complete, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, restartForeground)
 	if err != nil {
 		return err
 	}
 
-	// Wait for the restart group to complete
-	if err := restartGroup.Wait(); err != nil {
+	// Wait for the restart to complete
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to restart workload %s: %w", workloadName, err)
 	}
 
@@ -148,11 +147,11 @@ func restartMultipleWorkloads(
 
 	fmt.Printf("Restarting %d workload(s)...\n", len(workloadNames))
 
-	var restartRequests []*errgroup.Group
+	var restartRequests []workloads.CompletionFunc
 	// First, trigger the restarts concurrently.
 	for _, workloadName := range workloadNames {
 		fmt.Printf("Restarting %s...", workloadName)
-		restart, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, foreground)
+		complete, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, foreground)
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++
@@ -160,13 +159,13 @@ func restartMultipleWorkloads(
 		} else {
 			// If it didn't fail during the synchronous part of the operation,
 			// append to the list of restart requests in flight.
-			restartRequests = append(restartRequests, restart)
+			restartRequests = append(restartRequests, complete)
 		}
 	}
 
 	// Wait for all restarts to complete.
-	for _, restart := range restartRequests {
-		err := restart.Wait()
+	for _, complete := range restartRequests {
+		err := complete()
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++

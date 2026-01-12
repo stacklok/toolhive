@@ -7,6 +7,7 @@ import (
 )
 
 func TestCountToolTokens(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	tool := mcp.Tool{
@@ -28,6 +29,7 @@ func TestCountToolTokens(t *testing.T) {
 }
 
 func TestCountToolTokens_MinimalTool(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	// Minimal tool with just a name
@@ -44,6 +46,7 @@ func TestCountToolTokens_MinimalTool(t *testing.T) {
 }
 
 func TestCountToolTokens_NoDescription(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	tool := mcp.Tool{
@@ -59,6 +62,7 @@ func TestCountToolTokens_NoDescription(t *testing.T) {
 }
 
 func TestCountToolsTokens(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	tools := []mcp.Tool{
@@ -85,6 +89,7 @@ func TestCountToolsTokens(t *testing.T) {
 }
 
 func TestCountToolsTokens_EmptyList(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	tokens := counter.CountToolsTokens([]mcp.Tool{})
@@ -96,6 +101,7 @@ func TestCountToolsTokens_EmptyList(t *testing.T) {
 }
 
 func TestEstimateText(t *testing.T) {
+	t.Parallel()
 	counter := NewCounter()
 
 	tests := []struct {
@@ -127,6 +133,7 @@ func TestEstimateText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := counter.EstimateText(tt.text)
 			if got != tt.want {
 				t.Errorf("EstimateText() = %v, want %v", got, tt.want)

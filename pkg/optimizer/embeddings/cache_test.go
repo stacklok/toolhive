@@ -5,6 +5,7 @@ import (
 )
 
 func TestCache_GetPut(t *testing.T) {
+	t.Parallel()
 	c := newCache(2)
 
 	// Test cache miss
@@ -40,6 +41,7 @@ func TestCache_GetPut(t *testing.T) {
 }
 
 func TestCache_LRUEviction(t *testing.T) {
+	t.Parallel()
 	c := newCache(2)
 
 	// Add two items (fills cache)
@@ -72,6 +74,7 @@ func TestCache_LRUEviction(t *testing.T) {
 }
 
 func TestCache_MoveToFrontOnAccess(t *testing.T) {
+	t.Parallel()
 	c := newCache(2)
 
 	// Add two items
@@ -101,6 +104,7 @@ func TestCache_MoveToFrontOnAccess(t *testing.T) {
 }
 
 func TestCache_UpdateExistingKey(t *testing.T) {
+	t.Parallel()
 	c := newCache(2)
 
 	// Add initial value
@@ -127,6 +131,7 @@ func TestCache_UpdateExistingKey(t *testing.T) {
 }
 
 func TestCache_Clear(t *testing.T) {
+	t.Parallel()
 	c := newCache(10)
 
 	// Add some items

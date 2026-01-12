@@ -10,6 +10,7 @@ import (
 const testEmbeddingsEndpoint = "/v1/embeddings"
 
 func TestOpenAICompatibleBackend(t *testing.T) {
+	t.Parallel()
 	// Create a test server that mimics OpenAI-compatible API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testEmbeddingsEndpoint {
@@ -80,6 +81,7 @@ func TestOpenAICompatibleBackend(t *testing.T) {
 }
 
 func TestOpenAICompatibleBackendErrors(t *testing.T) {
+	t.Parallel()
 	// Test missing baseURL
 	_, err := NewOpenAICompatibleBackend("", "model", 384)
 	if err == nil {
@@ -94,6 +96,7 @@ func TestOpenAICompatibleBackendErrors(t *testing.T) {
 }
 
 func TestManagerWithVLLM(t *testing.T) {
+	t.Parallel()
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testEmbeddingsEndpoint {
@@ -149,6 +152,7 @@ func TestManagerWithVLLM(t *testing.T) {
 }
 
 func TestManagerWithUnified(t *testing.T) {
+	t.Parallel()
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testEmbeddingsEndpoint {
@@ -201,6 +205,7 @@ func TestManagerWithUnified(t *testing.T) {
 }
 
 func TestManagerFallbackBehavior(t *testing.T) {
+	t.Parallel()
 	// Test that invalid vLLM backend falls back to placeholder
 	config := &Config{
 		BackendType: "vllm",

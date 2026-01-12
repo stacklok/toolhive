@@ -5,6 +5,7 @@ import (
 )
 
 func TestTransportType_Valid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		transport TransportType
@@ -34,6 +35,7 @@ func TestTransportType_Valid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.transport.Valid(); got != tt.want {
 				t.Errorf("TransportType.Valid() = %v, want %v", got, tt.want)
 			}
@@ -42,6 +44,7 @@ func TestTransportType_Valid(t *testing.T) {
 }
 
 func TestTransportType_Value(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		transport TransportType
@@ -69,6 +72,7 @@ func TestTransportType_Value(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := tt.transport.Value()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("TransportType.Value() error = %v, wantErr %v", err, tt.wantErr)
@@ -82,6 +86,7 @@ func TestTransportType_Value(t *testing.T) {
 }
 
 func TestTransportType_Scan(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		value   interface{}
@@ -119,6 +124,7 @@ func TestTransportType_Scan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var transport TransportType
 			err := transport.Scan(tt.value)
 			if (err != nil) != tt.wantErr {
@@ -133,6 +139,7 @@ func TestTransportType_Scan(t *testing.T) {
 }
 
 func TestMCPStatus_Valid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status MCPStatus
@@ -162,6 +169,7 @@ func TestMCPStatus_Valid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.status.Valid(); got != tt.want {
 				t.Errorf("MCPStatus.Valid() = %v, want %v", got, tt.want)
 			}
@@ -170,6 +178,7 @@ func TestMCPStatus_Valid(t *testing.T) {
 }
 
 func TestMCPStatus_Value(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		status    MCPStatus
@@ -197,6 +206,7 @@ func TestMCPStatus_Value(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := tt.status.Value()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MCPStatus.Value() error = %v, wantErr %v", err, tt.wantErr)
@@ -210,6 +220,7 @@ func TestMCPStatus_Value(t *testing.T) {
 }
 
 func TestMCPStatus_Scan(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		value   interface{}
@@ -247,6 +258,7 @@ func TestMCPStatus_Scan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var status MCPStatus
 			err := status.Scan(tt.value)
 			if (err != nil) != tt.wantErr {

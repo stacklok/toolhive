@@ -7,6 +7,7 @@ import (
 )
 
 func TestRegistryServer_Validate(t *testing.T) {
+	t.Parallel()
 	url := "http://example.com/mcp"
 	pkg := "github.com/example/mcp-server"
 
@@ -57,6 +58,7 @@ func TestRegistryServer_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := tt.server.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RegistryServer.Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -66,6 +68,7 @@ func TestRegistryServer_Validate(t *testing.T) {
 }
 
 func TestToolDetailsToJSON(t *testing.T) {
+	t.Parallel()
 	tool := mcp.Tool{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -96,6 +99,7 @@ func TestToolDetailsToJSON(t *testing.T) {
 }
 
 func TestTokenMetrics_Validate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		metrics *TokenMetrics
@@ -155,6 +159,7 @@ func TestTokenMetrics_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := tt.metrics.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("TokenMetrics.Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -164,6 +169,7 @@ func TestTokenMetrics_Validate(t *testing.T) {
 }
 
 func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
+	t.Parallel()
 	registryDesc := "Registry description"
 	workloadDesc := "Workload description"
 
@@ -212,6 +218,7 @@ func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tt.w.EffectiveDescription()
 			if (got == nil) != (tt.want == nil) {
 				t.Errorf("WorkloadWithRegistry.EffectiveDescription() = %v, want %v", got, tt.want)
@@ -224,6 +231,7 @@ func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
 }
 
 func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		w    *WorkloadWithRegistry
@@ -261,6 +269,7 @@ func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.w.ServerNameForTools(); got != tt.want {
 				t.Errorf("WorkloadWithRegistry.ServerNameForTools() = %v, want %v", got, tt.want)
 			}

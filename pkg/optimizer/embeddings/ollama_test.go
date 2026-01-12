@@ -5,6 +5,7 @@ import (
 )
 
 func TestOllamaBackend_Placeholder(t *testing.T) {
+	t.Parallel()
 	// This test verifies that Ollama backend is properly structured
 	// Actual Ollama tests require ollama to be running
 
@@ -16,6 +17,7 @@ func TestOllamaBackend_Placeholder(t *testing.T) {
 }
 
 func TestManagerWithOllama(t *testing.T) {
+	t.Parallel()
 	// Test that Manager falls back to placeholder when Ollama is not available or model not pulled
 	config := &Config{
 		BackendType:  "ollama",
@@ -54,6 +56,7 @@ func TestManagerWithOllama(t *testing.T) {
 }
 
 func TestManagerWithPlaceholder(t *testing.T) {
+	t.Parallel()
 	// Test explicit placeholder backend
 	config := &Config{
 		BackendType: "placeholder",

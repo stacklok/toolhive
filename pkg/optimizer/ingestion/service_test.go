@@ -21,6 +21,13 @@ import (
 // 3. Ingest tools with embeddings
 // 4. Query the database
 func TestServiceCreationAndIngestion(t *testing.T) {
+	t.Parallel()
+
+	// Skip if sqlite-vec is not available
+	if os.Getenv("SQLITE_VEC_PATH") == "" {
+		t.Skip("Skipping test: SQLITE_VEC_PATH not set. Run 'task test-optimizer' to set up sqlite-vec.")
+	}
+
 	// Create database in persistent location for inspection
 	dbPath := "/tmp/optimizer-test.db"
 
@@ -235,6 +242,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 // TestServiceWithOllama demonstrates using real embeddings (requires Ollama running)
 // This test is skipped by default and can be enabled with -tags=integration
 func TestServiceWithOllama(t *testing.T) {
+	t.Parallel()
 	// Skip if not in integration mode
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -304,6 +312,7 @@ func TestServiceWithOllama(t *testing.T) {
 
 // TestCreateToolTextToEmbed tests the text generation for embeddings
 func TestCreateToolTextToEmbed(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		RuntimeMode: "docker",
 	}
@@ -339,6 +348,7 @@ func TestCreateToolTextToEmbed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := svc.createToolTextToEmbed(tt.tool, tt.serverName)
 			if got != tt.want {
 				t.Errorf("createToolTextToEmbed() = %v, want %v", got, tt.want)
@@ -349,6 +359,7 @@ func TestCreateToolTextToEmbed(t *testing.T) {
 
 // TestShouldSkipWorkload tests workload filtering
 func TestShouldSkipWorkload(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		RuntimeMode:      "docker",
 		SkippedWorkloads: []string{"inspector", "mcp-optimizer"},
@@ -371,6 +382,7 @@ func TestShouldSkipWorkload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := svc.shouldSkipWorkload(tt.workloadName)
 			if got != tt.wantSkip {
 				t.Errorf("shouldSkipWorkload(%q) = %v, want %v", tt.workloadName, got, tt.wantSkip)

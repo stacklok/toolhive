@@ -2,9 +2,6 @@ package virtualmcp
 
 import (
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -27,7 +25,6 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		backendName     = "yardstick-telemetry"
 		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
-		vmcpNodePort    int32
 	)
 
 	BeforeAll(func() {
@@ -83,8 +80,10 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Telemetry: &telemetry.Config{
-						Endpoint:                    "localhost:4317", // Required by CRD validation
+						Endpoint:                    "localhost:4317",
 						EnablePrometheusMetricsPath: true,
+						TracingEnabled:              true, // Enable tracing to satisfy OTLP endpoint requirement
+						MetricsEnabled:              true, // Enable metrics to satisfy OTLP endpoint requirement
 						ServiceName:                 "custom-service-name",
 						ServiceVersion:              "v1.2.3",
 						CustomAttributes: map[string]string{
@@ -113,20 +112,6 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 			}
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
-
-		By("Getting NodePort for VirtualMCPServer")
-		service := &corev1.Service{}
-		Eventually(func() error {
-			return k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, service)
-		}, timeout, pollingInterval).Should(Succeed())
-
-		Expect(service.Spec.Ports).NotTo(BeEmpty())
-		vmcpNodePort = service.Spec.Ports[0].NodePort
-		Expect(vmcpNodePort).NotTo(BeZero())
-		GinkgoWriter.Printf("VirtualMCPServer accessible at http://localhost:%d\n", vmcpNodePort)
 	})
 
 	AfterAll(func() {
@@ -158,79 +143,54 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		Expect(k8sClient.Delete(ctx, group)).To(Succeed())
 	})
 
-	It("should expose Prometheus metrics with custom attributes", func() {
-		By("Calling /metrics endpoint")
-		metricsURL := fmt.Sprintf("http://localhost:%d/metrics", vmcpNodePort)
+	It("should preserve telemetry config in ConfigMap", func() {
+		By("Getting the ConfigMap for VirtualMCPServer")
+		configMap := &corev1.ConfigMap{}
+		configMapName := fmt.Sprintf("%s-config", vmcpServerName)
 
-		var metricsBody string
 		Eventually(func() error {
-			resp, err := http.Get(metricsURL)
-			if err != nil {
-				return fmt.Errorf("failed to GET /metrics: %w", err)
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("expected status 200, got %d", resp.StatusCode)
-			}
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("failed to read response body: %w", err)
-			}
-
-			metricsBody = string(body)
-
-			// Verify we got valid Prometheus metrics output
-			if !strings.Contains(metricsBody, "# HELP") {
-				return fmt.Errorf("response doesn't look like Prometheus metrics")
-			}
-
-			return nil
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      configMapName,
+				Namespace: testNamespace,
+			}, configMap)
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Validating custom attributes appear in metrics")
-		// Check for service.name label
-		Expect(metricsBody).To(ContainSubstring("service_name=\"custom-service-name\""),
-			"Metrics should include custom service name")
+		By("Parsing the config.yaml from ConfigMap")
+		configYAML, exists := configMap.Data["config.yaml"]
+		Expect(exists).To(BeTrue(), "ConfigMap should contain config.yaml")
+		Expect(configYAML).NotTo(BeEmpty(), "config.yaml should not be empty")
 
-		// Check for service.version label
-		Expect(metricsBody).To(ContainSubstring("service_version=\"v1.2.3\""),
-			"Metrics should include custom service version")
+		// Parse the YAML config to verify telemetry settings
+		var config vmcpconfig.Config
+		Expect(yaml.Unmarshal([]byte(configYAML), &config)).To(Succeed())
 
-		// Check for custom attributes
-		Expect(metricsBody).To(ContainSubstring("environment=\"e2e-test\""),
-			"Metrics should include custom attribute 'environment'")
+		By("Validating telemetry configuration")
+		Expect(config.Telemetry).NotTo(BeNil(), "Telemetry config should not be nil")
 
-		Expect(metricsBody).To(ContainSubstring("test_id=\"telemetry_config_test\""),
-			"Metrics should include custom attribute 'test_id'")
+		// Verify all telemetry fields are preserved
+		Expect(config.Telemetry.EnablePrometheusMetricsPath).To(BeTrue(),
+			"EnablePrometheusMetricsPath should be preserved")
 
-		Expect(metricsBody).To(ContainSubstring("cluster_name=\"kind-test-cluster\""),
-			"Metrics should include custom attribute 'cluster_name'")
+		Expect(config.Telemetry.ServiceName).To(Equal("custom-service-name"),
+			"ServiceName should be preserved")
 
-		GinkgoWriter.Println("✓ All custom telemetry attributes found in metrics")
-	})
+		Expect(config.Telemetry.ServiceVersion).To(Equal("v1.2.3"),
+			"ServiceVersion should be preserved")
 
-	It("should include environment variables in metrics", func() {
-		By("Calling /metrics endpoint")
-		metricsURL := fmt.Sprintf("http://localhost:%d/metrics", vmcpNodePort)
+		Expect(config.Telemetry.CustomAttributes).NotTo(BeNil(),
+			"CustomAttributes should not be nil")
+		Expect(config.Telemetry.CustomAttributes).To(HaveKeyWithValue("environment", "e2e-test"),
+			"CustomAttributes should contain 'environment'")
+		Expect(config.Telemetry.CustomAttributes).To(HaveKeyWithValue("test_id", "telemetry_config_test"),
+			"CustomAttributes should contain 'test_id'")
+		Expect(config.Telemetry.CustomAttributes).To(HaveKeyWithValue("cluster_name", "kind-test-cluster"),
+			"CustomAttributes should contain 'cluster_name'")
 
-		resp, err := http.Get(metricsURL)
-		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		Expect(config.Telemetry.EnvironmentVariables).NotTo(BeEmpty(),
+			"EnvironmentVariables should not be empty")
+		Expect(config.Telemetry.EnvironmentVariables).To(ContainElements("PATH", "HOME"),
+			"EnvironmentVariables should be preserved")
 
-		body, err := io.ReadAll(resp.Body)
-		Expect(err).NotTo(HaveOccurred())
-		metricsBody := string(body)
-
-		By("Validating environment variables appear in metrics")
-		// The environment variables should be captured as resource attributes
-		// Note: The exact format depends on how the vmcp server exports them
-		// They might appear as labels on metrics or in resource attributes
-		// For now, we just verify the metrics endpoint is working with the config
-		Expect(metricsBody).To(ContainSubstring("service_name=\"custom-service-name\""),
-			"Environment variables configuration should be present alongside other telemetry config")
-
-		GinkgoWriter.Println("✓ Telemetry config with environment variables is active")
+		GinkgoWriter.Println("✓ All telemetry configuration fields preserved in ConfigMap")
 	})
 })

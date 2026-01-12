@@ -151,6 +151,12 @@ spec:
           - yardstick-streamable
           - fetch
           - yardstick-sse
+    # Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   # Incoming authentication (client -> vMCP)
   # Using OIDC for secure authentication
@@ -226,10 +232,3 @@ spec:
                     operator: In
                     values:
                       - production
-
-  # Operational settings
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail

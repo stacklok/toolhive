@@ -188,8 +188,9 @@ spec:
             name: test-vmcp-controller
             namespace: toolhive-system
           spec:
-            operational:
-              logLevel: debug
+            config:
+              operational:
+                logLevel: debug
 
     - script:
         content: |

@@ -245,32 +245,35 @@ spec:
           dependsOn: ["confirm_deploy"]
 ```
 
-### `.spec.operational` (optional)
+### `.spec.config.operational` (optional)
 
 Defines operational settings like timeouts and health checks.
 
 **Type**: `OperationalConfig`
 
 **Fields**:
+- `logLevel` (string, optional): Log level for the Virtual MCP server. Set to "debug" to enable debug logging.
 - `timeouts` (TimeoutConfig, optional): Timeout configuration
 - `failureHandling` (FailureHandlingConfig, optional): Failure handling configuration
 
 **Example**:
 ```yaml
 spec:
-  operational:
-    timeouts:
-      default: 30s
-      perWorkload:
-        github: 45s
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
-      circuitBreaker:
-        enabled: true
-        failureThreshold: 5
-        timeout: 60s
+  config:
+    operational:
+      logLevel: debug
+      timeouts:
+        default: 30s
+        perWorkload:
+          github: 45s
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
+        circuitBreaker:
+          enabled: true
+          failureThreshold: 5
+          timeout: 60s
 ```
 
 ### `.spec.podTemplateSpec` (optional)

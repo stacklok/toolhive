@@ -561,52 +561,63 @@ spec:
                     description: Operational configures operational settings.
                     properties:
                       failureHandling:
-                        description: FailureHandling configures failure handling.
+                        description: FailureHandling configures failure handling behavior.
                         properties:
                           circuitBreaker:
                             description: CircuitBreaker configures circuit breaker
-                              settings.
+                              behavior.
                             properties:
                               enabled:
-                                description: Enabled indicates if circuit breaker
+                                default: false
+                                description: Enabled controls whether circuit breaker
                                   is enabled.
                                 type: boolean
                               failureThreshold:
-                                description: FailureThreshold is how many failures
-                                  trigger open circuit.
+                                default: 5
+                                description: FailureThreshold is the number of failures
+                                  before opening the circuit.
                                 type: integer
                               timeout:
-                                description: Timeout is how long to keep circuit open.
+                                default: 60s
+                                description: Timeout is the duration to wait before
+                                  attempting to close the circuit.
                                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                                 type: string
-                            required:
-                            - enabled
-                            - failureThreshold
-                            - timeout
                             type: object
                           healthCheckInterval:
-                            description: HealthCheckInterval is how often to check
-                              backend health.
+                            default: 30s
+                            description: HealthCheckInterval is the interval between
+                              health checks.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           partialFailureMode:
+                            default: fail
                             description: |-
-                              PartialFailureMode defines behavior when some backends fail.
-                              Options: "fail" (fail entire request), "best_effort" (return partial results)
+                              PartialFailureMode defines behavior when some backends are unavailable.
+                              - fail: Fail entire request if any backend is unavailable
+                              - best_effort: Continue with available backends
+                            enum:
+                            - fail
+                            - best_effort
                             type: string
                           unhealthyThreshold:
-                            description: UnhealthyThreshold is how many failures before
-                              marking unhealthy.
+                            default: 3
+                            description: UnhealthyThreshold is the number of consecutive
+                              failures before marking unhealthy.
                             type: integer
-                        required:
-                        - healthCheckInterval
-                        - partialFailureMode
-                        - unhealthyThreshold
                         type: object
+                      logLevel:
+                        description: |-
+                          LogLevel sets the logging level for the Virtual MCP server.
+                          Set to "debug" to enable debug logging. When not set, defaults to info level.
+                        enum:
+                        - debug
+                        type: string
                       timeouts:
-                        description: Timeouts configures request timeouts.
+                        description: Timeouts configures timeout settings.
                         properties:
                           default:
+                            default: 30s
                             description: Default is the default timeout for backend
                               requests.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
@@ -615,11 +626,9 @@ spec:
                             additionalProperties:
                               pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                               type: string
-                            description: PerWorkload contains per-workload timeout
+                            description: PerWorkload defines per-workload timeout
                               overrides.
                             type: object
-                        required:
-                        - default
                         type: object
                     type: object
                   outgoingAuth:
@@ -1094,74 +1103,6 @@ spec:
                     type: string
                 required:
                 - type
-                type: object
-              operational:
-                description: Operational defines operational settings like timeouts
-                  and health checks
-                properties:
-                  failureHandling:
-                    description: FailureHandling configures failure handling behavior
-                    properties:
-                      circuitBreaker:
-                        description: CircuitBreaker configures circuit breaker behavior
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether circuit breaker
-                              is enabled
-                            type: boolean
-                          failureThreshold:
-                            default: 5
-                            description: FailureThreshold is the number of failures
-                              before opening the circuit
-                            type: integer
-                          timeout:
-                            default: 60s
-                            description: Timeout is the duration to wait before attempting
-                              to close the circuit
-                            type: string
-                        type: object
-                      healthCheckInterval:
-                        default: 30s
-                        description: HealthCheckInterval is the interval between health
-                          checks
-                        type: string
-                      partialFailureMode:
-                        default: fail
-                        description: |-
-                          PartialFailureMode defines behavior when some backends are unavailable
-                          - fail: Fail entire request if any backend is unavailable
-                          - best_effort: Continue with available backends
-                        enum:
-                        - fail
-                        - best_effort
-                        type: string
-                      unhealthyThreshold:
-                        default: 3
-                        description: UnhealthyThreshold is the number of consecutive
-                          failures before marking unhealthy
-                        type: integer
-                    type: object
-                  logLevel:
-                    description: |-
-                      LogLevel sets the logging level for the Virtual MCP server.
-                      Set to "debug" to enable debug logging. When not set, defaults to info level.
-                    enum:
-                    - debug
-                    type: string
-                  timeouts:
-                    description: Timeouts configures timeout settings
-                    properties:
-                      default:
-                        default: 30s
-                        description: Default is the default timeout for backend requests
-                        type: string
-                      perWorkload:
-                        additionalProperties:
-                          type: string
-                        description: PerWorkload defines per-workload timeout overrides
-                        type: object
-                    type: object
                 type: object
               outgoingAuth:
                 description: |-

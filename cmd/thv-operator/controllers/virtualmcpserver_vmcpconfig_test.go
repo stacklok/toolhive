@@ -601,6 +601,17 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 						},
 					},
 				},
+				// Operational with PerWorkload timeouts (map)
+				Operational: &vmcpconfig.OperationalConfig{
+					Timeouts: &vmcpconfig.TimeoutConfig{
+						Default: vmcpconfig.Duration(30 * time.Second),
+						PerWorkload: map[string]vmcpconfig.Duration{
+							"workload-zebra":  vmcpconfig.Duration(60 * time.Second),
+							"workload-alpha":  vmcpconfig.Duration(45 * time.Second),
+							"workload-middle": vmcpconfig.Duration(50 * time.Second),
+						},
+					},
+				},
 			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
@@ -614,17 +625,6 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 					},
 					"backend-middle": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
-				},
-			},
-			// Operational with PerWorkload timeouts (map)
-			Operational: &mcpv1alpha1.OperationalConfig{
-				Timeouts: &mcpv1alpha1.TimeoutConfig{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"workload-zebra":  "60s",
-						"workload-alpha":  "45s",
-						"workload-middle": "50s",
 					},
 				},
 			},

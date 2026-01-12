@@ -161,7 +161,7 @@ _Appears in:_
 
 
 
-CircuitBreakerConfig configures circuit breaker.
+CircuitBreakerConfig configures circuit breaker behavior.
 
 
 
@@ -170,9 +170,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled indicates if circuit breaker is enabled. |  |  |
-| `failureThreshold` _integer_ | FailureThreshold is how many failures trigger open circuit. |  |  |
-| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is how long to keep circuit open. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `enabled` _boolean_ | Enabled controls whether circuit breaker is enabled. | false |  |
+| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit. | 5 |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the duration to wait before attempting to close the circuit. | 60s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 
 
 #### vmcp.config.CompositeToolConfig
@@ -287,7 +287,7 @@ _Appears in:_
 
 
 
-FailureHandlingConfig configures failure handling.
+FailureHandlingConfig configures failure handling behavior.
 
 
 
@@ -296,10 +296,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is how often to check backend health. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
-| `unhealthyThreshold` _integer_ | UnhealthyThreshold is how many failures before marking unhealthy. |  |  |
-| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends fail.<br />Options: "fail" (fail entire request), "best_effort" (return partial results) |  |  |
-| `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker settings. |  |  |
+| `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is the interval between health checks. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy. | 3 |  |
+| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends are unavailable.<br />- fail: Fail entire request if any backend is unavailable<br />- best_effort: Continue with available backends | fail | Enum: [fail best_effort] <br /> |
+| `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior. |  |  |
 
 
 #### vmcp.config.IncomingAuthConfig
@@ -357,6 +357,7 @@ _Appears in:_
 
 
 OperationalConfig contains operational settings.
+OperationalConfig defines operational settings like timeouts and health checks.
 
 
 
@@ -365,8 +366,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures request timeouts. |  |  |
-| `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
+| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
+| `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  |  |
+| `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  |  |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -460,7 +462,7 @@ _Appears in:_
 
 
 
-TimeoutConfig configures timeouts.
+TimeoutConfig configures timeout settings.
 
 
 
@@ -469,8 +471,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
-| `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload contains per-workload timeout overrides. |  |  |
+| `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload defines per-workload timeout overrides. |  |  |
 
 
 #### vmcp.config.ToolConfigRef
@@ -733,24 +735,6 @@ _Appears in:_
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
-#### api.v1alpha1.CircuitBreakerConfig
-
-
-
-CircuitBreakerConfig configures circuit breaker behavior
-
-
-
-_Appears in:_
-- [api.v1alpha1.FailureHandlingConfig](#apiv1alpha1failurehandlingconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether circuit breaker is enabled | false |  |
-| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit | 5 |  |
-| `timeout` _string_ | Timeout is the duration to wait before attempting to close the circuit | 60s |  |
-
-
 #### api.v1alpha1.ConfigMapAuthzRef
 
 
@@ -859,25 +843,6 @@ _Appears in:_
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
-
-
-#### api.v1alpha1.FailureHandlingConfig
-
-
-
-FailureHandlingConfig configures failure handling behavior
-
-
-
-_Appears in:_
-- [api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `healthCheckInterval` _string_ | HealthCheckInterval is the interval between health checks | 30s |  |
-| `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy | 3 |  |
-| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends are unavailable<br />- fail: Fail entire request if any backend is unavailable<br />- best_effort: Continue with available backends | fail | Enum: [fail best_effort] <br /> |
-| `circuitBreaker` _[api.v1alpha1.CircuitBreakerConfig](#apiv1alpha1circuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior |  |  |
 
 
 #### api.v1alpha1.GitSource
@@ -1854,24 +1819,6 @@ _Appears in:_
 | `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 |  |
 
 
-#### api.v1alpha1.OperationalConfig
-
-
-
-OperationalConfig defines operational settings
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
-| `timeouts` _[api.v1alpha1.TimeoutConfig](#apiv1alpha1timeoutconfig)_ | Timeouts configures timeout settings |  |  |
-| `failureHandling` _[api.v1alpha1.FailureHandlingConfig](#apiv1alpha1failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
-
-
 #### api.v1alpha1.OutboundNetworkPermissions
 
 
@@ -2217,23 +2164,6 @@ _Appears in:_
 | `prometheus` _[api.v1alpha1.PrometheusConfig](#apiv1alpha1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
 
 
-#### api.v1alpha1.TimeoutConfig
-
-
-
-TimeoutConfig configures timeout settings
-
-
-
-_Appears in:_
-- [api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `default` _string_ | Default is the default timeout for backend requests | 30s |  |
-| `perWorkload` _object (keys:string, values:string)_ | PerWorkload defines per-workload timeout overrides |  |  |
-
-
 #### api.v1alpha1.TokenExchangeConfig
 
 
@@ -2480,7 +2410,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
 | `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  |  |
-| `operational` _[api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required.<br />NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE. |  | Type: object <br /> |

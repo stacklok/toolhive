@@ -61,6 +61,10 @@ spec:
       conflictResolution: prefix
       conflictResolutionConfig:
         prefixFormat: "{workload}_"
+    # Optional: Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
 
   # Incoming authentication (client -> vMCP)
   # Using anonymous auth for simplicity - replace with OIDC in production
@@ -79,8 +83,3 @@ spec:
 
   # Optional: Service type (default is ClusterIP)
   # serviceType: ClusterIP
-
-  # Optional: Operational settings
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s

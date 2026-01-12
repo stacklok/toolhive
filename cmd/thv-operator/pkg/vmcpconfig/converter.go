@@ -4,7 +4,6 @@ package vmcpconfig
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -117,10 +116,8 @@ func (c *Converter) Convert(
 		config.CompositeTools = compositeTools
 	}
 
-	// Convert Operational
-	if vmcp.Spec.Operational != nil {
-		config.Operational = c.convertOperational(ctx, vmcp)
-	}
+	// Use Operational from spec.config directly
+	config.Operational = vmcp.Spec.Config.Operational
 
 	config.Telemetry = spectoconfig.ConvertTelemetryConfig(
 		ctx,
@@ -600,65 +597,6 @@ func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 		seen[tools[i].Name] = true
 	}
 	return nil
-}
-
-// convertOperational converts OperationalConfig from CRD to vmcp config
-func (*Converter) convertOperational(
-	_ context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.OperationalConfig {
-	operational := &vmcpconfig.OperationalConfig{}
-
-	if vmcp.Spec.Operational.Timeouts != nil {
-		operational.Timeouts = &vmcpconfig.TimeoutConfig{
-			PerWorkload: make(map[string]vmcpconfig.Duration),
-		}
-
-		// Parse default timeout
-		if vmcp.Spec.Operational.Timeouts.Default != "" {
-			if duration, err := time.ParseDuration(vmcp.Spec.Operational.Timeouts.Default); err == nil {
-				operational.Timeouts.Default = vmcpconfig.Duration(duration)
-			}
-		}
-
-		// Parse per-workload timeouts
-		for workload, timeoutStr := range vmcp.Spec.Operational.Timeouts.PerWorkload {
-			if duration, err := time.ParseDuration(timeoutStr); err == nil {
-				operational.Timeouts.PerWorkload[workload] = vmcpconfig.Duration(duration)
-			}
-		}
-	}
-
-	if vmcp.Spec.Operational.FailureHandling != nil {
-		operational.FailureHandling = &vmcpconfig.FailureHandlingConfig{
-			UnhealthyThreshold: vmcp.Spec.Operational.FailureHandling.UnhealthyThreshold,
-			PartialFailureMode: vmcp.Spec.Operational.FailureHandling.PartialFailureMode,
-		}
-
-		// Parse health check interval
-		if vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
-			if duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval); err == nil {
-				operational.FailureHandling.HealthCheckInterval = vmcpconfig.Duration(duration)
-			}
-		}
-
-		// Convert circuit breaker config
-		if vmcp.Spec.Operational.FailureHandling.CircuitBreaker != nil {
-			operational.FailureHandling.CircuitBreaker = &vmcpconfig.CircuitBreakerConfig{
-				Enabled:          vmcp.Spec.Operational.FailureHandling.CircuitBreaker.Enabled,
-				FailureThreshold: vmcp.Spec.Operational.FailureHandling.CircuitBreaker.FailureThreshold,
-			}
-
-			// Parse circuit breaker timeout
-			if vmcp.Spec.Operational.FailureHandling.CircuitBreaker.Timeout != "" {
-				if duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.CircuitBreaker.Timeout); err == nil {
-					operational.FailureHandling.CircuitBreaker.Timeout = vmcpconfig.Duration(duration)
-				}
-			}
-		}
-	}
-
-	return operational
 }
 
 // telemetryConfigFromEmbedded constructs a v1alpha1.TelemetryConfig from the embedded telemetry.Config.

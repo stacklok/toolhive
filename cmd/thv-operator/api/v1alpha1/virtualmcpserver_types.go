@@ -24,11 +24,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
-	// Operational defines operational settings like timeouts and health checks
-	// TODO(jerm-dro): migrate to the Config field.
-	// +optional
-	Operational *OperationalConfig `json:"operational,omitempty"`
-
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
@@ -111,76 +106,6 @@ type BackendAuthConfig struct {
 }
 
 // OperationalConfig defines operational settings
-type OperationalConfig struct {
-	// LogLevel sets the logging level for the Virtual MCP server.
-	// Set to "debug" to enable debug logging. When not set, defaults to info level.
-	// +kubebuilder:validation:Enum=debug
-	// +optional
-	LogLevel string `json:"logLevel,omitempty"`
-
-	// Timeouts configures timeout settings
-	// +optional
-	Timeouts *TimeoutConfig `json:"timeouts,omitempty"`
-
-	// FailureHandling configures failure handling behavior
-	// +optional
-	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty"`
-}
-
-// TimeoutConfig configures timeout settings
-type TimeoutConfig struct {
-	// Default is the default timeout for backend requests
-	// +kubebuilder:default="30s"
-	// +optional
-	Default string `json:"default,omitempty"`
-
-	// PerWorkload defines per-workload timeout overrides
-	// +optional
-	PerWorkload map[string]string `json:"perWorkload,omitempty"`
-}
-
-// FailureHandlingConfig configures failure handling behavior
-type FailureHandlingConfig struct {
-	// HealthCheckInterval is the interval between health checks
-	// +kubebuilder:default="30s"
-	// +optional
-	HealthCheckInterval string `json:"healthCheckInterval,omitempty"`
-
-	// UnhealthyThreshold is the number of consecutive failures before marking unhealthy
-	// +kubebuilder:default=3
-	// +optional
-	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
-
-	// PartialFailureMode defines behavior when some backends are unavailable
-	// - fail: Fail entire request if any backend is unavailable
-	// - best_effort: Continue with available backends
-	// +kubebuilder:validation:Enum=fail;best_effort
-	// +kubebuilder:default=fail
-	// +optional
-	PartialFailureMode string `json:"partialFailureMode,omitempty"`
-
-	// CircuitBreaker configures circuit breaker behavior
-	// +optional
-	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty"`
-}
-
-// CircuitBreakerConfig configures circuit breaker behavior
-type CircuitBreakerConfig struct {
-	// Enabled controls whether circuit breaker is enabled
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// FailureThreshold is the number of failures before opening the circuit
-	// +kubebuilder:default=5
-	// +optional
-	FailureThreshold int `json:"failureThreshold,omitempty"`
-
-	// Timeout is the duration to wait before attempting to close the circuit
-	// +kubebuilder:default="60s"
-	// +optional
-	Timeout string `json:"timeout,omitempty"`
-}
 
 // Backend status constants for DiscoveredBackend.Status
 const (

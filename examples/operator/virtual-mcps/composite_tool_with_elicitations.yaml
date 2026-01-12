@@ -210,6 +210,16 @@ spec:
       conflictResolution: prefix
       conflictResolutionConfig:
         prefixFormat: "{workload}_"
+    # Reference the composite tool definition with elicitations
+    compositeToolRefs:
+      - name: interactive-deploy
+    operational:
+      timeouts:
+        default: 30m
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   incomingAuth:
     type: anonymous
@@ -222,18 +232,6 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Reference the composite tool definition with elicitations
-  compositeToolRefs:
-    - name: interactive-deploy
-
-  operational:
-    timeouts:
-      default: 30m
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
 
 ---
 # Example usage from MCP client:

@@ -337,57 +337,85 @@ type ToolOverride struct {
 }
 
 // OperationalConfig contains operational settings.
+// OperationalConfig defines operational settings like timeouts and health checks.
 // +kubebuilder:object:generate=true
 // +gendoc
 type OperationalConfig struct {
-	// Timeouts configures request timeouts.
+	// LogLevel sets the logging level for the Virtual MCP server.
+	// The only valid value is "debug" to enable debug logging.
+	// When omitted or empty, the server uses info level logging.
+	// +kubebuilder:validation:Enum=debug
+	// +optional
+	LogLevel string `json:"logLevel,omitempty" yaml:"logLevel,omitempty"`
+
+	// Timeouts configures timeout settings.
+	// +optional
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty" yaml:"timeouts,omitempty"`
 
-	// FailureHandling configures failure handling.
+	// FailureHandling configures failure handling behavior.
+	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
 }
 
-// TimeoutConfig configures timeouts.
+// TimeoutConfig configures timeout settings.
 // +kubebuilder:object:generate=true
 // +gendoc
 type TimeoutConfig struct {
 	// Default is the default timeout for backend requests.
-	Default Duration `json:"default" yaml:"default"`
+	// +kubebuilder:default="30s"
+	// +optional
+	Default Duration `json:"default,omitempty" yaml:"default,omitempty"`
 
-	// PerWorkload contains per-workload timeout overrides.
+	// PerWorkload defines per-workload timeout overrides.
+	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
 }
 
-// FailureHandlingConfig configures failure handling.
+// FailureHandlingConfig configures failure handling behavior.
 // +kubebuilder:object:generate=true
 // +gendoc
 type FailureHandlingConfig struct {
-	// HealthCheckInterval is how often to check backend health.
-	HealthCheckInterval Duration `json:"healthCheckInterval" yaml:"healthCheckInterval"`
+	// HealthCheckInterval is the interval between health checks.
+	// +kubebuilder:default="30s"
+	// +optional
+	HealthCheckInterval Duration `json:"healthCheckInterval,omitempty" yaml:"healthCheckInterval,omitempty"`
 
-	// UnhealthyThreshold is how many failures before marking unhealthy.
-	UnhealthyThreshold int `json:"unhealthyThreshold" yaml:"unhealthyThreshold"`
+	// UnhealthyThreshold is the number of consecutive failures before marking unhealthy.
+	// +kubebuilder:default=3
+	// +optional
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty" yaml:"unhealthyThreshold,omitempty"`
 
-	// PartialFailureMode defines behavior when some backends fail.
-	// Options: "fail" (fail entire request), "best_effort" (return partial results)
-	PartialFailureMode string `json:"partialFailureMode" yaml:"partialFailureMode"`
+	// PartialFailureMode defines behavior when some backends are unavailable.
+	// - fail: Fail entire request if any backend is unavailable
+	// - best_effort: Continue with available backends
+	// +kubebuilder:validation:Enum=fail;best_effort
+	// +kubebuilder:default=fail
+	// +optional
+	PartialFailureMode string `json:"partialFailureMode,omitempty" yaml:"partialFailureMode,omitempty"`
 
-	// CircuitBreaker configures circuit breaker settings.
+	// CircuitBreaker configures circuit breaker behavior.
+	// +optional
 	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty" yaml:"circuitBreaker,omitempty"`
 }
 
-// CircuitBreakerConfig configures circuit breaker.
+// CircuitBreakerConfig configures circuit breaker behavior.
 // +kubebuilder:object:generate=true
 // +gendoc
 type CircuitBreakerConfig struct {
-	// Enabled indicates if circuit breaker is enabled.
-	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Enabled controls whether circuit breaker is enabled.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
-	// FailureThreshold is how many failures trigger open circuit.
-	FailureThreshold int `json:"failureThreshold" yaml:"failureThreshold"`
+	// FailureThreshold is the number of failures before opening the circuit.
+	// +kubebuilder:default=5
+	// +optional
+	FailureThreshold int `json:"failureThreshold,omitempty" yaml:"failureThreshold,omitempty"`
 
-	// Timeout is how long to keep circuit open.
-	Timeout Duration `json:"timeout" yaml:"timeout"`
+	// Timeout is the duration to wait before attempting to close the circuit.
+	// +kubebuilder:default="60s"
+	// +optional
+	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // CompositeToolConfig defines a composite tool workflow.

@@ -369,3 +369,21 @@ func TestK8sReporter_ImplementsInterface(t *testing.T) {
 	// Verify K8sReporter implements Reporter interface
 	var _ Reporter = (*K8sReporter)(nil)
 }
+
+func TestK8sReporter_Stop_Multiple(t *testing.T) {
+	t.Parallel()
+
+	// Create a reporter with minimal setup
+	reporter := &K8sReporter{
+		name:      "test",
+		namespace: "default",
+		stopChan:  make(chan struct{}),
+	}
+
+	// Calling Stop multiple times should not panic
+	reporter.Stop()
+	reporter.Stop()
+	reporter.Stop()
+
+	// If we reach here without panic, the test passes
+}

@@ -30,6 +30,7 @@ type K8sReporter struct {
 	stopChan chan struct{}
 	wg       sync.WaitGroup
 	mu       sync.Mutex
+	stopOnce sync.Once
 }
 
 // NewK8sReporter creates a new K8sReporter instance.
@@ -162,17 +163,20 @@ func (r *K8sReporter) Start(ctx context.Context, interval time.Duration, statusF
 
 // Stop stops periodic status reporting and cleans up resources.
 // This method blocks until the reporter goroutine has fully stopped.
+// It is safe to call Stop multiple times.
 func (r *K8sReporter) Stop() {
-	r.mu.Lock()
-	if r.ticker != nil {
-		r.ticker.Stop()
-		r.ticker = nil
-	}
-	r.mu.Unlock()
+	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		if r.ticker != nil {
+			r.ticker.Stop()
+			r.ticker = nil
+		}
+		r.mu.Unlock()
 
-	close(r.stopChan)
-	r.wg.Wait()
-	logger.Debugf("K8sReporter cleanup complete for %s/%s", r.namespace, r.name)
+		close(r.stopChan)
+		r.wg.Wait()
+		logger.Debugf("K8sReporter cleanup complete for %s/%s", r.namespace, r.name)
+	})
 }
 
 // updateStatus converts RuntimeStatus to VirtualMCPServerStatus and updates the resource.

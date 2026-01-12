@@ -68,7 +68,7 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
 		Resources: []string{"virtualmcpservers/status"},
-		Verbs:     []string{"update", "patch"},
+		Verbs:     []string{"get", "update", "patch"},
 	},
 }
 

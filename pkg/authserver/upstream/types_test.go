@@ -206,8 +206,9 @@ func TestConfig_Validate(t *testing.T) {
 		errContains string
 	}{
 		{
-			name: "valid config",
+			name: "valid OIDC config",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
@@ -216,18 +217,67 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing issuer",
+			name: "valid OAuth2 config",
 			config: Config{
+				Type:                  ProviderTypeOAuth2,
+				AuthorizationEndpoint: "https://example.com/oauth/authorize",
+				TokenEndpoint:         "https://example.com/oauth/token",
+				ClientID:              "client-id",
+				ClientSecret:          "client-secret",
+				RedirectURI:           "https://example.com/oauth/callback",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing type",
+			config: Config{
+				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
 				RedirectURI:  "https://example.com/oauth/callback",
 			},
 			wantErr:     true,
-			errContains: "upstream issuer is required",
+			errContains: "upstream provider type must be 'oidc' or 'oauth2'",
+		},
+		{
+			name: "missing issuer for OIDC",
+			config: Config{
+				Type:         ProviderTypeOIDC,
+				ClientID:     "client-id",
+				ClientSecret: "client-secret",
+				RedirectURI:  "https://example.com/oauth/callback",
+			},
+			wantErr:     true,
+			errContains: "upstream issuer is required for OIDC providers",
+		},
+		{
+			name: "missing authorization_endpoint for OAuth2",
+			config: Config{
+				Type:          ProviderTypeOAuth2,
+				TokenEndpoint: "https://example.com/oauth/token",
+				ClientID:      "client-id",
+				ClientSecret:  "client-secret",
+				RedirectURI:   "https://example.com/oauth/callback",
+			},
+			wantErr:     true,
+			errContains: "upstream authorization_endpoint is required for OAuth2 providers",
+		},
+		{
+			name: "missing token_endpoint for OAuth2",
+			config: Config{
+				Type:                  ProviderTypeOAuth2,
+				AuthorizationEndpoint: "https://example.com/oauth/authorize",
+				ClientID:              "client-id",
+				ClientSecret:          "client-secret",
+				RedirectURI:           "https://example.com/oauth/callback",
+			},
+			wantErr:     true,
+			errContains: "upstream token_endpoint is required for OAuth2 providers",
 		},
 		{
 			name: "missing client_id",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientSecret: "client-secret",
 				RedirectURI:  "https://example.com/oauth/callback",
@@ -238,6 +288,7 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "missing client_secret",
 			config: Config{
+				Type:        ProviderTypeOIDC,
 				Issuer:      "https://accounts.google.com",
 				ClientID:    "client-id",
 				RedirectURI: "https://example.com/oauth/callback",
@@ -248,6 +299,7 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "missing redirect_uri",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
@@ -258,6 +310,7 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "invalid redirect_uri - HTTP to non-loopback",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
@@ -269,6 +322,7 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "invalid redirect_uri - contains fragment",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
@@ -280,6 +334,7 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "valid config with localhost redirect",
 			config: Config{
+				Type:         ProviderTypeOIDC,
 				Issuer:       "https://accounts.google.com",
 				ClientID:     "client-id",
 				ClientSecret: "client-secret",
@@ -370,6 +425,50 @@ func TestIsLoopbackAddress(t *testing.T) {
 
 			got := isLoopbackAddress(tt.host)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestConfig_IsOIDC(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  ProviderType
+		want bool
+	}{
+		{name: "OIDC type", typ: ProviderTypeOIDC, want: true},
+		{name: "OAuth2 type", typ: ProviderTypeOAuth2, want: false},
+		{name: "empty type", typ: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &Config{Type: tt.typ}
+			assert.Equal(t, tt.want, config.IsOIDC())
+		})
+	}
+}
+
+func TestConfig_IsOAuth2(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  ProviderType
+		want bool
+	}{
+		{name: "OAuth2 type", typ: ProviderTypeOAuth2, want: true},
+		{name: "OIDC type", typ: ProviderTypeOIDC, want: false},
+		{name: "empty type", typ: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &Config{Type: tt.typ}
+			assert.Equal(t, tt.want, config.IsOAuth2())
 		})
 	}
 }

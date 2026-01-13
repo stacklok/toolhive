@@ -29,6 +29,53 @@ const pkceChallengeMethodS256 = "S256"
 // This accounts for clock skew and network latency.
 const tokenExpirationBuffer = 30 * time.Second
 
+// maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
+const maxResponseSize = 1024 * 1024 // 1MB
+
+// schemeHTTPS is the HTTPS URL scheme.
+const schemeHTTPS = "https"
+
+// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
+const defaultTokenExpiration = time.Hour
+
+// ProviderType identifies the type of upstream Identity Provider.
+type ProviderType string
+
+const (
+	// ProviderTypeOIDC is for OpenID Connect providers that support discovery.
+	ProviderTypeOIDC ProviderType = "oidc"
+	// ProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
+	ProviderTypeOAuth2 ProviderType = "oauth2"
+)
+
+// AuthorizationOption configures authorization URL generation.
+type AuthorizationOption func(*authorizationOptions)
+
+type authorizationOptions struct {
+	nonce            string
+	additionalParams map[string]string
+}
+
+// WithNonce sets the OIDC nonce parameter for replay protection.
+// Only affects providers that support OIDC.
+func WithNonce(nonce string) AuthorizationOption {
+	return func(o *authorizationOptions) {
+		o.nonce = nonce
+	}
+}
+
+// WithAdditionalParams adds custom parameters to the authorization URL.
+func WithAdditionalParams(params map[string]string) AuthorizationOption {
+	return func(o *authorizationOptions) {
+		if o.additionalParams == nil {
+			o.additionalParams = make(map[string]string)
+		}
+		for k, v := range params {
+			o.additionalParams[k] = v
+		}
+	}
+}
+
 // Tokens represents the tokens obtained from an upstream Identity Provider.
 // This type is used for token exchange with the IDP, but stored separately
 // (see storage.IDPTokens for the storage representation).
@@ -91,25 +138,36 @@ type OIDCEndpoints struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// Provider handles communication with an upstream Identity Provider.
-type Provider interface {
-	// Name returns the provider name (e.g., "google", "oidc").
+// OAuth2Provider handles communication with an upstream Identity Provider.
+// This is the base interface for all provider types.
+type OAuth2Provider interface {
+	// Name returns the provider name (e.g., "google", "oidc", "oauth2").
 	Name() string
 
 	// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
 	// state: our internal state to correlate callback
 	// codeChallenge: PKCE challenge to send to upstream (if supported)
-	// nonce: OIDC nonce for ID Token replay protection (per OIDC Core Section 3.1.2.1)
-	AuthorizationURL(state, codeChallenge, nonce string) (string, error)
+	// opts: optional configuration such as nonce or additional parameters
+	AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error)
 
 	// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
 	ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error)
 
 	// RefreshTokens refreshes the upstream IDP tokens.
 	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
+}
 
+// UserInfoProvider is implemented by providers that support fetching user information.
+// This is optional - not all OAuth 2.0 providers have a UserInfo endpoint.
+type UserInfoProvider interface {
 	// UserInfo fetches user information from the upstream IDP.
 	UserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
+}
+
+// IDTokenValidator is implemented by providers that can validate ID tokens.
+type IDTokenValidator interface {
+	// ValidateIDToken validates an ID token and returns parsed claims.
+	ValidateIDToken(idToken string) (*IDTokenClaims, error)
 }
 
 // IDTokenNonceValidator is implemented by providers that support OIDC nonce validation.
@@ -137,8 +195,21 @@ var ErrUserInfoSubjectMismatch = fmt.Errorf("userinfo subject does not match exp
 // Config contains configuration for connecting to an upstream
 // Identity Provider (e.g., Google, Okta, Auth0).
 type Config struct {
-	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com).
+	// Type specifies the provider type (oidc or oauth2).
+	// Required field that determines how the provider is initialized.
+	Type ProviderType
+
+	// Issuer is the URL of the upstream IDP (required for OIDC providers).
 	Issuer string
+
+	// AuthorizationEndpoint is the URL for authorization (required for OAuth2 providers).
+	AuthorizationEndpoint string
+
+	// TokenEndpoint is the URL for token requests (required for OAuth2 providers).
+	TokenEndpoint string
+
+	// UserInfoEndpoint is the URL for user info (optional).
+	UserInfoEndpoint string
 
 	// ClientID is the OAuth client ID registered with the upstream IDP.
 	ClientID string
@@ -154,11 +225,26 @@ type Config struct {
 	RedirectURI string
 }
 
-// Validate checks that the Config is valid.
+// Validate checks that the Config is valid based on the provider type.
 func (c *Config) Validate() error {
-	if c.Issuer == "" {
-		return fmt.Errorf("upstream issuer is required")
+	// Validate based on provider type
+	switch c.Type {
+	case ProviderTypeOIDC:
+		if c.Issuer == "" {
+			return fmt.Errorf("upstream issuer is required for OIDC providers")
+		}
+	case ProviderTypeOAuth2:
+		if c.AuthorizationEndpoint == "" {
+			return fmt.Errorf("upstream authorization_endpoint is required for OAuth2 providers")
+		}
+		if c.TokenEndpoint == "" {
+			return fmt.Errorf("upstream token_endpoint is required for OAuth2 providers")
+		}
+	default:
+		return fmt.Errorf("upstream provider type must be '%s' or '%s'", ProviderTypeOIDC, ProviderTypeOAuth2)
 	}
+
+	// Common required fields
 	if c.ClientID == "" {
 		return fmt.Errorf("upstream client_id is required")
 	}
@@ -172,6 +258,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("upstream %w", err)
 	}
 	return nil
+}
+
+// IsOIDC returns true if the provider type is OIDC.
+func (c *Config) IsOIDC() bool {
+	return c.Type == ProviderTypeOIDC
+}
+
+// IsOAuth2 returns true if the provider type is OAuth2.
+func (c *Config) IsOAuth2() bool {
+	return c.Type == ProviderTypeOAuth2
 }
 
 // ValidateRedirectURI validates an OAuth redirect URI according to RFC 6749 Section 3.1.2.

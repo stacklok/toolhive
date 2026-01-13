@@ -95,6 +95,8 @@ type OIDCDiscoveryDocument struct {
 	GrantTypesSupported               []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
+	SubjectTypesSupported             []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
 }
 
 // OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.
@@ -112,6 +114,8 @@ func (r *Router) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		TokenEndpointAuthMethodsSupported: []string{"none"},
+		SubjectTypesSupported:             []string{"public"},
+		IDTokenSigningAlgValuesSupported:  []string{"RS256"},
 	}
 
 	w.Header().Set("Content-Type", "application/json")

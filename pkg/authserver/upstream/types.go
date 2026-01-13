@@ -16,10 +16,15 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
@@ -338,4 +343,70 @@ func isLoopbackAddress(host string) bool {
 	}
 
 	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
+}
+
+// tokenResponse represents the response from the token endpoint.
+// Per RFC 6749 Section 5.1 (Success Response) and OpenID Connect Core Section 3.1.3.3.
+type tokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int64  `json:"expires_in,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+}
+
+// tokenErrorResponse represents an error response from the token endpoint.
+// Per RFC 6749 Section 5.2 (Error Response).
+type tokenErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description,omitempty"`
+	ErrorURI         string `json:"error_uri,omitempty"`
+}
+
+// parseTokenResponse parses a token endpoint response body.
+// It handles both success responses and error responses per RFC 6749 Section 5.1 and 5.2.
+func parseTokenResponse(body []byte, statusCode int) (*Tokens, error) {
+	// If not 200 OK, try to parse error response
+	if statusCode != http.StatusOK {
+		var tokenError tokenErrorResponse
+		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
+			// OAuth error responses with error/error_description are standardized and safe to return
+			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
+		}
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		logger.Debugw("token request failed",
+			"status", statusCode,
+			"body", string(body))
+		return nil, fmt.Errorf("token request failed with status %d", statusCode)
+	}
+
+	var tokenResp tokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return nil, errors.New("token response missing access_token")
+	}
+
+	// Validate token_type per RFC 6749 Section 5.1
+	// The comparison is case-insensitive per the spec
+	if !strings.EqualFold(tokenResp.TokenType, "bearer") {
+		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", tokenResp.TokenType)
+	}
+
+	// Calculate expiration time
+	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	if tokenResp.ExpiresIn == 0 {
+		// Default to 1 hour if not specified
+		expiresAt = time.Now().Add(defaultTokenExpiration)
+	}
+
+	return &Tokens{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		IDToken:      tokenResp.IDToken,
+		ExpiresAt:    expiresAt,
+	}, nil
 }

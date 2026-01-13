@@ -108,6 +108,13 @@ type Config struct {
 	// See audit.Config for available configuration options.
 	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
+
+	// Optimizer configures the MCP optimizer for context optimization on large toolsets.
+	// When enabled, vMCP exposes only find_tool and call_tool operations to clients
+	// instead of all backend tools directly. This reduces token usage by allowing
+	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// +optional
+	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -472,6 +479,18 @@ type OutputProperty struct {
 	// Type coercion is applied to match the declared Type.
 	// +optional
 	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
+}
+
+// OptimizerConfig configures the MCP optimizer.
+// When enabled, vMCP exposes only find_tool and call_tool operations to clients
+// instead of all backend tools directly.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OptimizerConfig struct {
+	// EmbeddingService is the name of a Kubernetes Service that provides the embedding service
+	// for semantic tool discovery. The service must implement the optimizer embedding API.
+	// +kubebuilder:validation:Required
+	EmbeddingService string `json:"embeddingService" yaml:"embeddingService"`
 }
 
 // Validator validates configuration.

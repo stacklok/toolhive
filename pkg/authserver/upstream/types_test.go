@@ -77,7 +77,7 @@ func TestTokens_IsExpired(t *testing.T) {
 	}
 }
 
-func TestValidateRedirectURI(t *testing.T) {
+func Test_validateRedirectURI(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -185,7 +185,7 @@ func TestValidateRedirectURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := ValidateRedirectURI(tt.uri)
+			err := validateRedirectURI(tt.uri)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -196,151 +196,65 @@ func TestValidateRedirectURI(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate(t *testing.T) {
+func Test_validateRedirectURI_LoopbackAddresses(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		config      Config
-		wantErr     bool
-		errContains string
+		name    string
+		uri     string
+		wantErr bool
 	}{
+		// Loopback addresses with HTTP should be allowed
 		{
-			name: "valid OIDC config",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "https://example.com/oauth/callback",
-			},
+			name:    "HTTP with localhost",
+			uri:     "http://localhost/callback",
 			wantErr: false,
 		},
 		{
-			name: "valid OAuth2 config",
-			config: Config{
-				Type:                  ProviderTypeOAuth2,
-				AuthorizationEndpoint: "https://example.com/oauth/authorize",
-				TokenEndpoint:         "https://example.com/oauth/token",
-				ClientID:              "client-id",
-				ClientSecret:          "client-secret",
-				RedirectURI:           "https://example.com/oauth/callback",
-			},
+			name:    "HTTP with localhost and port",
+			uri:     "http://localhost:8080/callback",
 			wantErr: false,
 		},
 		{
-			name: "missing type",
-			config: Config{
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream provider type must be 'oidc' or 'oauth2'",
-		},
-		{
-			name: "missing issuer for OIDC",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream issuer is required for OIDC providers",
-		},
-		{
-			name: "missing authorization_endpoint for OAuth2",
-			config: Config{
-				Type:          ProviderTypeOAuth2,
-				TokenEndpoint: "https://example.com/oauth/token",
-				ClientID:      "client-id",
-				ClientSecret:  "client-secret",
-				RedirectURI:   "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream authorization_endpoint is required for OAuth2 providers",
-		},
-		{
-			name: "missing token_endpoint for OAuth2",
-			config: Config{
-				Type:                  ProviderTypeOAuth2,
-				AuthorizationEndpoint: "https://example.com/oauth/authorize",
-				ClientID:              "client-id",
-				ClientSecret:          "client-secret",
-				RedirectURI:           "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream token_endpoint is required for OAuth2 providers",
-		},
-		{
-			name: "missing client_id",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientSecret: "client-secret",
-				RedirectURI:  "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream client_id is required",
-		},
-		{
-			name: "missing client_secret",
-			config: Config{
-				Type:        ProviderTypeOIDC,
-				Issuer:      "https://accounts.google.com",
-				ClientID:    "client-id",
-				RedirectURI: "https://example.com/oauth/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream client_secret is required",
-		},
-		{
-			name: "missing redirect_uri",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-			},
-			wantErr:     true,
-			errContains: "upstream redirect_uri is required",
-		},
-		{
-			name: "invalid redirect_uri - HTTP to non-loopback",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "http://example.com/callback",
-			},
-			wantErr:     true,
-			errContains: "upstream redirect_uri with http scheme requires loopback address",
-		},
-		{
-			name: "invalid redirect_uri - contains fragment",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "https://example.com/callback#section",
-			},
-			wantErr:     true,
-			errContains: "upstream redirect_uri must not contain a fragment",
-		},
-		{
-			name: "valid config with localhost redirect",
-			config: Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://accounts.google.com",
-				ClientID:     "client-id",
-				ClientSecret: "client-secret",
-				RedirectURI:  "http://localhost:8080/oauth/callback",
-			},
+			name:    "HTTP with 127.0.0.1",
+			uri:     "http://127.0.0.1/callback",
 			wantErr: false,
+		},
+		{
+			name:    "HTTP with 127.0.0.1 and port",
+			uri:     "http://127.0.0.1:8080/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with IPv6 ::1",
+			uri:     "http://[::1]/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with IPv6 ::1 and port",
+			uri:     "http://[::1]:8080/callback",
+			wantErr: false,
+		},
+		// Non-loopback addresses with HTTP should be rejected
+		{
+			name:    "HTTP with non-loopback hostname",
+			uri:     "http://example.com/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback hostname and port",
+			uri:     "http://example.com:8080/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback IP",
+			uri:     "http://192.168.1.1/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback IP and port",
+			uri:     "http://192.168.1.1:8080/callback",
+			wantErr: true,
 		},
 	}
 
@@ -348,10 +262,10 @@ func TestConfig_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.config.Validate()
+			err := validateRedirectURI(tt.uri)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errContains)
+				assert.Contains(t, err.Error(), "redirect_uri with http scheme requires loopback address")
 			} else {
 				require.NoError(t, err)
 			}
@@ -359,116 +273,3 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackAddress(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		host string
-		want bool
-	}{
-		{
-			name: "localhost",
-			host: "localhost",
-			want: true,
-		},
-		{
-			name: "localhost with port",
-			host: "localhost:8080",
-			want: true,
-		},
-		{
-			name: "127.0.0.1",
-			host: "127.0.0.1",
-			want: true,
-		},
-		{
-			name: "127.0.0.1 with port",
-			host: "127.0.0.1:8080",
-			want: true,
-		},
-		{
-			name: "::1 with brackets",
-			host: "[::1]",
-			want: true,
-		},
-		{
-			name: "::1 with brackets and port",
-			host: "[::1]:8080",
-			want: true,
-		},
-		{
-			name: "non-loopback hostname",
-			host: "example.com",
-			want: false,
-		},
-		{
-			name: "non-loopback hostname with port",
-			host: "example.com:8080",
-			want: false,
-		},
-		{
-			name: "non-loopback IP",
-			host: "192.168.1.1",
-			want: false,
-		},
-		{
-			name: "non-loopback IP with port",
-			host: "192.168.1.1:8080",
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := isLoopbackAddress(tt.host)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestConfig_IsOIDC(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		typ  ProviderType
-		want bool
-	}{
-		{name: "OIDC type", typ: ProviderTypeOIDC, want: true},
-		{name: "OAuth2 type", typ: ProviderTypeOAuth2, want: false},
-		{name: "empty type", typ: "", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			config := &Config{Type: tt.typ}
-			assert.Equal(t, tt.want, config.IsOIDC())
-		})
-	}
-}
-
-func TestConfig_IsOAuth2(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		typ  ProviderType
-		want bool
-	}{
-		{name: "OAuth2 type", typ: ProviderTypeOAuth2, want: true},
-		{name: "OIDC type", typ: ProviderTypeOIDC, want: false},
-		{name: "empty type", typ: "", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			config := &Config{Type: tt.typ}
-			assert.Equal(t, tt.want, config.IsOAuth2())
-		})
-	}
-}

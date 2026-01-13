@@ -36,7 +36,7 @@
 //
 // These components implement pure OAuth 2.0 per RFC 6749:
 //
-//   - Config: Client credentials (client_id, client_secret, redirect_uri, scopes)
+//   - CommonOAuthConfig: Client credentials (client_id, client_secret, redirect_uri, scopes)
 //   - ValidateRedirectURI: RFC 6749 Section 3.1.2 redirect URI validation
 //   - Authorization Code Flow: response_type=code, state parameter
 //   - Token Exchange: authorization_code and refresh_token grants
@@ -89,27 +89,38 @@
 //
 // # Type Hierarchy
 //
-//	Provider (interface)
+//	OAuth2Provider (interface)
 //	    |
-//	OIDCProvider (implementation)
-//	    |-- IDTokenNonceValidator (optional)
-//	    +-- UserInfoSubjectValidator (optional)
+//	    +-- BaseOAuth2Provider (pure OAuth 2.0 implementation)
+//	            |
+//	            +-- OIDCProvider (embeds BaseOAuth2Provider, adds OIDC features)
+//	                    |-- IDTokenValidator (validates ID tokens)
+//	                    |-- IDTokenNonceValidator (optional nonce validation)
+//	                    +-- UserInfoSubjectValidator (optional subject validation)
+//
+// OIDCProvider embeds BaseOAuth2Provider to share common OAuth 2.0 logic
+// (token exchange, refresh, authorization URL building) while adding OIDC-specific
+// functionality like discovery, ID token validation, nonce support, and user info.
 //
 // # Value Objects
 //
 //   - Tokens: Token response from upstream IDP
 //   - UserInfo: User claims from UserInfo endpoint
-//   - Config: Configuration for upstream IDP connection
+//   - OIDCConfig: Configuration for OIDC providers (with discovery)
+//   - OAuth2Config: Configuration for pure OAuth 2.0 providers
+//   - CommonOAuthConfig: Shared configuration fields (embedded by above)
 //   - IDTokenClaims: Parsed claims from ID token
 //
 // # Usage
 //
-//	config := &upstream.Config{
-//	    Issuer:       "https://accounts.google.com",
-//	    ClientID:     "your-client-id",
-//	    ClientSecret: "your-client-secret",
-//	    RedirectURI:  "https://your-app.com/callback",
-//	    Scopes:       []string{"openid", "email", "profile"},
+//	config := &upstream.OIDCConfig{
+//	    CommonOAuthConfig: upstream.CommonOAuthConfig{
+//	        ClientID:     "your-client-id",
+//	        ClientSecret: "your-client-secret",
+//	        RedirectURI:  "https://your-app.com/callback",
+//	        Scopes:       []string{"openid", "email", "profile"},
+//	    },
+//	    Issuer: "https://accounts.google.com",
 //	}
 //
 //	provider, err := upstream.NewOIDCProvider(ctx, config)

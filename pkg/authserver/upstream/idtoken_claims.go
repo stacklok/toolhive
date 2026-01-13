@@ -68,6 +68,7 @@ var (
 	ErrIDTokenIssuerMismatch    = errors.New("id token issuer mismatch")
 	ErrIDTokenMissingAud        = errors.New("id token missing aud claim")
 	ErrIDTokenAudMismatch       = errors.New("id token audience mismatch")
+	ErrIDTokenAzpMismatch       = errors.New("id token authorized party (azp) mismatch")
 	ErrIDTokenMissingExp        = errors.New("id token missing exp claim")
 	ErrIDTokenExpired           = errors.New("id token has expired")
 	ErrIDTokenMissingNonce      = errors.New("id token missing nonce claim")
@@ -78,6 +79,7 @@ var (
 	ErrIDTokenMissingAlgorithm  = errors.New("id token missing algorithm in header")
 	ErrIDTokenUnsupportedAlg    = errors.New("id token uses unsupported algorithm")
 	ErrIDTokenMissingSigningKey = errors.New("jwks_uri is required for signature verification")
+	ErrIDTokenIssuedInFuture    = errors.New("id token issued in the future")
 )
 
 // supportedSignatureAlgorithms defines the asymmetric signature algorithms supported

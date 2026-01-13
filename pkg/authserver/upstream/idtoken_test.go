@@ -618,3 +618,244 @@ func TestExtractAudience(t *testing.T) {
 		})
 	}
 }
+
+func TestIDTokenValidator_AzpValidation(t *testing.T) {
+	t.Parallel()
+
+	validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+		expectedIssuer:            "https://example.com",
+		expectedAudience:          "client-id",
+		skipSignatureVerification: true,
+	})
+
+	t.Run("single audience without azp should pass", func(t *testing.T) {
+		t.Parallel()
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			// no azp claim
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("multiple audiences with correct azp should pass", func(t *testing.T) {
+		t.Parallel()
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": []any{"client-id", "other-client"},
+			"azp": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		claims, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if claims.AuthorizedParty != "client-id" {
+			t.Errorf("expected azp client-id, got %s", claims.AuthorizedParty)
+		}
+	})
+
+	t.Run("multiple audiences with wrong azp should fail", func(t *testing.T) {
+		t.Parallel()
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": []any{"client-id", "other-client"},
+			"azp": "other-client", // azp doesn't match our client_id
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err == nil {
+			t.Error("expected error for azp mismatch")
+		}
+		if !errors.Is(err, ErrIDTokenAzpMismatch) {
+			t.Errorf("expected ErrIDTokenAzpMismatch, got %v", err)
+		}
+	})
+
+	t.Run("multiple audiences without azp should pass with warning", func(t *testing.T) {
+		t.Parallel()
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": []any{"client-id", "other-client"},
+			// no azp claim - OIDC spec says SHOULD, not MUST
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		// Should pass (with warning logged) since azp is optional per OIDC spec
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("expected no error when azp is missing with multiple audiences: %v", err)
+		}
+	})
+
+	t.Run("single audience with azp matching client_id should pass", func(t *testing.T) {
+		t.Parallel()
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"azp": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("single audience with azp not matching client_id should pass", func(t *testing.T) {
+		t.Parallel()
+		// Per OIDC spec, azp validation is only required when there are multiple audiences.
+		// With a single audience, we don't validate azp even if it's present.
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"azp": "different-client", // This is unusual but allowed for single audience
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestIDTokenValidator_IssuedAtValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("iat in the past should pass", func(t *testing.T) {
+		t.Parallel()
+		validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+			expectedIssuer:            "https://example.com",
+			expectedAudience:          "client-id",
+			skipSignatureVerification: true,
+		})
+
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Add(-10 * time.Minute).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("unexpected error for iat in the past: %v", err)
+		}
+	})
+
+	t.Run("iat slightly in the future within clock skew should pass", func(t *testing.T) {
+		t.Parallel()
+		validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+			expectedIssuer:            "https://example.com",
+			expectedAudience:          "client-id",
+			clockSkew:                 5 * time.Minute,
+			skipSignatureVerification: true,
+		})
+
+		// iat is 2 minutes in the future, but we allow 5 minutes skew
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Add(2 * time.Minute).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("expected token to be valid within clock skew: %v", err)
+		}
+	})
+
+	t.Run("iat significantly in the future beyond clock skew should fail", func(t *testing.T) {
+		t.Parallel()
+		validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+			expectedIssuer:            "https://example.com",
+			expectedAudience:          "client-id",
+			clockSkew:                 5 * time.Minute,
+			skipSignatureVerification: true,
+		})
+
+		// iat is 10 minutes in the future, but we only allow 5 minutes skew
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Add(10 * time.Minute).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err == nil {
+			t.Error("expected error for iat significantly in the future")
+		}
+		if !errors.Is(err, ErrIDTokenIssuedInFuture) {
+			t.Errorf("expected ErrIDTokenIssuedInFuture, got %v", err)
+		}
+	})
+
+	t.Run("missing iat should pass", func(t *testing.T) {
+		t.Parallel()
+		validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+			expectedIssuer:            "https://example.com",
+			expectedAudience:          "client-id",
+			skipSignatureVerification: true,
+		})
+
+		// No iat claim - this should be allowed since iat is RECOMMENDED, not REQUIRED
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err != nil {
+			t.Errorf("unexpected error for missing iat: %v", err)
+		}
+	})
+
+	t.Run("iat in the future without clock skew should fail", func(t *testing.T) {
+		t.Parallel()
+		validator, _ := newIDTokenValidator(idTokenValidatorConfig{
+			expectedIssuer:            "https://example.com",
+			expectedAudience:          "client-id",
+			skipSignatureVerification: true,
+			// No clock skew configured
+		})
+
+		// iat is 1 minute in the future
+		token := createTestIDToken(map[string]any{
+			"iss": "https://example.com",
+			"sub": testSubject,
+			"aud": "client-id",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Add(1 * time.Minute).Unix(),
+		})
+
+		_, err := validator.validateIDToken(token)
+		if err == nil {
+			t.Error("expected error for iat in the future without clock skew")
+		}
+		if !errors.Is(err, ErrIDTokenIssuedInFuture) {
+			t.Errorf("expected ErrIDTokenIssuedInFuture, got %v", err)
+		}
+	})
+}

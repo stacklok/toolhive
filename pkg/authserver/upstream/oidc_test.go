@@ -65,14 +65,13 @@ func (m *mockOIDCServer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default token response
+	// Default token response (no ID token to avoid validation in most tests)
 	w.Header().Set("Content-Type", "application/json")
 	resp := tokenResponse{
 		AccessToken:  "test-access-token",
 		TokenType:    "Bearer",
 		RefreshToken: "test-refresh-token",
 		ExpiresIn:    3600,
-		IDToken:      "test-id-token",
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -110,13 +109,14 @@ func TestNewOIDCProvider(t *testing.T) {
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
-		Scopes:       []string{"openid", "profile", "email"},
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+			Scopes:       []string{"openid", "profile", "email"},
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -125,8 +125,8 @@ func TestNewOIDCProvider(t *testing.T) {
 		t.Fatalf("failed to create provider: %v", err)
 	}
 
-	if provider.Name() != "oidc" {
-		t.Errorf("expected name 'oidc', got %q", provider.Name())
+	if provider.Type() != ProviderTypeOIDC {
+		t.Errorf("expected type %q, got %q", ProviderTypeOIDC, provider.Type())
 	}
 
 	endpoints := provider.Endpoints()
@@ -156,7 +156,7 @@ func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		config *Config
+		config *OIDCConfig
 	}{
 		{
 			name:   "nil config",
@@ -164,33 +164,36 @@ func TestNewOIDCProvider_InvalidConfig(t *testing.T) {
 		},
 		{
 			name:   "empty config",
-			config: &Config{},
+			config: &OIDCConfig{},
 		},
 		{
 			name: "missing client id",
-			config: &Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://example.com",
-				ClientSecret: "secret",
-				RedirectURI:  "http://localhost:8080/callback",
+			config: &OIDCConfig{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientSecret: "secret",
+					RedirectURI:  "http://localhost:8080/callback",
+				},
+				Issuer: "https://example.com",
 			},
 		},
 		{
 			name: "missing client secret",
-			config: &Config{
-				Type:        ProviderTypeOIDC,
-				Issuer:      "https://example.com",
-				ClientID:    "client",
-				RedirectURI: "http://localhost:8080/callback",
+			config: &OIDCConfig{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:    "client",
+					RedirectURI: "http://localhost:8080/callback",
+				},
+				Issuer: "https://example.com",
 			},
 		},
 		{
 			name: "missing redirect uri",
-			config: &Config{
-				Type:         ProviderTypeOIDC,
-				Issuer:       "https://example.com",
-				ClientID:     "client",
-				ClientSecret: "secret",
+			config: &OIDCConfig{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     "client",
+					ClientSecret: "secret",
+				},
+				Issuer: "https://example.com",
 			},
 		},
 	}
@@ -215,12 +218,13 @@ func TestNewOIDCProvider_DiscoveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       server.URL,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: server.URL,
 	}
 
 	ctx := context.Background()
@@ -247,12 +251,13 @@ func TestNewOIDCProvider_IssuerMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       server.URL,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: server.URL,
 	}
 
 	ctx := context.Background()
@@ -272,13 +277,14 @@ func TestOIDCIDPProvider_AuthorizationURL(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
-		Scopes:       []string{"openid", "profile"},
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+			Scopes:       []string{"openid", "profile"},
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -428,13 +434,14 @@ func TestOIDCIDPProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	// Config with NO scopes - should fall back to defaults
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
-		// Scopes is intentionally empty
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+			// Scopes is intentionally empty
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -467,12 +474,13 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 	mock := newMockOIDCServer()
 	t.Cleanup(mock.Close)
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -497,19 +505,21 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 				TokenType:    "Bearer",
 				RefreshToken: "exchanged-refresh-token",
 				ExpiresIn:    7200,
-				IDToken:      "exchanged-id-token",
+				// Note: No ID token in response to avoid validation in this test.
+				// ID token validation is tested separately in idtoken_test.go.
 			}
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 		}
 
-		localConfig := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       localMock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		localConfig := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: localMock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, localConfig)
@@ -552,10 +562,6 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			t.Errorf("expected refresh token 'exchanged-refresh-token', got %q", tokens.RefreshToken)
 		}
 
-		if tokens.IDToken != "exchanged-id-token" {
-			t.Errorf("expected ID token 'exchanged-id-token', got %q", tokens.IDToken)
-		}
-
 		// Verify expiration is set approximately correctly
 		expectedExpiry := time.Now().Add(7200 * time.Second)
 		if tokens.ExpiresAt.Before(expectedExpiry.Add(-10*time.Second)) ||
@@ -584,12 +590,13 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       localMock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		localConfig := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: localMock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, localConfig)
@@ -638,12 +645,13 @@ func TestOIDCIDPProvider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		localConfig := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       localMock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		localConfig := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: localMock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, localConfig)
@@ -693,12 +701,13 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -736,12 +745,13 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -765,12 +775,13 @@ func TestOIDCIDPProvider_RefreshTokens(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -814,12 +825,13 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -866,12 +878,13 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock := newMockOIDCServer()
 		defer mock.Close()
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -896,12 +909,13 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 			_, _ = w.Write([]byte("invalid token"))
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -926,12 +940,13 @@ func TestOIDCIDPProvider_UserInfo(t *testing.T) {
 		mock.discoveryDoc.UserInfoEndpoint = "" // Remove userinfo endpoint
 		defer mock.Close()
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -973,12 +988,13 @@ func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -1018,12 +1034,13 @@ func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -1067,12 +1084,13 @@ func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -1101,12 +1119,13 @@ func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
 			_, _ = w.Write([]byte("invalid token"))
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -1146,12 +1165,13 @@ func TestOIDCIDPProvider_UserInfoWithSubjectValidation(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			Issuer: mock.issuer,
 		}
 
 		provider, err := NewOIDCProvider(ctx, config)
@@ -1178,12 +1198,13 @@ func TestOIDCIDPProvider_WithOptions(t *testing.T) {
 	mock := newMockOIDCServer()
 	defer mock.Close()
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -1470,12 +1491,13 @@ func TestOIDCIDPProvider_DefaultExpiryWhenNotSpecified(t *testing.T) {
 		}
 	}
 
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       mock.issuer,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: mock.issuer,
 	}
 
 	ctx := context.Background()
@@ -1517,8 +1539,9 @@ func TestOIDCIDPProvider_TokenTypeValidation(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test", TokenType: tt.tokenType, ExpiresIn: 3600})
 			}
-			provider, _ := NewOIDCProvider(ctx, &Config{
-				Type: ProviderTypeOIDC, Issuer: mock.issuer, ClientID: "c", ClientSecret: "s", RedirectURI: "http://localhost/cb",
+			provider, _ := NewOIDCProvider(ctx, &OIDCConfig{
+				CommonOAuthConfig: CommonOAuthConfig{ClientID: "c", ClientSecret: "s", RedirectURI: "http://localhost/cb"},
+				Issuer:            mock.issuer,
 			})
 			_, err := provider.ExchangeCode(ctx, "code", "")
 			if tt.errorMsg != "" {
@@ -1536,12 +1559,13 @@ func TestOIDCIDPProvider_NetworkError(t *testing.T) {
 	t.Parallel()
 
 	// Use an invalid URL to simulate network error
-	config := &Config{
-		Type:         ProviderTypeOIDC,
-		Issuer:       "http://localhost:1", // Invalid port, should fail to connect
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURI:  "http://localhost:8080/callback",
+	config := &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		Issuer: "http://localhost:1", // Invalid port, should fail to connect
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

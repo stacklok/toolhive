@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -83,49 +82,33 @@ func TestNewOAuth2Provider(t *testing.T) {
 		localMock := newMockOAuth2Server()
 		t.Cleanup(localMock.Close)
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+				Scopes:       []string{"read", "write"},
+			},
 			AuthorizationEndpoint: localMock.URL + "/authorize",
 			TokenEndpoint:         localMock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
-			Scopes:                []string{"read", "write"},
 		}
 
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 		require.NotNil(t, provider)
-		assert.Equal(t, "oauth2", provider.Name())
-	})
-
-	t.Run("wrong config type returns error", func(t *testing.T) {
-		t.Parallel()
-
-		config := &Config{
-			Type:                  ProviderTypeOIDC,
-			Issuer:                "https://example.com",
-			AuthorizationEndpoint: mock.URL + "/authorize",
-			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
-		}
-
-		_, err := NewOAuth2Provider(config)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "config.Type must be ProviderTypeOAuth2")
+		assert.Equal(t, ProviderTypeOAuth2, provider.Type())
 	})
 
 	t.Run("missing authorization endpoint returns error", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:          ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			TokenEndpoint: mock.URL + "/token",
-			ClientID:      "test-client",
-			ClientSecret:  "test-secret",
-			RedirectURI:   "http://localhost:8080/callback",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -136,12 +119,13 @@ func TestNewOAuth2Provider(t *testing.T) {
 	t.Run("missing token endpoint returns error", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -152,12 +136,13 @@ func TestNewOAuth2Provider(t *testing.T) {
 	t.Run("missing client ID returns error", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -176,12 +161,13 @@ func TestNewOAuth2Provider(t *testing.T) {
 	t.Run("missing client secret returns error", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -192,12 +178,13 @@ func TestNewOAuth2Provider(t *testing.T) {
 	t.Run("missing redirect URI returns error", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
 		}
 
 		_, err := NewOAuth2Provider(config)
@@ -206,24 +193,25 @@ func TestNewOAuth2Provider(t *testing.T) {
 	})
 }
 
-func TestBaseOAuth2Provider_Name(t *testing.T) {
+func TestBaseOAuth2Provider_Type(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockOAuth2Server()
 	t.Cleanup(mock.Close)
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
 	require.NoError(t, err)
-	assert.Equal(t, "oauth2", provider.Name())
+	assert.Equal(t, ProviderTypeOAuth2, provider.Type())
 }
 
 func TestBaseOAuth2Provider_AuthorizationURL(t *testing.T) {
@@ -232,14 +220,15 @@ func TestBaseOAuth2Provider_AuthorizationURL(t *testing.T) {
 	mock := newMockOAuth2Server()
 	t.Cleanup(mock.Close)
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+			Scopes:       []string{"read", "write"},
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
-		Scopes:                []string{"read", "write"},
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -326,13 +315,14 @@ func TestBaseOAuth2Provider_AuthorizationURL_NoScopes(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	// Config without scopes
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -380,13 +370,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -430,13 +421,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -451,13 +443,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 	t.Run("network error handling", func(t *testing.T) {
 		t.Parallel()
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: "http://localhost:1/authorize",
 			TokenEndpoint:         "http://localhost:1/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -477,13 +470,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		mock := newMockOAuth2Server()
 		t.Cleanup(mock.Close)
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -519,13 +513,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -555,13 +550,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -590,13 +586,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -625,13 +622,14 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -677,13 +675,14 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -721,13 +720,14 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 			}
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -744,13 +744,14 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		mock := newMockOAuth2Server()
 		t.Cleanup(mock.Close)
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -771,13 +772,14 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
 			AuthorizationEndpoint: mock.URL + "/authorize",
 			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
 		}
 
 		provider, err := NewOAuth2Provider(config)
@@ -795,13 +797,14 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 	mock := newMockOAuth2Server()
 	t.Cleanup(mock.Close)
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	customClient := &http.Client{Timeout: 5 * time.Second}
@@ -815,112 +818,6 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 	tokens, err := provider.ExchangeCode(ctx, "test-code", "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, tokens.AccessToken)
-}
-
-func TestNewProvider(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	t.Run("creates OIDCProvider for ProviderTypeOIDC config", func(t *testing.T) {
-		t.Parallel()
-
-		// Create mock OIDC server for discovery
-		mock := newMockOIDCServer()
-		t.Cleanup(mock.Close)
-
-		config := &Config{
-			Type:         ProviderTypeOIDC,
-			Issuer:       mock.issuer,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
-		}
-
-		provider, err := NewProvider(ctx, config)
-		require.NoError(t, err)
-		require.NotNil(t, provider)
-		assert.Equal(t, "oidc", provider.Name())
-	})
-
-	t.Run("creates BaseOAuth2Provider for ProviderTypeOAuth2 config", func(t *testing.T) {
-		t.Parallel()
-
-		mock := newMockOAuth2Server()
-		t.Cleanup(mock.Close)
-
-		config := &Config{
-			Type:                  ProviderTypeOAuth2,
-			AuthorizationEndpoint: mock.URL + "/authorize",
-			TokenEndpoint:         mock.URL + "/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
-		}
-
-		provider, err := NewProvider(ctx, config)
-		require.NoError(t, err)
-		require.NotNil(t, provider)
-		assert.Equal(t, "oauth2", provider.Name())
-	})
-
-	t.Run("returns error for unknown provider type", func(t *testing.T) {
-		t.Parallel()
-
-		config := &Config{
-			Type:                  ProviderType("unknown"),
-			AuthorizationEndpoint: "https://example.com/authorize",
-			TokenEndpoint:         "https://example.com/token",
-			ClientID:              "test-client",
-			ClientSecret:          "test-secret",
-			RedirectURI:           "http://localhost:8080/callback",
-		}
-
-		_, err := NewProvider(ctx, config)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "provider type must be")
-	})
-
-	t.Run("returns error for nil config", func(t *testing.T) {
-		t.Parallel()
-
-		_, err := NewProvider(ctx, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "config is required")
-	})
-
-	t.Run("returns error for invalid OIDC config", func(t *testing.T) {
-		t.Parallel()
-
-		config := &Config{
-			Type: ProviderTypeOIDC,
-			// Missing Issuer
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURI:  "http://localhost:8080/callback",
-		}
-
-		_, err := NewProvider(ctx, config)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "issuer is required")
-	})
-
-	t.Run("returns error for invalid OAuth2 config", func(t *testing.T) {
-		t.Parallel()
-
-		config := &Config{
-			Type: ProviderTypeOAuth2,
-			// Missing AuthorizationEndpoint
-			TokenEndpoint: "https://example.com/token",
-			ClientID:      "test-client",
-			ClientSecret:  "test-secret",
-			RedirectURI:   "http://localhost:8080/callback",
-		}
-
-		_, err := NewProvider(ctx, config)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "authorization_endpoint is required")
-	})
 }
 
 func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
@@ -961,13 +858,14 @@ func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
 				}
 			}
 
-			config := &Config{
-				Type:                  ProviderTypeOAuth2,
+			config := &OAuth2Config{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+					RedirectURI:  "http://localhost:8080/callback",
+				},
 				AuthorizationEndpoint: mock.URL + "/authorize",
 				TokenEndpoint:         mock.URL + "/token",
-				ClientID:              "test-client",
-				ClientSecret:          "test-secret",
-				RedirectURI:           "http://localhost:8080/callback",
 			}
 
 			provider, err := NewOAuth2Provider(config)
@@ -996,13 +894,14 @@ func TestBaseOAuth2Provider_NonJSONErrorResponse(t *testing.T) {
 		_, _ = w.Write([]byte("Not JSON error"))
 	}
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -1029,13 +928,14 @@ func TestBaseOAuth2Provider_InvalidJSONResponse(t *testing.T) {
 		_, _ = w.Write([]byte("not valid json"))
 	}
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -1070,13 +970,14 @@ func TestBaseOAuth2Provider_ContentTypeHeaders(t *testing.T) {
 		}
 	}
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -1087,33 +988,6 @@ func TestBaseOAuth2Provider_ContentTypeHeaders(t *testing.T) {
 
 	assert.Equal(t, "application/x-www-form-urlencoded", receivedContentType)
 	assert.Equal(t, "application/json", receivedAccept)
-}
-
-func TestNewProvider_ContextCancellation(t *testing.T) {
-	t.Parallel()
-
-	// Use a cancelled context
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Immediately cancel
-
-	// For OAuth2, context is not used during creation
-	mock := newMockOAuth2Server()
-	t.Cleanup(mock.Close)
-
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
-		AuthorizationEndpoint: mock.URL + "/authorize",
-		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
-	}
-
-	// OAuth2 provider creation should succeed even with cancelled context
-	// (context is only used for OIDC discovery)
-	provider, err := NewProvider(ctx, config)
-	require.NoError(t, err)
-	require.NotNil(t, provider)
 }
 
 func TestBaseOAuth2Provider_IDToken(t *testing.T) {
@@ -1137,13 +1011,14 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 		}
 	}
 
-	config := &Config{
-		Type:                  ProviderTypeOAuth2,
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			RedirectURI:  "http://localhost:8080/callback",
+		},
 		AuthorizationEndpoint: mock.URL + "/authorize",
 		TokenEndpoint:         mock.URL + "/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
 	}
 
 	provider, err := NewOAuth2Provider(config)
@@ -1154,24 +1029,4 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 
 	// OAuth2 providers can also return ID tokens if they support hybrid flows
 	assert.Equal(t, "test-id-token.payload.signature", tokens.IDToken)
-}
-
-func TestNewProvider_EmptyProviderType(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	config := &Config{
-		Type:                  "", // Empty provider type
-		AuthorizationEndpoint: "https://example.com/authorize",
-		TokenEndpoint:         "https://example.com/token",
-		ClientID:              "test-client",
-		ClientSecret:          "test-secret",
-		RedirectURI:           "http://localhost:8080/callback",
-	}
-
-	_, err := NewProvider(ctx, config)
-	require.Error(t, err)
-	// The error should mention the provider type requirement
-	assert.True(t, strings.Contains(err.Error(), "provider type") || strings.Contains(err.Error(), "oidc") || strings.Contains(err.Error(), "oauth2"))
 }

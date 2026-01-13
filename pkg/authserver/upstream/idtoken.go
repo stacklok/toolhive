@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v3"
@@ -56,7 +57,6 @@ type idTokenValidatorConfig struct {
 // This implementation verifies JWT signatures using the JWKS from the upstream IDP
 // and validates standard OIDC claims per OIDC Core Section 3.1.3.7.
 //
-// TODO: Validate iat claim is within acceptable range
 // TODO: Support at_hash validation (requires access token)
 type idTokenValidator struct {
 	config      idTokenValidatorConfig
@@ -144,6 +144,15 @@ func (v *idTokenValidator) validateIDTokenWithContext(ctx context.Context, idTok
 			)
 			return nil, err
 		}
+	}
+
+	// Validate issued at (RECOMMENDED per OIDC Core 3.1.3.7 step 10)
+	// Only validate if the claim is present (iat is recommended, not required)
+	if err := v.validateIssuedAt(claims); err != nil {
+		logger.Debugw("issued at validation failed",
+			"issued_at", claims.IssuedAt.Format(time.RFC3339),
+		)
+		return nil, err
 	}
 
 	logger.Debugw("ID token claims validated",
@@ -322,19 +331,42 @@ func (v *idTokenValidator) validateIssuer(claims *IDTokenClaims) error {
 }
 
 // validateAudience validates the aud claim contains the expected audience.
+// Per OIDC Core Section 3.1.3.7 steps 2-4:
+//   - Step 2: The aud claim MUST contain the client_id
+//   - Steps 3-4: If multiple audiences, the azp claim SHOULD be present and match client_id
 func (v *idTokenValidator) validateAudience(claims *IDTokenClaims) error {
 	if len(claims.Audience) == 0 {
 		return ErrIDTokenMissingAud
 	}
 
-	for _, aud := range claims.Audience {
-		if aud == v.config.expectedAudience {
-			return nil
+	// Step 2: Verify our client_id is in the audience
+	if !slices.Contains(claims.Audience, v.config.expectedAudience) {
+		return fmt.Errorf("%w: expected %q in audience",
+			ErrIDTokenAudMismatch, v.config.expectedAudience)
+	}
+
+	// Steps 3-4: Validate azp claim when multiple audiences are present
+	// Per OIDC Core Section 3.1.3.7:
+	// - Step 3: If multiple audiences, azp SHOULD be present
+	// - Step 4: If azp is present, it MUST equal the client_id
+	if len(claims.Audience) > 1 {
+		if claims.AuthorizedParty != "" {
+			// azp is present - it MUST equal our client_id
+			if claims.AuthorizedParty != v.config.expectedAudience {
+				return fmt.Errorf("%w: expected %q, got %q",
+					ErrIDTokenAzpMismatch, v.config.expectedAudience, claims.AuthorizedParty)
+			}
+		} else {
+			// azp is missing with multiple audiences - log warning but don't fail
+			// (OIDC spec says SHOULD, not MUST)
+			logger.Warnw("ID token has multiple audiences but no azp claim",
+				"audiences", claims.Audience,
+				"expected_audience", v.config.expectedAudience,
+			)
 		}
 	}
 
-	return fmt.Errorf("%w: expected %q in audience",
-		ErrIDTokenAudMismatch, v.config.expectedAudience)
+	return nil
 }
 
 // validateExpiration validates the exp claim is not expired.
@@ -348,6 +380,26 @@ func (v *idTokenValidator) validateExpiration(claims *IDTokenClaims) error {
 
 	if now.After(expiryWithSkew) {
 		return fmt.Errorf("%w: expired at %s", ErrIDTokenExpired, claims.ExpiresAt.Format(time.RFC3339))
+	}
+
+	return nil
+}
+
+// validateIssuedAt validates the iat claim is not in the future.
+// Per OIDC Core Section 3.1.3.7, the iat claim is RECOMMENDED but not required.
+// If the claim is present, we validate it is not in the future (beyond clock skew).
+func (v *idTokenValidator) validateIssuedAt(claims *IDTokenClaims) error {
+	// iat is recommended, not required - skip validation if not present
+	if claims.IssuedAt.IsZero() {
+		return nil
+	}
+
+	now := time.Now()
+	// Allow for clock skew by accepting iat values slightly in the future
+	iatWithSkew := claims.IssuedAt.Add(-v.config.clockSkew)
+
+	if iatWithSkew.After(now) {
+		return fmt.Errorf("%w: issued at %s", ErrIDTokenIssuedInFuture, claims.IssuedAt.Format(time.RFC3339))
 	}
 
 	return nil
@@ -369,12 +421,7 @@ func validateNonce(claims *IDTokenClaims, expectedNonce string) error {
 
 // isAlgorithmSupported checks if the algorithm is in our supported list.
 func isAlgorithmSupported(alg jose.SignatureAlgorithm) bool {
-	for _, supported := range supportedSignatureAlgorithms {
-		if supported == alg {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(supportedSignatureAlgorithms, alg)
 }
 
 // extractIDTokenClaims builds an IDTokenClaims struct from raw JWT claims.

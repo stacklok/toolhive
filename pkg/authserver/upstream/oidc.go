@@ -22,12 +22,51 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
+
+// OIDCConfig contains configuration for OIDC providers that support discovery.
+type OIDCConfig struct {
+	CommonOAuthConfig
+
+	// Issuer is the URL of the upstream OIDC provider (e.g., https://accounts.google.com).
+	// The provider will fetch endpoints from {Issuer}/.well-known/openid-configuration.
+	Issuer string
+}
+
+// Validate checks that OIDCConfig has all required fields.
+func (c *OIDCConfig) Validate() error {
+	if c.Issuer == "" {
+		return errors.New("issuer is required for OIDC providers")
+	}
+	return c.CommonOAuthConfig.Validate()
+}
+
+// OIDCEndpoints contains the discovered endpoints for an OIDC provider.
+type OIDCEndpoints struct {
+	// Issuer is the issuer identifier.
+	Issuer string `json:"issuer"`
+
+	// AuthorizationEndpoint is the URL for the authorization endpoint.
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+
+	// TokenEndpoint is the URL for the token endpoint.
+	TokenEndpoint string `json:"token_endpoint"`
+
+	// UserInfoEndpoint is the URL for the userinfo endpoint.
+	UserInfoEndpoint string `json:"userinfo_endpoint,omitempty"`
+
+	// JWKSEndpoint is the URL for the JWKS endpoint.
+	JWKSEndpoint string `json:"jwks_uri,omitempty"`
+
+	// CodeChallengeMethodsSupported lists the supported PKCE code challenge methods.
+	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
+}
 
 // Compile-time interface compliance checks.
 var (
@@ -39,12 +78,14 @@ var (
 )
 
 // OIDCProvider implements OAuth2Provider for OIDC-compliant identity providers.
+// It embeds BaseOAuth2Provider to share common OAuth 2.0 logic while adding
+// OIDC-specific functionality like discovery, ID token validation, and user info.
 type OIDCProvider struct {
-	config             *Config
-	endpoints          *OIDCEndpoints
-	client             networking.HTTPClient
-	forceConsentScreen bool
-	idTokenValidator   *idTokenValidator
+	*BaseOAuth2Provider        // Embed for shared OAuth 2.0 logic
+	oidcConfig          *OIDCConfig // Store original OIDC config (Issuer + common OAuth fields)
+	endpoints           *OIDCEndpoints
+	forceConsentScreen  bool
+	idTokenValidator    *idTokenValidator
 }
 
 // OIDCProviderOption configures an OIDCProvider.
@@ -53,7 +94,7 @@ type OIDCProviderOption func(*OIDCProvider)
 // WithHTTPClient sets a custom HTTP client for the provider.
 func WithHTTPClient(client networking.HTTPClient) OIDCProviderOption {
 	return func(p *OIDCProvider) {
-		p.client = client
+		p.httpClient = client
 	}
 }
 
@@ -74,15 +115,18 @@ func WithForceConsentScreen(force bool) OIDCProviderOption {
 }
 
 // NewOIDCProvider creates a new OIDC provider.
-// It performs OIDC discovery to fetch endpoints.
+// It performs OIDC discovery to fetch endpoints and then constructs the
+// underlying OAuth2 configuration from the discovered endpoints.
 func NewOIDCProvider(
 	ctx context.Context,
-	config *Config,
+	config *OIDCConfig,
 	opts ...OIDCProviderOption,
 ) (*OIDCProvider, error) {
 	if config == nil {
-		return nil, fmt.Errorf("config is required")
+		return nil, errors.New("config is required")
 	}
+
+	// Validate OIDC config
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -92,23 +136,22 @@ func NewOIDCProvider(
 		"client_id", config.ClientID,
 	)
 
-	// Build HTTP client using the standard networking builder.
-	// Allow HTTP and private IPs for localhost issuers to support local development/testing.
-	issuerURL, _ := url.Parse(config.Issuer) // Error already validated in config.Validate()
-	isLocalhost := networking.IsLocalhost(issuerURL.Host)
-	httpClient, err := networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(isLocalhost).
-		WithPrivateIPs(isLocalhost).
-		Build()
+	// Create HTTP client for the issuer host
+	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in config.Validate()
+	httpClient, err := newHTTPClientForHost(issuerURL.Host)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
 	p := &OIDCProvider{
-		config: config,
-		client: httpClient,
+		oidcConfig: config,
+		BaseOAuth2Provider: &BaseOAuth2Provider{
+			httpClient: httpClient,
+			// config will be set after discovery
+		},
 	}
 
+	// Apply OIDC-specific options
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -116,6 +159,22 @@ func NewOIDCProvider(
 	if err := p.discoverEndpoints(ctx); err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}
+
+	// Now create OAuth2Config from discovered endpoints + OIDC config.
+	// This allows the embedded BaseOAuth2Provider to use the discovered endpoints
+	// for token requests while preserving the original OIDC config.
+	oauth2Config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     config.ClientID,
+			ClientSecret: config.ClientSecret,
+			Scopes:       config.Scopes,
+			RedirectURI:  config.RedirectURI,
+		},
+		AuthorizationEndpoint: p.endpoints.AuthorizationEndpoint,
+		TokenEndpoint:         p.endpoints.TokenEndpoint,
+		UserInfoEndpoint:      p.endpoints.UserInfoEndpoint,
+	}
+	p.BaseOAuth2Provider.config = oauth2Config
 
 	// Initialize ID token validator for validating tokens from the upstream IDP.
 	// Uses the discovered issuer and our client_id as expected audience.
@@ -138,22 +197,20 @@ func NewOIDCProvider(
 	return p, nil
 }
 
-// Name returns the provider name.
-func (*OIDCProvider) Name() string {
-	return "oidc"
+// Type returns the provider type.
+func (*OIDCProvider) Type() ProviderType {
+	return ProviderTypeOIDC
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
+// This overrides the base implementation to add OIDC-specific parameters (nonce, prompt)
+// and use discovered endpoints.
 func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error) {
 	if p.endpoints == nil {
 		return "", errors.New("OIDC endpoints not discovered")
 	}
 
-	if state == "" {
-		return "", errors.New("state parameter is required")
-	}
-
-	// Apply authorization options
+	// Apply authorization options to extract nonce for logging
 	authOpts := &authorizationOptions{}
 	for _, opt := range opts {
 		opt(authOpts)
@@ -165,56 +222,56 @@ func (p *OIDCProvider) AuthorizationURL(state, codeChallenge string, opts ...Aut
 		"has_nonce", authOpts.nonce != "",
 	)
 
-	// For upstream requests, always use configured scopes if available.
-	// Config scopes represent what the upstream integration requires (e.g., Drive API access).
-	// Client-requested scopes govern the client<->server relationship, not server<->upstream.
-	upstreamScopes := p.config.Scopes
+	// PKCE support check with warning for OIDC discovery
+	if codeChallenge != "" && !p.supportsPKCE() {
+		logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
+	}
 
-	// Only fall back to defaults if no config scopes
+	// Build OIDC-specific additional params
+	oidcOpts := p.buildOIDCAuthOptions(authOpts)
+
+	// Determine scopes: use configured or OIDC defaults
+	upstreamScopes := p.oidcConfig.Scopes
 	if len(upstreamScopes) == 0 {
-		// Default to basic OIDC scopes
 		upstreamScopes = []string{"openid", "profile", "email"}
 	}
 
-	params := url.Values{
-		"response_type": {"code"},
-		"client_id":     {p.config.ClientID},
-		"redirect_uri":  {p.config.RedirectURI},
-		"scope":         {strings.Join(upstreamScopes, " ")},
-		"state":         {state},
-	}
+	// Merge caller's opts with our OIDC-specific opts
+	allOpts := append(opts, oidcOpts) //nolint:gocritic // intentionally appending single element
+
+	return p.buildAuthorizationURL(
+		p.endpoints.AuthorizationEndpoint,
+		state,
+		codeChallenge,
+		upstreamScopes,
+		allOpts...,
+	)
+}
+
+// buildOIDCAuthOptions creates additional authorization options for OIDC-specific parameters.
+func (p *OIDCProvider) buildOIDCAuthOptions(authOpts *authorizationOptions) AuthorizationOption {
+	return WithAdditionalParams(p.buildOIDCParams(authOpts))
+}
+
+// buildOIDCParams builds the OIDC-specific authorization parameters.
+func (p *OIDCProvider) buildOIDCParams(authOpts *authorizationOptions) map[string]string {
+	params := make(map[string]string)
 
 	// Add nonce for OIDC ID Token replay protection (OIDC Core Section 3.1.2.1)
 	if authOpts.nonce != "" {
-		params.Set("nonce", authOpts.nonce)
+		params["nonce"] = authOpts.nonce
 	}
 
 	// Add prompt=consent if configured to force the consent screen
 	if p.forceConsentScreen {
-		params.Set("prompt", "consent")
+		params["prompt"] = "consent"
 	}
 
-	// Add PKCE challenge if provided and supported
-	if codeChallenge != "" {
-		if p.supportsPKCE() {
-			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", pkceChallengeMethodS256)
-		} else {
-			logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
-			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", pkceChallengeMethodS256)
-		}
-	}
-
-	// Add any additional custom parameters
-	for k, v := range authOpts.additionalParams {
-		params.Set(k, v)
-	}
-
-	return p.endpoints.AuthorizationEndpoint + "?" + params.Encode(), nil
+	return params
 }
 
 // ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
+// This overrides the base implementation to use discovered endpoints and add ID token validation.
 func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
@@ -229,22 +286,19 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
-	params := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {p.config.RedirectURI},
-		"client_id":     {p.config.ClientID},
-		"client_secret": {p.config.ClientSecret},
-	}
-
-	// Add PKCE verifier if provided
-	if codeVerifier != "" {
-		params.Set("code_verifier", codeVerifier)
-	}
-
-	tokens, err := p.tokenRequest(ctx, params)
+	// Use base helper for param building, tokenRequest with discovered endpoint
+	params := p.buildCodeExchangeParams(code, codeVerifier)
+	tokens, err := p.tokenRequest(ctx, p.endpoints.TokenEndpoint, params)
 	if err != nil {
 		return nil, err
+	}
+
+	// OIDC-specific: Validate ID token if present (OIDC Core Section 3.1.3.7).
+	// ID token validation is REQUIRED per the spec when an ID token is returned.
+	if tokens.IDToken != "" && p.idTokenValidator != nil {
+		if _, err := p.idTokenValidator.validateIDToken(tokens.IDToken); err != nil {
+			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
 	}
 
 	logger.Infow("authorization code exchange successful",
@@ -257,6 +311,7 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
+// This overrides the base implementation to use discovered endpoints and add ID token validation.
 func (p *OIDCProvider) RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
@@ -270,16 +325,19 @@ func (p *OIDCProvider) RefreshTokens(ctx context.Context, refreshToken string) (
 		"token_endpoint", p.endpoints.TokenEndpoint,
 	)
 
-	params := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {p.config.ClientID},
-		"client_secret": {p.config.ClientSecret},
-	}
-
-	tokens, err := p.tokenRequest(ctx, params)
+	// Use base helper for param building, tokenRequest with discovered endpoint
+	params := p.buildRefreshParams(refreshToken)
+	tokens, err := p.tokenRequest(ctx, p.endpoints.TokenEndpoint, params)
 	if err != nil {
 		return nil, err
+	}
+
+	// OIDC-specific: Validate ID token if present (per OIDC Core spec).
+	// Some providers may return a new ID token on refresh.
+	if tokens.IDToken != "" && p.idTokenValidator != nil {
+		if _, err := p.idTokenValidator.validateIDToken(tokens.IDToken); err != nil {
+			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
 	}
 
 	logger.Infow("token refresh successful",
@@ -316,7 +374,7 @@ func (p *OIDCProvider) UserInfo(ctx context.Context, accessToken string) (*UserI
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := p.client.Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("userinfo request failed: %w", err)
 	}
@@ -472,7 +530,7 @@ func (p *OIDCProvider) ValidateIDTokenWithNonce(idToken, expectedNonce string) (
 
 // discoverEndpoints fetches the OIDC discovery document from {issuer}/.well-known/openid-configuration.
 func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
-	discoveryURL, err := buildDiscoveryURL(p.config.Issuer)
+	discoveryURL, err := buildDiscoveryURL(p.oidcConfig.Issuer)
 	if err != nil {
 		return err
 	}
@@ -486,7 +544,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := p.client.Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("discovery request failed: %w", err)
 	}
@@ -517,7 +575,7 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 		return fmt.Errorf("failed to parse discovery document: %w", err)
 	}
 
-	if err := validateDiscoveryDocument(&endpoints, p.config.Issuer); err != nil {
+	if err := validateDiscoveryDocument(&endpoints, p.oidcConfig.Issuer); err != nil {
 		return fmt.Errorf("invalid discovery document: %w", err)
 	}
 
@@ -532,67 +590,12 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 	return nil
 }
 
-// tokenRequest performs a token request to the upstream IDP.
-func (p *OIDCProvider) tokenRequest(ctx context.Context, params url.Values) (*Tokens, error) {
-	logger.Debugw("sending token request",
-		"token_endpoint", p.endpoints.TokenEndpoint,
-		"grant_type", params.Get("grant_type"),
-	)
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		p.endpoints.TokenEndpoint,
-		strings.NewReader(params.Encode()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response: %w", err)
-	}
-
-	tokens, err := parseTokenResponse(body, resp.StatusCode)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate ID token if present (OIDC Core Section 3.1.3.7).
-	// Currently logs warnings on validation failure rather than rejecting,
-	// since signature verification is not yet implemented.
-	if tokens.IDToken != "" && p.idTokenValidator != nil {
-		if _, err := p.idTokenValidator.validateIDToken(tokens.IDToken); err != nil {
-			// Log warning but don't fail - signature verification not yet implemented
-			logger.Warnw("ID token validation warning (claims only, no signature verification)",
-				"error", err.Error())
-		}
-	}
-
-	return tokens, nil
-}
-
 // supportsPKCE checks if the provider advertises S256 PKCE support.
 func (p *OIDCProvider) supportsPKCE() bool {
 	if p.endpoints == nil {
 		return false
 	}
-	for _, method := range p.endpoints.CodeChallengeMethodsSupported {
-		if method == pkceChallengeMethodS256 {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.endpoints.CodeChallengeMethodsSupported, pkceChallengeMethodS256)
 }
 
 // buildDiscoveryURL constructs the OIDC discovery URL from the issuer.

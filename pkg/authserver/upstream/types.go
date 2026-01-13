@@ -16,32 +16,13 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
-
-// pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
-const pkceChallengeMethodS256 = "S256"
 
 // tokenExpirationBuffer is the time buffer before actual expiration to consider a token expired.
 // This accounts for clock skew and network latency.
 const tokenExpirationBuffer = 30 * time.Second
-
-// maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
-const maxResponseSize = 1024 * 1024 // 1MB
-
-// schemeHTTPS is the HTTPS URL scheme.
-const schemeHTTPS = "https"
-
-// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
-const defaultTokenExpiration = time.Hour
 
 // ProviderType identifies the type of upstream Identity Provider.
 type ProviderType string
@@ -122,32 +103,11 @@ type UserInfo struct {
 	Claims map[string]any `json:"-"`
 }
 
-// OIDCEndpoints contains the discovered endpoints for an OIDC provider.
-type OIDCEndpoints struct {
-	// Issuer is the issuer identifier.
-	Issuer string `json:"issuer"`
-
-	// AuthorizationEndpoint is the URL for the authorization endpoint.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-
-	// TokenEndpoint is the URL for the token endpoint.
-	TokenEndpoint string `json:"token_endpoint"`
-
-	// UserInfoEndpoint is the URL for the userinfo endpoint.
-	UserInfoEndpoint string `json:"userinfo_endpoint,omitempty"`
-
-	// JWKSEndpoint is the URL for the JWKS endpoint.
-	JWKSEndpoint string `json:"jwks_uri,omitempty"`
-
-	// CodeChallengeMethodsSupported lists the supported PKCE code challenge methods.
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-}
-
 // OAuth2Provider handles communication with an upstream Identity Provider.
 // This is the base interface for all provider types.
 type OAuth2Provider interface {
-	// Name returns the provider name (e.g., "google", "oidc", "oauth2").
-	Name() string
+	// Type returns the provider type.
+	Type() ProviderType
 
 	// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
 	// state: our internal state to correlate callback
@@ -195,218 +155,4 @@ type UserInfoSubjectValidator interface {
 // ErrUserInfoSubjectMismatch is returned when the UserInfo endpoint returns a subject
 // that does not match the expected subject from the ID Token.
 // This validation is required per OIDC Core Section 5.3.4 to prevent user impersonation.
-var ErrUserInfoSubjectMismatch = fmt.Errorf("userinfo subject does not match expected subject")
-
-// Config contains configuration for connecting to an upstream
-// Identity Provider (e.g., Google, Okta, Auth0).
-type Config struct {
-	// Type specifies the provider type (oidc or oauth2).
-	// Required field that determines how the provider is initialized.
-	Type ProviderType
-
-	// Issuer is the URL of the upstream IDP (required for OIDC providers).
-	Issuer string
-
-	// AuthorizationEndpoint is the URL for authorization (required for OAuth2 providers).
-	AuthorizationEndpoint string
-
-	// TokenEndpoint is the URL for token requests (required for OAuth2 providers).
-	TokenEndpoint string
-
-	// UserInfoEndpoint is the URL for user info (optional).
-	UserInfoEndpoint string
-
-	// ClientID is the OAuth client ID registered with the upstream IDP.
-	ClientID string
-
-	// ClientSecret is the OAuth client secret registered with the upstream IDP.
-	ClientSecret string
-
-	// Scopes are the OAuth scopes to request from the upstream IDP.
-	Scopes []string
-
-	// RedirectURI is the callback URL where the upstream IDP will redirect
-	// after authentication. This should be our authorization server's callback endpoint.
-	RedirectURI string
-}
-
-// Validate checks that the Config is valid based on the provider type.
-func (c *Config) Validate() error {
-	// Validate based on provider type
-	switch c.Type {
-	case ProviderTypeOIDC:
-		if c.Issuer == "" {
-			return fmt.Errorf("upstream issuer is required for OIDC providers")
-		}
-	case ProviderTypeOAuth2:
-		if c.AuthorizationEndpoint == "" {
-			return fmt.Errorf("upstream authorization_endpoint is required for OAuth2 providers")
-		}
-		if c.TokenEndpoint == "" {
-			return fmt.Errorf("upstream token_endpoint is required for OAuth2 providers")
-		}
-	default:
-		return fmt.Errorf("upstream provider type must be '%s' or '%s'", ProviderTypeOIDC, ProviderTypeOAuth2)
-	}
-
-	// Common required fields
-	if c.ClientID == "" {
-		return fmt.Errorf("upstream client_id is required")
-	}
-	if c.ClientSecret == "" {
-		return fmt.Errorf("upstream client_secret is required")
-	}
-	if c.RedirectURI == "" {
-		return fmt.Errorf("upstream redirect_uri is required")
-	}
-	if err := ValidateRedirectURI(c.RedirectURI); err != nil {
-		return fmt.Errorf("upstream %w", err)
-	}
-	return nil
-}
-
-// IsOIDC returns true if the provider type is OIDC.
-func (c *Config) IsOIDC() bool {
-	return c.Type == ProviderTypeOIDC
-}
-
-// IsOAuth2 returns true if the provider type is OAuth2.
-func (c *Config) IsOAuth2() bool {
-	return c.Type == ProviderTypeOAuth2
-}
-
-// ValidateRedirectURI validates an OAuth redirect URI according to RFC 6749 Section 3.1.2.
-// It ensures the URI is:
-//   - A parseable, absolute URL with scheme and host
-//   - Free of fragments (per RFC 6749 Section 3.1.2.2)
-//   - Free of user credentials
-//   - Using http or https scheme only
-//   - Using HTTPS for non-loopback addresses (HTTP allowed only for 127.0.0.1, ::1, localhost)
-//   - Not containing wildcard hostnames
-func ValidateRedirectURI(uri string) error {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return fmt.Errorf("redirect_uri must be an absolute URL with scheme and host")
-	}
-
-	// Must be absolute URL (has scheme and host)
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("redirect_uri must be an absolute URL with scheme and host")
-	}
-
-	// Must not contain fragment per RFC 6749 Section 3.1.2.2
-	if parsed.Fragment != "" {
-		return fmt.Errorf("redirect_uri must not contain a fragment (#)")
-	}
-
-	// Must not contain user credentials
-	if parsed.User != nil {
-		return fmt.Errorf("redirect_uri must not contain user credentials")
-	}
-
-	// Must use http or https scheme
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("redirect_uri must use http or https scheme")
-	}
-
-	// HTTP scheme is only allowed for loopback addresses
-	if parsed.Scheme == "http" && !isLoopbackAddress(parsed.Host) {
-		return fmt.Errorf("redirect_uri with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
-	}
-
-	// Must not contain wildcard hostname
-	if strings.Contains(parsed.Hostname(), "*") {
-		return fmt.Errorf("redirect_uri must not contain wildcard hostname")
-	}
-
-	return nil
-}
-
-// isLoopbackAddress checks if the host is a loopback address (127.0.0.1, ::1, or localhost).
-// The host may include a port which is stripped before checking.
-func isLoopbackAddress(host string) bool {
-	// Handle IPv6 addresses in brackets (e.g., "[::1]:8080")
-	hostname := host
-	if strings.HasPrefix(host, "[") {
-		// IPv6 with brackets, find the closing bracket
-		if idx := strings.Index(host, "]"); idx != -1 {
-			hostname = host[1:idx]
-		}
-	} else {
-		// Remove port if present for non-bracketed hosts
-		if idx := strings.LastIndex(host, ":"); idx != -1 {
-			// Make sure this isn't an IPv6 address without brackets
-			if !strings.Contains(host, "::") && strings.Count(host, ":") == 1 {
-				hostname = host[:idx]
-			}
-		}
-	}
-
-	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
-}
-
-// tokenResponse represents the response from the token endpoint.
-// Per RFC 6749 Section 5.1 (Success Response) and OpenID Connect Core Section 3.1.3.3.
-type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	ExpiresIn    int64  `json:"expires_in,omitempty"`
-	IDToken      string `json:"id_token,omitempty"`
-	Scope        string `json:"scope,omitempty"`
-}
-
-// tokenErrorResponse represents an error response from the token endpoint.
-// Per RFC 6749 Section 5.2 (Error Response).
-type tokenErrorResponse struct {
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description,omitempty"`
-	ErrorURI         string `json:"error_uri,omitempty"`
-}
-
-// parseTokenResponse parses a token endpoint response body.
-// It handles both success responses and error responses per RFC 6749 Section 5.1 and 5.2.
-func parseTokenResponse(body []byte, statusCode int) (*Tokens, error) {
-	// If not 200 OK, try to parse error response
-	if statusCode != http.StatusOK {
-		var tokenError tokenErrorResponse
-		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
-			// OAuth error responses with error/error_description are standardized and safe to return
-			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
-		}
-		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		logger.Debugw("token request failed",
-			"status", statusCode,
-			"body", string(body))
-		return nil, fmt.Errorf("token request failed with status %d", statusCode)
-	}
-
-	var tokenResp tokenResponse
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
-	}
-
-	if tokenResp.AccessToken == "" {
-		return nil, errors.New("token response missing access_token")
-	}
-
-	// Validate token_type per RFC 6749 Section 5.1
-	// The comparison is case-insensitive per the spec
-	if !strings.EqualFold(tokenResp.TokenType, "bearer") {
-		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", tokenResp.TokenType)
-	}
-
-	// Calculate expiration time
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	if tokenResp.ExpiresIn == 0 {
-		// Default to 1 hour if not specified
-		expiresAt = time.Now().Add(defaultTokenExpiration)
-	}
-
-	return &Tokens{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
-		ExpiresAt:    expiresAt,
-	}, nil
-}
+var ErrUserInfoSubjectMismatch = errors.New("userinfo subject does not match expected subject")

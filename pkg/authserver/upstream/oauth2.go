@@ -16,6 +16,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,187 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+// pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
+const pkceChallengeMethodS256 = "S256"
+
+// maxResponseSize is the maximum allowed response size for HTTP requests to prevent DoS.
+const maxResponseSize = 1024 * 1024 // 1MB
+
+// schemeHTTPS is the HTTPS URL scheme.
+const schemeHTTPS = "https"
+
+// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
+const defaultTokenExpiration = time.Hour
+
+// CommonOAuthConfig contains fields shared by all OAuth provider types.
+// This provides compile-time type safety by separating OIDC and OAuth2 configuration.
+type CommonOAuthConfig struct {
+	// ClientID is the OAuth client ID registered with the upstream IDP.
+	ClientID string
+
+	// ClientSecret is the OAuth client secret registered with the upstream IDP.
+	ClientSecret string
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	Scopes []string
+
+	// RedirectURI is the callback URL where the upstream IDP will redirect
+	// after authentication.
+	RedirectURI string
+}
+
+// Validate checks that CommonOAuthConfig has all required fields.
+func (c *CommonOAuthConfig) Validate() error {
+	if c.ClientID == "" {
+		return errors.New("client_id is required")
+	}
+	if c.ClientSecret == "" {
+		return errors.New("client_secret is required")
+	}
+	if c.RedirectURI == "" {
+		return errors.New("redirect_uri is required")
+	}
+	return validateRedirectURI(c.RedirectURI)
+}
+
+// OAuth2Config contains configuration for pure OAuth 2.0 providers without OIDC discovery.
+type OAuth2Config struct {
+	CommonOAuthConfig
+
+	// AuthorizationEndpoint is the URL for the OAuth authorization endpoint.
+	AuthorizationEndpoint string
+
+	// TokenEndpoint is the URL for the OAuth token endpoint.
+	TokenEndpoint string
+
+	// UserInfoEndpoint is the URL for fetching user information (optional).
+	UserInfoEndpoint string
+}
+
+// Validate checks that OAuth2Config has all required fields.
+func (c *OAuth2Config) Validate() error {
+	if c.AuthorizationEndpoint == "" {
+		return errors.New("authorization_endpoint is required for OAuth2 providers")
+	}
+	if c.TokenEndpoint == "" {
+		return errors.New("token_endpoint is required for OAuth2 providers")
+	}
+	return c.CommonOAuthConfig.Validate()
+}
+
+// validateRedirectURI validates an OAuth redirect URI according to RFC 6749 Section 3.1.2.
+// It ensures the URI is:
+//   - A parseable, absolute URL with scheme and host
+//   - Free of fragments (per RFC 6749 Section 3.1.2.2)
+//   - Free of user credentials
+//   - Using http or https scheme only
+//   - Using HTTPS for non-loopback addresses (HTTP allowed only for 127.0.0.1, ::1, localhost)
+//   - Not containing wildcard hostnames
+func validateRedirectURI(uri string) error {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return errors.New("redirect_uri must be an absolute URL with scheme and host")
+	}
+
+	// Must be absolute URL (has scheme and host)
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("redirect_uri must be an absolute URL with scheme and host")
+	}
+
+	// Must not contain fragment per RFC 6749 Section 3.1.2.2
+	if parsed.Fragment != "" {
+		return errors.New("redirect_uri must not contain a fragment (#)")
+	}
+
+	// Must not contain user credentials
+	if parsed.User != nil {
+		return errors.New("redirect_uri must not contain user credentials")
+	}
+
+	// Must use http or https scheme
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("redirect_uri must use http or https scheme")
+	}
+
+	// HTTP scheme is only allowed for loopback addresses
+	if parsed.Scheme == "http" && !networking.IsLocalhost(parsed.Host) {
+		return errors.New("redirect_uri with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
+	}
+
+	// Must not contain wildcard hostname
+	if strings.Contains(parsed.Hostname(), "*") {
+		return errors.New("redirect_uri must not contain wildcard hostname")
+	}
+
+	return nil
+}
+
+// tokenResponse represents the response from the token endpoint.
+// Per RFC 6749 Section 5.1 (Success Response) and OpenID Connect Core Section 3.1.3.3.
+type tokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int64  `json:"expires_in,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+}
+
+// tokenErrorResponse represents an error response from the token endpoint.
+// Per RFC 6749 Section 5.2 (Error Response).
+type tokenErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description,omitempty"`
+	ErrorURI         string `json:"error_uri,omitempty"`
+}
+
+// parseTokenResponse parses a token endpoint response body.
+// It handles both success responses and error responses per RFC 6749 Section 5.1 and 5.2.
+func parseTokenResponse(body []byte, statusCode int) (*Tokens, error) {
+	// If not 200 OK, try to parse error response
+	if statusCode != http.StatusOK {
+		var tokenError tokenErrorResponse
+		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
+			// OAuth error responses with error/error_description are standardized and safe to return
+			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
+		}
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		logger.Debugw("token request failed",
+			"status", statusCode,
+			"body", string(body))
+		return nil, fmt.Errorf("token request failed with status %d", statusCode)
+	}
+
+	var tokenResp tokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return nil, errors.New("token response missing access_token")
+	}
+
+	// Validate token_type per RFC 6749 Section 5.1
+	// The comparison is case-insensitive per the spec
+	if !strings.EqualFold(tokenResp.TokenType, "bearer") {
+		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", tokenResp.TokenType)
+	}
+
+	// Calculate expiration time
+	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	if tokenResp.ExpiresIn == 0 {
+		// Default to 1 hour if not specified
+		expiresAt = time.Now().Add(defaultTokenExpiration)
+	}
+
+	return &Tokens{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		IDToken:      tokenResp.IDToken,
+		ExpiresAt:    expiresAt,
+	}, nil
+}
+
 // Compile-time interface compliance check.
 var _ OAuth2Provider = (*BaseOAuth2Provider)(nil)
 
@@ -35,7 +217,7 @@ var _ OAuth2Provider = (*BaseOAuth2Provider)(nil)
 // This can be used standalone for OAuth 2.0 providers without OIDC support,
 // or embedded by OIDCProvider to share common OAuth 2.0 logic.
 type BaseOAuth2Provider struct {
-	config     *Config
+	config     *OAuth2Config
 	httpClient networking.HTTPClient
 }
 
@@ -49,21 +231,33 @@ func WithOAuth2HTTPClient(client networking.HTTPClient) OAuth2ProviderOption {
 	}
 }
 
-// NewOAuth2Provider creates a new pure OAuth 2.0 provider.
-// Use this for providers that don't support OIDC discovery.
-// The config must have Type set to ProviderTypeOAuth2 and must include
-// AuthorizationEndpoint and TokenEndpoint.
-func NewOAuth2Provider(config *Config, opts ...OAuth2ProviderOption) (*BaseOAuth2Provider, error) {
-	if config == nil {
-		return nil, errors.New("config is required")
-	}
-
-	if config.Type != ProviderTypeOAuth2 {
-		return nil, fmt.Errorf("config.Type must be ProviderTypeOAuth2, got %q", config.Type)
-	}
-
+// newBaseOAuth2Provider creates a BaseOAuth2Provider with validated config and HTTP client.
+// The hostForClient parameter determines which URL to use for HTTP client configuration
+// (e.g., TokenEndpoint for OAuth2, Issuer for OIDC).
+//
+// IMPORTANT: Callers must ensure config is non-nil before calling this function.
+func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	httpClient, err := newHTTPClientForHost(hostForClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
+	return &BaseOAuth2Provider{
+		config:     config,
+		httpClient: httpClient,
+	}, nil
+}
+
+// NewOAuth2Provider creates a new pure OAuth 2.0 provider.
+// Use this for providers that don't support OIDC discovery.
+// The config must include AuthorizationEndpoint and TokenEndpoint.
+func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*BaseOAuth2Provider, error) {
+	if config == nil {
+		return nil, errors.New("config is required")
 	}
 
 	logger.Infow("creating OAuth2 provider",
@@ -72,12 +266,12 @@ func NewOAuth2Provider(config *Config, opts ...OAuth2ProviderOption) (*BaseOAuth
 		"client_id", config.ClientID,
 	)
 
-	p := &BaseOAuth2Provider{
-		config:     config,
-		httpClient: http.DefaultClient,
+	tokenURL, _ := url.Parse(config.TokenEndpoint) // Error already validated in config.Validate()
+	p, err := newBaseOAuth2Provider(config, tokenURL.Host)
+	if err != nil {
+		return nil, err
 	}
 
-	// Apply options
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -90,30 +284,56 @@ func NewOAuth2Provider(config *Config, opts ...OAuth2ProviderOption) (*BaseOAuth
 	return p, nil
 }
 
-// Name returns the provider name.
-func (*BaseOAuth2Provider) Name() string {
-	return "oauth2"
+// Type returns the provider type.
+func (*BaseOAuth2Provider) Type() ProviderType {
+	return ProviderTypeOAuth2
+}
+
+// authorizationEndpoint returns the authorization endpoint URL.
+func (p *BaseOAuth2Provider) authorizationEndpoint() string {
+	return p.config.AuthorizationEndpoint
+}
+
+// tokenEndpoint returns the token endpoint URL.
+func (p *BaseOAuth2Provider) tokenEndpoint() string {
+	return p.config.TokenEndpoint
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
 func (p *BaseOAuth2Provider) AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error) {
+	logger.Debugw("building authorization URL",
+		"authorization_endpoint", p.authorizationEndpoint(),
+		"has_pkce", codeChallenge != "",
+	)
+	return p.buildAuthorizationURL(
+		p.authorizationEndpoint(),
+		state,
+		codeChallenge,
+		p.config.Scopes,
+		opts...,
+	)
+}
+
+// buildAuthorizationURL builds an authorization URL with the given parameters.
+// This is the core implementation used by AuthorizationURL and can be extended by embedding types.
+func (p *BaseOAuth2Provider) buildAuthorizationURL(
+	authEndpoint string,
+	state string,
+	codeChallenge string,
+	scopes []string,
+	opts ...AuthorizationOption,
+) (string, error) {
+	if authEndpoint == "" {
+		return "", errors.New("authorization endpoint is required")
+	}
 	if state == "" {
 		return "", errors.New("state parameter is required")
 	}
 
-	// Apply authorization options
 	authOpts := &authorizationOptions{}
 	for _, opt := range opts {
 		opt(authOpts)
 	}
-
-	logger.Debugw("building authorization URL",
-		"authorization_endpoint", p.config.AuthorizationEndpoint,
-		"has_pkce", codeChallenge != "",
-	)
-
-	// Use configured scopes if available
-	upstreamScopes := p.config.Scopes
 
 	params := url.Values{
 		"response_type": {"code"},
@@ -122,25 +342,20 @@ func (p *BaseOAuth2Provider) AuthorizationURL(state, codeChallenge string, opts 
 		"state":         {state},
 	}
 
-	// Add scopes if configured
-	if len(upstreamScopes) > 0 {
-		params.Set("scope", strings.Join(upstreamScopes, " "))
+	if len(scopes) > 0 {
+		params.Set("scope", strings.Join(scopes, " "))
 	}
 
-	// Add PKCE challenge if provided
-	// Note: For pure OAuth 2.0 providers, we cannot check discovery metadata for PKCE support.
-	// We send the PKCE parameters and let the provider accept or ignore them.
 	if codeChallenge != "" {
 		params.Set("code_challenge", codeChallenge)
 		params.Set("code_challenge_method", pkceChallengeMethodS256)
 	}
 
-	// Add any additional custom parameters
 	for k, v := range authOpts.additionalParams {
 		params.Set(k, v)
 	}
 
-	return p.config.AuthorizationEndpoint + "?" + params.Encode(), nil
+	return authEndpoint + "?" + params.Encode(), nil
 }
 
 // ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
@@ -154,6 +369,24 @@ func (p *BaseOAuth2Provider) ExchangeCode(ctx context.Context, code, codeVerifie
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
+	params := p.buildCodeExchangeParams(code, codeVerifier)
+
+	tokens, err := p.tokenRequest(ctx, p.tokenEndpoint(), params)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infow("authorization code exchange successful",
+		"has_refresh_token", tokens.RefreshToken != "",
+		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return tokens, nil
+}
+
+// buildCodeExchangeParams builds the parameters for authorization code exchange.
+// This is extracted as a helper so OIDCProvider can reuse it while adding OIDC-specific behavior.
+func (p *BaseOAuth2Provider) buildCodeExchangeParams(code, codeVerifier string) url.Values {
 	params := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -167,17 +400,7 @@ func (p *BaseOAuth2Provider) ExchangeCode(ctx context.Context, code, codeVerifie
 		params.Set("code_verifier", codeVerifier)
 	}
 
-	tokens, err := p.tokenRequest(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-
-	logger.Infow("authorization code exchange successful",
-		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
-	)
-
-	return tokens, nil
+	return params
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
@@ -190,14 +413,9 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken str
 		"token_endpoint", p.config.TokenEndpoint,
 	)
 
-	params := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {p.config.ClientID},
-		"client_secret": {p.config.ClientSecret},
-	}
+	params := p.buildRefreshParams(refreshToken)
 
-	tokens, err := p.tokenRequest(ctx, params)
+	tokens, err := p.tokenRequest(ctx, p.tokenEndpoint(), params)
 	if err != nil {
 		return nil, err
 	}
@@ -210,17 +428,32 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken str
 	return tokens, nil
 }
 
+// buildRefreshParams builds the parameters for token refresh.
+// This is extracted as a helper so OIDCProvider can reuse it while adding OIDC-specific behavior.
+func (p *BaseOAuth2Provider) buildRefreshParams(refreshToken string) url.Values {
+	return url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {p.config.ClientID},
+		"client_secret": {p.config.ClientSecret},
+	}
+}
+
 // tokenRequest performs a token request to the upstream IDP.
-func (p *BaseOAuth2Provider) tokenRequest(ctx context.Context, params url.Values) (*Tokens, error) {
+func (p *BaseOAuth2Provider) tokenRequest(ctx context.Context, endpoint string, params url.Values) (*Tokens, error) {
+	if endpoint == "" {
+		return nil, errors.New("token endpoint is required")
+	}
+
 	logger.Debugw("sending token request",
-		"token_endpoint", p.config.TokenEndpoint,
+		"token_endpoint", endpoint,
 		"grant_type", params.Get("grant_type"),
 	)
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		p.config.TokenEndpoint,
+		endpoint,
 		strings.NewReader(params.Encode()),
 	)
 	if err != nil {
@@ -242,31 +475,4 @@ func (p *BaseOAuth2Provider) tokenRequest(ctx context.Context, params url.Values
 	}
 
 	return parseTokenResponse(body, resp.StatusCode)
-}
-
-// NewProvider creates an appropriate provider based on the config type.
-// For ProviderTypeOIDC, it creates an OIDCProvider with OIDC discovery.
-// For ProviderTypeOAuth2, it creates a BaseOAuth2Provider with explicit endpoints.
-//
-// For more control over provider options, use NewOIDCProvider or NewOAuth2Provider directly.
-func NewProvider(ctx context.Context, config *Config) (OAuth2Provider, error) {
-	if config == nil {
-		return nil, fmt.Errorf("config is required")
-	}
-
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid provider config: %w", err)
-	}
-
-	switch config.Type {
-	case ProviderTypeOIDC:
-		return NewOIDCProvider(ctx, config)
-
-	case ProviderTypeOAuth2:
-		return NewOAuth2Provider(config)
-
-	default:
-		return nil, fmt.Errorf("unknown provider type: %q (must be %q or %q)",
-			config.Type, ProviderTypeOIDC, ProviderTypeOAuth2)
-	}
 }

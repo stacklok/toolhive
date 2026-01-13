@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/norwoodj/helm-docs
-    rev: v1.2.0
+    rev: v1.14.2
     hooks:
       - id: helm-docs
         args:

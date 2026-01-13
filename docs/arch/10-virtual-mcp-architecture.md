@@ -73,7 +73,7 @@ graph TB
 | **Composition** | Execute multi-step workflows across multiple backends |
 | **Caching** | Reduce auth overhead by caching exchanged tokens |
 
-**Implementation**: `pkg/vmcp/`
+**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/discovery/`, routing: `pkg/vmcp/router/`)
 
 ## Backend Discovery
 
@@ -125,7 +125,7 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 
 | Strategy | Behavior |
 |----------|----------|
-| **prefix** | Prepend backend name to all tools (e.g., `github.create_issue`) |
+| **prefix** | Prepend backend name to all tools (e.g., `github_create_issue`) |
 | **priority** | First backend in priority order wins, others hidden |
 | **manual** | Explicit mapping for each conflict |
 
@@ -212,11 +212,11 @@ sequenceDiagram
     Server->>Client: Tool result
 ```
 
-**Key insight**: If a tool was renamed during conflict resolution (e.g., `github.create_issue`), vMCP translates it back to the original name (`create_issue`) when calling the backend.
+**Key insight**: If a tool was renamed during conflict resolution (e.g., `github_create_issue`), vMCP translates it back to the original name (`create_issue`) when calling the backend.
 
 ## Health Monitoring
 
-vMCP monitors backend health with configurable intervals. Health status (healthy, degraded, unhealthy, unknown) affects routing decisions and is reported in VirtualMCPServer status.
+vMCP monitors backend health with configurable intervals. Health status (healthy, degraded, unhealthy, unauthenticated, unknown) affects routing decisions and is reported in VirtualMCPServer status.
 
 **Implementation**: `pkg/vmcp/health/`
 

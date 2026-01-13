@@ -38,6 +38,95 @@ graph TB
 
 ## Custom Resource Definitions
 
+### CRD Overview
+
+MCPServer is the fundamental building block. All other CRDs either **organize**, **aggregate**, **configure**, or help **discover** MCP servers.
+
+```
+                    ┌─────────────────────────────────────┐
+                    │           DISCOVERY                 │
+                    │          MCPRegistry                │
+                    │  ┌───────────────────────────────┐  │
+                    │  │       AGGREGATION             │  │
+                    │  │    VirtualMCPServer           │  │
+                    │  │    + CompositeToolDef         │  │
+                    │  │  ┌─────────────────────────┐  │  │
+                    │  │  │     ORGANIZATION        │  │  │
+                    │  │  │       MCPGroup          │  │  │
+                    │  │  │  ┌───────────────────┐  │  │  │
+                    │  │  │  │      CORE         │  │  │  │
+                    │  │  │  │    MCPServer      │  │  │  │
+                    │  │  │  │  MCPRemoteProxy   │  │  │  │
+                    │  │  │  └───────────────────┘  │  │  │
+                    │  │  └─────────────────────────┘  │  │
+                    │  └───────────────────────────────┘  │
+                    └─────────────────────────────────────┘
+
+        ┌──────────────────────────────────────────────────┐
+        │              CONFIGURATION (attaches to any)     │
+        │         ToolConfig    MCPExternalAuthConfig      │
+        └──────────────────────────────────────────────────┘
+```
+
+| Layer | CRDs | Purpose |
+|-------|------|---------|
+| **Core** | MCPServer, MCPRemoteProxy | Run or proxy MCP servers |
+| **Organization** | MCPGroup | Group related servers together |
+| **Aggregation** | VirtualMCPServer, VirtualMCPCompositeToolDefinition | Combine multiple servers into one endpoint |
+| **Discovery** | MCPRegistry | Help clients find available servers |
+| **Configuration** | ToolConfig, MCPExternalAuthConfig | Shared config that attaches to any layer |
+
+#### Workload CRDs (Deploy Running Pods)
+
+| CRD | Deploys | Purpose |
+|-----|---------|---------|
+| **MCPServer** | Deployment + StatefulSet | Container-based MCP server with proxy |
+| **MCPRemoteProxy** | Deployment | Proxy to external/remote MCP servers |
+| **VirtualMCPServer** | Deployment | Aggregates multiple backends into one endpoint |
+| **MCPRegistry** | Deployment | Registry API server for MCP discovery |
+
+#### Logical/Configuration CRDs (No Pods)
+
+| CRD | Purpose |
+|-----|---------|
+| **MCPGroup** | Logical grouping of workloads (status tracking only) |
+| **ToolConfig** | Tool filtering and renaming configuration |
+| **MCPExternalAuthConfig** | Token exchange / header injection configuration |
+| **VirtualMCPCompositeToolDefinition** | Workflow definitions (webhook validation only) |
+
+### CRD Relationships
+
+```mermaid
+graph TB
+    subgraph "Deploys Workloads"
+        VMCP[VirtualMCPServer<br/>Deployment: aggregator]
+        Server[MCPServer<br/>Deployment + StatefulSet]
+        Proxy[MCPRemoteProxy<br/>Deployment: proxy]
+        Registry[MCPRegistry<br/>Deployment: API server]
+    end
+
+    subgraph "Logical Grouping"
+        Group[MCPGroup<br/>No resources]
+    end
+
+    subgraph "Configuration Only"
+        CTD[VirtualMCPCompositeToolDefinition<br/>Webhook validation]
+        ExtAuth[MCPExternalAuthConfig<br/>No resources]
+        ToolCfg[ToolConfig<br/>No resources]
+    end
+
+    VMCP -->|groupRef| Group
+    VMCP -->|compositeToolRefs| CTD
+
+    Server -->|groupRef| Group
+    Server -.->|externalAuthConfigRef| ExtAuth
+    Server -.->|toolConfigRef| ToolCfg
+
+    Proxy -->|groupRef| Group
+    Proxy -.->|externalAuthConfigRef| ExtAuth
+    Proxy -.->|toolConfigRef| ToolCfg
+```
+
 ### MCPServer
 
 Defines an MCP server deployment, including container images, transports, middleware, and authentication configuration.
@@ -165,10 +254,10 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Phase (Ready, Degraded, Pending, Failed)
 - URL for accessing the virtual server
 - Discovered backends with individual health status
-- Capabilities summary (tool/resource/prompt counts)
+- Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**Referenced by**: MCPGroup (via `spec.groupRef`)
+**References**: MCPGroup (via `spec.config.groupRef`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 

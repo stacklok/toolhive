@@ -25,7 +25,8 @@ type Optimizer interface {
 
 	// CallTool invokes a tool by name with the given parameters.
 	// Returns the tool's result or an error if the tool is not found or execution fails.
-	CallTool(ctx context.Context, input CallToolInput) (*CallToolResult, error)
+	// The return type matches BackendClient.CallTool for direct passthrough.
+	CallTool(ctx context.Context, input CallToolInput) (map[string]any, error)
 }
 
 // FindToolInput contains the parameters for finding tools.
@@ -80,29 +81,4 @@ type CallToolInput struct {
 
 	// Parameters are the arguments to pass to the tool.
 	Parameters map[string]any `json:"parameters" description:"Parameters to pass to the tool"`
-}
-
-// CallToolResult contains the result of a tool invocation.
-// This wraps the standard MCP CallToolResult content.
-type CallToolResult struct {
-	// Content contains the tool's output.
-	Content []ContentBlock `json:"content"`
-
-	// IsError indicates whether the tool execution resulted in an error.
-	IsError bool `json:"isError,omitempty"`
-}
-
-// ContentBlock represents a single content item in a tool result.
-type ContentBlock struct {
-	// Type is the content type (e.g., "text", "image", "resource").
-	Type string `json:"type"`
-
-	// Text is the text content (for type="text").
-	Text string `json:"text,omitempty"`
-
-	// Data is base64-encoded data (for type="image" or binary content).
-	Data string `json:"data,omitempty"`
-
-	// MimeType is the MIME type of the content.
-	MimeType string `json:"mimeType,omitempty"`
 }

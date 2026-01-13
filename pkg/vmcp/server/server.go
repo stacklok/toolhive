@@ -222,7 +222,7 @@ type Server struct {
 // This is defined as an interface to avoid circular dependencies and allow testing.
 type OptimizerIntegration interface {
 	// OnRegisterSession generates embeddings for session tools
-	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *vmcp.DiscoveredCapabilities) error
+	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
 
 	// RegisterTools adds optim.find_tool and optim.call_tool to the session
 	RegisterTools(ctx context.Context, session server.ClientSession) error

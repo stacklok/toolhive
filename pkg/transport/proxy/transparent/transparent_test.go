@@ -579,8 +579,8 @@ func TestHealthCheckRetryConstants(t *testing.T) {
 	assert.LessOrEqual(t, healthCheckRetryCount, 10, "Should not retry too many times")
 
 	// Verify retry delay is reasonable
-	assert.GreaterOrEqual(t, healthCheckRetryDelay, 1*time.Second, "Retry delay should be at least 1 second")
-	assert.LessOrEqual(t, healthCheckRetryDelay, 30*time.Second, "Retry delay should not be too long")
+	assert.GreaterOrEqual(t, DefaultHealthCheckRetryDelay, 1*time.Second, "Retry delay should be at least 1 second")
+	assert.LessOrEqual(t, DefaultHealthCheckRetryDelay, 30*time.Second, "Retry delay should not be too long")
 }
 
 // TestRewriteEndpointURL tests the rewriteEndpointURL function
@@ -970,7 +970,8 @@ func (ct *callbackTracker) isInvoked() bool {
 }
 
 // setupRemoteProxyTest creates a proxy with health check enabled for remote servers
-// Uses a 100ms health check interval for faster test execution
+// Uses a 100ms health check interval, 50ms retry delay, and 100ms ping timeout for faster test execution
+// With retry mechanism (3 consecutive ticker failures), shutdown occurs after ~200ms for instant failures (connection refused, 5xx) or ~700ms for timeouts
 func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthCheckFailedCallback) (*TransparentProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 	return setupRemoteProxyTestWithTimeout(t, serverURL, callback, 1*time.Second)
@@ -994,7 +995,9 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		"",
 		false,
 		nil, // middlewares
-		withHealthCheckInterval(100*time.Millisecond), // Use 100ms for faster tests
+		withHealthCheckInterval(100*time.Millisecond),    // Use 100ms for faster tests
+		withHealthCheckRetryDelay(50*time.Millisecond),   // Use 50ms retry delay for faster tests
+		withHealthCheckPingTimeout(100*time.Millisecond), // Use 100ms ping timeout for faster tests
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1026,10 +1029,17 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 
 	proxy.setServerInitialized()
 
-	// Health check runs every 100ms, wait for one cycle + buffer
-	time.Sleep(150 * time.Millisecond)
+	// With retry mechanism (100ms ticker, 50ms retry delay) and instant connection failures:
+	// The retry blocks the ticker case, so the next ticker fires after the retry completes.
+	// - First ticker: T=0ms → fails instantly → consecutiveFailures=1 → retry timer (50ms)
+	// - Retry: T=50ms → fails instantly → continue (consecutiveFailures stays 1)
+	// - Second ticker: T=100ms (next interval) → fails instantly → consecutiveFailures=2 → retry timer (50ms)
+	// - Retry: T=150ms → fails instantly → continue (consecutiveFailures stays 2)
+	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → shutdown
+	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
+	time.Sleep(400 * time.Millisecond)
 
-	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused")
+	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused after 3 consecutive failures")
 
 	running, _ := proxy.IsRunning(ctx)
 	assert.False(t, running, "Proxy should stop after connection failure")
@@ -1043,14 +1053,16 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 	tracker, callback := newCallbackTracker()
 
 	// Create server that hangs (simulates timeout)
-	// Note: The pinger has a 5-second timeout, so we need to hang longer
+	// Note: With 100ms ping timeout and retry mechanism, we need 3 consecutive ticker failures
+	// Each health check will timeout after 100ms, and with retries the total time is ~700ms
 	// Use a channel to allow graceful shutdown
 	serverDone := make(chan struct{})
 	hangingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Sleep longer than the pinger timeout (5 seconds)
+		// Sleep longer than all health checks combined (each takes 100ms to timeout)
+		// Need to hang for at least 700ms to allow all 3 failures to complete
 		// But use a select to allow cancellation
 		select {
-		case <-time.After(6 * time.Second):
+		case <-time.After(800 * time.Millisecond):
 			w.WriteHeader(http.StatusOK)
 		case <-serverDone:
 			return
@@ -1061,21 +1073,40 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 		hangingServer.Close()
 	}()
 
-	proxy, ctx, cancel := setupRemoteProxyTestWithTimeout(t, hangingServer.URL, callback, 7*time.Second)
+	// With retry mechanism (100ms ticker, 50ms retry delay) and 100ms health check timeout:
+	// The retry blocks the ticker case, so the next ticker fires after the retry completes.
+	// - First ticker: T=0ms → timeout at T=100ms → fail → consecutiveFailures=1 → retry timer (50ms)
+	// - Retry: T=150ms → timeout at T=250ms → fail → continue (consecutiveFailures stays 1)
+	// - Second ticker: T=300ms (next interval after retry) → timeout at T=400ms → fail → consecutiveFailures=2 → retry timer (50ms)
+	// - Retry: T=450ms → timeout at T=550ms → fail → continue (consecutiveFailures stays 2)
+	// - Third ticker: T=600ms (next interval after retry) → timeout at T=700ms → fail → consecutiveFailures=3 → shutdown
+	// Total time: ~700ms for 3 consecutive ticker failures with timeouts
+	// Use 1 second timeout to allow for retry mechanism to complete with buffer (~700ms + margin)
+	proxy, ctx, cancel := setupRemoteProxyTestWithTimeout(t, hangingServer.URL, callback, 1*time.Second)
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
 	proxy.setServerInitialized()
 
-	// Health check runs every 100ms, timeout occurs after 5s
-	// We need to wait for: one health check cycle (100ms) + timeout (5s) + buffer
-	// The worst case is a health check starts right after we initialize, so we wait a bit longer
-	time.Sleep(5300 * time.Millisecond)
+	// Wait for shutdown to complete, using a retry loop to handle timing variations
+	callbackInvoked := false
+	proxyStopped := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if tracker.isInvoked() {
+			callbackInvoked = true
+		}
+		running, _ := proxy.IsRunning(ctx)
+		if !running {
+			proxyStopped = true
+		}
+		if callbackInvoked && proxyStopped {
+			break
+		}
+	}
 
-	assert.True(t, tracker.isInvoked(), "Callback should be invoked on timeout")
-
-	running, _ := proxy.IsRunning(ctx)
-	assert.False(t, running, "Proxy should stop after timeout")
+	assert.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
+	assert.True(t, proxyStopped, "Proxy should stop after timeout")
 }
 
 // TestTransparentProxy_RemoteServerFailure_BecomesUnavailable tests that a server
@@ -1105,9 +1136,10 @@ func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
 	// Now close the server to simulate it becoming unavailable
 	healthyServer.Close()
 
-	// Wait for next health check cycle
-	time.Sleep(150 * time.Millisecond)
-	assert.True(t, tracker.isInvoked(), "Callback should be invoked after server becomes unavailable")
+	// With retry mechanism (100ms ticker, 50ms retry delay) and instant connection failures:
+	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
+	time.Sleep(400 * time.Millisecond)
+	assert.True(t, tracker.isInvoked(), "Callback should be invoked after server becomes unavailable (3 consecutive failures)")
 
 	running, _ := proxy.IsRunning(ctx)
 	assert.False(t, running, "Proxy should stop after server becomes unavailable")
@@ -1196,8 +1228,14 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 
 			proxy.setServerInitialized()
 
-			// Health check runs every 100ms, wait for one cycle + buffer
-			time.Sleep(150 * time.Millisecond)
+			if tc.expectCallback {
+				// With retry mechanism (100ms ticker, 50ms retry delay):
+				// Total time: ~200ms for instant failures (5xx status codes), ~700ms for timeouts
+				time.Sleep(400 * time.Millisecond)
+			} else {
+				// For 4xx codes that should not trigger callback, wait for one health check cycle
+				time.Sleep(150 * time.Millisecond)
+			}
 
 			assert.Equal(t, tc.expectCallback, tracker.isInvoked(), "%s: %s", tc.name, tc.description)
 
@@ -1252,8 +1290,9 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 
 	proxy.setServerInitialized()
 
-	// Health check runs every 100ms, wait for one cycle + buffer
-	time.Sleep(150 * time.Millisecond)
+	// With retry mechanism (100ms ticker, 50ms retry delay) and instant failures (5xx status):
+	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
+	time.Sleep(400 * time.Millisecond)
 
 	// Proxy should stop even without callback
 	running, _ := proxy.IsRunning(ctx)

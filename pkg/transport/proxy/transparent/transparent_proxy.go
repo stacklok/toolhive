@@ -97,11 +97,20 @@ type TransparentProxy struct {
 
 	// Health check interval (default: 10 seconds)
 	healthCheckInterval time.Duration
+
+	// Health check retry delay (default: 5 seconds)
+	healthCheckRetryDelay time.Duration
+
+	// Health check ping timeout (default: 5 seconds)
+	healthCheckPingTimeout time.Duration
 }
 
 const (
 	// DefaultHealthCheckInterval is the default interval for health checks
 	DefaultHealthCheckInterval = 10 * time.Second
+
+	// DefaultHealthCheckRetryDelay is the default delay between retry attempts
+	DefaultHealthCheckRetryDelay = 5 * time.Second
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -114,6 +123,28 @@ func withHealthCheckInterval(interval time.Duration) Option {
 	return func(p *TransparentProxy) {
 		if interval > 0 {
 			p.healthCheckInterval = interval
+		}
+	}
+}
+
+// withHealthCheckRetryDelay sets the health check retry delay.
+// This is primarily useful for testing with shorter delays.
+// Ignores non-positive delays; default will be used.
+func withHealthCheckRetryDelay(delay time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if delay > 0 {
+			p.healthCheckRetryDelay = delay
+		}
+	}
+}
+
+// withHealthCheckPingTimeout sets the health check ping timeout.
+// This is primarily useful for testing with shorter timeouts.
+// Ignores non-positive timeouts; default will be used.
+func withHealthCheckPingTimeout(timeout time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if timeout > 0 {
+			p.healthCheckPingTimeout = timeout
 		}
 	}
 }
@@ -188,6 +219,8 @@ func newTransparentProxyWithOptions(
 		endpointPrefix:         endpointPrefix,
 		trustProxyHeaders:      trustProxyHeaders,
 		healthCheckInterval:    DefaultHealthCheckInterval,
+		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
+		healthCheckPingTimeout: DefaultPingerTimeout,
 	}
 
 	// Apply options
@@ -206,7 +239,11 @@ func newTransparentProxyWithOptions(
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
-		mcpPinger = NewMCPPinger(targetURI)
+		pingTimeout := proxy.healthCheckPingTimeout
+		if pingTimeout == 0 {
+			pingTimeout = DefaultPingerTimeout
+		}
+		mcpPinger = NewMCPPingerWithTimeout(targetURI, pingTimeout)
 	}
 	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
 
@@ -463,10 +500,6 @@ const (
 	// healthCheckRetryCount is the number of consecutive failures before marking unhealthy.
 	// This prevents immediate shutdown on transient network issues.
 	healthCheckRetryCount = 3
-
-	// healthCheckRetryDelay is the delay between retry attempts.
-	// Using a shorter interval than the main ticker allows faster recovery.
-	healthCheckRetryDelay = 5 * time.Second
 )
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
@@ -498,8 +531,13 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 
 					// Retry with backoff before giving up
 					if consecutiveFailures < healthCheckRetryCount {
+						// Get retry delay (use configured value or default)
+						retryDelay := p.healthCheckRetryDelay
+						if retryDelay == 0 {
+							retryDelay = DefaultHealthCheckRetryDelay
+						}
 						// Wait and retry before the next ticker interval
-						retryTimer := time.NewTimer(healthCheckRetryDelay)
+						retryTimer := time.NewTimer(retryDelay)
 						select {
 						case <-parentCtx.Done():
 							retryTimer.Stop()

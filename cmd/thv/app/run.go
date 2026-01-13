@@ -152,12 +152,12 @@ func cleanupAndWait(workloadManager workloads.Manager, name string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 
-	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	complete, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
 	if err != nil {
 		logger.Warnf("Failed to delete workload %q: %v", name, err)
-	} else if group != nil {
-		if err := group.Wait(); err != nil {
-			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+	} else if complete != nil {
+		if err := complete(); err != nil {
+			logger.Warnf("DeleteWorkloads error for %q: %v", name, err)
 		}
 	}
 }

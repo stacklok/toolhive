@@ -17,6 +17,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -162,6 +163,36 @@ func EnsureAuthzConfigMap(
 	return nil
 }
 
+func addAuthzInlineConfigOptions(
+	authzRef *mcpv1alpha1.AuthzConfigRef,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if authzRef.Inline == nil {
+		return fmt.Errorf("inline authz config type specified but inline config is nil")
+	}
+
+	policies := authzRef.Inline.Policies
+	entitiesJSON := authzRef.Inline.EntitiesJSON
+
+	// Create authorization config using the full config structure
+	// This maintains backwards compatibility with the v1.0 schema
+	authzCfg, err := authz.NewConfig(cedar.Config{
+		Version: "v1",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     policies,
+			EntitiesJSON: entitiesJSON,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create authz config: %w", err)
+	}
+
+	// Add authorization config to options
+	*options = append(*options, runner.WithAuthzConfig(authzCfg))
+	return nil
+}
+
 // AddAuthzConfigOptions adds authorization configuration options to builder options
 func AddAuthzConfigOptions(
 	ctx context.Context,
@@ -176,26 +207,7 @@ func AddAuthzConfigOptions(
 
 	switch authzRef.Type {
 	case mcpv1alpha1.AuthzConfigTypeInline:
-		if authzRef.Inline == nil {
-			return fmt.Errorf("inline authz config type specified but inline config is nil")
-		}
-
-		policies := authzRef.Inline.Policies
-		entitiesJSON := authzRef.Inline.EntitiesJSON
-
-		// Create authorization config
-		authzCfg := &authz.Config{
-			Version: "v1",
-			Type:    authz.ConfigTypeCedarV1,
-			Cedar: &authz.CedarConfig{
-				Policies:     policies,
-				EntitiesJSON: entitiesJSON,
-			},
-		}
-
-		// Add authorization config to options
-		*options = append(*options, runner.WithAuthzConfig(authzCfg))
-		return nil
+		return addAuthzInlineConfigOptions(authzRef, options)
 
 	case mcpv1alpha1.AuthzConfigTypeConfigMap:
 		// Validate reference

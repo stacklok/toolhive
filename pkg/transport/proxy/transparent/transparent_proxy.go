@@ -502,6 +502,62 @@ const (
 	healthCheckRetryCount = 3
 )
 
+// performHealthCheckRetry performs a retry health check after a delay
+// Returns true if the retry was successful (health check recovered), false otherwise
+func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
+	retryDelay := p.healthCheckRetryDelay
+	if retryDelay == 0 {
+		retryDelay = DefaultHealthCheckRetryDelay
+	}
+
+	retryTimer := time.NewTimer(retryDelay)
+	defer retryTimer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-p.shutdownCh:
+		return false
+	case <-retryTimer.C:
+		retryAlive := p.healthChecker.CheckHealth(ctx)
+		if retryAlive.Status == healthcheck.StatusHealthy {
+			logger.Infof("Health check recovered for %s after retry", p.targetURI)
+			return true
+		}
+		return false
+	}
+}
+
+// handleHealthCheckFailure handles a failed health check, including retry logic and shutdown.
+// Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
+func (p *TransparentProxy) handleHealthCheckFailure(
+	ctx context.Context,
+	consecutiveFailures int,
+	status healthcheck.HealthStatus,
+) (int, bool) {
+	consecutiveFailures++
+	logger.Warnf("Health check failed for %s (attempt %d/%d): status=%s",
+		p.targetURI, consecutiveFailures, healthCheckRetryCount, status)
+
+	if consecutiveFailures < healthCheckRetryCount {
+		if p.performHealthCheckRetry(ctx) {
+			consecutiveFailures = 0
+		}
+		return consecutiveFailures, true
+	}
+
+	// All retries exhausted, initiate shutdown
+	logger.Errorf("Health check failed for %s after %d consecutive attempts; initiating proxy shutdown",
+		p.targetURI, healthCheckRetryCount)
+	if p.onHealthCheckFailed != nil {
+		p.onHealthCheckFailed()
+	}
+	if err := p.Stop(ctx); err != nil {
+		logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
+	}
+	return consecutiveFailures, false
+}
+
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	interval := p.healthCheckInterval
 	if interval == 0 {
@@ -521,62 +577,26 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
-			// Perform health check only if mcp server has been initialized
-			if p.serverInitialized() {
-				alive := p.healthChecker.CheckHealth(parentCtx)
-				if alive.Status != healthcheck.StatusHealthy {
-					consecutiveFailures++
-					logger.Warnf("Health check failed for %s (attempt %d/%d): status=%s",
-						p.targetURI, consecutiveFailures, healthCheckRetryCount, alive.Status)
+			if !p.serverInitialized() {
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
+				continue
+			}
 
-					// Retry with backoff before giving up
-					if consecutiveFailures < healthCheckRetryCount {
-						// Get retry delay (use configured value or default)
-						retryDelay := p.healthCheckRetryDelay
-						if retryDelay == 0 {
-							retryDelay = DefaultHealthCheckRetryDelay
-						}
-						// Wait and retry before the next ticker interval
-						retryTimer := time.NewTimer(retryDelay)
-						select {
-						case <-parentCtx.Done():
-							retryTimer.Stop()
-							return
-						case <-p.shutdownCh:
-							retryTimer.Stop()
-							return
-						case <-retryTimer.C:
-							// Retry health check immediately
-							retryAlive := p.healthChecker.CheckHealth(parentCtx)
-							if retryAlive.Status == healthcheck.StatusHealthy {
-								logger.Infof("Health check recovered for %s after retry", p.targetURI)
-								consecutiveFailures = 0
-							}
-							// If still unhealthy, the next ticker will increment consecutiveFailures
-						}
-						continue
-					}
-
-					// All retries exhausted, initiate shutdown
-					logger.Errorf("Health check failed for %s after %d consecutive attempts; initiating proxy shutdown",
-						p.targetURI, healthCheckRetryCount)
-					// Notify the runner about health check failure so it can update workload status
-					if p.onHealthCheckFailed != nil {
-						p.onHealthCheckFailed()
-					}
-					if err := p.Stop(parentCtx); err != nil {
-						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
-					}
+			alive := p.healthChecker.CheckHealth(parentCtx)
+			if alive.Status != healthcheck.StatusHealthy {
+				var shouldContinue bool
+				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
+				if !shouldContinue {
 					return
 				}
-				// Reset failure count on successful health check
-				if consecutiveFailures > 0 {
-					logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
-				}
-				consecutiveFailures = 0
-			} else {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
+				continue
 			}
+
+			// Reset failure count on successful health check
+			if consecutiveFailures > 0 {
+				logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
+			}
+			consecutiveFailures = 0
 		}
 	}
 }

@@ -33,15 +33,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout = 60 * time.Second
-	readHeaderTimeout = 10 * time.Second
-	socketPermissions = 0660 // Socket file permissions (owner/group read-write)
+	middlewareTimeout  = 60 * time.Second
+	readHeaderTimeout  = 10 * time.Second
+	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
+	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
@@ -137,11 +139,15 @@ func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder 
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
+	// Apply recovery middleware first to catch panics from all other middleware and handlers
+	r.Use(recovery.Middleware)
+
 	// Apply default middleware
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
 		middleware.Timeout(middlewareTimeout),
+		requestBodySizeLimitMiddleware(maxRequestBodySize),
 		headersMiddleware,
 	)
 
@@ -308,6 +314,56 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 				}
 			}()
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 errors to 413
+// after MaxBytesReader hits the limit
+type bodySizeResponseWriter struct {
+	http.ResponseWriter
+	written bool
+}
+
+func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
+	// If handler is returning 400 and we haven't written yet,
+	// it's likely from MaxBytesReader - change to 413
+	if statusCode == http.StatusBadRequest && !w.written {
+		statusCode = http.StatusRequestEntityTooLarge
+	}
+	w.written = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *bodySizeResponseWriter) Write(b []byte) (int, error) {
+	if !w.written {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
+func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check Content-Length header first for early rejection
+			if r.ContentLength > maxSize {
+				logger.Warnf("Request body size %d exceeds limit %d for %s %s",
+					r.ContentLength, maxSize, r.Method, r.URL.Path)
+				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+				return
+			}
+
+			// Wrap ResponseWriter to intercept MaxBytesReader errors and return 413
+			wrapped := &bodySizeResponseWriter{
+				ResponseWriter: w,
+				written:        false,
+			}
+
+			// Set MaxBytesReader as a safety net for requests without Content-Length
+			r.Body = http.MaxBytesReader(wrapped, r.Body, maxSize)
+
+			next.ServeHTTP(wrapped, r)
 		})
 	}
 }

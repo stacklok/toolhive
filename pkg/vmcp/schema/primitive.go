@@ -1,0 +1,64 @@
+package schema
+
+import (
+	"strconv"
+
+	"github.com/stacklok/toolhive/pkg/logger"
+)
+
+// primitiveSchema represents string/integer/number/boolean types.
+type primitiveSchema struct {
+	schemaType string
+}
+
+// makePrimitiveSchema creates a primitiveSchema from a raw JSON Schema map.
+func makePrimitiveSchema(schemaType string) primitiveSchema {
+	schema := primitiveSchema{
+		schemaType: schemaType,
+	}
+
+	return schema
+}
+
+// TryCoerce coerces a value to the expected primitive type.
+// String values are converted to integer/number/boolean as specified.
+// Non-string values pass through unchanged.
+// Returns the original value if coercion fails.
+func (s primitiveSchema) TryCoerce(value any) any {
+	str, ok := value.(string)
+	if !ok {
+		// Non-string values pass through unchanged
+		return value
+	}
+
+	switch s.schemaType {
+	case "string":
+		return value
+
+	case "integer":
+		v, err := strconv.ParseInt(str, 10, 64)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to integer: %v", str, err)
+			return value
+		}
+		return v
+
+	case "number":
+		v, err := strconv.ParseFloat(str, 64)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to number: %v", str, err)
+			return value
+		}
+		return v
+
+	case "boolean":
+		b, err := strconv.ParseBool(str)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to boolean: %v", str, err)
+			return value
+		}
+		return b
+	}
+
+	return value
+}

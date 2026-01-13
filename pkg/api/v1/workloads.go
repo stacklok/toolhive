@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -18,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
+	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -106,7 +106,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 		}
 		workloadList, err = workloads.FilterByGroup(workloadList, groupFilter)
 		if err != nil {
-			if thverrors.IsGroupNotFound(err) {
+			if errors.Is(err, groups.ErrGroupNotFound) {
 				http.Error(w, "Group not found", http.StatusNotFound)
 			} else {
 				logger.Errorf("Failed to filter workloads by group: %v", err)
@@ -338,8 +338,8 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check if workload exists
-	_, err := s.workloadManager.GetWorkload(ctx, name)
+	// Check if workload exists and get its current port
+	existingWorkload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
 		logger.Errorf("Failed to get workload: %v", err)
 		http.Error(w, "Workload not found", http.StatusNotFound)
@@ -352,7 +352,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq)
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		// Error messages already logged in UpdateWorkloadFromRequest
 		if errors.Is(err, retriever.ErrImageNotFound) {
@@ -646,7 +646,7 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 	// Load the saved run configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		if thverrors.IsRunConfigNotFound(err) {
+		if errors.Is(err, werr.ErrRunConfigNotFound) {
 			http.Error(w, "Workload configuration not found", http.StatusNotFound)
 			return
 		}

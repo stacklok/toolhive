@@ -25,7 +25,13 @@ func NewHandler(config *Config) *Handler {
 
 // Authenticate is the main entry point for remote MCP server authentication
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+	// Priority 1: Bearer token authentication (if configured)
+	if h.config.BearerToken != "" {
+		logger.Infof("Using bearer token authentication")
+		return NewBearerTokenSource(h.config.BearerToken), nil
+	}
 
+	// Priority 2: OAuth authentication (if configured or detected)
 	// First, try to detect if authentication is required
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
 	if err != nil {
@@ -38,7 +44,23 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 			authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
 
 		// Handle OAuth authentication
-		if authInfo.Type == "OAuth" {
+		if authInfo.Type == "Bearer" {
+			// If we reach here, bearer token is not configured (we already checked above)
+			// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
+			// Many servers use Bearer header but support OAuth flow
+			if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
+				logger.Infof("Server returned Bearer header but no bearer token configured. " +
+					"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
+				// Fall through to OAuth handling below
+			} else {
+				// No realm or resource_metadata - likely requires static bearer token
+				return nil, fmt.Errorf("server requires bearer token authentication but no bearer token is configured. "+
+					"Please provide a bearer token using --remote-auth-bearer-token flag or %s environment variable", BearerTokenEnvVarName)
+			}
+		}
+
+		// Handle OAuth authentication (including Bearer fallback for backward compatibility)
+		if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
 			// Discover the issuer and potentially update scopes
 			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 			if err != nil {

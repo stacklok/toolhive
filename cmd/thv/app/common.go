@@ -151,6 +151,26 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
+// AddGroupFlag adds a --group flag to the provided command for filtering by group.
+// If withShorthand is true, adds the -g shorthand as well.
+func AddGroupFlag(cmd *cobra.Command, groupVar *string, withShorthand bool) {
+	if withShorthand {
+		cmd.Flags().StringVarP(groupVar, "group", "g", "", "Filter by group")
+	} else {
+		cmd.Flags().StringVar(groupVar, "group", "", "Filter by group")
+	}
+}
+
+// AddAllFlag adds an --all flag to the provided command.
+// If withShorthand is true, adds the -a shorthand as well.
+func AddAllFlag(cmd *cobra.Command, allVar *bool, withShorthand bool, description string) {
+	if withShorthand {
+		cmd.Flags().BoolVarP(allVar, "all", "a", false, description)
+	} else {
+		cmd.Flags().BoolVar(allVar, "all", false, description)
+	}
+}
+
 // ValidateGroupFlag returns a cobra PreRunE-compatible function
 // that validates the --group flag *if provided*.
 func validateGroupFlag() func(cmd *cobra.Command, args []string) error {

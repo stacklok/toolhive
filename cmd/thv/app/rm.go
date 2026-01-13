@@ -38,8 +38,8 @@ var (
 )
 
 func init() {
-	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all workloads")
-	rmCmd.Flags().StringVarP(&rmGroup, "group", "", "", "Delete all workloads in the specified group")
+	AddAllFlag(rmCmd, &rmAll, false, "Delete all workloads")
+	AddGroupFlag(rmCmd, &rmGroup, true)
 
 	// Mark the flags as mutually exclusive
 	rmCmd.MarkFlagsMutuallyExclusive("all", "group")
@@ -56,12 +56,16 @@ func validateRmArgs(cmd *cobra.Command, args []string) error {
 	if all || group != "" {
 		// If --all or --group is set, no arguments should be provided
 		if len(args) > 0 {
-			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
+			return fmt.Errorf(
+				"no arguments should be provided when --all or --group flag is set. " +
+					"Hint: remove the workload names or remove the flag")
 		}
 	} else {
 		// If neither --all nor --group is set, at least one argument should be provided
 		if len(args) < 1 {
-			return fmt.Errorf("at least one workload name must be provided")
+			return fmt.Errorf(
+				"at least one workload name must be provided. " +
+					"Hint: use 'thv list' to see available workloads, or use --all to remove all")
 		}
 	}
 
@@ -88,21 +92,21 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 	// Delete workloads.
-	group, err := manager.DeleteWorkloads(ctx, workloadNames)
+	complete, err := manager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads: %w", err)
 	}
 
-	// Wait for the deletion to complete.
-	if err := group.Wait(); err != nil {
+	// Wait for the deletion to complete
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete workloads: %w", err)
 	}
 
 	if len(workloadNames) == 1 {
-		fmt.Printf("Container %s removed successfully\n", workloadNames[0])
+		fmt.Printf("Workload %s removed successfully\n", workloadNames[0])
 	} else {
 		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("Containers %s removed successfully\n", formattedNames)
+		fmt.Printf("Workloads %s removed successfully\n", formattedNames)
 	}
 	return nil
 }
@@ -132,13 +136,13 @@ func deleteAllWorkloads(ctx context.Context) error {
 	}
 
 	// Delete all workloads
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete all workloads: %w", err)
 	}
 
 	// Wait for the deletion to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete all workloads: %w", err)
 	}
 
@@ -159,7 +163,7 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Create workload manager
@@ -180,13 +184,13 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	}
 
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
+	complete, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
 	// Wait for the deletion to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 

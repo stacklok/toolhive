@@ -114,6 +114,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		runner.WithTransportAndPorts(transport, int(proxy.GetProxyPort()), 0),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(proxy.Spec.TrustProxyHeaders),
+		runner.WithEndpointPrefix(proxy.Spec.EndpointPrefix),
 		runner.WithToolsFilter(toolsFilter),
 	}
 

@@ -47,20 +47,23 @@ func ConvertConfigToWorkflowDefinitions(
 			return nil, fmt.Errorf("failed to convert steps for composite tool %s: %w", ct.Name, err)
 		}
 
-		// Parameters are already in JSON Schema format, pass through directly
-		params := ct.Parameters
-
 		// Convert timeout
 		var timeout time.Duration
 		if ct.Timeout > 0 {
 			timeout = time.Duration(ct.Timeout)
 		}
 
+		// Convert parameters RawJSON to map[string]any
+		paramsMap, err := ct.Parameters.ToMap()
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal parameters for composite tool %s: %w", ct.Name, err)
+		}
+
 		// Create workflow definition
 		def := &composer.WorkflowDefinition{
 			Name:        ct.Name,
 			Description: ct.Description,
-			Parameters:  params,
+			Parameters:  paramsMap,
 			Steps:       steps,
 			Timeout:     timeout,
 			Output:      ct.Output,
@@ -117,19 +120,30 @@ func convertSingleStep(index int, cs *config.WorkflowStepConfig) (composer.Workf
 		stepTimeout = time.Duration(cs.Timeout)
 	}
 
+	// Convert RawJSON fields to map[string]any
+	arguments, err := cs.Arguments.ToMap()
+	if err != nil {
+		return composer.WorkflowStep{}, fmt.Errorf("step %s: failed to unmarshal arguments: %w", cs.ID, err)
+	}
+
+	defaultResults, err := cs.DefaultResults.ToMap()
+	if err != nil {
+		return composer.WorkflowStep{}, fmt.Errorf("step %s: failed to unmarshal defaultResults: %w", cs.ID, err)
+	}
+
 	// Create workflow step
 	return composer.WorkflowStep{
 		ID:             cs.ID,
 		Type:           stepType,
 		Tool:           cs.Tool,
-		Arguments:      cs.Arguments,
+		Arguments:      arguments,
 		Condition:      cs.Condition,
 		DependsOn:      cs.DependsOn,
 		OnError:        onError,
 		Elicitation:    elicitation,
 		Timeout:        stepTimeout,
 		Metadata:       make(map[string]string),
-		DefaultResults: cs.DefaultResults,
+		DefaultResults: defaultResults,
 	}, nil
 }
 
@@ -192,8 +206,14 @@ func convertElicitation(
 	if cs.Message == "" {
 		return nil, fmt.Errorf("step %s: message is required for elicitation steps", cs.ID)
 	}
-	if cs.Schema == nil {
+	if cs.Schema.IsEmpty() {
 		return nil, fmt.Errorf("step %s: schema is required for elicitation steps", cs.ID)
+	}
+
+	// Convert Schema RawJSON to map[string]any
+	schema, err := cs.Schema.ToMap()
+	if err != nil {
+		return nil, fmt.Errorf("step %s: failed to unmarshal schema: %w", cs.ID, err)
 	}
 
 	timeout := time.Duration(0)
@@ -203,7 +223,7 @@ func convertElicitation(
 
 	elicitation := &composer.ElicitationConfig{
 		Message: cs.Message,
-		Schema:  cs.Schema,
+		Schema:  schema,
 		Timeout: timeout,
 	}
 

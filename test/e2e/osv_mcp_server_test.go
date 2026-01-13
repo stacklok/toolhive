@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,11 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 	"github.com/stacklok/toolhive/test/e2e"
 )
-
-// generateUniqueServerName creates a unique server name for OSV tests
-func generateUniqueServerName(prefix string) string {
-	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
-}
 
 var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
@@ -38,7 +32,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-registry-test")
+				serverName = e2e.GenerateUniqueServerName("osv-registry-test")
 			})
 
 			AfterEach(func() {
@@ -176,7 +170,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 			BeforeAll(func() {
 				// Generate unique server name for this context
-				serverName = generateUniqueServerName("osv-functionality-test")
+				serverName = e2e.GenerateUniqueServerName("osv-functionality-test")
 
 				// Start ONE server for ALL OSV-specific tests
 				e2e.NewTHVCommand(config, "run",
@@ -322,7 +316,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 			BeforeEach(func() {
 				// Generate unique server name for each lifecycle test
-				serverName = generateUniqueServerName("osv-lifecycle-test")
+				serverName = e2e.GenerateUniqueServerName("osv-lifecycle-test")
 
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
@@ -385,7 +379,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-error-test")
+				serverName = e2e.GenerateUniqueServerName("osv-error-test")
 			})
 
 			AfterEach(func() {
@@ -422,7 +416,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 	Describe("We cannot create duplicate servers", func() {
 		It("should reject starting a second workload with the same name [Serial]", func() {
 			// unique name for this test
-			serverName := generateUniqueServerName("osv-duplicate-name-test")
+			serverName := e2e.GenerateUniqueServerName("osv-duplicate-name-test")
 
 			By("Starting the first OSV MCP server")
 			e2e.NewTHVCommand(config, "run",
@@ -461,7 +455,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 	Describe("Running OSV MCP server in the foreground", func() {
 		Context("when running OSV server in foreground", func() {
 			It("starts, creates status file, stays healthy, then stops & updates status file [Serial]", func() {
-				serverName := generateUniqueServerName("osv-foreground-test")
+				serverName := e2e.GenerateUniqueServerName("osv-foreground-test")
 
 				// 1) Start the foreground process in the background (goroutine) with a generous timeout.
 				fgStdout := ""

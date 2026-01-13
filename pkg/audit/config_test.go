@@ -31,11 +31,11 @@ func TestLoadFromReader(t *testing.T) {
 	t.Parallel()
 	jsonConfig := `{
 		"component": "test-component",
-		"event_types": ["mcp_tool_call", "mcp_resource_read"],
-		"exclude_event_types": ["mcp_ping"],
-		"include_request_data": true,
-		"include_response_data": false,
-		"max_data_size": 2048
+		"eventTypes": ["mcp_tool_call", "mcp_resource_read"],
+		"excludeEventTypes": ["mcp_ping"],
+		"includeRequestData": true,
+		"includeResponseData": false,
+		"maxDataSize": 2048
 	}`
 
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))
@@ -145,7 +145,7 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 
 	err := config.Validate()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "max_data_size cannot be negative")
+	assert.Contains(t, err.Error(), "maxDataSize cannot be negative")
 }
 
 func TestValidateAppliesDefaultMaxDataSize(t *testing.T) {
@@ -334,8 +334,8 @@ func TestConfigWithLogFile(t *testing.T) {
 	t.Parallel()
 	jsonConfig := `{
 		"component": "test-component",
-		"log_file": "/tmp/audit.log",
-		"include_request_data": true
+		"logFile": "/tmp/audit.log",
+		"includeRequestData": true
 	}`
 
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))

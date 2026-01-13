@@ -276,15 +276,18 @@ spec:
 ```
 
 **Deployment:**
-- Kubernetes only (operator-based deployment)
-- Creates Deployment, Service, and ConfigMap
-- Mounts vmcp configuration as ConfigMap
-- Uses `thv-proxyrunner` to run vmcp binary
+- Kubernetes: Via VirtualMCPServer CRD managed by the operator
+  - Creates Deployment, Service, and ConfigMap
+  - Mounts vmcp configuration as ConfigMap
+  - Uses `thv-proxyrunner` to run vmcp binary
+- CLI: Standalone via the `vmcp` binary for development or non-Kubernetes environments
 
 **Implementation:**
 - CRD: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
 - Controller: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 - Binary: `cmd/vmcp/` (virtual MCP server runtime)
+
+**For architecture details**, see [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md).
 
 **Related concepts:** Group, MCPServer (Kubernetes), Workload, Client
 
@@ -777,3 +780,4 @@ Registry
 - [Transport Architecture](03-transport-architecture.md) - Transport and proxy details
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Configuration schema
 - [Middleware](../middleware.md) - Middleware system
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - vMCP aggregation details

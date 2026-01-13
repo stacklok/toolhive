@@ -9,8 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -85,6 +85,7 @@ type RunConfig struct {
 	// EnvVars are the parsed environment variables as key-value pairs
 	EnvVars map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// EnvFileDir is the directory path to load environment files from
 	EnvFileDir string `json:"env_file_dir,omitempty" yaml:"env_file_dir,omitempty"`
 
@@ -98,24 +99,30 @@ type RunConfig struct {
 	// ContainerLabels are the labels to apply to the container
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// OIDCConfig contains OIDC configuration
 	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// TokenExchangeConfig contains token exchange configuration for external authentication
 	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuthzConfigPath is the path to the authorization configuration file
 	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuditConfig contains the audit logging configuration
 	AuditConfig *audit.Config `json:"audit_config,omitempty" yaml:"audit_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuditConfigPath is the path to the audit configuration file
 	AuditConfigPath string `json:"audit_config_path,omitempty" yaml:"audit_config_path,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// TelemetryConfig contains the OpenTelemetry configuration
 	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
 
@@ -143,18 +150,22 @@ type RunConfig struct {
 	// Note: "sse" is deprecated; use "streamable-http" instead.
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
 	ThvCABundle string `json:"thv_ca_bundle,omitempty" yaml:"thv_ca_bundle,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
 	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
 
 	// Group is the name of the group this workload belongs to, if any
 	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// ToolsOverride is a map from an actual tool to its overridden name and/or description
 	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
 
@@ -164,6 +175,14 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// existingPort is the port from an existing workload being updated (not serialized)
+	// Used during port validation to allow reusing the same port
+	existingPort int
+
+	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios.
+	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -213,14 +232,23 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		return nil, fmt.Errorf("failed to migrate OAuth client secret: %w", err)
 	}
 
+	// Migrate plain text bearer tokens to CLI format
+	if err := migrateBearerToken(&config); err != nil {
+		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
+	}
+
 	return &config, nil
 }
 
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
 // This handles the transition from storing plain text secrets to CLI format references
 func migrateOAuthClientSecret(config *RunConfig) error {
-	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
-		return nil // No OAuth config or no client secret to migrate
+	if config.RemoteAuthConfig == nil {
+		return nil // No OAuth config to migrate
+	}
+
+	if config.RemoteAuthConfig.ClientSecret == "" {
+		return nil
 	}
 
 	// Check if the client secret is already in CLI format
@@ -229,13 +257,56 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	cliFormatSecret, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.ClientSecret,
+		authsecrets.TokenTypeOAuthClientSecret,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	// Update the RunConfig to use the CLI format reference
 	config.RemoteAuthConfig.ClientSecret = cliFormatSecret
+
+	// Save the migrated RunConfig back to disk so migration only happens once
+	if err := config.SaveState(context.Background()); err != nil {
+		// Log error without potentially sensitive details - only log error type and message
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		// Don't fail the migration - the secret is already stored and the config is updated in memory
+	}
+
+	return nil
+}
+
+// migrateBearerToken migrates plain text bearer tokens to CLI format
+// This handles the transition from storing plain text tokens to CLI format references
+func migrateBearerToken(config *RunConfig) error {
+	if config.RemoteAuthConfig == nil {
+		return nil // No remote auth config to migrate
+	}
+
+	if config.RemoteAuthConfig.BearerToken == "" {
+		return nil
+	}
+
+	// Check if the bearer token is already in CLI format
+	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.BearerToken); err == nil {
+		return nil // Already in CLI format, no migration needed
+	}
+
+	// The bearer token is in plain text format - migrate it
+	cliFormatToken, err := authsecrets.ProcessSecret(
+		config.Name,
+		config.RemoteAuthConfig.BearerToken,
+		authsecrets.TokenTypeBearerToken,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to process bearer token: %w", err)
+	}
+
+	// Update the RunConfig to use the CLI format reference
+	config.RemoteAuthConfig.BearerToken = cliFormatToken
 
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
@@ -300,11 +371,16 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	// If not available - treat as an error, since picking a random port here
 	// is going to lead to confusion.
 	if proxyPort != 0 {
-		if !networking.IsAvailable(proxyPort) {
+		// Skip validation if reusing the same port from existing workload (during update)
+		if proxyPort == c.existingPort && c.existingPort > 0 {
+			logger.Debugf("Reusing existing port: %d", proxyPort)
+			selectedPort = proxyPort
+		} else if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		} else {
+			logger.Debugf("Using requested port: %d", proxyPort)
+			selectedPort = proxyPort
 		}
-		logger.Debugf("Using requested port: %d", proxyPort)
-		selectedPort = proxyPort
 	} else {
 		// Otherwise - pick a random available port.
 		selectedPort, err = networking.FindOrUsePort(proxyPort)
@@ -393,6 +469,21 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 			}
 			// Replace the CLI format string with the actual secret value
 			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
+	}
+
+	// Process RemoteAuthConfig.BearerToken if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
+			// It's in CLI format, resolve the actual token value
+			actualToken, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual token value
+			c.RemoteAuthConfig.BearerToken = actualToken
 		}
 		// If it's not in CLI format (plain text), leave it as is
 	}

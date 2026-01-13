@@ -99,6 +99,8 @@ type remoteOAuthConfig struct {
 	// OAuth client ID for authentication
 	ClientID     string                   `json:"client_id,omitempty"`
 	ClientSecret *secrets.SecretParameter `json:"client_secret,omitempty"`
+	// Bearer token for authentication (alternative to OAuth)
+	BearerToken *secrets.SecretParameter `json:"bearer_token,omitempty"`
 
 	// OAuth scopes to request
 	Scopes []string `json:"scopes,omitempty"`
@@ -216,12 +218,23 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			// Ignore invalid secrets rather than failing the entire conversion
 		}
 
+		// Parse BearerToken from CLI format to SecretParameter (for details API)
+		var bearerTokenParam *secrets.SecretParameter
+		if runConfig.RemoteAuthConfig.BearerToken != "" {
+			// Parse the CLI format: "<name>,target=<target>"
+			if secretParam, err := secrets.ParseSecretParameter(runConfig.RemoteAuthConfig.BearerToken); err == nil {
+				bearerTokenParam = &secretParam
+			}
+			// Ignore invalid secrets rather than failing the entire conversion
+		}
+
 		oAuthConfig = remoteOAuthConfig{
 			Issuer:       runConfig.RemoteAuthConfig.Issuer,
 			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
 			ClientID:     runConfig.RemoteAuthConfig.ClientID,
 			ClientSecret: clientSecretParam,
+			BearerToken:  bearerTokenParam,
 			Scopes:       runConfig.RemoteAuthConfig.Scopes,
 			UsePKCE:      runConfig.RemoteAuthConfig.UsePKCE,
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,

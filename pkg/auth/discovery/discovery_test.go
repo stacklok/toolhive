@@ -48,14 +48,14 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "simple bearer",
 			header: "Bearer",
 			expected: &AuthInfo{
-				Type: "OAuth",
+				Type: "Bearer",
 			},
 		},
 		{
 			name:   "bearer with realm",
 			header: `Bearer realm="https://example.com"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
 			},
 		},
@@ -63,7 +63,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "bearer with quoted realm",
 			header: `Bearer realm="https://example.com/oauth"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com/oauth",
 			},
 		},
@@ -79,7 +79,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:   "multiple schemes with bearer first",
 			header: `Bearer realm="https://example.com", Basic realm="test"`,
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
 			},
 		},
@@ -250,14 +250,24 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name: "bearer authentication required",
+			name: "bearer authentication required (OAuth flow)",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},
 			expected: &AuthInfo{
-				Type:  "OAuth",
+				Type:  "Bearer",
 				Realm: "https://example.com",
+			},
+		},
+		{
+			name: "simple bearer token authentication required",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expected: &AuthInfo{
+				Type: "Bearer",
 			},
 		},
 		{
@@ -1106,15 +1116,19 @@ func TestDetectAuthenticationFromServer_WellKnownFallback(t *testing.T) {
 
 			if tt.expectedAuthFound {
 				require.NotNil(t, result, "Expected AuthInfo but got nil")
-				assert.Equal(t, "OAuth", result.Type)
-
+				// Well-known URI discovery returns Type = "OAuth", WWW-Authenticate Bearer headers return Type = "Bearer"
 				if tt.expectedResourceMeta {
+					// Well-known URI fallback - should be OAuth
+					assert.Equal(t, "OAuth", result.Type)
 					assert.NotEmpty(t, result.ResourceMetadata, "Expected ResourceMetadata to be set")
 					assert.True(t, strings.Contains(result.ResourceMetadata, "/.well-known/oauth-protected-resource"),
 						"ResourceMetadata should contain well-known path")
+				} else {
+					// WWW-Authenticate header - should be Bearer
+					assert.Equal(t, "Bearer", result.Type)
+					// When WWW-Authenticate is used (expectedResourceMeta=false), ResourceMetadata might
+					// or might not be set depending on the header content
 				}
-				// When WWW-Authenticate is used (expectedResourceMeta=false), ResourceMetadata might
-				// or might not be set depending on the header content
 			} else {
 				assert.Nil(t, result, "Expected nil AuthInfo but got %v", result)
 			}

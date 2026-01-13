@@ -3,43 +3,47 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 type VirtualMCPServerSpec struct {
-	// GroupRef references an existing MCPGroup that defines backend workloads
-	// The referenced MCPGroup must exist in the same namespace
-	// +kubebuilder:validation:Required
-	GroupRef GroupRef `json:"groupRef"`
-
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
 	// Must be explicitly set - use "anonymous" type when no authentication is required
+	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
 	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
 	// Aggregation defines tool aggregation and conflict resolution strategies
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Aggregation *AggregationConfig `json:"aggregation,omitempty"`
 
 	// CompositeTools defines inline composite tool definitions
 	// For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	CompositeTools []CompositeToolSpec `json:"compositeTools,omitempty"`
 
 	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
 	// for complex, reusable workflows
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
 	// Operational defines operational settings like timeouts and health checks
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
+	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default=ClusterIP
 	// +optional
@@ -50,27 +54,21 @@ type VirtualMCPServerSpec struct {
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify
 	// the 'vmcp' container name in the PodTemplateSpec.
 	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
+	// Config is the Virtual MCP server configuration
+	// The only field currently required within config is `config.groupRef`.
+	// GroupRef references an existing MCPGroup that defines backend workloads.
+	// The referenced MCPGroup must exist in the same namespace.
+	// The telemetry and audit config from here are also supported, but not required.
+	// NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
+	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
 	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
-
-	// Audit configures audit logging for the Virtual MCP server
-	// When enabled, audit logs include MCP protocol operations
-	// +optional
-	Audit *AuditConfig `json:"audit,omitempty"`
-}
-
-// GroupRef references an MCPGroup resource
-type GroupRef struct {
-	// Name is the name of the MCPGroup resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Config config.Config `json:"config,omitempty"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server

@@ -100,8 +100,8 @@ metadata:
   name: vmcp-prefix-strategy
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   incomingAuth:
     type: anonymous
@@ -142,8 +142,8 @@ metadata:
   name: vmcp-priority-strategy
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   incomingAuth:
     type: anonymous
@@ -187,8 +187,8 @@ metadata:
   name: vmcp-manual-strategy
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
 
   incomingAuth:
     type: anonymous

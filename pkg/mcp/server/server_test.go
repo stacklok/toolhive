@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -132,7 +133,7 @@ func TestServer_StartAndShutdown(t *testing.T) {
 	serverErr := make(chan error, 1)
 	go func() {
 		err := server.Start()
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 		close(serverErr)

@@ -516,7 +516,7 @@ func ParseMountDeclarations(declarations []string) ([]MountDeclaration, error) {
 		// Check if the declaration is valid
 		if !mount.IsValid() {
 			_, _, err := mount.Parse()
-			return nil, fmt.Errorf("invalid mount declaration: %s (%v)", declaration, err)
+			return nil, fmt.Errorf("invalid mount declaration: %s (%w)", declaration, err)
 		}
 
 		result = append(result, mount)

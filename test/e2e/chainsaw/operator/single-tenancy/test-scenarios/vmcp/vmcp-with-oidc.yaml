@@ -4,8 +4,8 @@ metadata:
   name: test-vmcp-oidc
   namespace: toolhive-system
 spec:
-  groupRef:
-    name: test-group-controller
+  config:
+    groupRef: test-group-controller
   incomingAuth:
     type: oidc
     oidcConfig:

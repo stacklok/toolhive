@@ -80,6 +80,30 @@ You can specify the network mode for the container using the --network flag:
 
 The --network flag accepts any Docker-compatible network mode.
 
+Examples:
+  # Run a server from the registry
+  thv run filesystem
+
+  # Run a server with custom arguments and toolsets
+  thv run github -- --toolsets repos
+
+  # Run from a container image
+  thv run ghcr.io/github/github-mcp-server
+
+  # Run using a protocol scheme (Python with uv)
+  thv run uvx://mcp-server-git
+
+  # Run using npx (Node.js)
+  thv run npx://@modelcontextprotocol/server-everything
+
+  # Run a server in a specific group
+  thv run filesystem --group production
+
+# Run a remote GitHub MCP server with authentication
+thv run github-remote --remote-auth \
+  --remote-auth-client-id <oauth-client-id> \
+  --remote-auth-client-secret <oauth-client-secret>
+
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ```
@@ -91,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --authz-config string                        Path to the authorization configuration file
       --ca-cert string                             Path to a custom CA certificate file to use for container builds
       --enable-audit                               Enable audit logging with default configuration
+      --endpoint-prefix string                     Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
   -e, --env stringArray                            Environment variables to pass to the MCP server (format: KEY=VALUE)
       --env-file string                            Load environment variables from a single file
       --env-file-dir string                        Load environment variables from all files in a directory
@@ -131,6 +156,8 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --remote-auth-bearer-token string            Bearer token for remote server authentication (alternative to OAuth)
+      --remote-auth-bearer-token-file string       Path to file containing bearer token (alternative to --remote-auth-bearer-token)
       --remote-auth-callback-port int              Port for OAuth callback server during remote authentication (default 8666)
       --remote-auth-client-id string               OAuth client ID for remote server authentication
       --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)

@@ -18,8 +18,24 @@ var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List running MCP servers",
-	Long:    `List all MCP servers managed by ToolHive, including their status and configuration.`,
-	RunE:    listCmdFunc,
+	Long: `List all MCP servers managed by ToolHive, including their status and configuration.
+
+Examples:
+  # List running MCP servers
+  thv list
+
+  # List all MCP servers (including stopped)
+  thv list --all
+
+  # List servers in JSON format
+  thv list --format json
+
+  # List servers in a specific group
+  thv list --group production
+
+  # List servers with specific labels
+  thv list --label env=dev --label team=backend`,
+	RunE: listCmdFunc,
 }
 
 var (
@@ -30,12 +46,15 @@ var (
 )
 
 func init() {
-	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows just running)")
+	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
-	listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
+	AddGroupFlag(listCmd, &listGroupFilter, false)
 
-	listCmd.PreRunE = validateGroupFlag()
+	listCmd.PreRunE = chainPreRunE(
+		validateGroupFlag(),
+		ValidateFormat(&listFormat, FormatJSON, FormatText, "mcpservers"),
+	)
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -44,19 +63,19 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	// Instantiate the status manager.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create status manager: %v", err)
+		return fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, listAll, listLabelFilter...)
 	if err != nil {
-		return fmt.Errorf("failed to list workloads: %v", err)
+		return fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	// Apply group filtering if specified
 	if listGroupFilter != "" {
 		workloadList, err = workloads.FilterByGroup(workloadList, listGroupFilter)
 		if err != nil {
-			return fmt.Errorf("failed to filter workloads by group: %v", err)
+			return fmt.Errorf("failed to filter workloads by group: %w", err)
 		}
 	}
 
@@ -94,7 +113,7 @@ func printJSONOutput(workloadList []core.Workload) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON directly to stdout
@@ -121,7 +140,7 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 		"mcpServers": mcpServers,
 	}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON directly to stdout
@@ -136,7 +155,10 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED")
+	if _, err := fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED"); err != nil {
+		logger.Warnf("Failed to write output header: %v", err)
+		return
+	}
 
 	// Print workload information
 	for _, c := range workloadList {
@@ -147,7 +169,7 @@ func printTextOutput(workloadList []core.Workload) {
 		}
 
 		// Print workload information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			c.Name,
 			c.Package,
 			status,
@@ -155,7 +177,9 @@ func printTextOutput(workloadList []core.Workload) {
 			c.Port,
 			c.Group,
 			c.CreatedAt,
-		)
+		); err != nil {
+			logger.Debugf("Failed to write workload information: %v", err)
+		}
 	}
 
 	// Flush the tabwriter

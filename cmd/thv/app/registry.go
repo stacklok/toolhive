@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -50,31 +51,34 @@ func init() {
 	registryCmd.AddCommand(registryInfoCmd)
 
 	// Add flags for list and info commands
-	registryListCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	AddFormatFlag(registryListCmd, &registryFormat)
 	registryListCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
-	registryInfoCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryListCmd.PreRunE = ValidateFormat(&registryFormat)
+
+	AddFormatFlag(registryInfoCmd, &registryFormat)
 	registryInfoCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
+	registryInfoCmd.PreRunE = ValidateFormat(&registryFormat)
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	// Get all servers from registry
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %v", err)
+		return fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	// Force refresh if requested
 	if refreshRegistry {
 		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
 			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %v", err)
+				return fmt.Errorf("failed to refresh registry: %w", err)
 			}
 		}
 	}
 
 	servers, err := provider.ListServers()
 	if err != nil {
-		return fmt.Errorf("failed to list servers: %v", err)
+		return fmt.Errorf("failed to list servers: %w", err)
 	}
 
 	// Sort servers by name using the utility function
@@ -95,21 +99,21 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	serverName := args[0]
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %v", err)
+		return fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	// Force refresh if requested
 	if refreshRegistry {
 		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
 			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %v", err)
+				return fmt.Errorf("failed to refresh registry: %w", err)
 			}
 		}
 	}
 
 	server, err := provider.GetServer(serverName)
 	if err != nil {
-		return fmt.Errorf("failed to get server information: %v", err)
+		return fmt.Errorf("failed to get server information: %w", err)
 	}
 
 	// Output based on format
@@ -127,7 +131,7 @@ func printJSONServers(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON
@@ -139,7 +143,7 @@ func printJSONServers(servers []types.ServerMetadata) error {
 func printJSONServer(server types.ServerMetadata) error {
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON
@@ -151,7 +155,10 @@ func printJSONServer(server types.ServerMetadata) error {
 func printTextServers(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS")
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return
+	}
 
 	// Print server information
 	for _, server := range servers {
@@ -167,14 +174,16 @@ func printTextServers(servers []types.ServerMetadata) {
 			desc = "**DEPRECATED** " + desc
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
 			server.GetName(),
 			getServerType(server),
 			truncateString(desc, 50),
 			server.GetTier(),
 			stars,
 			pulls,
-		)
+		); err != nil {
+			logger.Debugf("Failed to write server information: %v", err)
+		}
 	}
 
 	// Flush the tabwriter

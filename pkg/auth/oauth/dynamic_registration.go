@@ -261,7 +261,11 @@ func getHTTPClient(client httpClient) httpClient {
 
 // handleHTTPResponse handles the HTTP response and validates it
 func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse, error) {
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {

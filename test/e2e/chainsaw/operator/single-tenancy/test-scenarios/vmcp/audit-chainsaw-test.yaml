@@ -40,12 +40,12 @@ spec:
                 name: test-vmcp-audit-enabled
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
+                  audit:
+                    enabled: true
                 incomingAuth:
                   type: anonymous
-                audit:
-                  enabled: true
         - assert:
             resource:
               apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -62,10 +62,10 @@ spec:
               #!/bin/bash
               echo "Verifying audit configuration in VirtualMCPServer spec..."
 
-              # Get the audit.enabled field from the spec
+              # Get the audit.enabled field from the spec.config
               AUDIT_ENABLED=$(kubectl get virtualmcpserver \
                 test-vmcp-audit-enabled -n toolhive-system \
-                -o jsonpath='{.spec.audit.enabled}' 2>/dev/null || echo "")
+                -o jsonpath='{.spec.config.audit.enabled}' 2>/dev/null || echo "")
 
               if [ "$AUDIT_ENABLED" = "true" ]; then
                 echo "✓ Audit is enabled in the spec"
@@ -88,8 +88,8 @@ spec:
                 name: test-vmcp-no-audit
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
                 incomingAuth:
                   type: anonymous
         - assert:
@@ -108,9 +108,9 @@ spec:
               #!/bin/bash
               echo "Verifying audit is not configured..."
 
-              # Get the audit field from the spec (should be null or not present)
+              # Get the audit field from the spec.config (should be null or not present)
               AUDIT_FIELD=$(kubectl get virtualmcpserver test-vmcp-no-audit \
-                -n toolhive-system -o jsonpath='{.spec.audit}' \
+                -n toolhive-system -o jsonpath='{.spec.config.audit}' \
                 2>/dev/null || echo "")
 
               if [ -z "$AUDIT_FIELD" ] || [ "$AUDIT_FIELD" = "null" ]; then
@@ -120,7 +120,7 @@ spec:
 
               # If audit field exists, check if enabled is false
               AUDIT_ENABLED=$(kubectl get virtualmcpserver test-vmcp-no-audit \
-                -n toolhive-system -o jsonpath='{.spec.audit.enabled}' \
+                -n toolhive-system -o jsonpath='{.spec.config.audit.enabled}' \
                 2>/dev/null || echo "")
               if [ "$AUDIT_ENABLED" = "false" ] || [ -z "$AUDIT_ENABLED" ]
               then
@@ -145,12 +145,12 @@ spec:
                 name: test-vmcp-audit-disabled
                 namespace: toolhive-system
               spec:
-                groupRef:
-                  name: test-audit-group
+                config:
+                  groupRef: test-audit-group
+                  audit:
+                    enabled: false
                 incomingAuth:
                   type: anonymous
-                audit:
-                  enabled: false
         - assert:
             resource:
               apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -169,7 +169,7 @@ spec:
 
               AUDIT_ENABLED=$(kubectl get virtualmcpserver \
                 test-vmcp-audit-disabled -n toolhive-system \
-                -o jsonpath='{.spec.audit.enabled}' 2>/dev/null || echo "")
+                -o jsonpath='{.spec.config.audit.enabled}' 2>/dev/null || echo "")
 
               if [ "$AUDIT_ENABLED" = "false" ]; then
                 echo "✓ Audit is explicitly disabled"

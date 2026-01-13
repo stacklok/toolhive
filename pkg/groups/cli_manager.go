@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -34,7 +33,7 @@ func NewCLIManager() (Manager, error) {
 func (m *cliManager) Create(ctx context.Context, name string) error {
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		return thverrors.NewInvalidArgumentError(err.Error(), err)
+		return fmt.Errorf("%w: %s - %w", ErrInvalidGroupName, name, err)
 	}
 	// Check if group already exists
 	exists, err := m.groupStore.Exists(ctx, name)
@@ -42,7 +41,7 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
+		return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
 	}
 
 	group := &Group{
@@ -58,7 +57,12 @@ func (m *cliManager) Get(ctx context.Context, name string) (*Group, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reader for group: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			// Non-fatal: reader cleanup failure
+			logger.Debugf("Failed to close reader: %v", err)
+		}
+	}()
 
 	var group Group
 	if err := json.NewDecoder(reader).Decode(&group); err != nil {
@@ -186,7 +190,12 @@ func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 	if err != nil {
 		return fmt.Errorf("failed to get writer for group: %w", err)
 	}
-	defer writer.Close()
+	defer func() {
+		if err := writer.Close(); err != nil {
+			// Non-fatal: writer cleanup failure
+			logger.Warnf("Failed to close writer: %v", err)
+		}
+	}()
 
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")

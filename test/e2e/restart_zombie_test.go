@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Restart Zombie Process Prevention", Label("core", "restart", "e2e"), func() {
+var _ = Describe("Restart Zombie Process Prevention", Label("core", "start", "e2e"), func() {
 	var (
 		config     *e2e.TestConfig
 		serverName string
@@ -51,9 +51,9 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "restart", "
 				GinkgoWriter.Printf("Supervisor processes before restart: %d\n", countBefore)
 				Expect(countBefore).To(Equal(1), "Should have exactly 1 supervisor process before restart")
 
-				By("Restarting the server")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				By("Starting the server again")
+				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -67,9 +67,9 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "restart", "
 				GinkgoWriter.Printf("Supervisor processes after restart: %d\n", countAfter)
 				Expect(countAfter).To(Equal(1), "Should still have exactly 1 supervisor process after restart")
 
-				By("Restarting the server a second time")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				By("Starting the server a second time")
+				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -93,9 +93,9 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "restart", "
 })
 
 // countSupervisorProcesses counts the number of supervisor processes for a given workload
-// by looking for "thv restart <workloadName> --foreground" processes
+// by looking for "thv start <workloadName> --foreground" processes
 func countSupervisorProcesses(workloadName string) int {
-	// Use ps to find processes matching "thv restart <workloadName> --foreground"
+	// Use ps to find processes matching "thv start <workloadName> --foreground"
 	cmd := exec.Command("ps", "aux")
 	output, err := cmd.Output()
 	if err != nil {
@@ -105,7 +105,7 @@ func countSupervisorProcesses(workloadName string) int {
 
 	lines := strings.Split(string(output), "\n")
 	count := 0
-	searchPattern := fmt.Sprintf("thv restart %s --foreground", workloadName)
+	searchPattern := fmt.Sprintf("thv start %s --foreground", workloadName)
 
 	for _, line := range lines {
 		if strings.Contains(line, searchPattern) && !strings.Contains(line, "grep") {

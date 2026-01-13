@@ -95,13 +95,13 @@ func GetMCPServer(
 	// Pull the image if necessary
 	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
 		// Check if the error is due to context cancellation/timeout
-		if ctx.Err() == context.DeadlineExceeded {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", nil, fmt.Errorf("image pull timed out - the image may be too large or the connection too slow")
 		}
-		if ctx.Err() == context.Canceled {
+		if errors.Is(ctx.Err(), context.Canceled) {
 			return "", nil, fmt.Errorf("image pull was canceled")
 		}
-		return "", nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
+		return "", nil, fmt.Errorf("failed to retrieve or pull image: %w", err)
 	}
 
 	return imageToUse, imageMetadata, nil
@@ -142,12 +142,12 @@ func handleGroupLookup(
 
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
+		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry: %v", err)
+		return "", nil, nil, fmt.Errorf("failed to get registry: %w", err)
 	}
 
 	group, exists := reg.GetGroupByName(groupName)
@@ -200,7 +200,7 @@ func handleRegistryLookup(
 	// Try to find the server in the registry
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
+		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	// First check if the server exists and whether it's remote
@@ -244,10 +244,10 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 		err := imageManager.PullImage(ctx, image)
 		if err != nil {
 			// Check if the error is due to context cancellation/timeout
-			if ctx.Err() == context.DeadlineExceeded {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("image pull timed out for %s - the image may be too large or the connection too slow", image)
 			}
-			if ctx.Err() == context.Canceled {
+			if errors.Is(ctx.Err(), context.Canceled) {
 				return fmt.Errorf("image pull was canceled for %s", image)
 			}
 
@@ -255,7 +255,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			logger.Infof("Pull failed, checking if image exists locally: %s", image)
 			imageExists, checkErr := imageManager.ImageExists(ctx, image)
 			if checkErr != nil {
-				return fmt.Errorf("failed to check if image exists: %v", checkErr)
+				return fmt.Errorf("failed to check if image exists: %w", checkErr)
 			}
 
 			if imageExists {
@@ -272,7 +272,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 		imageExists, err := imageManager.ImageExists(ctx, image)
 		logger.Debugf("ImageExists locally: %t", imageExists)
 		if err != nil {
-			return fmt.Errorf("failed to check if image exists locally: %v", err)
+			return fmt.Errorf("failed to check if image exists locally: %w", err)
 		}
 
 		if imageExists {
@@ -282,10 +282,10 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			logger.Infof("Image %s not found locally, pulling...", image)
 			if err := imageManager.PullImage(ctx, image); err != nil {
 				// Check if the error is due to context cancellation/timeout
-				if ctx.Err() == context.DeadlineExceeded {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return fmt.Errorf("image pull timed out for %s - the image may be too large or the connection too slow", image)
 				}
-				if ctx.Err() == context.Canceled {
+				if errors.Is(ctx.Err(), context.Canceled) {
 					return fmt.Errorf("image pull was canceled for %s", image)
 				}
 				// TODO: need more fine grained error handling here.
@@ -338,7 +338,7 @@ func verifyImage(image string, server *types.ImageMetadata, verifySetting string
 		// Verify the image passing the server info
 		isSafe, err := v.VerifyServer(image, server)
 		if err != nil {
-			return fmt.Errorf("image verification failed: %v", err)
+			return fmt.Errorf("image verification failed: %w", err)
 		}
 		if !isSafe {
 			if verifySetting == VerifyImageWarn {

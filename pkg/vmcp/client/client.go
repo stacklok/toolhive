@@ -380,7 +380,11 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client and get server capabilities
 	serverCaps, err := initializeClient(ctx, c)
@@ -495,7 +499,11 @@ func (h *httpBackendClient) CallTool(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
@@ -518,7 +526,7 @@ func (h *httpBackendClient) CallTool(
 	})
 	if err != nil {
 		// Network/connection errors are operational errors
-		return nil, fmt.Errorf("%w: tool call failed on backend %s: %v", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
 	// Check if the tool call returned an error (MCP domain error)
@@ -592,7 +600,11 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
@@ -653,7 +665,11 @@ func (h *httpBackendClient) GetPrompt(
 	if err != nil {
 		return "", wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {

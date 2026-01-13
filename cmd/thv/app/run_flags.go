@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -89,6 +89,9 @@ type RunFlags struct {
 
 	// Proxy headers
 	TrustProxyHeaders bool
+
+	// Endpoint prefix for SSE endpoint URLs
+	EndpointPrefix string
 
 	// Network mode
 	Network string
@@ -215,6 +218,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
+	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
+		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
 		"Connect the container to a network (e.g., 'host' for host networking)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
@@ -260,6 +265,11 @@ func BuildRunnerConfig(
 		return nil, fmt.Errorf("invalid host: %s", runFlags.Host)
 	}
 
+	// Validate endpoint prefix
+	if runFlags.EndpointPrefix != "" && !strings.HasPrefix(runFlags.EndpointPrefix, "/") {
+		return nil, fmt.Errorf("endpoint-prefix must start with '/' when provided, got: %s", runFlags.EndpointPrefix)
+	}
+
 	// Setup OIDC configuration
 	oidcConfig, err := setupOIDCConfiguration(cmd, runFlags)
 	if err != nil {
@@ -295,7 +305,7 @@ func BuildRunnerConfig(
 	// Parse environment variables
 	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
 	// Build the runner config
@@ -340,7 +350,7 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create container runtime: %v", err)
+		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	var envVarValidator runner.EnvVarValidator
@@ -370,7 +380,7 @@ func handleImageRetrieval(
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
 		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
 	}
 
 	// Check if we have a remote server
@@ -452,6 +462,7 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
@@ -469,7 +480,7 @@ func buildRunnerConfig(
 	if runFlags.ToolsOverride != "" {
 		loadedToolsOverride, err := cli.LoadToolsOverride(runFlags.ToolsOverride)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load tools override: %v", err)
+			return nil, fmt.Errorf("failed to load tools override: %w", err)
 		}
 		toolsOverride = *loadedToolsOverride
 	}
@@ -621,7 +632,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	if config == nil {
 		return "", 0.0, nil
 	}
-	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
+	return config.Endpoint, config.GetSamplingRateFloat(), config.EnvironmentVariables
 }
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
@@ -656,13 +667,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
 
 	authCfg := &remote.Config{
@@ -709,6 +716,18 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	resolvedBearerToken, err := resolveSecret(
+		f.RemoteAuthBearerToken,
+		f.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	authCfg.BearerToken = resolvedBearerToken
+	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
+
 	return authCfg, nil
 }
 
@@ -726,13 +745,26 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
-	var clientSecret string
-	if resolvedClientSecret != "" {
-		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
-		}
+	clientSecret, err := authsecrets.ProcessSecret(runFlags.Name, resolvedClientSecret, authsecrets.TokenTypeOAuthClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
+	// Resolve bearer token from multiple sources (flag, file, environment variable)
+	// This follows the same priority as resolveSecret: flag → file → environment variable
+	resolvedBearerToken, err := resolveSecret(
+		runFlags.RemoteAuthFlags.RemoteAuthBearerToken,
+		runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName, // Hardcoded environment variable
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+
+	// Process the resolved bearer token (convert plain text to secret reference if needed)
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
 	}
 
 	// Derive the resource parameter (RFC 8707)
@@ -742,17 +774,19 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	}
 
 	return &remote.Config{
-		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-		ClientSecret: clientSecret,
-		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
-		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-		CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
-		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
-		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
-		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
-		Resource:     resource,
-		OAuthParams:  runFlags.OAuthParams,
+		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
+		ClientSecret:    clientSecret,
+		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
+		Issuer:          runFlags.RemoteAuthFlags.RemoteAuthIssuer,
+		AuthorizeURL:    runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
+		TokenURL:        runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:        resource,
+		OAuthParams:     runFlags.OAuthParams,
+		BearerToken:     bearerToken,
+		BearerTokenFile: runFlags.RemoteAuthFlags.RemoteAuthBearerTokenFile,
 	}, nil
 }
 
@@ -867,22 +901,18 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		customAttrs = nil
 	}
 
-	return &telemetry.Config{
+	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 	}
-}
-
-// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
-func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
+	return telemetryCfg
 }

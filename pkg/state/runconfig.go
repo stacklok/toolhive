@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // LoadRunConfigJSON loads a run configuration from the state store and returns the raw reader
@@ -24,7 +24,7 @@ func LoadRunConfigJSON(ctx context.Context, name string) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("failed to check if run configuration exists: %w", err)
 	}
 	if !exists {
-		return nil, errors.NewRunConfigNotFoundError(fmt.Sprintf("run configuration for %s not found", name), nil)
+		return nil, fmt.Errorf("%w: %s", errors.ErrRunConfigNotFound, name)
 	}
 
 	// Get a reader for the state
@@ -86,7 +86,11 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	if err != nil {
 		return fmt.Errorf("failed to get writer for state: %w", err)
 	}
-	defer writer.Close()
+	defer func() {
+		if err := writer.Close(); err != nil {
+			logger.Warnf("Failed to close writer: %v", err)
+		}
+	}()
 
 	// Serialize the configuration to JSON and write it directly to the state store
 	if err := config.WriteJSON(writer); err != nil {
@@ -104,7 +108,11 @@ func LoadRunConfig[T any](ctx context.Context, name string, readJSONFunc ReadJSO
 	if err != nil {
 		return zero, err
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			logger.Warnf("Failed to close reader: %v", err)
+		}
+	}()
 
 	// Deserialize the configuration using the provided function
 	return readJSONFunc(reader)
@@ -136,7 +144,11 @@ func LoadRunConfigWithFunc(ctx context.Context, name string, readFunc RunConfigR
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			logger.Warnf("Failed to close reader: %v", err)
+		}
+	}()
 
 	return readFunc(reader)
 }

@@ -170,7 +170,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			}
-			clientset := fake.NewSimpleClientset(mockStatefulSet)
+			clientset := fake.NewClientset(mockStatefulSet)
 
 			// Create a fake config for testing
 			fakeConfig := &rest.Config{
@@ -709,7 +709,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			}
-			clientset := fake.NewSimpleClientset(mockStatefulSet)
+			clientset := fake.NewClientset(mockStatefulSet)
 
 			// Create a fake config for testing
 			fakeConfig := &rest.Config{
@@ -781,6 +781,187 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			assert.Equal(t, tc.expectedCommand, mcpContainer.Args)
 			assert.Equal(t, tc.attachStdio, mcpContainer.Stdin)
 			assert.Equal(t, tc.expectedEnvVarCount, len(mcpContainer.Env))
+		})
+	}
+}
+
+// TestAttachToWorkloadExitFunc tests that the exit function is properly configured
+// and can be mocked for testing
+func TestAttachToWorkloadExitFunc(t *testing.T) {
+	t.Parallel()
+
+	// Create a client
+	clientset := fake.NewClientset()
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+	client := NewClientWithConfig(clientset, fakeConfig)
+
+	// Verify that exitFunc can be set and is initially nil
+	assert.Nil(t, client.exitFunc, "Expected exitFunc to be nil by default")
+
+	// Set a mock exit function
+	exitCalled := false
+	exitCode := 0
+	client.exitFunc = func(code int) {
+		exitCalled = true
+		exitCode = code
+	}
+
+	// Verify the mock is set
+	assert.NotNil(t, client.exitFunc, "Expected exitFunc to be set")
+
+	// Call the exit function directly to verify it works
+	client.exitFunc(1)
+	assert.True(t, exitCalled, "Expected exit function to be called")
+	assert.Equal(t, 1, exitCode, "Expected exit code 1")
+}
+
+// TestClientExitFuncDefaultsToNil verifies that the exitFunc field defaults to nil,
+// meaning the code will use os.Exit in production. The actual exit behavior on
+// connection failure is verified in E2E tests (see test/e2e/thv-operator/virtualmcp/
+// virtualmcp_yardstick_base_test.go "should reflect backend health changes in status").
+func TestClientExitFuncDefaultsToNil(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+	client := NewClientWithConfig(clientset, fakeConfig)
+
+	// Verify exitFunc defaults to nil (production will use os.Exit)
+	assert.Nil(t, client.exitFunc, "Expected exitFunc to be nil by default")
+}
+
+// TestAttachToWorkloadNoPodFound tests that AttachToWorkload returns error when no pod is found
+func TestAttachToWorkloadNoPodFound(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake Kubernetes clientset with no pods
+	clientset := fake.NewClientset()
+
+	// Create a fake config
+	fakeConfig := &rest.Config{
+		Host: "https://fake-k8s-api.example.com",
+	}
+
+	// Create a client with the fake clientset and config
+	client := NewClientWithConfig(clientset, fakeConfig)
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	// Call AttachToWorkload with a workload that has no pods
+	_, _, err := client.AttachToWorkload(context.Background(), "nonexistent-workload")
+
+	// Should return error immediately (no pods found)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no pods found")
+}
+
+// TestApplyPodTemplatePatchAnnotations tests that annotations are correctly applied
+// from the pod template patch to the base template.
+// This is a regression test for the bug where annotations were not being applied.
+func TestApplyPodTemplatePatchAnnotations(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name                string
+		patchJSON           string
+		expectedAnnotations map[string]string
+		expectedLabels      map[string]string
+	}{
+		{
+			name: "patch with annotations only",
+			patchJSON: `{
+				"metadata": {
+					"annotations": {
+						"vault.hashicorp.com/agent-inject": "true",
+						"vault.hashicorp.com/role": "mcp-server"
+					}
+				}
+			}`,
+			expectedAnnotations: map[string]string{
+				"vault.hashicorp.com/agent-inject": "true",
+				"vault.hashicorp.com/role":         "mcp-server",
+			},
+			expectedLabels: nil,
+		},
+		{
+			name: "patch with both labels and annotations",
+			patchJSON: `{
+				"metadata": {
+					"labels": {
+						"app": "test-app",
+						"version": "v1"
+					},
+					"annotations": {
+						"prometheus.io/scrape": "true",
+						"prometheus.io/port": "8080"
+					}
+				}
+			}`,
+			expectedAnnotations: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "8080",
+			},
+			expectedLabels: map[string]string{
+				"app":     "test-app",
+				"version": "v1",
+			},
+		},
+		{
+			name: "patch with labels only (no annotations)",
+			patchJSON: `{
+				"metadata": {
+					"labels": {
+						"app": "test-app"
+					}
+				}
+			}`,
+			expectedAnnotations: nil,
+			expectedLabels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		{
+			name:                "empty patch",
+			patchJSON:           `{}`,
+			expectedAnnotations: nil,
+			expectedLabels:      nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			baseTemplate := corev1apply.PodTemplateSpec()
+			result, err := applyPodTemplatePatch(baseTemplate, tc.patchJSON)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			// Get labels and annotations safely (may be nil if ObjectMetaApplyConfiguration is nil)
+			var resultLabels, resultAnnotations map[string]string
+			if result.ObjectMetaApplyConfiguration != nil {
+				resultLabels = result.Labels
+				resultAnnotations = result.Annotations
+			}
+
+			// Verify labels
+			if tc.expectedLabels == nil {
+				assert.Empty(t, resultLabels, "Expected no labels")
+			} else {
+				assert.Equal(t, tc.expectedLabels, resultLabels, "Labels mismatch")
+			}
+
+			// Verify annotations - this is the key assertion for the bug fix
+			if tc.expectedAnnotations == nil {
+				assert.Empty(t, resultAnnotations, "Expected no annotations")
+			} else {
+				assert.Equal(t, tc.expectedAnnotations, resultAnnotations,
+					"BUG: Annotations are not being applied from the patch")
+			}
 		})
 	}
 }

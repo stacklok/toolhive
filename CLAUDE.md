@@ -304,3 +304,14 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
+
+## Error Handling Guidelines
+
+See `docs/error-handling.md` for comprehensive documentation.
+
+- **Return errors by default** - Never silently swallow errors
+- **Comment ignored errors** - Explain why and typically log them
+- **No sensitive data in errors** - No API keys, credentials, tokens, or passwords
+- **Use `errors.Is()` or `errors.As()`** - For all error inspection (they properly unwrap errors)
+- **Use `fmt.Errorf` with `%w`** - To preserve error chains; don't wrap excessively
+- **Use `recover()` sparingly** - Only at top-level API/CLI boundaries

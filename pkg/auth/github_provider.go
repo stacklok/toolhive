@@ -157,7 +157,11 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	if err != nil {
 		return nil, fmt.Errorf("github validation request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read the response with a reasonable limit to prevent DoS attacks
 	const maxResponseSize = 64 * 1024 // 64KB should be more than enough

@@ -121,12 +121,12 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --env-file-dir string                        Load environment variables from all files in a directory
   -f, --foreground                                 Run in foreground mode (block until container exits)
       --from-config string                         Load configuration from exported file
-      --group string                               Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")
+      --group string                               Name of the group this workload belongs to (default "default")
   -h, --help                                       help for run
       --host string                                Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally                            Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
       --image-verification string                  Set image verification mode (warn, enabled, disabled) (default "warn")
-      --isolate-network                            Isolate the container network from the host (default: false)
+      --isolate-network                            Isolate the container network from the host
       --jwks-allow-private-ip                      Allow JWKS/OIDC endpoints on private IP addresses (use with caution)
       --jwks-auth-token-file string                Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                          Set labels on the container (format: key=value)

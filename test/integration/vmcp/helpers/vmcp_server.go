@@ -10,12 +10,13 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -31,7 +32,6 @@ func NewBackend(id string, opts ...func(*vmcptypes.Backend)) vmcptypes.Backend {
 		TransportType: "streamable-http",
 		HealthStatus:  vmcptypes.BackendHealthy,
 		Metadata:      make(map[string]string),
-		AuthMetadata:  make(map[string]any),
 	}
 	for _, opt := range opts {
 		opt(&b)
@@ -46,11 +46,10 @@ func WithURL(url string) func(*vmcptypes.Backend) {
 	}
 }
 
-// WithAuth configures authentication.
-func WithAuth(strategy string, metadata map[string]any) func(*vmcptypes.Backend) {
+// WithAuth configures authentication with a typed auth strategy.
+func WithAuth(authConfig *authtypes.BackendAuthStrategy) func(*vmcptypes.Backend) {
 	return func(b *vmcptypes.Backend) {
-		b.AuthStrategy = strategy
-		b.AuthMetadata = metadata
+		b.AuthConfig = authConfig
 	}
 }
 
@@ -66,8 +65,10 @@ type VMCPServerOption func(*vmcpServerConfig)
 
 // vmcpServerConfig holds configuration for creating a test vMCP server.
 type vmcpServerConfig struct {
-	conflictStrategy string
-	prefixFormat     string
+	conflictStrategy  string
+	prefixFormat      string
+	workflowDefs      map[string]*composer.WorkflowDefinition
+	telemetryProvider *telemetry.Provider
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -75,6 +76,20 @@ func WithPrefixConflictResolution(format string) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.conflictStrategy = "prefix"
 		c.prefixFormat = format
+	}
+}
+
+// WithWorkflowDefinitions configures composite tool workflow definitions.
+func WithWorkflowDefinitions(defs map[string]*composer.WorkflowDefinition) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.workflowDefs = defs
+	}
+}
+
+// WithTelemetryProvider configures the telemetry provider.
+func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.telemetryProvider = provider
 	}
 }
 
@@ -86,7 +101,10 @@ func getFreePort(tb testing.TB) int {
 	// Listen on port 0 to get a random available port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(tb, err, "failed to get free port")
-	defer listener.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = listener.Close()
+	}()
 
 	// Extract the port number from the listener's address
 	addr, ok := listener.Addr().(*net.TCPAddr)
@@ -122,35 +140,9 @@ func NewVMCPServer(
 		opt(config)
 	}
 
-	// Create outgoing auth registry and register strategies used by backends
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, nil, &env.OSReader{})
+	// Create outgoing auth registry with all strategies registered
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
 	require.NoError(tb, err)
-
-	// Scan backends to determine which strategies need to be registered
-	// This is needed because we pass nil config to NewOutgoingAuthRegistry (which only registers unauthenticated)
-	// but backends may use other strategies like header_injection
-	strategyTypes := make(map[string]struct{})
-	for _, backend := range backends {
-		if backend.AuthStrategy != "" && backend.AuthStrategy != "unauthenticated" {
-			strategyTypes[backend.AuthStrategy] = struct{}{}
-		}
-	}
-
-	// Register additional strategies found in backends
-	for strategyType := range strategyTypes {
-		var strategy vmcpauth.Strategy
-		switch strategyType {
-		case strategies.StrategyTypeHeaderInjection:
-			strategy = strategies.NewHeaderInjectionStrategy()
-		case strategies.StrategyTypeTokenExchange:
-			strategy = strategies.NewTokenExchangeStrategy(&env.OSReader{})
-		default:
-			tb.Fatalf("unknown auth strategy type: %s", strategyType)
-		}
-
-		err = outgoingRegistry.RegisterStrategy(strategyType, strategy)
-		require.NoError(tb, err, "failed to register strategy %s", strategyType)
-	}
 
 	// Create backend client
 	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
@@ -175,14 +167,18 @@ func NewVMCPServer(
 	// Create router
 	rtr := router.NewDefaultRouter()
 
+	// Create immutable backend registry for tests (backends don't change during test execution)
+	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
+
 	// Create vMCP server with test-specific defaults
-	vmcpServer, err := vmcpserver.New(&vmcpserver.Config{
-		Name:           "test-vmcp",
-		Version:        "1.0.0",
-		Host:           "127.0.0.1",
-		Port:           getFreePort(tb), // Get a random available port for parallel test execution
-		AuthMiddleware: auth.AnonymousMiddleware,
-	}, rtr, backendClient, discoveryMgr, backends, nil) // nil for workflowDefs in tests
+	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
+		Name:              "test-vmcp",
+		Version:           "1.0.0",
+		Host:              "127.0.0.1",
+		Port:              getFreePort(tb), // Get a random available port for parallel test execution
+		AuthMiddleware:    auth.AnonymousMiddleware,
+		TelemetryProvider: config.telemetryProvider,
+	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 
 	// Start server automatically

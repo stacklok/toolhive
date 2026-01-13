@@ -14,9 +14,9 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap"
-	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -46,7 +46,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 	}
 
 	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-	configMap := &corev1.ConfigMap{
+	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
 			Namespace: m.Namespace,
@@ -57,18 +57,19 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 		},
 	}
 
-	checksum := configMapChecksum.NewRunConfigConfigMapChecksum()
 	// Compute and add content checksum annotation
-	cs := checksum.ComputeConfigMapChecksum(configMap)
-	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": cs,
+	checksumCalculator := checksum.NewRunConfigConfigMapChecksum()
+	cs := checksumCalculator.ComputeConfigMapChecksum(cm)
+	cm.Annotations = map[string]string{
+		checksum.ContentChecksumAnnotation: cs,
 	}
 
-	runConfigConfigMap := configmap.NewRunConfigConfigMap(r.Client, r.Scheme, checksum)
-	err = runConfigConfigMap.UpsertRunConfigMap(ctx, m, configMap)
-	if err != nil {
+	// Use the kubernetes configmaps client for upsert operations
+	configMapsClient := configmaps.NewClient(r.Client, r.Scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, cm, m); err != nil {
 		return fmt.Errorf("failed to upsert RunConfig ConfigMap: %w", err)
 	}
+
 	return nil
 }
 
@@ -134,6 +135,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
+		runner.WithEndpointPrefix(m.Spec.EndpointPrefix),
 		runner.WithToolsFilter(toolsFilter),
 		runner.WithEnvVars(envVars),
 		runner.WithVolumes(volumes),

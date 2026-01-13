@@ -1,6 +1,7 @@
 package registryapi
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -34,8 +36,17 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type: "github",
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "default",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "test-configmap",
+								},
+								Key: "registry.json",
+							},
+						},
 					},
 				},
 			},
@@ -74,8 +85,8 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				// Verify pod template annotations
 				assert.Equal(t, "hash-dummy-value", deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"])
 
-				// Verify service account
-				assert.Equal(t, DefaultServiceAccountName, deployment.Spec.Template.Spec.ServiceAccountName)
+				// Verify service account uses the dynamically generated name (registry-name + "-registry-api")
+				assert.Equal(t, "test-registry-registry-api", deployment.Spec.Template.Spec.ServiceAccountName)
 
 				// Verify containers
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
@@ -112,6 +123,47 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			},
 		},
+		{
+			name: "user PodTemplateSpec merged correctly",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "default",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "test-configmap",
+								},
+								Key: "registry.json",
+							},
+						},
+					},
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
+					},
+				},
+			},
+			setupMocks: func() {
+			},
+			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				require.NotNil(t, deployment)
+
+				// User-provided service account name should take precedence
+				assert.Equal(t, "custom-sa", deployment.Spec.Template.Spec.ServiceAccountName)
+
+				// Default volumes and mounts should still be present
+				volumes := deployment.Spec.Template.Spec.Volumes
+				assert.True(t, hasVolume(volumes, RegistryServerConfigVolumeName))
+				assert.True(t, hasVolume(volumes, "storage-data"))
+				assert.True(t, hasVolume(volumes, "registry-data-source-default"))
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -124,9 +176,8 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			manager := &manager{}
 
-			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
-			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, configManager)
-			require.NoError(t, err)
+			configManager := config.NewConfigManager(tt.mcpRegistry)
+			deployment := manager.buildRegistryAPIDeployment(context.Background(), tt.mcpRegistry, configManager)
 			tt.validateResult(t, deployment)
 		})
 	}

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -19,9 +21,13 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
+	// Log level configuration
+	logLevelDebug = "debug" // Debug log level value
+
 	// Network configuration
 	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
@@ -53,7 +59,7 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }
@@ -63,14 +69,15 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
 	replicas := int32(1)
 
 	// Build deployment components using helper functions
-	args := r.buildContainerArgsForVmcp()
+	args := r.buildContainerArgsForVmcp(vmcp)
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
-	env := r.buildEnvVarsForVmcp(ctx, vmcp)
+	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
@@ -119,6 +126,16 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		},
 	}
 
+	// Apply user-provided PodTemplateSpec customizations if present
+	if vmcp.Spec.PodTemplateSpec != nil && vmcp.Spec.PodTemplateSpec.Raw != nil {
+		if err := r.applyPodTemplateSpecToDeployment(ctx, vmcp, dep); err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to apply PodTemplateSpec to Deployment")
+			// Return nil to block deployment creation until PodTemplateSpec is fixed
+			return nil
+		}
+	}
+
 	if err := controllerutil.SetControllerReference(vmcp, dep, r.Scheme); err != nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Failed to set controller reference for Deployment")
@@ -128,13 +145,24 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 }
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
-func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp() []string {
-	return []string{
+func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) []string {
+	args := []string{
 		"serve",
 		"--config=/etc/vmcp-config/config.yaml",
 		"--host=0.0.0.0", // Listen on all interfaces for Kubernetes service routing
 		"--port=4483",    // Standard vmcp port
 	}
+
+	// Add --debug flag if log level is set to debug
+	// Note: vmcp binary currently only supports --debug flag, not other log levels
+	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
+	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.LogLevel == logLevelDebug {
+		args = append(args, "--debug")
+	}
+
+	return args
 }
 
 // buildVolumesForVmcp builds volumes and volume mounts for vmcp
@@ -169,9 +197,10 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 }
 
 // buildEnvVarsForVmcp builds environment variables for the vmcp container
-func (*VirtualMCPServerReconciler) buildEnvVarsForVmcp(
+func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	env := []corev1.EnvVar{}
 
@@ -186,69 +215,260 @@ func (*VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		Value: vmcp.Namespace,
 	})
 
-	// TODO: Add log level from operational config when Operational is not nil
-	//nolint:staticcheck // Empty branch reserved for future log level configuration
-	if vmcp.Spec.Operational != nil {
-		// Log level env var will be added here
-	}
+	// Mount OIDC client secret
+	env = append(env, r.buildOIDCEnvVars(vmcp)...)
 
-	// Mount OIDC client secret as environment variable
-	// The vmcp config file will reference this via client_secret_env: "VMCP_OIDC_CLIENT_SECRET"
-	//
-	// Two approaches are supported:
-	// 1. ClientSecretRef: References an existing Kubernetes Secret (recommended)
-	// 2. ClientSecret: Literal value that will be stored in a generated Secret
-	//
-	// Both cases result in the secret being mounted as an environment variable for security.
-	if vmcp.Spec.IncomingAuth != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
-		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-
-		// For testing: Skip OIDC discovery for example/test issuers
-		// This allows tests to run without requiring a real OIDC provider
-		if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
-			env = append(env, corev1.EnvVar{
-				Name:  "VMCP_SKIP_OIDC_DISCOVERY",
-				Value: "true",
-			})
-		}
-
-		if inline.ClientSecretRef != nil {
-			// Approach 1: Mount from existing Secret reference
-			env = append(env, corev1.EnvVar{
-				Name: "VMCP_OIDC_CLIENT_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: inline.ClientSecretRef.Name,
-						},
-						Key: inline.ClientSecretRef.Key,
-					},
-				},
-			})
-		} else if inline.ClientSecret != "" {
-			// Approach 2: Mount from generated Secret containing literal value
-			// The generated secret is created by ensureOIDCClientSecret()
-			generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
-			env = append(env, corev1.EnvVar{
-				Name: "VMCP_OIDC_CLIENT_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: generatedSecretName,
-						},
-						Key: "clientSecret",
-					},
-				},
-			})
-		}
-	}
+	// Mount outgoing auth secrets
+	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
 	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
 	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
+func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+	var env []corev1.EnvVar
+
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfig == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline == nil {
+		return env
+	}
+
+	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
+
+	// For testing: Skip OIDC discovery for example/test issuers
+	if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
+		env = append(env, corev1.EnvVar{
+			Name:  "VMCP_SKIP_OIDC_DISCOVERY",
+			Value: "true",
+		})
+	}
+
+	if inline.ClientSecretRef != nil {
+		env = append(env, corev1.EnvVar{
+			Name: "VMCP_OIDC_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: inline.ClientSecretRef.Name,
+					},
+					Key: inline.ClientSecretRef.Key,
+				},
+			},
+		})
+	} else if inline.ClientSecret != "" {
+		generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
+		env = append(env, corev1.EnvVar{
+			Name: "VMCP_OIDC_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: generatedSecretName,
+					},
+					Key: "clientSecret",
+				},
+			},
+		})
+	}
+
+	return env
+}
+
+// buildOutgoingAuthEnvVars builds environment variables for outgoing auth secrets.
+func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+) []corev1.EnvVar {
+	var env []corev1.EnvVar
+
+	if vmcp.Spec.OutgoingAuth == nil {
+		return env
+	}
+
+	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
+	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
+		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
+		env = append(env, discoveredSecrets...)
+	}
+
+	// Mount secrets from inline ExternalAuthConfigRefs
+	if vmcp.Spec.OutgoingAuth.Backends != nil {
+		inlineSecrets := r.discoverInlineExternalAuthConfigSecrets(ctx, vmcp)
+		env = append(env, inlineSecrets...)
+	}
+
+	// Mount secret from Default ExternalAuthConfigRef
+	if vmcp.Spec.OutgoingAuth.Default != nil && vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil {
+		defaultSecret, err := r.getExternalAuthConfigSecretEnvVar(
+			ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef.Name)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.V(1).Info("Failed to get Default ExternalAuthConfig secret, continuing without it",
+				"error", err)
+		} else if defaultSecret != nil {
+			env = append(env, *defaultSecret)
+		}
+	}
+
+	return env
+}
+
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
+// and returns environment variables for their client secrets. This is used for discovered mode.
+func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+) []corev1.EnvVar {
+	ctxLogger := log.FromContext(ctx)
+	var envVars []corev1.EnvVar
+	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
+
+	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServers")
+		return envVars
+	}
+
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
+		return envVars
+	}
+
+	// Discover ExternalAuthConfigs from workloads (MCPServers and MCPRemoteProxies)
+	for _, workloadInfo := range typedWorkloads {
+		configName := r.getExternalAuthConfigNameFromWorkload(
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+		if configName == "" {
+			continue
+		}
+
+		// Skip if we've already processed this ExternalAuthConfig
+		if seenConfigs[configName] {
+			continue
+		}
+		seenConfigs[configName] = true
+
+		// Get the secret env var for this ExternalAuthConfig
+		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
+				"externalAuthConfig", configName,
+				"error", err)
+			continue
+		}
+		if secretEnvVar != nil {
+			envVars = append(envVars, *secretEnvVar)
+		}
+	}
+
+	return envVars
+}
+
+// discoverInlineExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced in inline Backends
+// and returns environment variables for their client secrets.
+func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
+
+	// Process per-backend configs
+	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+		if backendAuth.ExternalAuthConfigRef == nil {
+			continue
+		}
+
+		configName := backendAuth.ExternalAuthConfigRef.Name
+		// Skip if we've already processed this ExternalAuthConfig
+		if seenConfigs[configName] {
+			continue
+		}
+		seenConfigs[configName] = true
+
+		// Get the secret env var for this ExternalAuthConfig
+		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
+				"externalAuthConfig", configName,
+				"error", err)
+			continue
+		}
+		if secretEnvVar != nil {
+			envVars = append(envVars, *secretEnvVar)
+		}
+	}
+
+	return envVars
+}
+
+// getExternalAuthConfigSecretEnvVar returns an environment variable for secrets
+// from an ExternalAuthConfig (token exchange client secrets or header injection values).
+// Generates unique env var names per ExternalAuthConfig to avoid conflicts when multiple
+// configs of the same type reference different secrets.
+func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
+	ctx context.Context,
+	namespace string,
+	externalAuthConfigName string,
+) (*corev1.EnvVar, error) {
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
+		ctx, r.Client, namespace, externalAuthConfigName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigName, err)
+	}
+
+	var envVarName string
+	var secretRef *mcpv1alpha1.SecretKeyRef
+
+	switch externalAuthConfig.Spec.Type {
+	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
+		if externalAuthConfig.Spec.TokenExchange == nil {
+			return nil, nil
+		}
+		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef == nil {
+			return nil, nil // No secret to mount
+		}
+		envVarName = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
+		secretRef = externalAuthConfig.Spec.TokenExchange.ClientSecretRef
+
+	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
+		if externalAuthConfig.Spec.HeaderInjection == nil {
+			return nil, nil
+		}
+		if externalAuthConfig.Spec.HeaderInjection.ValueSecretRef == nil {
+			return nil, nil // No secret to mount
+		}
+		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
+		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
+
+	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
+		// No secrets to mount for unauthenticated
+		return nil, nil
+
+	default:
+		return nil, nil // Not applicable
+	}
+
+	return &corev1.EnvVar{
+		Name: envVarName,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: secretRef.Name,
+				},
+				Key: secretRef.Key,
+			},
+		},
+	}, nil
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
@@ -275,8 +495,6 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
-
-	// TODO: Add support for PodTemplateSpec overrides from spec
 
 	return templateLabels, templateAnnotations
 }
@@ -385,7 +603,6 @@ func getVmcpImage() string {
 // Validated secrets include:
 // - OIDC client secrets (IncomingAuth.OIDCConfig.Inline.ClientSecretRef)
 // - Service account credentials (OutgoingAuth.*.ServiceAccount.CredentialsRef)
-// - Redis passwords (TokenCache.Redis.PasswordRef)
 //
 // This follows the pattern from ctrlutil.GenerateOIDCClientSecretEnvVar() which validates secrets
 // exist before pod creation.
@@ -420,17 +637,6 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 			if err := r.validateBackendAuthSecrets(ctx, vmcp.Namespace, &backendAuth, fmt.Sprintf("backend %s", backendName)); err != nil {
 				return err
 			}
-		}
-	}
-
-	// Validate Redis password if configured
-	if vmcp.Spec.TokenCache != nil &&
-		vmcp.Spec.TokenCache.Redis != nil &&
-		vmcp.Spec.TokenCache.Redis.PasswordRef != nil {
-		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
-			vmcp.Spec.TokenCache.Redis.PasswordRef,
-			"Redis password"); err != nil {
-			return err
 		}
 	}
 
@@ -475,6 +681,68 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 		return fmt.Errorf("%s secret %s/%s is missing key %q",
 			secretDesc, namespace, secretRef.Name, secretRef.Key)
 	}
+
+	return nil
+}
+
+// applyPodTemplateSpecToDeployment applies user-provided PodTemplateSpec customizations to the deployment
+// using strategic merge patch. This allows users to customize pod-level settings like node selectors,
+// tolerations, affinity rules, security contexts, and additional containers.
+//
+// The merge strategy:
+// - User-provided fields override controller-generated defaults
+// - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
+// - The "vmcp" container is preserved from the controller-generated spec
+func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	deployment *appsv1.Deployment,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Early return if no PodTemplateSpec provided
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return nil
+	}
+
+	// Validate the PodTemplateSpec and check if there are meaningful customizations
+	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
+	if err != nil {
+		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+	}
+
+	if builder.Build() == nil {
+		// No meaningful customizations to apply
+		return nil
+	}
+
+	// Use the raw user JSON directly for strategic merge patch.
+	// This avoids the nil-slice-becomes-empty-array problem that occurs when
+	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
+	// nil slices to [], which strategic merge patch interprets as "replace with empty".
+	// By using the raw JSON, we preserve exactly what the user specified.
+	userJSON := vmcp.Spec.PodTemplateSpec.Raw
+
+	originalJSON, err := json.Marshal(deployment.Spec.Template)
+	if err != nil {
+		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
+	}
+
+	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
+	if err != nil {
+		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
+	}
+
+	var patchedPodTemplateSpec corev1.PodTemplateSpec
+	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
+		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
+	}
+
+	deployment.Spec.Template = patchedPodTemplateSpec
+
+	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
+		"virtualmcpserver", vmcp.Name,
+		"namespace", vmcp.Namespace)
 
 	return nil
 }

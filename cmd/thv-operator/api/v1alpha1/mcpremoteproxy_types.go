@@ -63,9 +63,20 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios where the ingress
+	// strips a path prefix before forwarding to the backend.
+	// +optional
+	EndpointPrefix string `json:"endpointPrefix,omitempty"`
+
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
+
+	// GroupRef is the name of the MCPGroup this proxy belongs to
+	// Must reference an existing MCPGroup in the same namespace
+	// +optional
+	GroupRef string `json:"groupRef,omitempty"`
 }
 
 // MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
@@ -131,6 +142,9 @@ const (
 
 	// ConditionTypeAuthConfigured indicates whether authentication is properly configured
 	ConditionTypeAuthConfigured = "AuthConfigured"
+
+	// ConditionTypeMCPRemoteProxyGroupRefValidated indicates whether the GroupRef is valid
+	ConditionTypeMCPRemoteProxyGroupRefValidated = "GroupRefValidated"
 )
 
 // Condition reasons for MCPRemoteProxy
@@ -155,6 +169,15 @@ const (
 
 	// ConditionReasonMissingOIDCConfig indicates OIDCConfig is not specified
 	ConditionReasonMissingOIDCConfig = "MissingOIDCConfig"
+
+	// ConditionReasonMCPRemoteProxyGroupRefValidated indicates the GroupRef is valid
+	ConditionReasonMCPRemoteProxyGroupRefValidated = "GroupRefIsValid"
+
+	// ConditionReasonMCPRemoteProxyGroupRefNotFound indicates the GroupRef is invalid
+	ConditionReasonMCPRemoteProxyGroupRefNotFound = "GroupRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
+	ConditionReasonMCPRemoteProxyGroupRefNotReady = "GroupRefNotReady"
 )
 
 //+kubebuilder:object:root=true

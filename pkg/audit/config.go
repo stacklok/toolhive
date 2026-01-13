@@ -9,26 +9,44 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Config represents the audit logging configuration.
+// +kubebuilder:object:generate=true
+// +gendoc
 type Config struct {
-	// Component is the component name to use in audit events
+	// Enabled controls whether audit logging is enabled.
+	// When true, enables audit logging with the configured options.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Component is the component name to use in audit events.
+	// +optional
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`
 	// EventTypes specifies which event types to audit. If empty, all events are audited.
-	EventTypes []string `json:"event_types,omitempty" yaml:"event_types,omitempty"`
+	// +optional
+	EventTypes []string `json:"eventTypes,omitempty" yaml:"eventTypes,omitempty"`
 	// ExcludeEventTypes specifies which event types to exclude from auditing.
 	// This takes precedence over EventTypes.
-	ExcludeEventTypes []string `json:"exclude_event_types,omitempty" yaml:"exclude_event_types,omitempty"`
-	// IncludeRequestData determines whether to include request data in audit logs
-	IncludeRequestData bool `json:"include_request_data,omitempty" yaml:"include_request_data,omitempty"`
-	// IncludeResponseData determines whether to include response data in audit logs
-	IncludeResponseData bool `json:"include_response_data,omitempty" yaml:"include_response_data,omitempty"`
-	// MaxDataSize limits the size of request/response data included in audit logs (in bytes)
-	MaxDataSize int `json:"max_data_size,omitempty" yaml:"max_data_size,omitempty"`
+	// +optional
+	ExcludeEventTypes []string `json:"excludeEventTypes,omitempty" yaml:"excludeEventTypes,omitempty"`
+	// IncludeRequestData determines whether to include request data in audit logs.
+	// +kubebuilder:default=false
+	// +optional
+	IncludeRequestData bool `json:"includeRequestData,omitempty" yaml:"includeRequestData,omitempty"`
+	// IncludeResponseData determines whether to include response data in audit logs.
+	// +kubebuilder:default=false
+	// +optional
+	IncludeResponseData bool `json:"includeResponseData,omitempty" yaml:"includeResponseData,omitempty"`
+	// MaxDataSize limits the size of request/response data included in audit logs (in bytes).
+	// +kubebuilder:default=1024
+	// +optional
+	MaxDataSize int `json:"maxDataSize,omitempty" yaml:"maxDataSize,omitempty"`
 	// LogFile specifies the file path for audit logs. If empty, logs to stdout.
-	LogFile string `json:"log_file,omitempty" yaml:"log_file,omitempty"`
+	// +optional
+	LogFile string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 }
 
 // GetLogWriter creates and returns the appropriate io.Writer based on the configuration.
@@ -49,6 +67,8 @@ func (c *Config) GetLogWriter() (io.Writer, error) {
 // DefaultConfig returns a default audit configuration.
 func DefaultConfig() *Config {
 	return &Config{
+		// Note, these defaults are also present on the kubebuilder annotations above.
+		// If you change these defaults, you must also change the kubebuilder annotations.
 		IncludeRequestData:  false, // Disabled by default for privacy
 		IncludeResponseData: false, // Disabled by default for privacy
 		MaxDataSize:         1024,  // 1KB default limit
@@ -62,7 +82,11 @@ func LoadFromFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit config file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Warnf("Failed to close audit config file: %v", err)
+		}
+	}()
 
 	return LoadFromReader(file)
 }
@@ -128,8 +152,13 @@ func GetMiddlewareFromFile(path string, transportType string) (func(http.Handler
 
 // Validate validates the audit configuration.
 func (c *Config) Validate() error {
+	// Apply default for MaxDataSize if not set (0 means use default)
+	if c.MaxDataSize == 0 {
+		c.MaxDataSize = DefaultConfig().MaxDataSize
+	}
+
 	if c.MaxDataSize < 0 {
-		return fmt.Errorf("max_data_size cannot be negative")
+		return fmt.Errorf("maxDataSize cannot be negative")
 	}
 
 	// Validate event types (basic validation - could be extended)
@@ -146,6 +175,15 @@ func (c *Config) Validate() error {
 		EventTypeMCPLogging:          true,
 		EventTypeMCPCompletion:       true,
 		EventTypeMCPRootsListChanged: true,
+		// Workflow event types for vMCP composite workflows
+		EventTypeWorkflowStarted:       true,
+		EventTypeWorkflowCompleted:     true,
+		EventTypeWorkflowFailed:        true,
+		EventTypeWorkflowTimedOut:      true,
+		EventTypeWorkflowStepStarted:   true,
+		EventTypeWorkflowStepCompleted: true,
+		EventTypeWorkflowStepFailed:    true,
+		EventTypeWorkflowStepSkipped:   true,
 		// Fallback event types that can also be emitted by the middleware
 		EventTypeMCPRequest:  true,
 		EventTypeHTTPRequest: true,

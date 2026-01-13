@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -9,41 +10,44 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/telemetry"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// TestYAMLLoader_transformBackendAuthStrategy tests the critical auth strategy transformation logic
+// TestYAMLLoader_processBackendAuthStrategy tests the critical auth strategy processing logic
 // including environment variable resolution, mutual exclusivity validation, and strategy-specific config.
-func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
+func TestYAMLLoader_processBackendAuthStrategy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		raw     *rawBackendAuthStrategy
-		envVars map[string]string
-		verify  func(t *testing.T, strategy *BackendAuthStrategy)
-		wantErr bool
-		errMsg  string
+		name     string
+		strategy *authtypes.BackendAuthStrategy
+		envVars  map[string]string
+		verify   func(t *testing.T, strategy *authtypes.BackendAuthStrategy)
+		wantErr  bool
+		errMsg   string
 	}{
 		{
 			name: "header_injection with literal value",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName:  "Authorization",
 					HeaderValue: "Bearer token123",
 				},
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "Bearer token123", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "Bearer token123", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection resolves env var correctly",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName:     "X-API-Key",
 					HeaderValueEnv: "API_KEY",
 				},
@@ -51,40 +55,41 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"API_KEY": "secret-key-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "secret-key-value", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "secret-key-value", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection fails when both value and env set (mutual exclusivity)",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName:     "Authorization",
 					HeaderValue:    "literal",
 					HeaderValueEnv: "ENV_VAR",
 				},
 			},
 			wantErr: true,
-			errMsg:  "only one of header_value or header_value_env must be set",
+			errMsg:  "only one of headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when neither value nor env set",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName: "Authorization",
 				},
 			},
 			wantErr: true,
-			errMsg:  "either header_value or header_value_env must be set",
+			errMsg:  "either headerValue or headerValueEnv must be set",
 		},
 		{
 			name: "header_injection fails when env var not set",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "MISSING_VAR",
 				},
@@ -94,9 +99,9 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		},
 		{
 			name: "header_injection fails when env var is empty string",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
-				HeaderInjection: &rawHeaderInjectionAuth{
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "EMPTY_VAR",
 				},
@@ -109,17 +114,17 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		},
 		{
 			name: "header_injection fails when config block missing",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
-			errMsg:  "header_injection configuration is required",
+			errMsg:  "headerInjection configuration is required",
 		},
 		{
 			name: "token_exchange validates env var is set",
-			raw: &rawBackendAuthStrategy{
+			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
-				TokenExchange: &rawTokenExchangeAuth{
+				TokenExchange: &authtypes.TokenExchangeConfig{
 					TokenURL:        "https://auth.example.com/token",
 					ClientID:        "client-123",
 					ClientSecretEnv: "CLIENT_SECRET",
@@ -128,17 +133,18 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"CLIENT_SECRET": "secret-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				// Verify env var name is stored (not resolved) for lazy evaluation
-				assert.Equal(t, "CLIENT_SECRET", strategy.Metadata["client_secret_env"])
+				require.NotNil(t, strategy.TokenExchange)
+				assert.Equal(t, "CLIENT_SECRET", strategy.TokenExchange.ClientSecretEnv)
 			},
 		},
 		{
 			name: "token_exchange fails when env var not set",
-			raw: &rawBackendAuthStrategy{
+			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
-				TokenExchange: &rawTokenExchangeAuth{
+				TokenExchange: &authtypes.TokenExchangeConfig{
 					TokenURL:        "https://auth.example.com/token",
 					ClientID:        "client-123",
 					ClientSecretEnv: "MISSING_SECRET",
@@ -149,20 +155,22 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		},
 		{
 			name: "token_exchange fails when config block missing",
-			raw: &rawBackendAuthStrategy{
+			strategy: &authtypes.BackendAuthStrategy{
 				Type: "token_exchange",
 			},
 			wantErr: true,
-			errMsg:  "token_exchange configuration is required",
+			errMsg:  "tokenExchange configuration is required",
 		},
 		{
 			name: "unauthenticated strategy requires no extra config",
-			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeUnauthenticated,
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUnauthenticated,
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Empty(t, strategy.Metadata)
+				// Unauthenticated strategy has no additional config
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			},
 		},
 	}
@@ -179,7 +187,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
 
 			loader := &YAMLLoader{envReader: mockEnv}
-			strategy, err := loader.transformBackendAuthStrategy(tt.raw)
+			err := loader.processBackendAuthStrategy("test", tt.strategy)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -188,414 +196,89 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-				require.NotNil(t, strategy)
+				require.NotNil(t, tt.strategy)
 				if tt.verify != nil {
-					tt.verify(t, strategy)
+					tt.verify(t, tt.strategy)
 				}
 			}
 		})
 	}
 }
 
-// TestYAMLLoader_transformTokenCache tests duration parsing which can fail.
-func TestYAMLLoader_transformTokenCache(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		raw        *rawTokenCache
-		wantErr    bool
-		errMsg     string
-		wantOffset time.Duration
-	}{
-		{
-			name: "memory cache parses duration correctly",
-			raw: &rawTokenCache{
-				Provider: CacheProviderMemory,
-				Config: struct {
-					MaxEntries int    `yaml:"max_entries"`
-					TTLOffset  string `yaml:"ttl_offset"`
-					Address    string `yaml:"address"`
-					DB         int    `yaml:"db"`
-					KeyPrefix  string `yaml:"key_prefix"`
-					Password   string `yaml:"password"`
-				}{
-					MaxEntries: 1000,
-					TTLOffset:  "5m",
-				},
-			},
-			wantOffset: 5 * time.Minute,
-		},
-		{
-			name: "redis cache parses duration correctly",
-			raw: &rawTokenCache{
-				Provider: CacheProviderRedis,
-				Config: struct {
-					MaxEntries int    `yaml:"max_entries"`
-					TTLOffset  string `yaml:"ttl_offset"`
-					Address    string `yaml:"address"`
-					DB         int    `yaml:"db"`
-					KeyPrefix  string `yaml:"key_prefix"`
-					Password   string `yaml:"password"`
-				}{
-					TTLOffset: "10m",
-				},
-			},
-			wantOffset: 10 * time.Minute,
-		},
-		{
-			name: "invalid duration returns error",
-			raw: &rawTokenCache{
-				Provider: CacheProviderMemory,
-				Config: struct {
-					MaxEntries int    `yaml:"max_entries"`
-					TTLOffset  string `yaml:"ttl_offset"`
-					Address    string `yaml:"address"`
-					DB         int    `yaml:"db"`
-					KeyPrefix  string `yaml:"key_prefix"`
-					Password   string `yaml:"password"`
-				}{
-					TTLOffset: "invalid",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid ttl_offset",
-		},
-		{
-			name: "complex duration like 1h30m parses correctly",
-			raw: &rawTokenCache{
-				Provider: CacheProviderMemory,
-				Config: struct {
-					MaxEntries int    `yaml:"max_entries"`
-					TTLOffset  string `yaml:"ttl_offset"`
-					Address    string `yaml:"address"`
-					DB         int    `yaml:"db"`
-					KeyPrefix  string `yaml:"key_prefix"`
-					Password   string `yaml:"password"`
-				}{
-					TTLOffset: "1h30m",
-				},
-			},
-			wantOffset: 90 * time.Minute,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			loader := &YAMLLoader{}
-			cfg, err := loader.transformTokenCache(tt.raw)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
-				// Verify duration was parsed correctly
-				if cfg.Memory != nil {
-					assert.Equal(t, Duration(tt.wantOffset), cfg.Memory.TTLOffset)
-				} else if cfg.Redis != nil {
-					assert.Equal(t, Duration(tt.wantOffset), cfg.Redis.TTLOffset)
-				}
-			}
-		})
-	}
-}
-
-// TestYAMLLoader_transformOperational tests duration parsing in multiple fields.
-func TestYAMLLoader_transformOperational(t *testing.T) {
+// TestYAMLLoader_processCompositeTool tests parameter validation.
+func TestYAMLLoader_processCompositeTool(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		raw     *rawOperational
+		tool    *CompositeToolConfig
+		verify  func(t *testing.T, tool *CompositeToolConfig)
 		wantErr bool
 		errMsg  string
 	}{
-		{
-			name: "parses all duration fields correctly",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"slow-backend": "1m",
-						"fast-backend": "10s",
-					},
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "5s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: true,
-						Timeout: "30s",
-					},
-				},
-			},
-		},
-		{
-			name: "invalid default timeout returns error",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "invalid",
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid default timeout",
-		},
-		{
-			name: "invalid per-workload timeout returns error with workload name",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"bad-backend": "invalid-duration",
-					},
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid timeout for workload bad-backend",
-		},
-		{
-			name: "invalid health check interval returns error",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "not-a-duration",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid health_check_interval",
-		},
-		{
-			name: "invalid circuit breaker timeout returns error",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: true,
-						Timeout: "bad-duration",
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid circuit_breaker timeout",
-		},
-		{
-			name: "circuit breaker disabled skips timeout parsing",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: false,
-						// Even with bad timeout, should not error since disabled
-						Timeout: "invalid",
-					},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			loader := &YAMLLoader{}
-			cfg, err := loader.transformOperational(tt.raw)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
-			}
-		})
-	}
-}
-
-// TestYAMLLoader_transformCompositeTools tests parameter validation and duration parsing.
-func TestYAMLLoader_transformCompositeTools(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     []*rawCompositeTool
-		verify  func(t *testing.T, tools []*CompositeToolConfig)
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "empty timeout defaults to zero",
-			raw: []*rawCompositeTool{
-				{
-					Name:  "test",
-					Steps: []*rawWorkflowStep{{ID: "step1", Tool: "test.tool"}},
-				},
-			},
-			verify: func(t *testing.T, tools []*CompositeToolConfig) {
-				t.Helper()
-				assert.Equal(t, Duration(0), tools[0].Timeout)
-			},
-		},
-		{
-			name: "timeout parses correctly",
-			raw: []*rawCompositeTool{
-				{
-					Name:    "test",
-					Timeout: "5m",
-					Steps:   []*rawWorkflowStep{{ID: "step1", Tool: "test.tool"}},
-				},
-			},
-			verify: func(t *testing.T, tools []*CompositeToolConfig) {
-				t.Helper()
-				assert.Equal(t, Duration(5*time.Minute), tools[0].Timeout)
-			},
-		},
-		{
-			name: "invalid timeout returns error",
-			raw: []*rawCompositeTool{
-				{
-					Name:    "bad",
-					Timeout: "invalid",
-					Steps:   []*rawWorkflowStep{{ID: "s1"}},
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid timeout",
-		},
 		{
 			name: "parameter missing type field returns error",
-			raw: []*rawCompositeTool{
-				{
-					Name: "bad",
-					Parameters: map[string]map[string]any{
-						"param1": {
-							"default": "value",
-						},
+			tool: &CompositeToolConfig{
+				Name: "bad",
+				Parameters: thvjson.NewMap(map[string]any{
+					"properties": map[string]any{
+						"input": map[string]any{"type": "string"},
 					},
-					Steps: []*rawWorkflowStep{{ID: "s1"}},
-				},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
-			errMsg:  "missing 'type' field",
+			errMsg:  "parameters must have 'type' field",
 		},
 		{
 			name: "parameter type not string returns error",
-			raw: []*rawCompositeTool{
-				{
-					Name: "bad",
-					Parameters: map[string]map[string]any{
-						"param1": {
-							"type": 123,
-						},
+			tool: &CompositeToolConfig{
+				Name: "bad",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": 123,
+					"properties": map[string]any{
+						"param1": map[string]any{"type": "string"},
 					},
-					Steps: []*rawWorkflowStep{{ID: "s1"}},
-				},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
 			},
 			wantErr: true,
 			errMsg:  "'type' field must be a string",
 		},
 		{
-			name: "parameter with default value works",
-			raw: []*rawCompositeTool{
-				{
-					Name: "test",
-					Parameters: map[string]map[string]any{
-						"version": {
-							"type":    "string",
-							"default": "latest",
-						},
-					},
-					Steps: []*rawWorkflowStep{{ID: "s1"}},
-				},
+			name: "parameter type must be object returns error",
+			tool: &CompositeToolConfig{
+				Name:       "bad",
+				Parameters: thvjson.NewMap(map[string]any{"type": "string"}),
+				Steps:      []*WorkflowStepConfig{{ID: "s1"}},
 			},
-			verify: func(t *testing.T, tools []*CompositeToolConfig) {
+			wantErr: true,
+			errMsg:  "parameters 'type' must be 'object'",
+		},
+		{
+			name: "parameter with default value works",
+			tool: &CompositeToolConfig{
+				Name: "test",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"version": map[string]any{"type": "string", "default": "latest"},
+					},
+				}),
+				Steps: []*WorkflowStepConfig{{ID: "s1"}},
+			},
+			verify: func(t *testing.T, tool *CompositeToolConfig) {
 				t.Helper()
-				assert.Equal(t, "string", tools[0].Parameters["version"].Type)
-				assert.Equal(t, "latest", tools[0].Parameters["version"].Default)
+				// Parameters is now map[string]any with JSON Schema format
+				paramsMap, err := tool.Parameters.ToMap()
+				require.NoError(t, err)
+				assert.Equal(t, "object", paramsMap["type"])
+				properties, ok := paramsMap["properties"].(map[string]any)
+				require.True(t, ok, "properties should be a map")
+				version, ok := properties["version"].(map[string]any)
+				require.True(t, ok, "version property should be a map")
+				assert.Equal(t, "string", version["type"])
+				assert.Equal(t, "latest", version["default"])
 			},
 		},
 	}
@@ -604,7 +287,7 @@ func TestYAMLLoader_transformCompositeTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			loader := &YAMLLoader{}
-			tools, err := loader.transformCompositeTools(tt.raw)
+			err := loader.processCompositeTool(tt.tool)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -613,29 +296,27 @@ func TestYAMLLoader_transformCompositeTools(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-				require.NotNil(t, tools)
+				require.NotNil(t, tt.tool)
 				if tt.verify != nil {
-					tt.verify(t, tools)
+					tt.verify(t, tt.tool)
 				}
 			}
 		})
 	}
 }
 
-// TestYAMLLoader_transformWorkflowStep tests type inference, default timeouts, and duration parsing.
-func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
+// TestYAMLLoader_processWorkflowStep tests type inference and default timeouts.
+func TestYAMLLoader_processWorkflowStep(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		raw     *rawWorkflowStep
-		verify  func(t *testing.T, step *WorkflowStepConfig)
-		wantErr bool
-		errMsg  string
+		name   string
+		step   *WorkflowStepConfig
+		verify func(t *testing.T, step *WorkflowStepConfig)
 	}{
 		{
 			name: "type inference: empty type with tool field infers 'tool'",
-			raw: &rawWorkflowStep{
+			step: &WorkflowStepConfig{
 				ID:   "step1",
 				Tool: "some.tool",
 			},
@@ -646,7 +327,7 @@ func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
 		},
 		{
 			name: "type inference: explicit type not overridden",
-			raw: &rawWorkflowStep{
+			step: &WorkflowStepConfig{
 				ID:   "step1",
 				Type: "elicitation",
 				Tool: "some.tool",
@@ -658,7 +339,7 @@ func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
 		},
 		{
 			name: "elicitation without timeout gets 5 minute default",
-			raw: &rawWorkflowStep{
+			step: &WorkflowStepConfig{
 				ID:      "ask",
 				Type:    "elicitation",
 				Message: "Approve?",
@@ -669,69 +350,16 @@ func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
 			},
 		},
 		{
-			name: "elicitation with explicit timeout overrides default",
-			raw: &rawWorkflowStep{
+			name: "elicitation with explicit timeout keeps it",
+			step: &WorkflowStepConfig{
 				ID:      "ask",
 				Type:    "elicitation",
 				Message: "Approve?",
-				Timeout: "10m",
+				Timeout: Duration(10 * time.Minute),
 			},
 			verify: func(t *testing.T, step *WorkflowStepConfig) {
 				t.Helper()
 				assert.Equal(t, Duration(10*time.Minute), step.Timeout)
-			},
-		},
-		{
-			name: "tool step with timeout parses correctly",
-			raw: &rawWorkflowStep{
-				ID:      "slow",
-				Type:    "tool",
-				Tool:    "tool",
-				Timeout: "2m",
-			},
-			verify: func(t *testing.T, step *WorkflowStepConfig) {
-				t.Helper()
-				assert.Equal(t, Duration(2*time.Minute), step.Timeout)
-			},
-		},
-		{
-			name: "invalid timeout returns error",
-			raw: &rawWorkflowStep{
-				ID:      "bad",
-				Tool:    "tool",
-				Timeout: "invalid",
-			},
-			wantErr: true,
-			errMsg:  "invalid timeout",
-		},
-		{
-			name: "invalid retry delay returns error",
-			raw: &rawWorkflowStep{
-				ID:   "bad",
-				Tool: "tool",
-				OnError: &rawStepErrorHandling{
-					Action:     "retry",
-					RetryDelay: "not-a-duration",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid retry_delay",
-		},
-		{
-			name: "retry delay parses correctly",
-			raw: &rawWorkflowStep{
-				ID:   "step1",
-				Tool: "tool",
-				OnError: &rawStepErrorHandling{
-					Action:     "retry",
-					RetryCount: 3,
-					RetryDelay: "5s",
-				},
-			},
-			verify: func(t *testing.T, step *WorkflowStepConfig) {
-				t.Helper()
-				require.NotNil(t, step.OnError)
-				assert.Equal(t, Duration(5*time.Second), step.OnError.RetryDelay)
 			},
 		},
 	}
@@ -740,20 +368,101 @@ func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			loader := &YAMLLoader{}
-			step, err := loader.transformWorkflowStep(tt.raw)
+			loader.processWorkflowStep(tt.step)
 
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				require.NoError(t, err)
-				require.NotNil(t, step)
-				if tt.verify != nil {
-					tt.verify(t, step)
-				}
+			require.NotNil(t, tt.step)
+			if tt.verify != nil {
+				tt.verify(t, tt.step)
 			}
 		})
 	}
+}
+
+// TestYAMLLoader_Load_TelemetryConfig tests that telemetry configuration is preserved
+// when loading from YAML.
+func TestYAMLLoader_Load_TelemetryConfig(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := `
+name: telemetry-test
+telemetry:
+  endpoint: "localhost:4318"
+  serviceName: "test-service"
+  serviceVersion: "1.2.3"
+  tracingEnabled: true
+  metricsEnabled: true
+  samplingRate: 0.75
+  insecure: true
+  enablePrometheusMetricsPath: true
+  headers:
+    Authorization: "Bearer token123"
+    X-Custom-Header: "custom-value"
+  environmentVariables:
+    - "NODE_ENV"
+    - "DEPLOYMENT_ENV"
+`
+
+	// Write temp file
+	tmpFile, err := os.CreateTemp("", "telemetry-test-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	// Load config
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+	loader := NewYAMLLoader(tmpFile.Name(), mockEnv)
+	cfg, err := loader.Load()
+	require.NoError(t, err)
+
+	// Verify telemetry config is fully preserved
+	require.NotNil(t, cfg.Telemetry, "Telemetry config should not be nil")
+
+	require.Equal(t, telemetry.Config{
+		Endpoint:                    "localhost:4318",
+		ServiceName:                 "test-service",
+		ServiceVersion:              "1.2.3",
+		TracingEnabled:              true,
+		MetricsEnabled:              true,
+		SamplingRate:                "0.75",
+		Insecure:                    true,
+		EnablePrometheusMetricsPath: true,
+		Headers:                     map[string]string{"Authorization": "Bearer token123", "X-Custom-Header": "custom-value"},
+		EnvironmentVariables:        []string{"NODE_ENV", "DEPLOYMENT_ENV"},
+		CustomAttributes:            nil,
+	}, *cfg.Telemetry)
+}
+
+// TestYAMLLoader_StrictMode tests that unknown fields are rejected.
+func TestYAMLLoader_StrictMode(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := `
+name: test
+unknown_field: this should cause an error
+`
+
+	// Write temp file
+	tmpFile, err := os.CreateTemp("", "strict-test-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	// Load config
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+
+	loader := NewYAMLLoader(tmpFile.Name(), mockEnv)
+	_, err = loader.Load()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown_field")
 }

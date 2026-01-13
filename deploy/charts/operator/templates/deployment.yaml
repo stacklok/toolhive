@@ -58,12 +58,20 @@ spec:
             value: "true"
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
+          - name: ENABLE_SERVER
+            value: {{ .Values.operator.features.server | quote }}
+          - name: ENABLE_REGISTRY
+            value: {{ .Values.operator.features.registry | quote }}
+          - name: ENABLE_VMCP
+            value: {{ .Values.operator.features.virtualMCP | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"
           {{- end }}
           - name: TOOLHIVE_RUNNER_IMAGE
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
+          - name: VMCP_IMAGE
+            value: "{{ .Values.operator.vmcpImage }}"
           - name: TOOLHIVE_PROXY_HOST
             value: "{{ .Values.operator.proxyHost }}"
           - name: TOOLHIVE_REGISTRY_API_IMAGE

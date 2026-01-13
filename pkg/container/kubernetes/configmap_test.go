@@ -21,7 +21,7 @@ func TestNewConfigMapReaderWithClient(t *testing.T) {
 	}{
 		{
 			name:      "creates reader with fake clientset",
-			clientset: fake.NewSimpleClientset(),
+			clientset: fake.NewClientset(),
 		},
 		{
 			name:      "creates reader with nil clientset",
@@ -252,9 +252,9 @@ func TestConfigMapReader_GetRunConfigMap(t *testing.T) {
 			// Create fake clientset
 			var fakeClient *fake.Clientset
 			if tt.configMap != nil {
-				fakeClient = fake.NewSimpleClientset(tt.configMap)
+				fakeClient = fake.NewClientset(tt.configMap)
 			} else {
-				fakeClient = fake.NewSimpleClientset()
+				fakeClient = fake.NewClientset()
 			}
 
 			// Simulate API error if needed
@@ -305,7 +305,7 @@ func TestConfigMapReader_GetRunConfigMap_ContextCancellation(t *testing.T) {
 	}
 
 	// Create fake clientset
-	fakeClient := fake.NewSimpleClientset(configMap)
+	fakeClient := fake.NewClientset(configMap)
 
 	// Create reader
 	reader := NewConfigMapReaderWithClient(fakeClient)
@@ -329,7 +329,7 @@ func TestConfigMapReader_GetRunConfigMap_ContextCancellation(t *testing.T) {
 func TestConfigMapReader_InterfaceCompliance(t *testing.T) {
 	t.Parallel()
 	// Verify that ConfigMapReader implements RunConfigMapReader interface
-	fakeClient := fake.NewSimpleClientset()
+	fakeClient := fake.NewClientset()
 	reader := NewConfigMapReaderWithClient(fakeClient)
 
 	// This will fail to compile if ConfigMapReader doesn't implement RunConfigMapReader
@@ -370,7 +370,7 @@ func TestConfigMapReader_MultipleCallsWithSameClient(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewSimpleClientset(configMap1, configMap2)
+	fakeClient := fake.NewClientset(configMap1, configMap2)
 	reader := NewConfigMapReaderWithClient(fakeClient)
 
 	// First call

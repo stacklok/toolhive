@@ -110,11 +110,27 @@ func AddExternalAuthConfigOptions(
 		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
 
-	// Only token exchange type is supported currently
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+	// Handle different auth types
+	switch externalAuthConfig.Spec.Type {
+	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
+		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
+		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
+		// No config to add for unauthenticated
+		return nil
+	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}
+}
 
+func addTokenExchangeConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
 	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
 	if tokenExchangeSpec == nil {
 		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
@@ -166,5 +182,22 @@ func AddExternalAuthConfigOptions(
 	// The middleware will be automatically created by PopulateMiddlewareConfigs() in the correct order
 	*options = append(*options, runner.WithTokenExchangeConfig(tokenExchangeConfig))
 
+	return nil
+}
+
+// addHeaderInjectionConfig adds header injection configuration to runner options
+// For now, this is a no-op as header injection for MCPServer is not implemented
+// Header injection is primarily used for vMCP outgoing auth, not for MCPServer incoming auth
+func addHeaderInjectionConfig(
+	_ context.Context,
+	_ client.Client,
+	_ string,
+	_ *mcpv1alpha1.MCPExternalAuthConfig,
+	_ *[]runner.RunConfigBuilderOption,
+) error {
+	// Header injection for MCPServer is not yet implemented
+	// This is a placeholder to avoid the "unsupported auth type" error
+	// MCPServer's ExternalAuthConfigRef is meant for incoming auth configuration
+	// but header injection doesn't make sense in that context
 	return nil
 }

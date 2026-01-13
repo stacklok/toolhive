@@ -142,15 +142,20 @@ tasks:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
+      VMCP_IMAGE:
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
+      - echo "Loading vmcp image {{.VMCP_IMAGE}} into kind..."
+      - kind load docker-image --name toolhive {{.VMCP_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
+        --set operator.vmcpImage={{.VMCP_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
         --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
@@ -173,19 +178,32 @@ tasks:
         platforms: [windows]
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
-      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..."
+      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..." paths="./pkg/json/..." paths="./pkg/vmcp/config/..." paths="./pkg/vmcp/auth/types/..." paths="./pkg/telemetry/..." paths="./pkg/audit/..."
 
   operator-manifests:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    vars:
+      PROJECT_ROOT:
+        sh: git rev-parse --show-toplevel || pwd
+      CONTROLLER_GEN_PATHS:
+        sh: |
+          if [[ "$PWD" == *"/cmd/thv-operator"* ]]; then
+            echo "./..."
+          else
+            echo "./cmd/thv-operator/..."
+          fi
     cmds:
-      - cmd: mkdir -p bin
+      - cmd: mkdir -p {{.PROJECT_ROOT}}/cmd/thv-operator/bin
         platforms: [linux, darwin]
-      - cmd: cmd.exe /c mkdir bin
+      - cmd: cmd.exe /c mkdir {{.PROJECT_ROOT}}/cmd/thv-operator/bin
         platforms: [windows]
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
-      - $(go env GOPATH)/bin/controller-gen crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/charts/operator-crds/crds
-      - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="./cmd/thv-operator/..." output:rbac:artifacts:config=deploy/charts/operator/templates/clusterrole
+      - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="{{.CONTROLLER_GEN_PATHS}}" output:rbac:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator/templates/clusterrole
+      - $(go env GOPATH)/bin/controller-gen crd webhook paths="{{.CONTROLLER_GEN_PATHS}}" output:crd:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds
+      # Wrap CRDs with Helm templates for conditional installation
+      - go run {{.PROJECT_ROOT}}/deploy/charts/operator-crds/crd-helm-wrapper/main.go -source {{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds -target {{.PROJECT_ROOT}}/deploy/charts/operator-crds/templates
+      #  - "{{.PROJECT_ROOT}}/deploy/charts/operator-crds/scripts/wrap-crds.sh"
 
   operator-test:
     desc: Run tests for the operator
@@ -255,7 +273,7 @@ tasks:
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |
-        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:
@@ -272,10 +290,16 @@ tasks:
     desc: Generate CRD API docs via crd-ref-docs
     deps: [crdref-install]
     cmds:
-      - crd-ref-docs --source-path=. --config={{ .CRDREF_CONFIG }} --renderer markdown --output-path {{ .DOCS_OUT }}
+      # Run from repo root to include types from pkg/vmcp/config, pkg/telemetry, pkg/audit
+      - crd-ref-docs --source-path=../.. --config={{ .CRDREF_CONFIG }} --renderer markdown --templates-dir=../../docs/operator/templates/markdown --output-path {{ .DOCS_OUT }}
     sources:
       - 'config/crd/bases/**/*.yaml'
       - 'api/**/*.go'
+      - '../../pkg/vmcp/config/*.go'
+      - '../../pkg/vmcp/auth/types/*.go'
+      - '../../pkg/telemetry/*.go'
+      - '../../pkg/audit/*.go'
+      - '../../docs/operator/templates/markdown/*.tpl'
     generates:
       - '{{ .DOCS_OUT }}'
 

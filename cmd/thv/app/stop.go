@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -16,9 +15,20 @@ import (
 )
 
 var stopCmd = &cobra.Command{
-	Use:               "stop [workload-name...]",
-	Short:             "Stop one or more MCP servers",
-	Long:              `Stop one or more running MCP servers managed by ToolHive.`,
+	Use:   "stop [workload-name...]",
+	Short: "Stop one or more MCP servers",
+	Long: `Stop one or more running MCP servers managed by ToolHive. Examples:
+  # Stop a single MCP server
+  thv stop filesystem
+
+  # Stop multiple MCP servers
+  thv stop filesystem github slack
+
+  # Stop all running MCP servers
+  thv stop --all
+
+  # Stop all servers in a group
+  thv stop --group production`,
 	Args:              validateStopArgs,
 	RunE:              stopCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,
@@ -32,8 +42,8 @@ var (
 
 func init() {
 	stopCmd.Flags().IntVar(&stopTimeout, "timeout", 30, "Timeout in seconds before forcibly stopping the workload")
-	stopCmd.Flags().BoolVar(&stopAll, "all", false, "Stop all running MCP servers")
-	stopCmd.Flags().StringVarP(&stopGroup, "group", "g", "", "Stop all MCP servers in a specific group")
+	AddAllFlag(stopCmd, &stopAll, true, "Stop all running MCP servers")
+	AddGroupFlag(stopCmd, &stopGroup, true)
 
 	// Mark the flags as mutually exclusive
 	stopCmd.MarkFlagsMutuallyExclusive("all", "group")
@@ -50,12 +60,16 @@ func validateStopArgs(cmd *cobra.Command, args []string) error {
 	if all || group != "" {
 		// If --all or --group is set, no arguments should be provided
 		if len(args) > 0 {
-			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
+			return fmt.Errorf(
+				"no arguments should be provided when --all or --group flag is set. " +
+					"Hint: remove the workload names or remove the flag")
 		}
 	} else {
 		// If neither --all nor --group is set, at least one argument should be provided
 		if len(args) < 1 {
-			return fmt.Errorf("at least one workload name must be provided")
+			return fmt.Errorf(
+				"at least one workload name must be provided. " +
+					"Hint: use 'thv list' to see available workloads, or use --all to stop all")
 		}
 	}
 
@@ -67,10 +81,8 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
-
-	var group *errgroup.Group
 
 	if stopAll {
 		return stopAllWorkloads(ctx, workloadManager)
@@ -82,7 +94,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Stop specified workloads
 	workloadNames := args
-	group, err = workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		// If the workload is not found or not running, treat as a non-fatal error.
 		if errors.Is(err, rt.ErrWorkloadNotFound) ||
@@ -91,18 +103,18 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 			fmt.Println("one or more workloads are not running")
 			return nil
 		}
-		return fmt.Errorf("unexpected error stopping workloads: %v", err)
+		return fmt.Errorf("unexpected error stopping workloads: %w", err)
 	}
 
-	// Since the stop operation is asynchronous, wait for the group to finish.
-	if err := group.Wait(); err != nil {
-		return fmt.Errorf("failed to stop workloads %v: %v", workloadNames, err)
+	// Wait for the stop operation to complete
+	if err := complete(); err != nil {
+		return fmt.Errorf("failed to stop workloads %v: %w", workloadNames, err)
 	}
 	if len(workloadNames) == 1 {
-		fmt.Printf("workload %s stopped successfully\n", workloadNames[0])
+		fmt.Printf("Workload %s stopped successfully\n", workloadNames[0])
 	} else {
 		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("workloads %v stopped successfully\n", formattedNames)
+		fmt.Printf("Workloads %s stopped successfully\n", formattedNames)
 	}
 
 	return nil
@@ -112,7 +124,7 @@ func stopAllWorkloads(ctx context.Context, workloadManager workloads.Manager) er
 	// Get list of all running workloads first
 	workloadList, err := workloadManager.ListWorkloads(ctx, false) // false = only running workloads
 	if err != nil {
-		return fmt.Errorf("failed to list workloads: %v", err)
+		return fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	// Extract workload names
@@ -127,14 +139,14 @@ func stopAllWorkloads(ctx context.Context, workloadManager workloads.Manager) er
 	}
 
 	// Stop all workloads using the bulk method
-	group, err := workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
-		return fmt.Errorf("failed to stop all workloads: %v", err)
+		return fmt.Errorf("failed to stop all workloads: %w", err)
 	}
 
-	// Since the stop operation is asynchronous, wait for the group to finish.
-	if err := group.Wait(); err != nil {
-		return fmt.Errorf("failed to stop all workloads: %v", err)
+	// Wait for the stop operation to complete
+	if err := complete(); err != nil {
+		return fmt.Errorf("failed to stop all workloads: %w", err)
 	}
 	fmt.Println("All workloads stopped successfully")
 	return nil
@@ -144,28 +156,28 @@ func stopWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager
 	// Create a groups manager to list workloads in the group
 	groupManager, err := groups.NewManager()
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %v", err)
+		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
 	// Check if the group exists
 	exists, err := groupManager.Exists(ctx, groupName)
 	if err != nil {
-		return fmt.Errorf("failed to check if group '%s' exists: %v", groupName, err)
+		return fmt.Errorf("failed to check if group '%s' exists: %w", groupName, err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Get list of running workloads and filter by group
 	workloadList, err := workloadManager.ListWorkloads(ctx, false) // false = only running workloads
 	if err != nil {
-		return fmt.Errorf("failed to list running workloads: %v", err)
+		return fmt.Errorf("failed to list running workloads: %w", err)
 	}
 
 	// Filter workloads by group
 	groupWorkloads, err := workloads.FilterByGroup(workloadList, groupName)
 	if err != nil {
-		return fmt.Errorf("failed to filter workloads by group: %v", err)
+		return fmt.Errorf("failed to filter workloads by group: %w", err)
 	}
 
 	if len(groupWorkloads) == 0 {
@@ -180,14 +192,14 @@ func stopWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager
 	}
 
 	// Stop workloads in the group
-	subtasks, err := workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
-		return fmt.Errorf("failed to stop workloads in group '%s': %v", groupName, err)
+		return fmt.Errorf("failed to stop workloads in group '%s': %w", groupName, err)
 	}
 
 	// Wait for the stop operation to complete
-	if err := subtasks.Wait(); err != nil {
-		return fmt.Errorf("failed to stop workloads in group '%s': %v", groupName, err)
+	if err := complete(); err != nil {
+		return fmt.Errorf("failed to stop workloads in group '%s': %w", groupName, err)
 	}
 
 	fmt.Printf("Successfully stopped %d workload(s) in group '%s'\n", len(workloadNames), groupName)

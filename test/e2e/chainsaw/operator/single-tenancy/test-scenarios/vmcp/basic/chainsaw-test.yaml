@@ -25,9 +25,10 @@ spec:
           metadata:
             name: test-vmcp
           spec:
-            groupRef:
-              name: test-group
+            config:
+              groupRef: test-group
             incomingAuth:
+              type: oidc
               oidcConfig:
                 type: inline
                 inline:

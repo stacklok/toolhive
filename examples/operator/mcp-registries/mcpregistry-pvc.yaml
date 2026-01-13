@@ -1,0 +1,273 @@
+# Example MCPRegistry using a single PVC with multiple registries
+#
+# This example demonstrates:
+# 1. Creating a single PVC to store multiple registry sources
+# 2. Configuring MCPRegistry with multiple registries from the same PVC
+# 3. Each registry in its own subdirectory within the PVC
+# 4. Independent sync policies and filters per registry
+#
+# PVC structure (can organize data however you want):
+#   /prod-data/registry.json    - Production servers
+#   /dev-data/registry.json     - Development servers
+#
+# How it works:
+# - Registry "production" mounts PVC at /config/registry/production/
+# - Reads file from pvcRef.path: prod-data/registry.json
+# - Final path: /config/registry/production/prod-data/registry.json
+#
+# - Registry "development" mounts SAME PVC at /config/registry/development/
+# - Reads file from pvcRef.path: dev-data/registry.json
+# - Final path: /config/registry/development/dev-data/registry.json
+#
+# Both registries see the entire PVC but from different mount points!
+#
+# The PVC can be populated by:
+# - An init container or Job (example below)
+# - A separate process that writes to the PVC
+# - Manual copy using kubectl cp
+# - A CSI driver that provides the data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-registry-data
+  namespace: toolhive-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Mi
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: pvc-multi-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Multi-Registry from Single PVC"
+  registries:
+    # Production registry - reads from prod-data/ subdirectory in PVC
+    - name: production
+      format: toolhive
+      pvcRef:
+        claimName: shared-registry-data
+        path: prod-data/registry.json
+      syncPolicy:
+        interval: "2h"
+      filter:
+        tags:
+          include:
+            - "production"
+            - "stable"
+
+    # Development registry - reads from dev-data/ subdirectory in PVC
+    - name: development
+      format: toolhive
+      pvcRef:
+        claimName: shared-registry-data
+        path: dev-data/registry.json
+      syncPolicy:
+        interval: "30m"
+      filter:
+        tags:
+          include:
+            - "development"
+            - "testing"
+---
+# Example Job to populate the shared PVC with multiple registry directories
+# This job creates the directory structure and writes registry data for both registries
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-shared-registry-pvc
+  namespace: toolhive-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: populate
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Create subdirectories for different registry data
+          # Note: These directory names don't need to match registry names
+          mkdir -p /data/prod-data
+          mkdir -p /data/dev-data
+
+          # Write production registry data
+          cat > /data/prod-data/registry.json <<'EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+            "version": "1.0.0",
+            "last_updated": "2025-11-26T12:00:00Z",
+            "servers": {
+              "prod-filesystem": {
+                "description": "Production-ready filesystem operations server",
+                "tier": "Official",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": [
+                  "read_file",
+                  "write_file",
+                  "list_directory",
+                  "create_directory",
+                  "backup_files"
+                ],
+                "metadata": {
+                  "stars": 1500,
+                  "pulls": 500,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/modelcontextprotocol/servers",
+                "tags": [
+                  "filesystem",
+                  "files",
+                  "storage",
+                  "production",
+                  "stable"
+                ],
+                "image": "docker.io/mcp/filesystem:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                },
+                "args": [
+                  "/projects"
+                ]
+              },
+              "github-api": {
+                "description": "Production GitHub API integration",
+                "tier": "Official",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": [
+                  "create_issue",
+                  "create_pull_request",
+                  "search_repositories"
+                ],
+                "metadata": {
+                  "stars": 2200,
+                  "pulls": 800,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/github/github-mcp-server",
+                "tags": [
+                  "github",
+                  "api",
+                  "repository",
+                  "production",
+                  "stable"
+                ],
+                "image": "ghcr.io/github/github-mcp-server:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {
+                      "allow_host": [
+                        ".github.com",
+                        ".githubusercontent.com"
+                      ],
+                      "allow_port": [
+                        443
+                      ]
+                    }
+                  }
+                },
+                "env_vars": [
+                  {
+                    "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "description": "GitHub personal access token with appropriate permissions",
+                    "required": true,
+                    "secret": true
+                  }
+                ]
+              }
+            }
+          }
+          EOF
+
+          # Write development registry data
+          cat > /data/dev-data/registry.json <<'EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+            "version": "1.0.0",
+            "last_updated": "2025-11-26T12:00:00Z",
+            "servers": {
+              "dev-filesystem": {
+                "description": "Development version of filesystem operations server",
+                "tier": "Community",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": [
+                  "read_file",
+                  "write_file",
+                  "list_directory"
+                ],
+                "metadata": {
+                  "stars": 800,
+                  "pulls": 200,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/modelcontextprotocol/servers",
+                "tags": [
+                  "filesystem",
+                  "files",
+                  "development",
+                  "testing"
+                ],
+                "image": "docker.io/mcp/filesystem:dev",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                }
+              },
+              "test-runner": {
+                "description": "Automated testing and quality assurance server",
+                "tier": "Community",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": [
+                  "run_tests",
+                  "analyze_coverage",
+                  "generate_report"
+                ],
+                "metadata": {
+                  "stars": 300,
+                  "pulls": 80,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/testing/test-runner-mcp",
+                "tags": [
+                  "testing",
+                  "quality",
+                  "automation",
+                  "development"
+                ],
+                "image": "testing/test-runner:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+          echo "Registry data written successfully"
+          echo "Production registry:"
+          ls -lh /data/prod-data/registry.json
+          echo "Development registry:"
+          ls -lh /data/dev-data/registry.json
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: shared-registry-data

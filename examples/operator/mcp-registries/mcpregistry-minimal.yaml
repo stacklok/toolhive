@@ -6,7 +6,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-09-08T12:00:00Z",
       "servers": {
@@ -144,15 +144,16 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Production-Ready MCP Servers"
-  source:
-    type: configmap
-    configMapRef:
-      name: minimal-registry-data
-      key: registry.json
-  filter:
-    tags:
-      include:
-        - "production"
-      exclude:
-        - "experimental"
-        - "deprecated"
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: minimal-registry-data
+        key: registry.json
+      filter:
+        tags:
+          include:
+            - "production"
+          exclude:
+            - "experimental"
+            - "deprecated"

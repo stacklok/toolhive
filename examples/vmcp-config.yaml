@@ -16,16 +16,16 @@
 
 # Virtual MCP metadata
 name: "engineering-vmcp"
-group: "engineering-team"  # Reference to ToolHive group
+groupRef: "engineering-team"  # Reference to ToolHive group
 
 # ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
-incoming_auth:
-  type: oidc  # Options: oidc | anonymous | local
+incomingAuth:
+  type: oidc  # Options: oidc | anonymous
   # OIDC configuration
   oidc:
     issuer: "https://keycloak.example.com/realms/myrealm"
-    client_id: "vmcp-client"
-    client_secret_env: "VMCP_CLIENT_SECRET"  # Read from environment variable
+    clientId: "vmcp-client"
+    clientSecretEnv: "VMCP_CLIENT_SECRET"  # Read from environment variable
     audience: "vmcp"  # Token must have aud=vmcp
     resource: "http://localhost:4483/mcp"
     scopes: ["openid", "profile", "email"]
@@ -42,15 +42,13 @@ incoming_auth:
         );
 
 # ===== OUTGOING AUTHENTICATION (Virtual MCP → Backend APIs) =====
-outgoing_auth:
+outgoingAuth:
   # Configuration source (CLI only supports 'inline')
   source: inline  # Options: inline | discovered
 
   # Default behavior for backends without explicit config
   default:
     type: unauthenticated  # unauthenticated | header_injection | token_exchange
-    # TODO: Uncomment when pass_through is implemented
-    # type: pass_through  # Forward client token unchanged
 
   # Per-backend authentication configurations
   # IMPORTANT: These tokens are for backend APIs (e.g., github-api, jira-api),
@@ -60,63 +58,51 @@ outgoing_auth:
     # Example 1: API key from environment variable (recommended for secrets)
     github:
       type: header_injection
-      header_injection:
-        header_name: "Authorization"
-        header_value_env: "GITHUB_API_TOKEN"  # Read from environment variable
+      headerInjection:
+        headerName: "Authorization"
+        headerValueEnv: "GITHUB_API_TOKEN"  # Read from environment variable
 
     # Example 2: Static header value (for non-secret values only)
     # api-service:
     #   type: header_injection
-    #   header_injection:
-    #     header_name: "X-API-Version"
-    #     header_value: "v1"  # Literal value
+    #   headerInjection:
+    #     headerName: "X-API-Version"
+    #     headerValue: "v1"  # Literal value
 
     # Example: OAuth 2.0 Token Exchange (RFC 8693) for GitHub API access
     # github:
     #   type: token_exchange
-    #   token_exchange:
+    #   tokenExchange:
     #     # RFC 8693 token exchange for GitHub API access
-    #     token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
-    #     client_id: "vmcp-github-exchange"
-    #     client_secret_env: "GITHUB_EXCHANGE_SECRET"
+    #     tokenUrl: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+    #     clientId: "vmcp-github-exchange"
+    #     clientSecretEnv: "GITHUB_EXCHANGE_SECRET"
     #     audience: "github-api"  # Token audience for GitHub API
     #     scopes: ["repo", "read:org"]  # GitHub API scopes
-    #     subject_token_type: "access_token"  # Optional: access_token | id_token | jwt
+    #     subjectTokenType: "access_token"  # Optional: access_token | id_token | jwt
 
     # Example: Token Exchange for Jira API access
     # jira:
     #   type: token_exchange
-    #   token_exchange:
-    #     token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
-    #     client_id: "vmcp-jira-exchange"
-    #     client_secret_env: "JIRA_EXCHANGE_SECRET"
+    #   tokenExchange:
+    #     tokenUrl: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+    #     clientId: "vmcp-jira-exchange"
+    #     clientSecretEnv: "JIRA_EXCHANGE_SECRET"
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
-
-    # TODO: Uncomment when pass_through strategy is implemented
-    # internal-db:
-    #   type: pass_through  # Forward client token unchanged
-
-# ===== TOKEN CACHING =====
-# Token cache configuration
-token_cache:
-  provider: memory  # Options: memory | redis | custom
-  config:
-    max_entries: 1000
-    ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
 
 # ===== TOOL AGGREGATION =====
 aggregation:
   # Conflict resolution strategy
-  conflict_resolution: prefix  # prefix | priority | manual
+  conflictResolution: prefix  # prefix | priority | manual
 
   # Conflict resolution details
-  conflict_resolution_config:
+  conflictResolutionConfig:
     # For 'prefix' strategy: prefix format
-    prefix_format: "{workload}_"  # Options: {workload}, {workload}_, {workload}., custom-prefix-
+    prefixFormat: "{workload}_"  # Options: {workload}, {workload}_, {workload}., custom-prefix-
 
     # For 'priority' strategy: explicit ordering (commented out)
-    # priority_order: ["github", "jira", "slack"]
+    # priorityOrder: ["github", "jira", "slack"]
 
   # Tool filtering and overrides (per workload in the group)
   tools:
@@ -137,39 +123,45 @@ aggregation:
 operational:
   timeouts:
     default: 30s
-    per_workload:
+    perWorkload:
       github: 45s
       jira: 30s
 
   # Failure handling
-  failure_handling:
+  failureHandling:
     # Backend unavailability
-    health_check_interval: 30s
-    unhealthy_threshold: 3  # Mark unhealthy after N failures
+    healthCheckInterval: 30s
+    unhealthyThreshold: 3  # Mark unhealthy after N failures
 
     # Partial failures
-    partial_failure_mode: fail  # fail | best_effort
+    partialFailureMode: fail  # fail | bestEffort
 
     # Circuit breaker
-    circuit_breaker:
+    circuitBreaker:
       enabled: true
-      failure_threshold: 5
+      failureThreshold: 5
       timeout: 60s
 
 # ===== COMPOSITE TOOLS (Phase 2 - Future Feature) =====
 # Composite tools enable multi-step workflows with elicitation support
-# composite_tools:
+# compositeTools:
 #   - name: "deploy_and_notify"
 #     description: "Deploy PR with user confirmation and notification"
+#     # Parameters use standard JSON Schema format per MCP specification
 #     parameters:
-#       pr_number: {type: "integer"}
+#       type: object
+#       properties:
+#         pr_number:
+#           type: integer
+#           description: "Pull request number to deploy"
+#       required: ["pr_number"]
 #     timeout: "30m"
 #
 #     steps:
 #       - id: "merge"
 #         tool: "github.merge_pr"
 #         arguments: {pr: "{{.params.pr_number}}"}
-#         on_error:
+#         onError:
 #           action: "abort"  # abort | continue | retry
 #
 #       - id: "confirm_deploy"
@@ -181,11 +173,11 @@ operational:
 #             environment:
 #               type: "string"
 #               enum: ["staging", "production"]
-#         depends_on: ["merge"]
+#         dependsOn: ["merge"]
 #         timeout: "5m"
-#         on_decline:
+#         onDecline:
 #           action: "skip_remaining"
-#         on_cancel:
+#         onCancel:
 #           action: "abort"
 #
 #       - id: "deploy"
@@ -193,5 +185,30 @@ operational:
 #         arguments:
 #           pr: "{{.params.pr_number}}"
 #           environment: "{{.steps.confirm_deploy.content.environment}}"
-#         depends_on: ["confirm_deploy"]
+#         dependsOn: ["confirm_deploy"]
 #         condition: "{{.steps.confirm_deploy.action == 'accept'}}"
+
+# ===== OBSERVABILITY =====
+# OpenTelemetry-based metrics and tracing for backend operations and workflows
+telemetry:
+  endpoint: "localhost:4317"  # OTLP collector endpoint
+  serviceName: "engineering-vmcp"
+  tracingEnabled: true
+  metricsEnabled: true
+  samplingRate: "0.1"  # 10% sampling
+  insecure: true  # Use HTTP instead of HTTPS
+  enablePrometheusMetricsPath: true  # Expose /metrics endpoint
+
+# ===== AUDIT LOGGING =====
+# Audit logging for MCP operations (optional)
+# audit:
+#   component: "vmcp-server"  # Component name in audit events
+#   eventTypes:  # Specific event types to audit (empty = audit all)
+#     - "mcp_initialize"
+#     - "mcp_tool_call"
+#   # excludeEventTypes:  # Event types to exclude (takes precedence over eventTypes)
+#   #   - "mcp_ping"
+#   includeRequestData: true  # Include request data in audit logs
+#   includeResponseData: false  # Include response data in audit logs
+#   maxDataSize: 10000  # Max size of request/response data (bytes)
+#   logFile: "/var/log/vmcp/audit.log"  # Log file path (empty = stdout)

@@ -80,6 +80,30 @@ You can specify the network mode for the container using the --network flag:
 
 The --network flag accepts any Docker-compatible network mode.
 
+Examples:
+  # Run a server from the registry
+  thv run filesystem
+
+  # Run a server with custom arguments and toolsets
+  thv run github -- --toolsets repos
+
+  # Run from a container image
+  thv run ghcr.io/github/github-mcp-server
+
+  # Run using a protocol scheme (Python with uv)
+  thv run uvx://mcp-server-git
+
+  # Run using npx (Node.js)
+  thv run npx://@modelcontextprotocol/server-everything
+
+  # Run a server in a specific group
+  thv run filesystem --group production
+
+# Run a remote GitHub MCP server with authentication
+thv run github-remote --remote-auth \
+  --remote-auth-client-id <oauth-client-id> \
+  --remote-auth-client-secret <oauth-client-secret>
+
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ```
@@ -91,6 +115,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --authz-config string                        Path to the authorization configuration file
       --ca-cert string                             Path to a custom CA certificate file to use for container builds
       --enable-audit                               Enable audit logging with default configuration
+      --endpoint-prefix string                     Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)
   -e, --env stringArray                            Environment variables to pass to the MCP server (format: KEY=VALUE)
       --env-file string                            Load environment variables from a single file
       --env-file-dir string                        Load environment variables from all files in a directory
@@ -114,6 +139,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-introspection-url string              URL for token introspection endpoint
       --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                       URL to fetch the JWKS from
+      --oidc-scopes strings                        OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --otel-custom-attributes string              Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)
       --otel-enable-prometheus-metrics-path        Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                       OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
@@ -126,10 +152,12 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-tracing-enabled                       Enable distributed tracing (when OTLP endpoint is configured) (default true)
       --permission-profile string                  Permission profile to use (none, network, or path to JSON file)
       --print-resolved-overlays                    Debug: show resolved container paths for tmpfs overlays
-      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse) (default "streamable-http")
+      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --remote-auth-bearer-token string            Bearer token for remote server authentication (alternative to OAuth)
+      --remote-auth-bearer-token-file string       Path to file containing bearer token (alternative to --remote-auth-bearer-token)
       --remote-auth-callback-port int              Port for OAuth callback server during remote authentication (default 8666)
       --remote-auth-client-id string               OAuth client ID for remote server authentication
       --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)

@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -137,6 +138,9 @@ func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder 
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
+	// Apply recovery middleware first to catch panics from all other middleware and handlers
+	r.Use(recovery.Middleware)
+
 	// Apply default middleware
 	r.Use(
 		middleware.RequestID,
@@ -151,7 +155,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	// Add authentication middleware
 	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, b.oidcConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create authentication middleware: %v", err)
+		return nil, fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 	r.Use(authMiddleware)
 
@@ -183,28 +187,28 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 	if b.containerRuntime == nil {
 		b.containerRuntime, err = container.NewFactory().Create(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create container runtime: %v", err)
+			return fmt.Errorf("failed to create container runtime: %w", err)
 		}
 	}
 
 	if b.clientManager == nil {
 		b.clientManager, err = client.NewManager(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create client manager: %v", err)
+			return fmt.Errorf("failed to create client manager: %w", err)
 		}
 	}
 
 	if b.workloadManager == nil {
 		b.workloadManager, err = workloads.NewManagerFromRuntime(b.containerRuntime)
 		if err != nil {
-			return fmt.Errorf("failed to create workload manager: %v", err)
+			return fmt.Errorf("failed to create workload manager: %w", err)
 		}
 	}
 
 	if b.groupManager == nil {
 		b.groupManager, err = groups.NewManager()
 		if err != nil {
-			return fmt.Errorf("failed to create group manager: %v", err)
+			return fmt.Errorf("failed to create group manager: %w", err)
 		}
 	}
 
@@ -247,24 +251,24 @@ func setupUnixSocket(address string) (net.Listener, error) {
 	// Remove the socket file if it already exists
 	if _, err := os.Stat(address); err == nil {
 		if err := os.Remove(address); err != nil {
-			return nil, fmt.Errorf("failed to remove existing socket: %v", err)
+			return nil, fmt.Errorf("failed to remove existing socket: %w", err)
 		}
 	}
 
 	// Create the directory for the socket file if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(address), 0750); err != nil {
-		return nil, fmt.Errorf("failed to create socket directory: %v", err)
+		return nil, fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
 	// Create UNIX socket listener
 	listener, err := net.Listen("unix", address)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create UNIX socket listener: %v", err)
+		return nil, fmt.Errorf("failed to create UNIX socket listener: %w", err)
 	}
 
 	// Set file permissions on the socket to allow other local processes to connect
 	if err := os.Chmod(address, socketPermissions); err != nil {
-		return nil, fmt.Errorf("failed to set socket permissions: %v", err)
+		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
 	return listener, nil

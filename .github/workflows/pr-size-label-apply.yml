@@ -1,0 +1,217 @@
+name: PR Size Labeler - Apply and Enforce
+
+on:
+  workflow_run:
+    workflows: ["PR Size Labeler - Calculate"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  apply-size-label:
+    name: Apply Size Label
+    runs-on: ubuntu-slim
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: pr-size-label
+          path: pr-size/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read PR number and size label
+        id: read
+        run: |
+          PR_NUMBER=$(cat pr-size/pr-number.txt)
+          SIZE_LABEL=$(cat pr-size/label.txt | tr -d '"')
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "size_label=$SIZE_LABEL" >> $GITHUB_OUTPUT
+          echo "PR #$PR_NUMBER should get label: $SIZE_LABEL"
+
+      - name: Remove old size labels
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+
+            const currentLabels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+
+            for (const label of currentLabels.data) {
+              if (sizeLabels.includes(label.name)) {
+                console.log(`Removing old size label: ${label.name}`);
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label.name
+                });
+              }
+            }
+
+      - name: Add new size label
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+          SIZE_LABEL: ${{ steps.read.outputs.size_label }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const sizeLabel = process.env.SIZE_LABEL;
+
+            console.log(`Adding size label: ${sizeLabel} to PR #${prNumber}`);
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: [sizeLabel]
+            });
+
+  enforce-xl-justification:
+    name: Enforce XL PR Justification
+    runs-on: ubuntu-slim
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Download artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: pr-size-label
+          path: pr-size/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read PR number and check for XL justification
+        id: check
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = parseInt(fs.readFileSync('pr-size/pr-number.txt', 'utf8').trim());
+            const sizeLabel = fs.readFileSync('pr-size/label.txt', 'utf8').trim().replace(/"/g, '');
+
+            console.log('PR Number:', prNumber);
+            console.log('Size Label:', sizeLabel);
+
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const hasXLLabel = sizeLabel === 'size/XL';
+            const prBody = pr.data.body || '';
+            const hasJustification = /##\s*Large PR Justification/i.test(prBody);
+
+            console.log('Has XL label:', hasXLLabel);
+            console.log('Has justification:', hasJustification);
+
+            return {
+              prNumber: prNumber,
+              hasXLLabel: hasXLLabel,
+              hasJustification: hasJustification,
+              needsEnforcement: hasXLLabel && !hasJustification,
+              shouldDismiss: hasXLLabel && hasJustification
+            };
+
+      - name: Request changes if no justification
+        if: fromJSON(steps.check.outputs.result).needsEnforcement
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RESULT_JSON: ${{ steps.check.outputs.result }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.RESULT_JSON);
+            const prNumber = result.prNumber;
+
+            // Check if we already have a review requesting changes
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const botReview = reviews.data.find(review =>
+              review.user.login === 'github-actions[bot]' &&
+              review.state === 'CHANGES_REQUESTED'
+            );
+
+            if (botReview) {
+              console.log('Already requested changes in review:', botReview.id);
+              return;
+            }
+
+            // Read the message template from file
+            const fs = require('fs');
+            const template = fs.readFileSync('.github/workflows/pr-size-justification-template.md', 'utf8');
+            const contributingLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md#code-quality-expectations`;
+            const message = template.replace('CONTRIBUTING_LINK', contributingLink);
+
+            // Request changes with explanation
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'REQUEST_CHANGES',
+              body: message
+            });
+
+            console.log('Created review requesting changes for PR #' + prNumber);
+
+      - name: Dismiss review if justification added
+        if: fromJSON(steps.check.outputs.result).shouldDismiss
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RESULT_JSON: ${{ steps.check.outputs.result }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.RESULT_JSON);
+            const prNumber = result.prNumber;
+
+            // Find our previous review requesting changes
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const botReview = reviews.data.find(review =>
+              review.user.login === 'github-actions[bot]' &&
+              review.state === 'CHANGES_REQUESTED'
+            );
+
+            if (botReview) {
+              await github.rest.pulls.dismissReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                review_id: botReview.id,
+                message: 'Large PR justification has been provided. Thank you!'
+              });
+
+              console.log('Dismissed previous review:', botReview.id);
+
+              // Add a comment confirming unblock
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: '✅ Large PR justification has been provided. The size review has been dismissed and this PR can now proceed with normal review.'
+              });
+            } else {
+              console.log('No previous blocking review found to dismiss');
+            }

@@ -105,25 +105,29 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "deploy_app",
 					Description: "Deploy application with parameters",
-					Parameters: map[string]ParameterSpec{
-						"environment": {
-							Type:        "string",
-							Description: "Target environment",
-							Required:    true,
-						},
-						"replicas": {
-							Type:        "integer",
-							Description: "Number of replicas",
-							Default:     "3",
-						},
+					Parameters: &runtime.RawExtension{
+						Raw: []byte(`{
+							"type": "object",
+							"properties": {
+								"environment": {
+									"type": "string",
+									"description": "Target environment"
+								},
+								"replicas": {
+									"type": "integer",
+									"description": "Number of replicas",
+									"default": 3
+								}
+							},
+							"required": ["environment"]
+						}`),
 					},
 					Steps: []WorkflowStep{
 						{
 							ID:   "deploy",
 							Tool: "kubectl.apply",
-							Arguments: map[string]string{
-								"namespace": "{{.params.environment}}",
-								"replicas":  "{{.params.replicas}}",
+							Arguments: &runtime.RawExtension{
+								Raw: []byte(`{"namespace": "{{.params.environment}}", "replicas": "{{.params.replicas}}"}`),
 							},
 						},
 					},
@@ -137,10 +141,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "deploy_app",
 					Description: "Deploy application",
-					Parameters: map[string]ParameterSpec{
-						"environment": {
-							Type: "invalid_type",
-						},
+					Parameters: &runtime.RawExtension{
+						Raw: []byte(`{
+							"type": "invalid_type_not_object",
+							"properties": {
+								"environment": {
+									"type": "string"
+								}
+							}
+						}`),
 					},
 					Steps: []WorkflowStep{
 						{
@@ -151,7 +160,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.parameters: invalid JSON Schema",
+			errMsg:  "spec.parameters: 'type' must be 'object'",
 		},
 		{
 			name: "missing step ID",
@@ -353,7 +362,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 							ID:   "deploy",
 							Tool: "kubectl.apply",
 							OnError: &ErrorHandling{
-								Action:     "retry",
+								Action:     ErrorActionRetry,
 								MaxRetries: 3,
 							},
 						},
@@ -373,7 +382,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 							ID:   "deploy",
 							Tool: "kubectl.apply",
 							OnError: &ErrorHandling{
-								Action:     "retry",
+								Action:     ErrorActionRetry,
 								MaxRetries: 0,
 							},
 						},
@@ -443,9 +452,9 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid failure mode configuration",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "best_effort_deploy",
-					Description: "Deploy with best effort",
-					FailureMode: "best_effort",
+					Name:        "continue_deploy",
+					Description: "Deploy with continue mode",
+					FailureMode: ErrorActionContinue,
 					Steps: []WorkflowStep{
 						{
 							ID:   "deploy1",
@@ -476,7 +485,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.failureMode must be one of: abort, continue, best_effort",
+			errMsg:  "spec.failureMode must be one of: abort, continue",
 		},
 		{
 			name: "valid conditional step",
@@ -505,8 +514,8 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 						{
 							ID:   "deploy",
 							Tool: "kubectl.apply",
-							Arguments: map[string]string{
-								"namespace": "{{.params.env",
+							Arguments: &runtime.RawExtension{
+								Raw: []byte(`{"namespace": "{{.params.env"}`),
 							},
 						},
 					},

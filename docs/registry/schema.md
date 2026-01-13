@@ -13,7 +13,7 @@ ToolHive MCP server registry and how to use it for validation and development.
 
 ## Overview
 
-The [`schema.json`](../../pkg/registry/data/schema.json) file provides comprehensive validation for the
+The [`toolhive-legacy-registry.schema.json`](../../pkg/registry/data/toolhive-legacy-registry.schema.json) file provides comprehensive validation for the
 [`registry.json`](../../pkg/registry/data/registry.json) file structure. It
 ensures consistency, catches common errors, and serves as living documentation
 for contributors.
@@ -23,9 +23,9 @@ This can also be used to validate a custom registry file to be used with the
 
 ## Schema location
 
-- **File**: [`pkg/registry/data/schema.json`](../../pkg/registry/data/schema.json)
+- **File**: [`pkg/registry/data/toolhive-legacy-registry.schema.json`](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
 - **Schema ID**:
-  `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json`
+  `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json`
 
 ## Usage
 
@@ -86,7 +86,7 @@ Validate the registry with full format validation:
 
 ```bash
 # Run from the root of the repository
-check-jsonschema --schemafile pkg/registry/data/schema.json pkg/registry/data/registry.json
+check-jsonschema --schemafile pkg/registry/data/toolhive-legacy-registry.schema.json pkg/registry/data/registry.json
 ```
 
 #### Using ajv-cli
@@ -101,7 +101,7 @@ Validate the registry with format validation:
 
 ```bash
 # Run from the root of the repository
-ajv validate -c ajv-formats -s pkg/registry/data/schema.json -d pkg/registry/data/registry.json
+ajv validate -c ajv-formats -s pkg/registry/data/toolhive-legacy-registry.schema.json -d pkg/registry/data/registry.json
 ```
 
 #### Using VS Code
@@ -111,7 +111,7 @@ to the top of any registry JSON file:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   ...
 }
 ```

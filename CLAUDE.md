@@ -2,6 +2,50 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Available Subagents
+
+ToolHive uses specialized AI subagents for different aspects of development. These agents are configured in `.claude/agents/` and MUST be invoked when you need to perform tasks that come under their expertise:
+
+### Core Development Agents
+
+- **toolhive-expert**: Deep expert on ToolHive architecture, codebase structure, design patterns, and implementation guidance. Use for general ToolHive questions, architecture decisions, and navigating the codebase.
+
+- **golang-code-writer**: Expert Go developer for writing clean, idiomatic Go code. Use when creating new functions, structs, interfaces, or complete packages.
+
+- **unit-test-writer**: Specialized in writing comprehensive unit tests for Go code. Use when you need thorough test coverage for functions, methods, or components.
+
+- **code-reviewer**: Reviews code for ToolHive best practices, security patterns, Go conventions, and architectural consistency. Use after significant code changes.
+
+- **tech-lead-orchestrator**: Provides architectural oversight, task delegation, and technical leadership for code development projects. Use for complex features or architectural decisions.
+
+### Specialized Domain Agents
+
+- **kubernetes-expert**: Specialized in Kubernetes operator patterns, CRDs, controllers, and cloud-native architecture for ToolHive. Use for operator-specific questions or K8s resources.
+
+- **mcp-protocol-expert**: Specialized in MCP (Model Context Protocol) specification, transport implementations, and protocol compliance. Use when working with MCP transports or protocol details.
+
+- **oauth-expert**: Specialized in OAuth 2.0, OIDC, token exchange, and authentication flows for ToolHive. Use for auth/authz implementation.
+
+- **site-reliability-engineer**: Expert on observability and monitoring (logging, metrics, tracing) including OpenTelemetry instrumentation. Use for telemetry and monitoring setup.
+
+### Support Agents
+
+- **documentation-writer**: Maintains consistent documentation, updates CLI docs, and ensures documentation matches code behavior. Use when updating docs.
+
+- **security-advisor**: Provides security guidance for coding tasks, including code reviews, architecture decisions, and secure implementation patterns.
+
+### When to Use Subagents
+
+Invoke specialized agents when:
+- You need expertise in their specific domain (e.g., Kubernetes, OAuth, MCP protocol)
+- Writing new code (use golang-code-writer)
+- Creating tests (use unit-test-writer)
+- Orchestrating the different tasks to other subagents that are required for completing work asked by the user (use tech-lead-orchestrator)
+- Reviewing code that is written (use code-reviewer)
+- Working with observability/monitoring (use site-reliability-engineer)
+
+The agents work together - for example, tech-lead-orchestrator might delegate to golang-code-writer for implementation and then to code-reviewer for validation.
+
 ## Project Overview
 
 ToolHive is a lightweight, secure manager for MCP (Model Context Protocol: https://modelcontextprotocol.io) servers written in Go. It provides three main components:
@@ -260,3 +304,14 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
+
+## Error Handling Guidelines
+
+See `docs/error-handling.md` for comprehensive documentation.
+
+- **Return errors by default** - Never silently swallow errors
+- **Comment ignored errors** - Explain why and typically log them
+- **No sensitive data in errors** - No API keys, credentials, tokens, or passwords
+- **Use `errors.Is()` or `errors.As()`** - For all error inspection (they properly unwrap errors)
+- **Use `fmt.Errorf` with `%w`** - To preserve error chains; don't wrap excessively
+- **Use `recover()` sparingly** - Only at top-level API/CLI boundaries

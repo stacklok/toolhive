@@ -270,8 +270,6 @@ func TestProviderRegistryOperations(t *testing.T) {
 	t.Parallel()
 	logger.Initialize()
 
-	tempDir := t.TempDir()
-
 	t.Run("DefaultProvider_RegistryOperations", func(t *testing.T) {
 		t.Parallel()
 
@@ -284,23 +282,26 @@ func TestProviderRegistryOperations(t *testing.T) {
 		_, err := pathProvider.LoadOrCreateConfig()
 		require.NoError(t, err)
 
-		// Test SetRegistryURL
+		// Test SetRegistryURL with invalid URL (validation will fail)
 		err = pathProvider.SetRegistryURL("https://example.com", true)
-		assert.NoError(t, err)
+		// URL validation now checks that the URL returns valid ToolHive registry JSON
+		// This will fail for non-existent URLs
+		assert.Error(t, err, "Non-existent URL should fail validation")
 
-		// Test GetRegistryConfig after setting URL
-		url, localPath, allowPrivateIP, registryType := pathProvider.GetRegistryConfig()
-		assert.Equal(t, "https://example.com", url)
-		assert.Equal(t, "", localPath)
-		assert.True(t, allowPrivateIP)
-		assert.Equal(t, "url", registryType)
-
-		// Test SetRegistryFile (must be a JSON file)
+		// Test SetRegistryFile (must be a JSON file with valid registry structure)
 		registryFilePath := filepath.Join(tempDir, "registry.json")
-		err = os.WriteFile(registryFilePath, []byte(`{"test": "registry"}`), 0600)
+		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+		err = os.WriteFile(registryFilePath, []byte(validRegistryJSON), 0600)
 		require.NoError(t, err)
 		err = pathProvider.SetRegistryFile(registryFilePath)
 		assert.NoError(t, err)
+
+		// Test GetRegistryConfig after setting file
+		url, localPath, allowPrivateIP, registryType := pathProvider.GetRegistryConfig()
+		assert.Equal(t, "", url)
+		assert.NotEmpty(t, localPath) // Should have the absolute path
+		assert.False(t, allowPrivateIP)
+		assert.Equal(t, "file", registryType)
 
 		// Test UnsetRegistry
 		err = pathProvider.UnsetRegistry()
@@ -309,6 +310,7 @@ func TestProviderRegistryOperations(t *testing.T) {
 
 	t.Run("PathProvider_RegistryOperations", func(t *testing.T) {
 		t.Parallel()
+		tempDir := t.TempDir() // Use separate temp dir for this test
 		configPath := filepath.Join(tempDir, "path_config.yaml")
 		provider := NewPathProvider(configPath)
 
@@ -316,33 +318,151 @@ func TestProviderRegistryOperations(t *testing.T) {
 		_, err := provider.LoadOrCreateConfig()
 		require.NoError(t, err)
 
-		// Test SetRegistryURL
+		// Test SetRegistryURL with invalid URL (validation will fail)
 		err = provider.SetRegistryURL("https://path-example.com", false)
-		assert.NoError(t, err)
+		// URL validation now checks that the URL returns valid ToolHive registry JSON
+		assert.Error(t, err, "Non-existent URL should fail validation")
 
-		// Test GetRegistryConfig after setting URL
-		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
-		assert.Equal(t, "https://path-example.com", url)
-		assert.Equal(t, "", localPath)
-		assert.False(t, allowPrivateIP)
-		assert.Equal(t, "url", registryType)
-
-		// Test SetRegistryFile (must be a JSON file)
-		registryFilePath := filepath.Join(tempDir, "path_registry.json")
-		err = os.WriteFile(registryFilePath, []byte(`{"test": "registry"}`), 0600)
+		// Test SetRegistryFile with invalid structure (should fail)
+		invalidFilePath := filepath.Join(tempDir, "invalid_registry.json")
+		err = os.WriteFile(invalidFilePath, []byte(`{"test": "registry"}`), 0600)
 		require.NoError(t, err)
-		err = provider.SetRegistryFile(registryFilePath)
+		err = provider.SetRegistryFile(invalidFilePath)
+		assert.Error(t, err, "Invalid registry structure should fail validation")
+
+		// Test SetRegistryFile with valid structure (should succeed)
+		validFilePath := filepath.Join(tempDir, "path_registry.json")
+		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+		err = os.WriteFile(validFilePath, []byte(validRegistryJSON), 0600)
+		require.NoError(t, err)
+		err = provider.SetRegistryFile(validFilePath)
 		assert.NoError(t, err)
 
 		// Test GetRegistryConfig after setting file
-		url, localPath, allowPrivateIP, registryType = provider.GetRegistryConfig()
+		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
 		assert.Equal(t, "", url)
-		assert.Equal(t, registryFilePath, localPath)
+		assert.NotEmpty(t, localPath) // Should have the absolute path
 		assert.False(t, allowPrivateIP)
 		assert.Equal(t, "file", registryType)
 
 		// Test UnsetRegistry
 		err = provider.UnsetRegistry()
+		assert.NoError(t, err)
+	})
+}
+
+func TestProviderBuildEnvOperations(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	t.Run("PathProvider_BuildEnvOperations", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "buildenv_config.yaml")
+		provider := NewPathProvider(configPath)
+
+		// Create initial config
+		_, err := provider.LoadOrCreateConfig()
+		require.NoError(t, err)
+
+		// Test GetAllBuildEnv when empty
+		envVars := provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+
+		// Test GetBuildEnv when not set
+		value, exists := provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Test SetBuildEnv
+		err = provider.SetBuildEnv("NPM_CONFIG_REGISTRY", "https://npm.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetBuildEnv after setting
+		value, exists = provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.True(t, exists)
+		assert.Equal(t, "https://npm.corp.example.com", value)
+
+		// Test SetBuildEnv with multiple variables
+		err = provider.SetBuildEnv("GOPROXY", "https://goproxy.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetAllBuildEnv with multiple variables
+		envVars = provider.GetAllBuildEnv()
+		assert.Len(t, envVars, 2)
+		assert.Equal(t, "https://npm.corp.example.com", envVars["NPM_CONFIG_REGISTRY"])
+		assert.Equal(t, "https://goproxy.corp.example.com", envVars["GOPROXY"])
+
+		// Test UnsetBuildEnv
+		err = provider.UnsetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.NoError(t, err)
+
+		value, exists = provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Verify GOPROXY still exists
+		value, exists = provider.GetBuildEnv("GOPROXY")
+		assert.True(t, exists)
+		assert.Equal(t, "https://goproxy.corp.example.com", value)
+
+		// Test UnsetAllBuildEnv
+		err = provider.UnsetAllBuildEnv()
+		assert.NoError(t, err)
+
+		envVars = provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+	})
+
+	t.Run("PathProvider_BuildEnvValidation", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "buildenv_validation_config.yaml")
+		provider := NewPathProvider(configPath)
+
+		// Create initial config
+		_, err := provider.LoadOrCreateConfig()
+		require.NoError(t, err)
+
+		// Test invalid key format
+		err = provider.SetBuildEnv("invalid_key", "value")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid environment variable name")
+
+		// Test reserved key
+		err = provider.SetBuildEnv("PATH", "/usr/local/bin")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "reserved")
+
+		// Test invalid value with shell metacharacters
+		err = provider.SetBuildEnv("TEST_VAR", "$(whoami)")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "dangerous characters")
+	})
+
+	t.Run("KubernetesProvider_BuildEnvOperations", func(t *testing.T) {
+		t.Parallel()
+		provider := NewKubernetesProvider()
+
+		// Test SetBuildEnv (should be no-op)
+		err := provider.SetBuildEnv("NPM_CONFIG_REGISTRY", "https://npm.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetBuildEnv (should return empty)
+		value, exists := provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Test GetAllBuildEnv (should return empty map)
+		envVars := provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+
+		// Test UnsetBuildEnv (should be no-op)
+		err = provider.UnsetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.NoError(t, err)
+
+		// Test UnsetAllBuildEnv (should be no-op)
+		err = provider.UnsetAllBuildEnv()
 		assert.NoError(t, err)
 	})
 }

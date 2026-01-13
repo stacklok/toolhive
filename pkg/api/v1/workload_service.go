@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -59,8 +61,8 @@ func NewWorkloadService(
 
 // CreateWorkloadFromRequest creates a workload from a request
 func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	// Build the full run config (no existing port, so pass 0)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -81,9 +83,15 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 }
 
 // UpdateWorkloadFromRequest updates a workload from a request
-func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest) (*runner.RunConfig, error) { //nolint:lll
+func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest, existingPort int) (*runner.RunConfig, error) { //nolint:lll
+	// If ProxyPort is 0, reuse the existing port
+	if req.ProxyPort == 0 && existingPort > 0 {
+		req.ProxyPort = existingPort
+		logger.Debugf("Reusing existing port %d for workload %s", existingPort, name)
+	}
+
 	// Build the full run config
-	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	runConfig, err := s.BuildFullRunConfig(ctx, req, existingPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
@@ -99,7 +107,9 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 // BuildFullRunConfig builds a complete RunConfig
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
-func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+func (s *WorkloadService) BuildFullRunConfig(
+	ctx context.Context, req *createRequest, existingPort int,
+) (*runner.RunConfig, error) {
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -112,7 +122,14 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	// Validate user-provided resource indicator (RFC 8707)
 	if req.OAuthConfig.Resource != "" {
 		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
-			return nil, fmt.Errorf("%w: invalid resource parameter: %v", retriever.ErrInvalidRunConfig, err)
+			return nil, fmt.Errorf("%w: invalid resource parameter: %w", retriever.ErrInvalidRunConfig, err)
+		}
+	}
+
+	// Validate user-provided OAuth callback port
+	if req.OAuthConfig.CallbackPort != 0 {
+		if err := networking.ValidateCallbackPort(req.OAuthConfig.CallbackPort, req.OAuthConfig.ClientID); err != nil {
+			return nil, fmt.Errorf("%w: invalid OAuth callback port configuration", retriever.ErrInvalidRunConfig)
 		}
 	}
 
@@ -157,7 +174,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		)
 		if err != nil {
 			// Check if the error is due to context timeout
-			if imageCtx.Err() == context.DeadlineExceeded {
+			if errors.Is(imageCtx.Err(), context.DeadlineExceeded) {
 				return nil, fmt.Errorf("image retrieval timed out after %v - image may be too large or connection too slow",
 					imageRetrievalTimeout)
 			}
@@ -192,6 +209,11 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 				// Store the client secret in CLI format if provided
 				if req.OAuthConfig.ClientSecret != nil {
 					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+				}
+
+				// Store the bearer token in CLI format if provided
+				if req.OAuthConfig.BearerToken != nil {
+					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
 				}
 			}
 		}
@@ -232,11 +254,16 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithAuditEnabled(false, ""),
-		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false, false),
+		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, "",
+			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
+	}
+
+	// Add existing port if provided (for update operations)
+	if existingPort > 0 {
+		options = append(options, runner.WithExistingPort(existingPort))
 	}
 
 	// Determine transport type
@@ -267,7 +294,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
-		return nil, fmt.Errorf("%w: Failed to build run config: %v", retriever.ErrInvalidRunConfig, err)
+		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
 	}
 
 	return runConfig, nil
@@ -303,6 +330,11 @@ func createRequestToRemoteAuthConfig(
 	// Store the client secret in CLI format if provided
 	if req.OAuthConfig.ClientSecret != nil {
 		remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+
+	// Store the bearer token in CLI format if provided
+	if req.OAuthConfig.BearerToken != nil {
+		remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
 	}
 
 	return remoteAuthConfig

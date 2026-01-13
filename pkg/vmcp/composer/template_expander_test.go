@@ -162,7 +162,7 @@ func TestWorkflowContext_Lifecycle(t *testing.T) {
 	assert.True(t, ctx.HasStepFailed("s2"))
 
 	// Skipped
-	ctx.RecordStepSkipped("s3")
+	ctx.RecordStepSkipped("s3", nil)
 	assert.Equal(t, StepStatusSkipped, ctx.Steps["s3"].Status)
 
 	// Check completion status
@@ -217,4 +217,277 @@ func TestWorkflowContext_Clone(t *testing.T) {
 
 	assert.NotEqual(t, original.Params, clone.Params)
 	assert.NotEqual(t, len(original.Steps), len(clone.Steps))
+}
+
+func TestTemplateExpander_WorkflowMetadata(t *testing.T) {
+	t.Parallel()
+
+	startTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		data     map[string]any
+		workflow *WorkflowMetadata
+		expected map[string]any
+		wantErr  bool
+	}{
+		{
+			name: "workflow ID",
+			data: map[string]any{"id": "{{.workflow.id}}"},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-123",
+				StartTime:  startTime,
+				StepCount:  3,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 1500,
+			},
+			expected: map[string]any{"id": "wf-123"},
+		},
+		{
+			name: "workflow duration_ms",
+			data: map[string]any{"duration": "{{.workflow.duration_ms}}"},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-123",
+				StartTime:  startTime,
+				StepCount:  3,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 2500,
+			},
+			expected: map[string]any{"duration": "2500"},
+		},
+		{
+			name: "workflow step_count",
+			data: map[string]any{"steps": "{{.workflow.step_count}}"},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-123",
+				StartTime:  startTime,
+				StepCount:  5,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 1000,
+			},
+			expected: map[string]any{"steps": "5"},
+		},
+		{
+			name: "workflow status",
+			data: map[string]any{"status": "{{.workflow.status}}"},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-123",
+				StartTime:  startTime,
+				StepCount:  3,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 1000,
+			},
+			expected: map[string]any{"status": "completed"},
+		},
+		{
+			name: "workflow start_time",
+			data: map[string]any{"started": "{{.workflow.start_time}}"},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-123",
+				StartTime:  startTime,
+				StepCount:  3,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 1000,
+			},
+			expected: map[string]any{"started": "2024-01-01T12:00:00Z"},
+		},
+		{
+			name: "combined workflow metadata",
+			data: map[string]any{
+				"summary": map[string]any{
+					"workflow_id": "{{.workflow.id}}",
+					"duration_ms": "{{.workflow.duration_ms}}",
+					"step_count":  "{{.workflow.step_count}}",
+					"status":      "{{.workflow.status}}",
+					"started_at":  "{{.workflow.start_time}}",
+				},
+			},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-abc",
+				StartTime:  startTime,
+				StepCount:  7,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 3250,
+			},
+			expected: map[string]any{
+				"summary": map[string]any{
+					"workflow_id": "wf-abc",
+					"duration_ms": "3250",
+					"step_count":  "7",
+					"status":      "completed",
+					"started_at":  "2024-01-01T12:00:00Z",
+				},
+			},
+		},
+		{
+			name: "workflow metadata with step outputs",
+			data: map[string]any{
+				"result":      "{{.steps.fetch.output.data}}",
+				"workflow_id": "{{.workflow.id}}",
+				"step_count":  "{{.workflow.step_count}}",
+			},
+			workflow: &WorkflowMetadata{
+				ID:         "wf-456",
+				StartTime:  startTime,
+				StepCount:  2,
+				Status:     WorkflowStatusCompleted,
+				DurationMs: 800,
+			},
+			expected: map[string]any{
+				"result":      "test-data",
+				"workflow_id": "wf-456",
+				"step_count":  "2",
+			},
+		},
+	}
+
+	expander := NewTemplateExpander()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := &WorkflowContext{
+				WorkflowID: tt.workflow.ID,
+				Params:     map[string]any{},
+				Steps:      map[string]*StepResult{},
+				Variables:  map[string]any{},
+				Workflow:   tt.workflow,
+			}
+
+			// Add test step data for the combined test
+			if tt.name == "workflow metadata with step outputs" {
+				ctx.Steps = map[string]*StepResult{
+					"fetch": {
+						StepID: "fetch",
+						Status: StepStatusCompleted,
+						Output: map[string]any{"data": "test-data"},
+					},
+				}
+			}
+
+			result, err := expander.Expand(context.Background(), tt.data, ctx)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestTemplateExpander_WorkflowMetadataEmpty(t *testing.T) {
+	t.Parallel()
+
+	expander := NewTemplateExpander()
+
+	// Test with nil workflow metadata
+	ctx := &WorkflowContext{
+		WorkflowID: "test",
+		Params:     map[string]any{},
+		Steps:      map[string]*StepResult{},
+		Variables:  map[string]any{},
+		Workflow:   nil,
+	}
+
+	data := map[string]any{"id": "{{.workflow.id}}"}
+
+	// Should not panic, should return empty/zero value
+	result, err := expander.Expand(context.Background(), data, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"id": "<no value>"}, result)
+}
+
+func TestTemplateExpander_FromJsonFunction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		data     map[string]any
+		steps    map[string]*StepResult
+		expected map[string]any
+		wantErr  bool
+	}{
+		{
+			name: "parse JSON from step output and access field",
+			data: map[string]any{"name": `{{(fromJson .steps.fetch.output.text).name}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"name": "Alice", "email": "alice@example.com"}`},
+				},
+			},
+			expected: map[string]any{"name": "Alice"},
+		},
+		{
+			name: "parse JSON and access nested field",
+			data: map[string]any{"email": `{{(fromJson .steps.fetch.output.text).user.email}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"user": {"email": "bob@example.com"}}`},
+				},
+			},
+			expected: map[string]any{"email": "bob@example.com"},
+		},
+		{
+			name: "parse JSON array and use with index",
+			data: map[string]any{"first": `{{index (fromJson .steps.fetch.output.text) 0}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `["apple", "banana", "cherry"]`},
+				},
+			},
+			expected: map[string]any{"first": "apple"},
+		},
+		{
+			name: "combine fromJson with json function",
+			data: map[string]any{"data": `{{json (fromJson .steps.fetch.output.text)}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"key": "value"}`},
+				},
+			},
+			expected: map[string]any{"data": `{"key":"value"}`},
+		},
+		{
+			name: "fromJson with invalid JSON causes error",
+			data: map[string]any{"val": `{{(fromJson .steps.fetch.output.text).key}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `not valid json`},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	expander := NewTemplateExpander()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := &WorkflowContext{
+				WorkflowID: "test",
+				Params:     map[string]any{},
+				Steps:      tt.steps,
+				Variables:  map[string]any{},
+			}
+
+			result, err := expander.Expand(context.Background(), tt.data, ctx)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

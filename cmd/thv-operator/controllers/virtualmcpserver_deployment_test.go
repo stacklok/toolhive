@@ -28,6 +28,8 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // TestDeploymentForVirtualMCPServer tests Deployment creation
@@ -40,9 +42,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -54,7 +54,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum")
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -79,11 +79,52 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 func TestBuildContainerArgsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	r := &VirtualMCPServerReconciler{}
-	args := r.buildContainerArgsForVmcp()
+	tests := []struct {
+		name     string
+		vmcp     *mcpv1alpha1.VirtualMCPServer
+		wantArgs []string
+	}{
+		{
+			name: "without log level",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+				},
+			},
+			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
+		},
+		{
+			name: "with log level debug",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+					Operational: &mcpv1alpha1.OperationalConfig{
+						LogLevel: "debug",
+					},
+				},
+			},
+			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
+		},
+	}
 
-	assert.Contains(t, args, "serve")
-	assert.Contains(t, args, "--config=/etc/vmcp-config/config.yaml")
+	for _, tt := range tests {
+		tt := tt // capture range variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := &VirtualMCPServerReconciler{}
+			args := r.buildContainerArgsForVmcp(tt.vmcp)
+
+			assert.Equal(t, tt.wantArgs, args)
+		})
+	}
 }
 
 // TestBuildVolumesForVmcp tests volume and volume mount generation
@@ -96,9 +137,7 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -127,14 +166,12 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env := r.buildEnvVarsForVmcp(context.Background(), vmcp)
+	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
 	foundName := false
@@ -245,9 +282,7 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -344,7 +379,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, ""))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []workloads.TypedWorkload{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -354,7 +389,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum"))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection

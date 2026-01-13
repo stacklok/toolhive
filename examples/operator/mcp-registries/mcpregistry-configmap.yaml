@@ -6,7 +6,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-09-08T12:00:00Z",
       "servers": {
@@ -220,25 +220,25 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Example MCP Server Registry"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: example-registry-data
-      key: registry.json
-  syncPolicy:
-    interval: "1h"
-  filter:
-    names:
-      include:
-        - "prod-*"     # Only production servers
-        - "github-*"   # GitHub integration servers
-      exclude:
-        - "*-legacy"   # Exclude legacy versions
-    tags:
-      include:
-        - "production" # Only production-ready servers
-        - "api"        # API integration servers
-      exclude:
-        - "deprecated" # Exclude deprecated servers
-        - "legacy"     # Exclude legacy servers
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: example-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "1h"
+      filter:
+        names:
+          include:
+            - "prod-*"     # Only production servers
+            - "github-*"   # GitHub integration servers
+          exclude:
+            - "*-legacy"   # Exclude legacy versions
+        tags:
+          include:
+            - "production" # Only production-ready servers
+            - "api"        # API integration servers
+          exclude:
+            - "deprecated" # Exclude deprecated servers
+            - "legacy"     # Exclude legacy servers

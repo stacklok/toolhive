@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -114,6 +112,11 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
+// GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
+func (c *RunConfig) GetName() string {
+	return c.Name
+}
+
 // GetPort returns the port from the runner config (implements types.RunnerConfig)
 func (c *RunConfig) GetPort() int {
 	return c.Port
@@ -126,7 +129,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Populate default middlewares from old config fields if not already populated
 	if len(r.Config.MiddlewareConfigs) == 0 {
 		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
-			return fmt.Errorf("failed to populate middleware configs: %v", err)
+			return fmt.Errorf("failed to populate middleware configs: %w", err)
 		}
 	}
 
@@ -140,6 +143,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Deployer:          r.Config.Deployer,
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
+		EndpointPrefix:    r.Config.EndpointPrefix,
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -153,7 +157,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Create the middleware instance using the factory function.
 		// The factory will add the middleware to the runner and handle any special configuration.
 		if err := factory(&middlewareConfig, r); err != nil {
-			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
+			return fmt.Errorf("failed to create middleware of type %s: %w", middlewareConfig.Type, err)
 		}
 	}
 
@@ -165,13 +169,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
+	// Process secrets if provided (regular secrets or RemoteAuthConfig secrets in CLI format)
 	hasRegularSecrets := len(r.Config.Secrets) > 0
-	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
+		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
 
 	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
 	if hasRemoteAuthSecret {
-		logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		if r.Config.RemoteAuthConfig.ClientSecret != "" {
+			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		}
+		if r.Config.RemoteAuthConfig.BearerToken != "" {
+			logger.Debugf("RemoteAuthConfig.BearerToken: %s", r.Config.RemoteAuthConfig.BearerToken)
+		}
 	}
 
 	if hasRegularSecrets || hasRemoteAuthSecret {
@@ -186,10 +196,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		secretManager, err := secrets.CreateSecretProvider(providerType)
 		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
+			return fmt.Errorf("error instantiating secret manager %w", err)
 		}
 
-		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
+		// Process secrets (including RemoteAuthConfig.ClientSecret and BearerToken resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
@@ -222,7 +232,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.TargetHost,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to set up workload: %v", err)
+			return fmt.Errorf("failed to set up workload: %w", err)
 		}
 		setupResult = result
 
@@ -236,14 +246,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Create transport with options
 	transportHandler, err := transport.NewFactory().Create(transportConfig, transportOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to create transport: %v", err)
+		return fmt.Errorf("failed to create transport: %w", err)
 	}
 
 	// For remote MCP servers, set the remote URL on HTTP transports
 	if r.Config.RemoteURL != "" {
-		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
-			httpTransport.SetRemoteURL(r.Config.RemoteURL)
-		}
+		transportHandler.SetRemoteURL(r.Config.RemoteURL)
 
 		// Handle remote authentication if configured
 		tokenSource, err := r.handleRemoteAuthentication(ctx)
@@ -262,16 +270,41 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
 
-		// Set the token source on the HTTP transport
-		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
-			httpTransport.SetTokenSource(tokenSource)
-		}
+		// Set the token source on the transport
+		transportHandler.SetTokenSource(tokenSource)
+
+		// Set the health check failure callback for remote servers
+		transportHandler.SetOnHealthCheckFailed(func() {
+			logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnhealthy,
+				"Health check failed",
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
+
+		// Set the unauthorized response callback for bearer token authentication
+		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
+		transportHandler.SetOnUnauthorizedResponse(func() {
+			logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnauthenticated,
+				errorMsg,
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
 	}
 
 	// Start the transport (which also starts the container and monitoring)
 	logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start transport: %v", err)
+		return fmt.Errorf("failed to start transport: %w", err)
 	}
 
 	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
@@ -284,6 +317,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportType := labels.GetTransportType(r.Config.ContainerLabels)
 	serverURL := transport.GenerateMCPServerURL(
 		transportType,
+		string(r.Config.ProxyMode),
 		"localhost",
 		r.Config.Port,
 		r.Config.ContainerName,
@@ -317,16 +351,19 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
+		// Use a background context to avoid cancellation of the main context.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cleanupCancel()
 		logger.Infof("Stopping MCP server: %s", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
 		logger.Infof("Stopping %s transport...", r.Config.Transport)
-		if err := transportHandler.Stop(ctx); err != nil {
+		if err := transportHandler.Stop(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
 
 		// Cleanup telemetry provider
-		if err := r.Cleanup(ctx); err != nil {
+		if err := r.Cleanup(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
@@ -335,17 +372,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
-	// TODO: Stop writing to PID file once we migrate over to statuses.
-	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-		logger.Warnf("Warning: Failed to write PID file: %v", err)
-	}
 	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 		logger.Warnf("Warning: Failed to set workload PID: %v", err)
 	}
@@ -357,10 +390,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	} else {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
-
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Create a done channel to signal when the server has been stopped
 	doneCh := make(chan struct{})
@@ -396,15 +425,28 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
-		// If we can't set the status to `running` - treat it as a fatal error.
-		return fmt.Errorf("failed to set workload status: %v", err)
+	// However, we should preserve unauthenticated status if it was already set
+	// (e.g., if bearer token authentication failed during initialization)
+	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
+		logger.Warnf("Failed to get current workload status: %v", err)
+	}
+
+	// Only set status to running if it's not already unauthenticated
+	// This preserves the unauthenticated state when bearer token authentication fails
+	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
+		logger.Debugf("Preserving unauthenticated status for workload %s", r.Config.BaseName)
+	} else {
+		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
+			// If we can't set the status to `running` - treat it as a fatal error.
+			return fmt.Errorf("failed to set workload status: %w", err)
+		}
 	}
 
 	// Wait for either a signal or the done channel to be closed
 	select {
-	case sig := <-sigCh:
-		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
+	case <-ctx.Done():
+		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
 		// Clean up the PID file and state

@@ -1,0 +1,480 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "dev-filesystem": {
+          "description": "Development version of filesystem operations server",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory"
+          ],
+          "metadata": {
+            "stars": 800,
+            "pulls": 200,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "files",
+            "development"
+          ],
+          "image": "docker.io/mcp/filesystem:dev",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "prod-filesystem": {
+          "description": "Production-ready filesystem operations server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "create_directory",
+            "backup_files"
+          ],
+          "metadata": {
+            "stars": 1500,
+            "pulls": 500,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "files",
+            "storage",
+            "production"
+          ],
+          "image": "docker.io/mcp/filesystem:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          },
+          "args": [
+            "/projects"
+          ]
+        },
+        "github-api": {
+          "description": "Provides integration with GitHub's APIs",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "create_issue",
+            "create_pull_request",
+            "search_repositories"
+          ],
+          "metadata": {
+            "stars": 2200,
+            "pulls": 800,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/github/github-mcp-server",
+          "tags": [
+            "github",
+            "api",
+            "repository",
+            "production"
+          ],
+          "image": "ghcr.io/github/github-mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          },
+          "env_vars": [
+            {
+              "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+              "description": "GitHub personal access token with appropriate permissions",
+              "required": true,
+              "secret": true
+            }
+          ]
+        },
+        "slack-notifications": {
+          "description": "Send notifications and messages to Slack channels",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "send_message",
+            "create_channel",
+            "list_channels"
+          ],
+          "metadata": {
+            "stars": 450,
+            "pulls": 120,
+            "last_updated": "2025-09-05T12:00:00Z"
+          },
+          "repository_url": "https://github.com/slack/slack-mcp-server",
+          "tags": [
+            "slack",
+            "notifications",
+            "messaging",
+            "development"
+          ],
+          "image": "slack/mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".slack.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        },
+        "test-runner": {
+          "description": "Automated testing and quality assurance server",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "run_tests",
+            "analyze_coverage",
+            "generate_report"
+          ],
+          "metadata": {
+            "stars": 300,
+            "pulls": 80,
+            "last_updated": "2025-09-03T12:00:00Z"
+          },
+          "repository_url": "https://github.com/testing/test-runner-mcp",
+          "tags": [
+            "testing",
+            "quality",
+            "automation",
+            "development"
+          ],
+          "image": "testing/test-runner:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "legacy-xml-parser": {
+          "description": "Legacy XML parsing server - deprecated in favor of modern alternatives",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "parse_xml",
+            "validate_schema"
+          ],
+          "metadata": {
+            "stars": 25,
+            "pulls": 10,
+            "last_updated": "2024-06-01T12:00:00Z"
+          },
+          "repository_url": "https://github.com/legacy/xml-parser-mcp",
+          "tags": [
+            "xml",
+            "parsing",
+            "legacy",
+            "deprecated"
+          ],
+          "image": "legacy/xml-parser:v1",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-registry-data-new
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "dev-filesystem": {
+          "description": "Development version of filesystem operations server",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory"
+          ],
+          "metadata": {
+            "stars": 800,
+            "pulls": 200,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "files",
+            "development"
+          ],
+          "image": "docker.io/mcp/filesystem:dev",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "prod-filesystem": {
+          "description": "Production-ready filesystem operations server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "create_directory",
+            "backup_files"
+          ],
+          "metadata": {
+            "stars": 1500,
+            "pulls": 500,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "files",
+            "storage",
+            "production"
+          ],
+          "image": "docker.io/mcp/filesystem:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          },
+          "args": [
+            "/projects"
+          ]
+        },
+        "github-api": {
+          "description": "Provides integration with GitHub's APIs",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "create_issue",
+            "create_pull_request",
+            "search_repositories"
+          ],
+          "metadata": {
+            "stars": 2200,
+            "pulls": 800,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/github/github-mcp-server",
+          "tags": [
+            "github",
+            "api",
+            "repository",
+            "production"
+          ],
+          "image": "ghcr.io/github/github-mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          },
+          "env_vars": [
+            {
+              "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+              "description": "GitHub personal access token with appropriate permissions",
+              "required": true,
+              "secret": true
+            }
+          ]
+        },
+        "slack-notifications": {
+          "description": "Send notifications and messages to Slack channels",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "send_message",
+            "create_channel",
+            "list_channels"
+          ],
+          "metadata": {
+            "stars": 450,
+            "pulls": 120,
+            "last_updated": "2025-09-05T12:00:00Z"
+          },
+          "repository_url": "https://github.com/slack/slack-mcp-server",
+          "tags": [
+            "slack",
+            "notifications",
+            "messaging",
+            "development"
+          ],
+          "image": "slack/mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".slack.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        },
+        "test-runner": {
+          "description": "Automated testing and quality assurance server",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "run_tests",
+            "analyze_coverage",
+            "generate_report"
+          ],
+          "metadata": {
+            "stars": 300,
+            "pulls": 80,
+            "last_updated": "2025-09-03T12:00:00Z"
+          },
+          "repository_url": "https://github.com/testing/test-runner-mcp",
+          "tags": [
+            "testing",
+            "quality",
+            "automation",
+            "development"
+          ],
+          "image": "testing/test-runner:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "legacy-xml-parser": {
+          "description": "Legacy XML parsing server - deprecated in favor of modern alternatives",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "parse_xml",
+            "validate_schema"
+          ],
+          "metadata": {
+            "stars": 25,
+            "pulls": 10,
+            "last_updated": "2024-06-01T12:00:00Z"
+          },
+          "repository_url": "https://github.com/legacy/xml-parser-mcp",
+          "tags": [
+            "xml",
+            "parsing",
+            "legacy",
+            "deprecated"
+          ],
+          "image": "legacy/xml-parser:v1",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: example-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Example MCP Server Registry"
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: example-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "1h"
+      filter:
+        names:
+          include:
+            - "prod-*"     # Only production servers
+            - "github-*"   # GitHub integration servers
+          exclude:
+            - "*-legacy"   # Exclude legacy versions
+        tags:
+          include:
+            - "production" # Only production-ready servers
+            - "api"        # API integration servers
+          exclude:
+            - "deprecated" # Exclude deprecated servers
+            - "legacy"     # Exclude legacy servers
+    - name: default-new
+      format: toolhive
+      configMapRef:
+        name: example-registry-data-new
+        key: registry.json
+      syncPolicy:
+        interval: "1h"
+      filter:
+        names:
+          include:
+            - "prod-*"     # Only production servers
+            - "github-*"   # GitHub integration servers
+          exclude:
+            - "*-legacy"   # Exclude legacy versions
+        tags:
+          include:
+            - "production" # Only production-ready servers
+            - "api"        # API integration servers
+          exclude:
+            - "deprecated" # Exclude deprecated servers
+            - "legacy"     # Exclude legacy servers

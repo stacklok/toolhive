@@ -70,45 +70,6 @@ func getPIDFilePathWithFallback(containerBaseName string) (string, error) {
 	return newPath, nil
 }
 
-// WritePIDFile writes a process ID to a file
-// For full version compatibility, it writes to both the new XDG location and the old temp location
-func WritePIDFile(containerBaseName string, pid int) error {
-	// Skip PID file operations in Kubernetes runtime
-	if runtime.IsKubernetesRuntime() {
-		return nil
-	}
-
-	pidContent := []byte(fmt.Sprintf("%d", pid))
-
-	// Write to the new XDG location first
-	newPath, err := getPIDFilePath(containerBaseName)
-	if err != nil {
-		return fmt.Errorf("failed to get PID file path: %v", err)
-	}
-
-	// Ensure the directory exists before writing
-	if err := os.MkdirAll(filepath.Dir(newPath), 0750); err != nil {
-		return fmt.Errorf("failed to create PID directory: %v", err)
-	}
-
-	if err := os.WriteFile(newPath, pidContent, 0600); err != nil {
-		return fmt.Errorf("failed to write PID file: %v", err)
-	}
-
-	// Also write to the old temp location for backward/forward compatibility
-	// This is best-effort - don't fail the operation
-	oldPath := getOldPIDFilePath(containerBaseName)
-
-	_ = os.WriteFile(oldPath, pidContent, 0600)
-
-	return nil
-}
-
-// WriteCurrentPIDFile writes the current process ID to a file
-func WriteCurrentPIDFile(containerBaseName string) error {
-	return WritePIDFile(containerBaseName, os.Getpid())
-}
-
 // ReadPIDFile reads the process ID from a file
 // It checks both the new XDG location and the old temp directory location
 // Note: containerBaseName is pre-sanitized by the caller
@@ -121,7 +82,7 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 	// Get the PID file path with fallback
 	pidFilePath, err := getPIDFilePathWithFallback(containerBaseName)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get PID file path: %v", err)
+		return 0, fmt.Errorf("failed to get PID file path: %w", err)
 	}
 
 	// Read the PID from the file
@@ -166,7 +127,7 @@ func RemovePIDFile(containerBaseName string) error {
 	// Try to remove from the new location
 	newPath, err := getPIDFilePath(containerBaseName)
 	if err != nil {
-		return fmt.Errorf("failed to get PID file path: %v", err)
+		return fmt.Errorf("failed to get PID file path: %w", err)
 	}
 
 	if err := os.Remove(newPath); err != nil && !os.IsNotExist(err) {
@@ -179,7 +140,7 @@ func RemovePIDFile(containerBaseName string) error {
 	if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
 		// If we couldn't remove either file and both had errors, return the error
 		if lastErr != nil {
-			return fmt.Errorf("failed to remove PID files: new location: %v, old location: %v", lastErr, err)
+			return fmt.Errorf("failed to remove PID files: new location: %v, old location: %w", lastErr, err)
 		}
 		lastErr = err
 	}

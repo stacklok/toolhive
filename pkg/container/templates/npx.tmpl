@@ -1,5 +1,10 @@
 FROM node:22-alpine AS builder
 
+{{if .BuildEnv}}
+# Custom build environment variables
+{{range $key, $value := .BuildEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
 # This ensures that package managers can verify TLS certificates in corporate networks
@@ -31,11 +36,19 @@ ENV NODE_ENV=production \
 # Set working directory for package installation
 WORKDIR /build
 
+{{if index .BuildAuthFiles "npmrc"}}
+# Copy npmrc for registry authentication (build stage only)
+COPY .npmrc /root/.npmrc
+{{end}}
+
 {{if .IsLocalPath}}
 # Copy the local source code
 COPY . /build/
 # Install dependencies if package.json exists
 RUN if [ -f package.json ]; then npm ci --only=production || npm install --production; fi
+
+# Clean up auth files from build directory to prevent leaking to final image
+RUN rm -f /build/.netrc /build/.npmrc /build/.yarnrc /root/.npmrc
 {{else}}
 # Create a package.json to install the MCP package
 RUN echo '{"name":"mcp-container","version":"1.0.0"}' > package.json

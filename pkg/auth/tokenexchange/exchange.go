@@ -471,7 +471,12 @@ func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Non-fatal: response body cleanup failure
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {

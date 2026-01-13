@@ -112,7 +112,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go func() {
 		logger.Infof("Streamable HTTP proxy started on port %d", p.port)
 		logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
-		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("Streamable HTTP server error: %v", err)
 		}
 	}()
@@ -390,7 +390,10 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			},
 		}
 		if data, mErr := json.Marshal(errObj); mErr == nil {
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				logger.Debugf("Failed to write error message: %v", err)
+				return
+			}
 			flusher.Flush()
 		}
 		return
@@ -403,7 +406,10 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		logger.Debugf("Failed to write response: %v", err)
+		return
+	}
 	flusher.Flush()
 }
 

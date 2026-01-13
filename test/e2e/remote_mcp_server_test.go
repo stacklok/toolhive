@@ -17,7 +17,6 @@ type WorkloadInfo struct {
 	Package       string            `json:"package"`
 	URL           string            `json:"url"`
 	Port          int               `json:"port"`
-	ToolType      string            `json:"tool_type"`
 	TransportType string            `json:"transport_type"`
 	ProxyMode     string            `json:"proxy_mode"`
 	Status        string            `json:"status"`
@@ -43,7 +42,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("mcp-spec-remote-test")
+				serverName = e2e.GenerateUniqueServerName("mcp-spec-remote-test")
 			})
 
 			AfterEach(func() {
@@ -87,7 +86,6 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 				Expect(serverInfo.Status).To(Equal("running"), "Server should be in running state")
 				Expect(serverInfo.Remote).To(BeTrue(), "Server should be marked as remote")
 				Expect(serverInfo.Package).To(Equal("remote"), "Package should be 'remote'")
-				Expect(serverInfo.ToolType).To(Equal("remote"), "Tool type should be 'remote'")
 				Expect(serverInfo.TransportType).To(Equal("streamable-http"), "Transport should be streamable-http")
 			})
 
@@ -233,7 +231,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("mcp-spec-lifecycle-test")
+				serverName = e2e.GenerateUniqueServerName("mcp-spec-lifecycle-test")
 
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
@@ -299,7 +297,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("custom-remote-test")
+				serverName = e2e.GenerateUniqueServerName("custom-remote-test")
 			})
 
 			AfterEach(func() {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -17,8 +18,9 @@ type RemoteRegistryProvider struct {
 	allowPrivateIp bool
 }
 
-// NewRemoteRegistryProvider creates a new remote registry provider
-func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteRegistryProvider {
+// NewRemoteRegistryProvider creates a new remote registry provider.
+// Validates the registry is reachable before returning.
+func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*RemoteRegistryProvider, error) {
 	p := &RemoteRegistryProvider{
 		registryURL:    registryURL,
 		allowPrivateIp: allowPrivateIp,
@@ -27,14 +29,23 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteR
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	return p
+	// Validate the registry is reachable
+	if _, err := p.GetRegistry(); err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // GetRegistry returns the remote registry data
 func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
-	client, err := networking.NewHttpClientBuilder().
-		WithPrivateIPs(p.allowPrivateIp).
-		Build()
+	// Build HTTP client with security controls
+	// If private IPs are allowed, also allow HTTP (for localhost testing)
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(p.allowPrivateIp)
+	if p.allowPrivateIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	client, err := builder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build http client: %w", err)
 	}
@@ -43,7 +54,11 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if the response status code is OK
 	if resp.StatusCode != http.StatusOK {

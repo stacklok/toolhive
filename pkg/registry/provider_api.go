@@ -38,12 +38,14 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryPro
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the endpoint
+	// Validate the endpoint by actually trying to use it (not checking openapi.yaml)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := client.ValidateEndpoint(ctx); err != nil {
-		return nil, fmt.Errorf("invalid MCP Registry API endpoint: %w", err)
+	// Try to list servers with a small limit to verify API functionality
+	_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
+	if err != nil {
+		return nil, fmt.Errorf("API endpoint not functional: %w", err)
 	}
 
 	return p, nil

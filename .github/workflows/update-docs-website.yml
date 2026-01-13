@@ -16,7 +16,7 @@ on:
 jobs:
   trigger-docs-update:
     name: Trigger Documentation Update
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
 
     steps:
       - name: Trigger docs update workflow

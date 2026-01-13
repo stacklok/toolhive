@@ -2,109 +2,56 @@ package registry
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/xeipuuv/gojsonschema"
 )
 
-//go:embed data/schema.json
+//go:embed data/toolhive-legacy-registry.schema.json data/upstream-registry.schema.json
 var embeddedSchemaFS embed.FS
 
 // ValidateRegistrySchema validates registry JSON data against the registry schema
+// This validates the old ToolHive registry format (flat structure).
 func ValidateRegistrySchema(registryData []byte) error {
 	// Load the schema from the embedded filesystem
-	schemaData, err := embeddedSchemaFS.ReadFile("data/schema.json")
+	schemaData, err := embeddedSchemaFS.ReadFile("data/toolhive-legacy-registry.schema.json")
 	if err != nil {
 		return fmt.Errorf("failed to read embedded registry schema: %w", err)
 	}
 
-	// Parse the schema data (v6 requires parsed JSON object)
-	var schemaDoc interface{}
-	if err := json.Unmarshal(schemaData, &schemaDoc); err != nil {
-		return fmt.Errorf("failed to parse schema: %w", err)
-	}
+	// Create schema loader from embedded data
+	schemaLoader := gojsonschema.NewBytesLoader(schemaData)
 
-	// Compile the schema
-	compiler := jsonschema.NewCompiler()
-	schemaID := "file://local/registry-schema.json"
-	if err := compiler.AddResource(schemaID, schemaDoc); err != nil {
-		return fmt.Errorf("failed to add schema resource: %w", err)
-	}
-	schema, err := compiler.Compile(schemaID)
+	// Create document loader from registry data
+	documentLoader := gojsonschema.NewBytesLoader(registryData)
+
+	// Perform validation
+	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
 	if err != nil {
-		return fmt.Errorf("failed to compile registry schema: %w", err)
-	}
-
-	// Parse the registry data
-	var registryDoc interface{}
-	if err := json.Unmarshal(registryData, &registryDoc); err != nil {
-		return fmt.Errorf("failed to parse registry data: %w", err)
-	}
-
-	// Validate the registry data against the schema
-	if err := schema.Validate(registryDoc); err != nil {
-		// Extract all validation errors for better user experience
-		if validationErr, ok := err.(*jsonschema.ValidationError); ok {
-			return formatValidationErrors(validationErr)
-		}
 		return fmt.Errorf("registry schema validation failed: %w", err)
 	}
 
+	// Check if validation passed
+	if !result.Valid() {
+		var errorMessages []string
+		for _, desc := range result.Errors() {
+			errorMessages = append(errorMessages, desc.String())
+		}
+
+		if len(errorMessages) == 1 {
+			return fmt.Errorf("registry schema validation failed: %s", errorMessages[0])
+		}
+
+		// Format multiple errors
+		resultStr := fmt.Sprintf("registry schema validation failed with %d errors:\n", len(errorMessages))
+		for i, msg := range errorMessages {
+			resultStr += fmt.Sprintf("  %d. %s\n", i+1, msg)
+		}
+		return fmt.Errorf("%s", strings.TrimSuffix(resultStr, "\n"))
+	}
+
 	return nil
-}
-
-// formatValidationErrors formats all validation errors into a comprehensive error message
-func formatValidationErrors(validationErr *jsonschema.ValidationError) error {
-	var errorMessages []string
-
-	// Collect all validation errors recursively
-	collectErrors(validationErr, &errorMessages)
-
-	if len(errorMessages) == 0 {
-		return fmt.Errorf("registry schema validation failed: %s", validationErr.Error())
-	}
-
-	if len(errorMessages) == 1 {
-		return fmt.Errorf("registry schema validation failed: %s", errorMessages[0])
-	}
-
-	// Format multiple errors
-	result := fmt.Sprintf("registry schema validation failed with %d errors:\n", len(errorMessages))
-	for i, msg := range errorMessages {
-		result += fmt.Sprintf("  %d. %s\n", i+1, msg)
-	}
-
-	return fmt.Errorf("%s", strings.TrimSuffix(result, "\n"))
-}
-
-// collectErrors recursively collects all validation error messages
-func collectErrors(err *jsonschema.ValidationError, messages *[]string) {
-	if err == nil {
-		return
-	}
-
-	// If this error has causes, recurse into them instead of adding this error
-	// This avoids duplicate parent/child error messages
-	if len(err.Causes) > 0 {
-		for _, cause := range err.Causes {
-			collectErrors(cause, messages)
-		}
-		return
-	}
-
-	// This is a leaf error - format it with the error kind and instance location
-	// In v6, BasicOutput provides structured error information
-	output := err.BasicOutput()
-	if output != nil && output.Error != nil {
-		// Create a descriptive error message with path context
-		errorMsg := output.Error.String()
-		if output.InstanceLocation != "" {
-			errorMsg = fmt.Sprintf("%s at '%s'", errorMsg, output.InstanceLocation)
-		}
-		*messages = append(*messages, errorMsg)
-	}
 }
 
 // ValidateEmbeddedRegistry validates the embedded registry.json against the schema
@@ -116,4 +63,48 @@ func ValidateEmbeddedRegistry() error {
 	}
 
 	return ValidateRegistrySchema(registryData)
+}
+
+// ValidateUpstreamRegistry validates UpstreamRegistry JSON data against the upstream-registry.schema.json
+// This validates the complete registry structure including meta, data, servers, and groups.
+// It uses gojsonschema which automatically handles HTTP/HTTPS schema references.
+func ValidateUpstreamRegistry(registryData []byte) error {
+	// Load the schema from the embedded filesystem
+	schemaData, err := embeddedSchemaFS.ReadFile("data/upstream-registry.schema.json")
+	if err != nil {
+		return fmt.Errorf("failed to read embedded registry schema: %w", err)
+	}
+
+	// Create schema loader from embedded data
+	schemaLoader := gojsonschema.NewBytesLoader(schemaData)
+
+	// Create document loader from registry data
+	documentLoader := gojsonschema.NewBytesLoader(registryData)
+
+	// Perform validation - gojsonschema automatically loads HTTP/HTTPS $ref schemas
+	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		return fmt.Errorf("registry schema validation failed: %w", err)
+	}
+
+	// Check if validation passed
+	if !result.Valid() {
+		var errorMessages []string
+		for _, desc := range result.Errors() {
+			errorMessages = append(errorMessages, desc.String())
+		}
+
+		if len(errorMessages) == 1 {
+			return fmt.Errorf("registry schema validation failed: %s", errorMessages[0])
+		}
+
+		// Format multiple errors
+		resultStr := fmt.Sprintf("registry schema validation failed with %d errors:\n", len(errorMessages))
+		for i, msg := range errorMessages {
+			resultStr += fmt.Sprintf("  %d. %s\n", i+1, msg)
+		}
+		return fmt.Errorf("%s", strings.TrimSuffix(resultStr, "\n"))
+	}
+
+	return nil
 }

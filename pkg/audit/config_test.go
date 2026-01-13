@@ -2,9 +2,14 @@ package audit
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,11 +31,11 @@ func TestLoadFromReader(t *testing.T) {
 	t.Parallel()
 	jsonConfig := `{
 		"component": "test-component",
-		"event_types": ["mcp_tool_call", "mcp_resource_read"],
-		"exclude_event_types": ["mcp_ping"],
-		"include_request_data": true,
-		"include_response_data": false,
-		"max_data_size": 2048
+		"eventTypes": ["mcp_tool_call", "mcp_resource_read"],
+		"excludeEventTypes": ["mcp_ping"],
+		"includeRequestData": true,
+		"includeResponseData": false,
+		"maxDataSize": 2048
 	}`
 
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))
@@ -129,6 +134,7 @@ func TestValidateValidConfig(t *testing.T) {
 
 	err := config.Validate()
 	assert.NoError(t, err)
+	assert.Equal(t, 2048, config.MaxDataSize, "MaxDataSize should be preserved when explicitly set")
 }
 
 func TestValidateNegativeMaxDataSize(t *testing.T) {
@@ -139,7 +145,19 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 
 	err := config.Validate()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "max_data_size cannot be negative")
+	assert.Contains(t, err.Error(), "maxDataSize cannot be negative")
+}
+
+func TestValidateAppliesDefaultMaxDataSize(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		MaxDataSize: 0, // Not set - should become default (1024) after validation
+	}
+
+	err := config.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, DefaultConfig().MaxDataSize, config.MaxDataSize,
+		"Validate() should apply default MaxDataSize when 0")
 }
 
 func TestValidateInvalidEventType(t *testing.T) {
@@ -316,8 +334,8 @@ func TestConfigWithLogFile(t *testing.T) {
 	t.Parallel()
 	jsonConfig := `{
 		"component": "test-component",
-		"log_file": "/tmp/audit.log",
-		"include_request_data": true
+		"logFile": "/tmp/audit.log",
+		"includeRequestData": true
 	}`
 
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))
@@ -326,4 +344,264 @@ func TestConfigWithLogFile(t *testing.T) {
 	assert.Equal(t, "test-component", config.Component)
 	assert.Equal(t, "/tmp/audit.log", config.LogFile)
 	assert.True(t, config.IncludeRequestData)
+}
+
+func TestGetLogWriter_WithActualFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates file and writes audit logs", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary directory for this test
+		tmpDir := t.TempDir()
+		logFilePath := filepath.Join(tmpDir, "audit.log")
+
+		// Create config with temp file path
+		config := &Config{
+			Component:           "test-component",
+			LogFile:             logFilePath,
+			IncludeRequestData:  true,
+			IncludeResponseData: true,
+		}
+
+		// Get the writer
+		writer, err := config.GetLogWriter()
+		require.NoError(t, err)
+		require.NotNil(t, writer)
+
+		// Close the writer (it's a file)
+		if closer, ok := writer.(io.Closer); ok {
+			defer closer.Close()
+		}
+
+		// Verify file was created
+		fileInfo, err := os.Stat(logFilePath)
+		require.NoError(t, err)
+		assert.False(t, fileInfo.IsDir())
+
+		// Verify file permissions (0600 = owner read/write only)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm())
+
+		// Read the file and verify it's empty (no events logged yet)
+		content, err := os.ReadFile(logFilePath)
+		require.NoError(t, err)
+		assert.Empty(t, content)
+	})
+
+	t.Run("appends to existing file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary directory for this test
+		tmpDir := t.TempDir()
+		logFilePath := filepath.Join(tmpDir, "audit.log")
+
+		// Write initial content
+		initialContent := "initial log entry\n"
+		err := os.WriteFile(logFilePath, []byte(initialContent), 0600)
+		require.NoError(t, err)
+
+		// Create config pointing to the same file
+		config := &Config{
+			Component: "test-component",
+			LogFile:   logFilePath,
+		}
+
+		// Get the writer (should open in append mode)
+		writer, err := config.GetLogWriter()
+		require.NoError(t, err)
+		require.NotNil(t, writer)
+
+		// Write additional content
+		additionalContent := "appended log entry\n"
+		n, err := writer.Write([]byte(additionalContent))
+		require.NoError(t, err)
+		assert.Equal(t, len(additionalContent), n)
+
+		// Close the writer
+		if closer, ok := writer.(io.Closer); ok {
+			closer.Close()
+		}
+
+		// Read file and verify both entries exist in the correct order
+		content, err := os.ReadFile(logFilePath)
+		require.NoError(t, err)
+		assert.Equal(t, initialContent+additionalContent, string(content))
+	})
+
+	t.Run("creates nested directories", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary directory for this test
+		tmpDir := t.TempDir()
+
+		// Use a nested path
+		nestedPath := filepath.Join(tmpDir, "nested", "dir", "audit.log")
+
+		// Create the parent directories
+		err := os.MkdirAll(filepath.Dir(nestedPath), 0755)
+		require.NoError(t, err)
+
+		config := &Config{
+			LogFile: nestedPath,
+		}
+
+		writer, err := config.GetLogWriter()
+		require.NoError(t, err)
+		require.NotNil(t, writer)
+
+		// Verify file was created
+		fileInfo, err := os.Stat(nestedPath)
+		require.NoError(t, err)
+		assert.False(t, fileInfo.IsDir())
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm())
+
+		if closer, ok := writer.(io.Closer); ok {
+			closer.Close()
+		}
+	})
+}
+
+// waitForAuditLog polls the audit log file until content is available or timeout is reached.
+// This is more reliable than a fixed sleep for async log writes.
+func waitForAuditLog(t *testing.T, logFilePath string, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		content, err := os.ReadFile(logFilePath)
+		if err == nil && len(content) > 0 {
+			return content
+		}
+		time.Sleep(50 * time.Millisecond) // Poll every 50ms
+	}
+	t.Fatalf("timeout waiting for audit log at %s after %v", logFilePath, timeout)
+	return nil
+}
+
+func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes valid JSON audit logs to file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file for audit logs
+		tmpDir := t.TempDir()
+		logFilePath := filepath.Join(tmpDir, "vmcp-http-audit.log")
+
+		// Create audit config with file output (simulating vMCP configuration)
+		config := &Config{
+			Component:           "vmcp-server",
+			LogFile:             logFilePath,
+			IncludeRequestData:  true,
+			IncludeResponseData: true,
+			MaxDataSize:         1024, // Required for data capture
+		}
+
+		// Create HTTP auditor (used by vMCP for MCP protocol requests)
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		require.NotNil(t, auditor)
+		t.Cleanup(func() {
+			auditor.Close()
+		})
+
+		// Create a test HTTP request simulating an MCP tool call
+		req := httptest.NewRequest("POST", "/mcp/tools/call", strings.NewReader(`{"tool":"calculator","params":{"operation":"add"}}`))
+		req.Header.Set("Content-Type", "application/json")
+
+		// Simulate the audit middleware
+		rw := httptest.NewRecorder()
+		handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(`{"result":"success","value":42}`))
+			require.NoError(t, err)
+		}))
+		handler.ServeHTTP(rw, req)
+
+		// Wait for audit log to be written (with timeout)
+		content := waitForAuditLog(t, logFilePath, 1*time.Second)
+		require.NotEmpty(t, content, "audit log file should not be empty")
+
+		// Verify it's valid JSON
+		var logEntry map[string]any
+		err = json.Unmarshal(content, &logEntry)
+		require.NoError(t, err, "audit log should be valid JSON")
+
+		// Verify required audit event fields
+		assert.Contains(t, logEntry, "audit_id", "should have audit_id")
+		assert.Contains(t, logEntry, "type", "should have type")
+		assert.Contains(t, logEntry, "logged_at", "should have logged_at")
+		assert.Contains(t, logEntry, "outcome", "should have outcome")
+		assert.Contains(t, logEntry, "component", "should have component")
+		assert.Contains(t, logEntry, "source", "should have source")
+		assert.Contains(t, logEntry, "subjects", "should have subjects")
+		assert.Contains(t, logEntry, "target", "should have target")
+		assert.Contains(t, logEntry, "metadata", "should have metadata")
+
+		// Verify component matches vMCP
+		assert.Equal(t, "vmcp-server", logEntry["component"])
+
+		// Verify outcome
+		assert.Equal(t, "success", logEntry["outcome"])
+
+		// Verify data field contains request and response (must be present since both are enabled)
+		require.Contains(t, logEntry, "data", "audit log should have data field when request/response data is enabled")
+		dataField := logEntry["data"]
+		data, ok := dataField.(map[string]any)
+		require.True(t, ok, "data should be a map")
+		assert.Contains(t, data, "request", "data should contain request")
+		assert.Contains(t, data, "response", "data should contain response")
+	})
+
+	t.Run("multiple HTTP requests create valid newline-delimited JSON", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file for audit logs
+		tmpDir := t.TempDir()
+		logFilePath := filepath.Join(tmpDir, "vmcp-multiple-audit.log")
+
+		// Create audit config with file output
+		config := &Config{
+			Component: "vmcp-server",
+			LogFile:   logFilePath,
+		}
+
+		// Create HTTP auditor
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			auditor.Close()
+		})
+
+		// Simulate multiple HTTP requests
+		handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(`{"result":"ok"}`))
+			require.NoError(t, err)
+		}))
+
+		// Make 3 requests
+		for i := 0; i < 3; i++ {
+			req := httptest.NewRequest("POST", "/mcp/endpoint", strings.NewReader(`{"test":"data"}`))
+			rw := httptest.NewRecorder()
+			handler.ServeHTTP(rw, req)
+		}
+
+		// Wait for audit logs to be written (with timeout)
+		content := waitForAuditLog(t, logFilePath, 1*time.Second)
+		require.NotEmpty(t, content, "audit log file should not be empty")
+
+		// Split by newlines and verify each line is valid JSON
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		assert.Equal(t, 3, len(lines), "should have 3 log entries")
+
+		for i, line := range lines {
+			var logEntry map[string]any
+			err := json.Unmarshal([]byte(line), &logEntry)
+			require.NoError(t, err, "line %d should be valid JSON", i+1)
+			assert.Contains(t, logEntry, "audit_id")
+			assert.Contains(t, logEntry, "type")
+			assert.Contains(t, logEntry, "component")
+			assert.Equal(t, "vmcp-server", logEntry["component"])
+		}
+	})
 }

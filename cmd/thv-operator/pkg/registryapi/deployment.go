@@ -9,9 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -79,11 +77,7 @@ func (m *manager) ensureDeployment(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to build deployment configuration")
-		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
-	}
+	deployment := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configManager)
 	deploymentName := deployment.Name
 
 	// Set owner reference for automatic garbage collection
@@ -94,7 +88,7 @@ func (m *manager) ensureDeployment(
 
 	// Check if deployment already exists
 	existing := &appsv1.Deployment{}
-	err = m.client.Get(ctx, client.ObjectKey{
+	err := m.client.Get(ctx, client.ObjectKey{
 		Name:      deploymentName,
 		Namespace: mcpRegistry.Namespace,
 	}, existing)
@@ -124,15 +118,51 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (m *manager) buildRegistryAPIDeployment(
+func (*manager) buildRegistryAPIDeployment(
+	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configManager config.ConfigManager,
-) (*appsv1.Deployment, error) {
+) *appsv1.Deployment {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
 
 	// Define labels using common function
 	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
+
+	// Parse user-provided PodTemplateSpec if present
+	var userPTS *corev1.PodTemplateSpec
+	if mcpRegistry.HasPodTemplateSpec() {
+		var err error
+		userPTS, err = ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+		if err != nil {
+			ctxLogger.Error(err, "Failed to parse PodTemplateSpec")
+			return nil
+		}
+	}
+
+	// Build list of options for PodTemplateSpec
+	opts := []PodTemplateSpecOption{
+		WithLabels(labels),
+		WithAnnotations(map[string]string{
+			"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
+		}),
+		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
+		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
+		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
+		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Registries),
+		WithRegistryStorageMount(registryAPIContainerName),
+	}
+
+	// Add pgpass mount if databaseConfig is specified
+	if mcpRegistry.HasDatabaseConfig() {
+		secretName := mcpRegistry.BuildPGPassSecretName()
+		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
+	}
+
+	// Build PodTemplateSpec with defaults and user customizations merged
+	builder := NewPodTemplateSpecBuilderFrom(userPTS)
+	podTemplateSpec := builder.Apply(opts...).Build()
 
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{
@@ -149,82 +179,11 @@ func (m *manager) buildRegistryAPIDeployment(
 					"app.kubernetes.io/component": "registry-api",
 				},
 			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: DefaultServiceAccountName,
-					Containers: []corev1.Container{
-						{
-							Name:  registryAPIContainerName,
-							Image: getRegistryAPIImage(),
-							Args: []string{
-								ServeCommand,
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: RegistryAPIPort,
-									Name:          RegistryAPIPortName,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							// Add resource limits and requests for production readiness
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(DefaultCPURequest),
-									corev1.ResourceMemory: resource.MustParse(DefaultMemoryRequest),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(DefaultCPULimit),
-									corev1.ResourceMemory: resource.MustParse(DefaultMemoryLimit),
-								},
-							},
-							// Add liveness and readiness probes
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: HealthCheckPath,
-										Port: intstr.FromInt32(RegistryAPIPort),
-									},
-								},
-								InitialDelaySeconds: LivenessInitialDelay,
-								PeriodSeconds:       LivenessPeriod,
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: ReadinessCheckPath,
-										Port: intstr.FromInt32(RegistryAPIPort),
-									},
-								},
-								InitialDelaySeconds: ReadinessInitialDelay,
-								PeriodSeconds:       ReadinessPeriod,
-							},
-						},
-					},
-				},
-			},
+			Template: podTemplateSpec,
 		},
 	}
 
-	// Configure storage-specific aspects using the new inverted dependency approach
-	if err := m.configureRegistryServerConfigMounts(deployment, registryAPIContainerName, configManager); err != nil {
-		return nil, fmt.Errorf("failed to configure registry server config mounts: %w", err)
-	}
-
-	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure registry source mounts: %w", err)
-	}
-
-	if err := m.configureRegistryStorageMounts(deployment, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure registry storage mounts: %w", err)
-	}
-
-	return deployment, nil
+	return deployment
 }
 
 // getRegistryAPIImage returns the registry API container image to use
@@ -239,34 +198,4 @@ func getRegistryAPIImageWithEnvGetter(envGetter func(string) string) string {
 		return img
 	}
 	return "ghcr.io/stacklok/thv-registry-api:latest"
-}
-
-// findContainerByName finds a container by name in a slice of containers
-func findContainerByName(containers []corev1.Container, name string) *corev1.Container {
-	for i := range containers {
-		if containers[i].Name == name {
-			return &containers[i]
-		}
-	}
-	return nil
-}
-
-// hasVolume checks if a volume with the given name exists in the volumes slice
-func hasVolume(volumes []corev1.Volume, name string) bool {
-	for _, volume := range volumes {
-		if volume.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-// hasVolumeMount checks if a volume mount with the given name exists in the volume mounts slice
-func hasVolumeMount(volumeMounts []corev1.VolumeMount, name string) bool {
-	for _, mount := range volumeMounts {
-		if mount.Name == name {
-			return true
-		}
-	}
-	return false
 }

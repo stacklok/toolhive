@@ -17,7 +17,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-01-14T00:00:00Z",
       "servers": {
@@ -40,11 +40,11 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "My MCP Registry"
-  source:
-    type: configmap
-    configMapRef:
-      name: my-registry-data
-      key: registry.json
+  registries:
+    - name: configmap-registry
+      configMapRef:
+        name: my-registry-data
+        key: registry.json
 ```
 
 Apply with:
@@ -56,12 +56,18 @@ kubectl apply -f my-registry.yaml
 
 ### Automatic Sync
 
-Configure automatic synchronization with interval-based policies:
+Configure automatic synchronization with interval-based policies per registry:
 
 ```yaml
 spec:
-  syncPolicy:
-    interval: "1h"  # Sync every hour
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "1h"  # Sync every hour
 ```
 
 Supported intervals:
@@ -104,12 +110,12 @@ Store registry data in Kubernetes ConfigMaps:
 
 ```yaml
 spec:
-  source:
-    type: configmap
-    format: toolhive  # or "upstream"
-    configMapRef:
-      name: registry-data
-      key: registry.json  # required
+  registries:
+    - name: default
+      format: toolhive  # or "upstream"
+      configMapRef:
+        name: registry-data
+        key: registry.json  # required
 ```
 
 ### Git Source
@@ -118,13 +124,13 @@ Synchronize from Git repositories:
 
 ```yaml
 spec:
-  source:
-    type: git
-    format: toolhive
-    git:
-      repository: "https://github.com/org/mcp-registry"
-      branch: "main"
-      path: "registry.json"  # optional, defaults to "registry.json"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        repository: "https://github.com/org/mcp-registry"
+        branch: "main"
+        path: "registry.json"  # optional, defaults to "registry.json"
 ```
 
 Supported repository URL formats:
@@ -141,10 +147,11 @@ Synchronize from HTTP/HTTPS API endpoints compatible with
 
 ```yaml
 spec:
-  source:
-    type: api
-    api:
-      endpoint: "https://registry.example.com"
+  registries:
+    - name: default
+      format: toolhive
+      api:
+        endpoint: "https://registry.example.com"
 ```
 
 The API source automatically detects the registry format by probing the endpoint:
@@ -166,23 +173,25 @@ Example configurations:
 **Internal ToolHive Registry API:**
 ```yaml
 spec:
-  source:
-    type: api
-    api:
-      endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
-  syncPolicy:
-    interval: "30m"
+  registries:
+    - name: default
+      format: toolhive
+      api:
+        endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
+      syncPolicy:
+        interval: "30m"
 ```
 
 **External Registry API:**
 ```yaml
 spec:
-  source:
-    type: api
-    api:
-      endpoint: "https://registry.modelcontextprotocol.io/"
-  syncPolicy:
-    interval: "1h"
+  registries:
+    - name: default
+      format: toolhive
+      api:
+        endpoint: "https://registry.modelcontextprotocol.io/"
+      syncPolicy:
+        interval: "1h"
 ```
 
 **Notes:**
@@ -191,18 +200,129 @@ spec:
 - HTTPS is recommended for production use
 - Authentication support planned for future release
 
+### PVC Source
+
+Store registry data in PersistentVolumeClaims for dynamic, persistent storage:
+
+```yaml
+spec:
+  registries:
+    - name: production
+      format: toolhive
+      pvcRef:
+        claimName: registry-data-pvc
+        path: production/registry.json  # Path within the PVC
+      syncPolicy:
+        interval: "1h"
+```
+
+**How PVC mounting works:**
+- Each registry gets its own volume mount at `/config/registry/{registryName}/`
+- File path becomes: `/config/registry/{registryName}/{path}`
+- Multiple registries can share the same PVC by mounting it at different paths
+- Consistent with ConfigMap source behavior (all sources use `{registryName}` pattern)
+
+**PVC Structure Examples:**
+
+Single PVC with multiple registries:
+```
+PVC "shared-data":
+  /prod-data/registry.json
+  /dev-data/registry.json
+
+Registry "production": pvcRef: {claimName: shared-data, path: prod-data/registry.json}
+→ Mounted at: /config/registry/production/
+→ File path: /config/registry/production/prod-data/registry.json
+
+Registry "development": pvcRef: {claimName: shared-data, path: dev-data/registry.json}
+→ Mounted at: /config/registry/development/
+→ File path: /config/registry/development/dev-data/registry.json
+
+Note: Same PVC mounted twice at different paths, allowing independent registry access
+```
+
+**Populating PVC Data:**
+
+The PVC can be populated using:
+- **Kubernetes Job** (recommended for initial setup)
+- **Init container** in a deployment
+- **Manual copy**: `kubectl cp registry.json pod:/path`
+- **CSI driver** that provides pre-populated data
+- **External sync process** that writes to the PVC
+
+Example populate Job:
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-registry
+spec:
+  template:
+    spec:
+      containers:
+      - name: populate
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          mkdir -p /data/production
+          cat > /data/production/registry.json <<EOF
+          {"version": "1.0.0", "servers": {...}}
+          EOF
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: registry-data-pvc
+      restartPolicy: OnFailure
+```
+
+**See Also:**
+- Complete PVC example: [examples/operator/mcp-registries/mcpregistry-pvc.yaml](../../examples/operator/mcp-registries/mcpregistry-pvc.yaml)
+- Multi-source example: [examples/operator/mcp-registries/mcpregistry-multi-source.yaml](../../examples/operator/mcp-registries/mcpregistry-multi-source.yaml)
+
 ### Registry Formats
 
 **ToolHive Format** (default):
 - Native ToolHive registry schema
 - Supports all ToolHive features
-- See [registry schema](../../pkg/registry/data/schema.json)
+- See [registry schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
 
 **Upstream Format**:
 - Standard MCP registry format
 - Compatible with community registries
 - Automatically converted to ToolHive format
 - **Note**: Not supported until the upstream schema is more stable
+
+## Filtering
+
+Each registry configuration can define its own filtering rules:
+
+```yaml
+spec:
+  registries:
+    - name: production
+      format: toolhive
+      configMapRef:
+        name: registry-data
+        key: registry.json
+      filter:
+        names:
+          include:
+            - "prod-*"
+          exclude:
+            - "*-legacy"
+        tags:
+          include:
+            - "production"
+          exclude:
+            - "experimental"
+            - "deprecated"
+```
+
+Filtering is applied per-registry, allowing different filtering rules for different registry sources in the same MCPRegistry.
 
 ## Image Validation
 
@@ -340,6 +460,8 @@ status:
     type: configmap
     configMapRef:
       name: "my-registry-registry-storage"
+    configMapRef:
+      name: "my-registry-registry-storage"
   lastManualSyncTrigger: "1704110400"
   conditions:
     - type: SyncSuccessful
@@ -447,12 +569,14 @@ metadata:
   name: production-registry
 spec:
   displayName: "Production MCP Servers"
-  source:
-    type: configmap
-    configMapRef:
-      name: prod-registry-data
-  syncPolicy:
-    interval: "1h"
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: prod-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "1h"
   enforceServers: true
 ```
 
@@ -464,17 +588,56 @@ metadata:
   name: dev-registry
 spec:
   displayName: "Development MCP Servers"
-  source:
-    type: git
-    git:
-      repository: "https://github.com/org/dev-mcp-registry"
-      branch: "develop"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        repository: "https://github.com/org/dev-mcp-registry"
+        branch: "develop"
+        path: "registry.json"
   # No sync policy = manual sync only
 ```
+
+### Multiple Registries
+
+You can configure multiple registry sources in a single MCPRegistry:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: multi-source-registry
+spec:
+  displayName: "Multi-Source Registry"
+  registries:
+    - name: production
+      format: toolhive
+      git:
+        repository: "https://github.com/org/prod-registry"
+        branch: "main"
+        path: "registry.json"
+      syncPolicy:
+        interval: "1h"
+      filter:
+        tags:
+          include:
+            - "production"
+    - name: development
+      format: toolhive
+      configMapRef:
+        name: dev-registry-data
+        key: registry.json
+      filter:
+        tags:
+          include:
+            - "development"
+```
+
+Each registry configuration must have a unique `name` within the MCPRegistry.
 
 ## See Also
 
 - [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
-- [Registry Schema](../../pkg/registry/data/schema.json)
+- [Registry Schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)

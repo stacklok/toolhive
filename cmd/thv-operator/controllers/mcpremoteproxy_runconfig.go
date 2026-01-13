@@ -7,16 +7,14 @@ import (
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
-	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -51,61 +49,16 @@ func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context,
 	}
 
 	// Compute and add content checksum annotation
-	checksumCalculator := configMapChecksum.NewRunConfigConfigMapChecksum()
-	checksum := checksumCalculator.ComputeConfigMapChecksum(configMap)
+	checksumCalculator := checksum.NewRunConfigConfigMapChecksum()
+	cs := checksumCalculator.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": checksum,
+		checksum.ContentChecksumAnnotation: cs,
 	}
 
-	return r.ensureRunConfigConfigMapResource(ctx, proxy, configMap)
-}
-
-// ensureRunConfigConfigMapResource ensures the RunConfig ConfigMap exists and is up to date
-func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMapResource(
-	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-	desired *corev1.ConfigMap,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	current := &corev1.ConfigMap{}
-	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(proxy, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
-		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("failed to create RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap created", "ConfigMap.Name", desired.Name)
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to get RunConfig ConfigMap: %w", err)
-	}
-
-	// ConfigMap exists, check if content has changed by comparing checksums
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
-
-	if currentChecksum != desiredChecksum {
-		desired.ResourceVersion = current.ResourceVersion
-		desired.UID = current.UID
-
-		if err := controllerutil.SetControllerReference(proxy, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap content changed, updating",
-			"ConfigMap.Name", desired.Name,
-			"oldChecksum", currentChecksum,
-			"newChecksum", desiredChecksum)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap updated", "ConfigMap.Name", desired.Name)
+	// Use the kubernetes configmaps client for upsert operations
+	configMapsClient := configmaps.NewClient(r.Client, r.Scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, proxy); err != nil {
+		return fmt.Errorf("failed to upsert RunConfig ConfigMap: %w", err)
 	}
 
 	return nil
@@ -161,6 +114,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		runner.WithTransportAndPorts(transport, int(proxy.GetProxyPort()), 0),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(proxy.Spec.TrustProxyHeaders),
+		runner.WithEndpointPrefix(proxy.Spec.EndpointPrefix),
 		runner.WithToolsFilter(toolsFilter),
 	}
 

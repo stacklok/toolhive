@@ -74,10 +74,13 @@ func newOIDCAuthMiddleware(
 	}
 
 	oidcConfig := &auth.TokenValidatorConfig{
-		Issuer:      oidcCfg.Issuer,
-		ClientID:    oidcCfg.ClientID,
-		Audience:    oidcCfg.Audience,
-		ResourceURL: oidcCfg.Resource,
+		Issuer:            oidcCfg.Issuer,
+		ClientID:          oidcCfg.ClientID,
+		Audience:          oidcCfg.Audience,
+		ResourceURL:       oidcCfg.Resource,
+		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP,
+		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
+		Scopes:            oidcCfg.Scopes,
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity

@@ -122,7 +122,11 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	if err != nil {
 		return nil, fmt.Errorf("google tokeninfo request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read the response with a reasonable limit to prevent DoS attacks
 	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for tokeninfo response
@@ -299,7 +303,11 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	if err != nil {
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read response body with a reasonable limit to prevent DoS attacks
 	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for introspection response
@@ -403,6 +411,10 @@ type TokenValidatorConfig struct {
 
 	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)
 	ResourceURL string
+
+	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+	// If empty, defaults to ["openid"]
+	Scopes []string
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
@@ -444,7 +456,11 @@ func discoverOIDCConfiguration(
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
@@ -551,7 +567,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 			config.AllowPrivateIP, config.InsecureAllowHTTP,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
+			return nil, fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
 		}
 		jwksURL = doc.JWKSURI
 	}

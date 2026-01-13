@@ -49,32 +49,31 @@ spec:
 
 ### Parameters
 
-Define input parameters with type validation:
+Parameters are defined using standard JSON Schema format, per the MCP specification. The top-level must be `type: object` with `properties` defining the individual parameters:
 
 ```yaml
 spec:
   name: deploy_app
   description: Deploy application with configuration
   parameters:
-    environment:
-      type: string
-      description: Target environment (dev, staging, prod)
-      required: true
-
-    replicas:
-      type: integer
-      description: Number of pod replicas
-      default: "3"
-      required: false
-
-    enable_monitoring:
-      type: boolean
-      description: Enable Prometheus monitoring
-      default: "true"
-      required: false
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target environment (dev, staging, prod)
+      replicas:
+        type: integer
+        description: Number of pod replicas
+        default: 3
+      enable_monitoring:
+        type: boolean
+        description: Enable Prometheus monitoring
+        default: true
+    required:
+      - environment
 ```
 
-**Supported Parameter Types**:
+**Supported Property Types** (per JSON Schema):
 - `string`
 - `integer`
 - `number`
@@ -90,14 +89,14 @@ Define workflow steps that execute tools:
 spec:
   steps:
     - id: validate_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.validate
       arguments:
         namespace: "{{.params.environment}}"
         manifest: "deployment.yaml"
 
     - id: apply_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -106,7 +105,7 @@ spec:
         - validate_deployment
 
     - id: verify_health
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         resource: "deployment/myapp"
@@ -118,12 +117,12 @@ spec:
 
 **Step Types**:
 
-#### tool_call (Phase 1)
+#### tool (Phase 1)
 Execute a backend tool. The `tool` field must be in format `workload.tool_name`.
 
 ```yaml
 - id: deploy
-  type: tool_call
+  type: tool
   tool: kubectl.apply
   arguments:
     manifest: "{{.params.manifest}}"
@@ -150,17 +149,17 @@ Define execution order using `dependsOn`:
 spec:
   steps:
     - id: step1
-      type: tool_call
+      type: tool
       tool: workload.tool_a
 
     - id: step2
-      type: tool_call
+      type: tool
       tool: workload.tool_b
       dependsOn:
         - step1
 
     - id: step3
-      type: tool_call
+      type: tool
       tool: workload.tool_c
       dependsOn:
         - step1
@@ -202,6 +201,63 @@ Configure how steps handle errors:
 - `continue`: Continue to next step, ignoring error
 - `retry`: Retry the step up to `maxRetries` times
 
+### Default Results
+
+When a step may be skipped (due to a condition) or may fail with `continue` error handling, you can specify `defaultResults` to provide fallback output values for downstream steps:
+
+```yaml
+- id: optional_enrichment
+  type: tool
+  tool: enrichment.service
+  condition: "{{.params.enable_enrichment}}"
+  arguments:
+    data: "{{.params.input}}"
+  # When skipped, use these default values as the step's output
+  defaultResults:
+    text: "no enrichment performed"
+
+- id: use_result
+  type: tool
+  tool: processor.handle
+  dependsOn:
+    - optional_enrichment
+  arguments:
+    # This template works whether optional_enrichment ran or was skipped
+    enriched_data: "{{.steps.optional_enrichment.output.text}}"
+```
+
+**When to Use `defaultResults`**:
+- Step has a `condition` that may evaluate to false
+- Step has `onError.action: continue` and may fail
+- Downstream steps reference this step's output in templates
+
+**Key Points**:
+- `defaultResults` is a map where keys correspond to output field names
+- Values must match the expected output structure from the backend tool
+- Backend tool calls store text content under the `text` key, so use `defaultResults.text` for text outputs
+- Validation will error if a skippable step's output is referenced but `defaultResults` is not specified for that field
+- `defaultResults` do not need to be specified for outputs that are not referenced in the composite tool definition.
+
+**Example with error handling**:
+
+```yaml
+- id: external_lookup
+  type: tool
+  tool: external.api
+  onError:
+    action: continue  # Continue workflow even if this fails
+  defaultResults:
+    text: "{\"status\": \"unavailable\", \"data\": null}"
+
+- id: process_result
+  type: tool
+  tool: internal.process
+  dependsOn:
+    - external_lookup
+  arguments:
+    lookup_result: "{{.steps.external_lookup.output.text}}"
+```
+
 ### Timeouts
 
 Configure timeouts at workflow and step level:
@@ -236,7 +292,7 @@ spec:
   description: Deploy with multiple retries
 
   # Failure handling strategy
-  failureMode: best_effort
+  failureMode: continue
 
   steps:
     - id: deploy_primary
@@ -253,7 +309,6 @@ spec:
 **Failure Modes**:
 - `abort`: Stop on first failure (default)
 - `continue`: Execute all steps regardless of failures
-- `best_effort`: Try all steps, report partial success
 
 ### Template Syntax
 
@@ -275,6 +330,64 @@ arguments:
 - `.params.<name>`: Access workflow parameters
 - `.steps.<step_id>.<field>`: Access step results (Phase 2)
 
+**Available Template Functions**:
+
+Composite Tools supports all the built-in functions from [text/template](https://pkg.go.dev/text/template#hdr-Functions) (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `printf`, etc.) plus custom functions:
+
+- `json`: Encode a value as a JSON string
+- `fromJson`: Parse a JSON string into a value (useful when tools return JSON as text)
+- `quote`: Quote a string value
+
+### Step Output Format
+
+Backend tools can return results in two formats, which affects how you access the data in templates:
+
+**Structured Content (Object Response)**
+
+When a backend tool returns structured content (an object), fields are directly accessible:
+
+```yaml
+# If get_user returns: {"name": "Alice", "profile": {"email": "alice@example.com"}}
+arguments:
+  user_name: "{{.steps.get_user.output.name}}"
+  email: "{{.steps.get_user.output.profile.email}}"
+```
+
+**Unstructured Content (Text Response)**
+
+When a backend tool returns text content, it is stored under the `text` key:
+
+```yaml
+# If echo_tool returns: "Hello, world!"
+arguments:
+  message: "{{.steps.echo_tool.output.text}}"
+```
+
+If a tool returns JSON as text content, use the `fromJson` function to parse it and access fields:
+
+```yaml
+# If api_call returns text: '{"user": {"name": "Alice", "email": "alice@example.com"}}'
+arguments:
+  name: "{{(fromJson .steps.api_call.output.text).user.name}}"
+  email: "{{(fromJson .steps.api_call.output.text).user.email}}"
+```
+
+> **Important**: Structured content must be an object (map). If a tool returns an array, primitive, or other non-object type, it falls back to unstructured content handling.
+
+### Numeric Values in Templates
+
+All numeric values from JSON are unmarshaled as `float64`. When using numeric comparisons in templates, always use float literals:
+
+```yaml
+# Correct: use float literal (10.0)
+value: '{{if ge .steps.get_stats.output.count 10.0}}high{{else}}low{{end}}'
+
+# Incorrect: integer literal will cause type mismatch error
+value: '{{if ge .steps.get_stats.output.count 10}}high{{else}}low{{end}}'
+```
+
+This applies to all numeric comparisons (`eq`, `ne`, `lt`, `le`, `gt`, `ge`) when comparing against step output values.
+
 ## Complete Examples
 
 ### Example 1: Simple Deployment
@@ -290,14 +403,17 @@ spec:
   description: Deploy application to Kubernetes
 
   parameters:
-    environment:
-      type: string
-      required: true
-      description: Target environment
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target environment
+    required:
+      - environment
 
   steps:
     - id: apply
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -320,26 +436,30 @@ spec:
   description: Deploy application and verify it's healthy
 
   parameters:
-    environment:
-      type: string
-      required: true
-    replicas:
-      type: integer
-      default: "3"
-    health_check_timeout:
-      type: string
-      default: "5m"
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target deployment environment
+      replicas:
+        type: integer
+        default: 3
+      health_check_timeout:
+        type: string
+        default: "5m"
+    required:
+      - environment
 
   steps:
     - id: validate_config
-      type: tool_call
+      type: tool
       tool: kubectl.validate
       arguments:
         namespace: "{{.params.environment}}"
         manifest: "deployment.yaml"
 
     - id: apply_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -352,7 +472,7 @@ spec:
         maxRetries: 3
 
     - id: wait_for_ready
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         namespace: "{{.params.environment}}"
@@ -363,7 +483,7 @@ spec:
         - apply_deployment
 
     - id: notify_success
-      type: tool_call
+      type: tool
       tool: slack.send
       arguments:
         channel: "#deployments"
@@ -390,22 +510,25 @@ spec:
   description: Gather diagnostic information for incident investigation
 
   parameters:
-    service:
-      type: string
-      required: true
-      description: Service name to investigate
-    namespace:
-      type: string
-      required: true
-      description: Kubernetes namespace
-    time_range:
-      type: string
-      default: "1h"
-      description: Time range for log collection
+    type: object
+    properties:
+      service:
+        type: string
+        description: Service name to investigate
+      namespace:
+        type: string
+        description: Kubernetes namespace
+      time_range:
+        type: string
+        default: "1h"
+        description: Time range for log collection
+    required:
+      - service
+      - namespace
 
   steps:
     - id: get_pod_status
-      type: tool_call
+      type: tool
       tool: kubectl.get
       arguments:
         resource: "pods"
@@ -413,7 +536,7 @@ spec:
         selector: "app={{.params.service}}"
 
     - id: get_recent_logs
-      type: tool_call
+      type: tool
       tool: kubectl.logs
       arguments:
         namespace: "{{.params.namespace}}"
@@ -423,7 +546,7 @@ spec:
         - get_pod_status
 
     - id: check_recent_events
-      type: tool_call
+      type: tool
       tool: kubectl.events
       arguments:
         namespace: "{{.params.namespace}}"
@@ -432,7 +555,7 @@ spec:
         - get_pod_status
 
     - id: query_metrics
-      type: tool_call
+      type: tool
       tool: prometheus.query
       arguments:
         query: "rate(http_requests_total{service=\"{{.params.service}}\"}[5m])"
@@ -441,7 +564,7 @@ spec:
         - get_pod_status
 
     - id: create_report
-      type: tool_call
+      type: tool
       tool: jira.create_issue
       arguments:
         project: "SRE"
@@ -455,7 +578,7 @@ spec:
         action: continue
 
   timeout: 15m
-  failureMode: best_effort
+  failureMode: continue
 ```
 
 ### Example 4: Multi-Stage Deployment
@@ -471,28 +594,33 @@ spec:
   description: Progressive canary deployment with rollback capability
 
   parameters:
-    service:
-      type: string
-      required: true
-    image:
-      type: string
-      required: true
-    canary_percentage:
-      type: integer
-      default: "10"
-    success_threshold:
-      type: number
-      default: "0.99"
+    type: object
+    properties:
+      service:
+        type: string
+        description: Service name for canary deployment
+      image:
+        type: string
+        description: Container image to deploy
+      canary_percentage:
+        type: integer
+        default: 10
+      success_threshold:
+        type: number
+        default: 0.99
+    required:
+      - service
+      - image
 
   steps:
     - id: validate_image
-      type: tool_call
+      type: tool
       tool: registry.inspect
       arguments:
         image: "{{.params.image}}"
 
     - id: deploy_canary
-      type: tool_call
+      type: tool
       tool: kubectl.patch
       arguments:
         resource: "deployment/{{.params.service}}-canary"
@@ -503,7 +631,7 @@ spec:
       timeout: 5m
 
     - id: wait_canary_ready
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         resource: "deployment/{{.params.service}}-canary"
@@ -513,7 +641,7 @@ spec:
         - deploy_canary
 
     - id: monitor_canary
-      type: tool_call
+      type: tool
       tool: prometheus.query
       arguments:
         query: "rate(http_requests_total{deployment=\"{{.params.service}}-canary\",status=\"200\"}[5m])"
@@ -523,7 +651,7 @@ spec:
       timeout: 10m
 
     - id: validate_metrics
-      type: tool_call
+      type: tool
       tool: metrics.evaluate
       arguments:
         success_rate: "{{.params.success_threshold}}"
@@ -532,7 +660,7 @@ spec:
         - monitor_canary
 
     - id: promote_to_production
-      type: tool_call
+      type: tool
       tool: kubectl.patch
       arguments:
         resource: "deployment/{{.params.service}}"
@@ -543,7 +671,7 @@ spec:
         action: abort
 
     - id: notify_success
-      type: tool_call
+      type: tool
       tool: slack.send
       arguments:
         channel: "#deployments"
@@ -568,8 +696,8 @@ metadata:
   name: production-vmcp
   namespace: default
 spec:
-  groupRef:
-    name: production-backends
+  config:
+    groupRef: production-backends
 
   # Reference composite tool definitions
   compositeToolRefs:
@@ -641,7 +769,7 @@ The CRD includes comprehensive validation:
 
 ### Step Validation
 - Unique step IDs
-- Valid step types (`tool_call`, `elicitation`)
+- Valid step types (`tool`, `elicitation`)
 - Tool references in format `workload.tool_name`
 - Valid Go template syntax in arguments
 - No circular dependencies

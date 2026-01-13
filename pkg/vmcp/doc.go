@@ -137,8 +137,8 @@
 //
 //			// Authenticate to backend (resolve strategy and call it)
 //			backendReq := createBackendRequest(...)
-//			strategy, err := outAuth.GetStrategy(target.AuthStrategy)
-//			err = strategy.Authenticate(ctx, backendReq, target.AuthMetadata)
+//			strategy, err := outAuth.GetStrategy(target.AuthConfig.Type)
+//			err = strategy.Authenticate(ctx, backendReq, target.AuthConfig)
 //
 //			// Forward request and return response
 //			// ...

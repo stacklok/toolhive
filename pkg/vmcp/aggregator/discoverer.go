@@ -76,7 +76,8 @@ func NewBackendDiscoverer(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workload manager: %w", err)
 		}
-		workloadDiscoverer = manager
+		// Wrap CLI manager with adapter to implement Discoverer interface
+		workloadDiscoverer = workloadsmgr.NewDiscovererAdapter(manager)
 	}
 	return NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig), nil
 }
@@ -106,25 +107,25 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		return nil, fmt.Errorf("group %s not found", groupRef)
 	}
 
-	// Get all workload names in the group
-	workloadNames, err := d.workloadsManager.ListWorkloadsInGroup(ctx, groupRef)
+	// Get all typedWorkloads in the group
+	typedWorkloads, err := d.workloadsManager.ListWorkloadsInGroup(ctx, groupRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 	}
 
-	if len(workloadNames) == 0 {
+	if len(typedWorkloads) == 0 {
 		logger.Infof("No workloads found in group %s", groupRef)
 		return []vmcp.Backend{}, nil
 	}
 
-	logger.Debugf("Found %d workloads in group %s, discovering backends", len(workloadNames), groupRef)
+	logger.Debugf("Found %d workloads in group %s, discovering backends", len(typedWorkloads), groupRef)
 
 	// Query each workload and convert to backend
 	var backends []vmcp.Backend
-	for _, name := range workloadNames {
-		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, name)
+	for _, workload := range typedWorkloads {
+		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {
-			logger.Warnf("Failed to get workload %s: %v, skipping", name, err)
+			logger.Warnf("Failed to get workload %s: %v, skipping", workload.Name, err)
 			continue
 		}
 
@@ -133,26 +134,14 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 			continue
 		}
 
-		// Apply authentication configuration if provided
-		var authStrategy string
-		var authMetadata map[string]any
-		if d.authConfig != nil {
-			authStrategy, authMetadata = d.authConfig.ResolveForBackend(name)
-			backend.AuthStrategy = authStrategy
-			backend.AuthMetadata = authMetadata
-			if authStrategy != "" {
-				logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
-			}
-		}
+		// Apply authentication configuration to backend
+		d.applyAuthConfigToBackend(backend, workload.Name)
 
 		// Set group metadata (override user labels to prevent conflicts)
 		if backend.Metadata == nil {
 			backend.Metadata = make(map[string]string)
 		}
 		backend.Metadata["group"] = groupRef
-
-		logger.Debugf("Discovered backend %s: %s (%s) with health status %s",
-			backend.ID, backend.BaseURL, backend.TransportType, backend.HealthStatus)
 
 		backends = append(backends, *backend)
 	}
@@ -164,4 +153,52 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 
 	logger.Infof("Discovered %d backends in group %s", len(backends), groupRef)
 	return backends, nil
+}
+
+// applyAuthConfigToBackend applies authentication configuration to a backend based on the source mode.
+// It determines whether to use discovered auth from the MCPServer or auth from the vMCP config.
+//
+// Auth resolution logic:
+// - "discovered" mode: Use discovered auth if available, otherwise fall back to Default or backend-specific config
+// - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
+// - unknown mode: Default to config-based auth for safety
+//
+// When useDiscoveredAuth is false, ResolveForBackend is called which handles:
+// 1. Backend-specific config (d.authConfig.Backends[backendName])
+// 2. Default config fallback (d.authConfig.Default)
+// 3. No auth if neither is configured
+func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, backendName string) {
+	if d.authConfig == nil {
+		return
+	}
+
+	// Determine if we should use discovered auth or config-based auth
+	var useDiscoveredAuth bool
+	switch d.authConfig.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
+		// which will use backend-specific config, then Default, then no auth
+		useDiscoveredAuth = backend.AuthConfig != nil
+	case "inline", "":
+		// For inline mode or empty source, always use config-based auth
+		// Ignore any discovered auth from backends
+		useDiscoveredAuth = false
+	default:
+		// Unknown source mode - default to config-based auth for safety
+		logger.Warnf("Unknown auth source mode: %s, defaulting to config-based auth", d.authConfig.Source)
+		useDiscoveredAuth = false
+	}
+
+	if useDiscoveredAuth {
+		// Keep the auth discovered from MCPServer (already populated in backend)
+		logger.Debugf("Backend %s using discovered auth strategy: %s", backendName, backend.AuthConfig.Type)
+	} else {
+		// Use auth from config (inline mode)
+		authConfig := d.authConfig.ResolveForBackend(backendName)
+		if authConfig != nil {
+			backend.AuthConfig = authConfig
+			logger.Debugf("Backend %s configured with auth strategy from config: %s", backendName, authConfig.Type)
+		}
+	}
 }

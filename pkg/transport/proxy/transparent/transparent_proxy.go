@@ -3,19 +3,16 @@
 package transparent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -80,9 +77,27 @@ type TransparentProxy struct {
 
 	// Transport type (sse, streamable-http)
 	transportType string
+
+	// Callback when health check fails (for remote servers)
+	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Callback when 401 Unauthorized response is received (for bearer token authentication)
+	onUnauthorizedResponse types.UnauthorizedResponseCallback
+
+	// Response processor for transport-specific logic
+	responseProcessor ResponseProcessor
+
+	// Deprecated: SSE endpoint URL rewriting configuration (moved to SSEResponseProcessor)
+	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
+	endpointPrefix string
+
+	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
+	trustProxyHeaders bool
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
+// The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
+// The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
 func NewTransparentProxy(
 	host string,
 	port int,
@@ -92,24 +107,38 @@ func NewTransparentProxy(
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
+	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onUnauthorizedResponse types.UnauthorizedResponseCallback,
+	endpointPrefix string,
+	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:              host,
-		port:              port,
-		targetURI:         targetURI,
-		middlewares:       middlewares,
-		shutdownCh:        make(chan struct{}),
-		prometheusHandler: prometheusHandler,
-		authInfoHandler:   authInfoHandler,
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:          isRemote,
-		transportType:     transportType,
+		host:                   host,
+		port:                   port,
+		targetURI:              targetURI,
+		middlewares:            middlewares,
+		shutdownCh:             make(chan struct{}),
+		prometheusHandler:      prometheusHandler,
+		authInfoHandler:        authInfoHandler,
+		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:               isRemote,
+		transportType:          transportType,
+		onHealthCheckFailed:    onHealthCheckFailed,
+		onUnauthorizedResponse: onUnauthorizedResponse,
+		endpointPrefix:         endpointPrefix,
+		trustProxyHeaders:      trustProxyHeaders,
 	}
 
+	// Create appropriate response processor based on transport type
+	proxy.responseProcessor = createResponseProcessor(
+		transportType,
+		proxy,
+		endpointPrefix,
+		trustProxyHeaders,
+	)
+
 	// Create health checker always for Kubernetes probes
-	// For remote proxies, pass nil pinger since we can't ping authenticated servers
-	// For local proxies, create pinger to check MCP server status
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
 		mcpPinger = NewMCPPinger(targetURI)
@@ -174,6 +203,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		logger.Errorf("Failed to forward request: %v", err)
 		return nil, err
 	}
+
+	// Check for 401 Unauthorized response (bearer token authentication failure)
+	if resp.StatusCode == http.StatusUnauthorized {
+		logger.Debugf("Received 401 Unauthorized response from %s, bearer token may be invalid", t.p.targetURI)
+		if t.p.onUnauthorizedResponse != nil {
+			t.p.onUnauthorizedResponse()
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
@@ -226,64 +264,10 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 	return false
 }
 
-var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
-
-func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if mediaType != "text/event-stream" {
-		return nil
-	}
-
-	pr, pw := io.Pipe()
-	originalBody := resp.Body
-	resp.Body = pr
-
-	// NOTE: it would be better to have a proper function instead of a goroutine, as this
-	// makes it harder to debug and test.
-	go func() {
-		defer pw.Close()
-		scanner := bufio.NewScanner(originalBody)
-		// NOTE: The following line mitigates the issue of the response body being too large.
-		// By default, the maximum token size of the scanner is 64KB, which is too small in
-		// the case of e.g. images. This raises the limit to 1MB. This is a workaround, and
-		// not a proper fix.
-		scanner.Buffer(make([]byte, 0, 1024), 1024*1024*1)
-		found := false
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if !found {
-				if m := sessionRe.FindSubmatch(line); m != nil {
-					sid := string(m[1])
-					if sid == "" {
-						sid = string(m[2])
-					}
-					p.setServerInitialized()
-					err := p.sessionManager.AddWithID(sid)
-					if err != nil {
-						logger.Errorf("Failed to create session from SSE line: %v", err)
-					}
-					found = true
-				}
-			}
-			if _, err := pw.Write(append(line, '\n')); err != nil {
-				return
-			}
-		}
-
-		// NOTE: this line is always necessary since scanner.Scan() will return false
-		// in case of an error.
-		if err := scanner.Err(); err != nil {
-			logger.Errorf("Failed to scan response body: %v", err)
-		}
-
-		_, err := io.Copy(pw, originalBody)
-		if err != nil && err != io.EOF {
-			logger.Errorf("Failed to copy response body: %v", err)
-		}
-	}()
-
-	return nil
+// modifyResponse modifies HTTP responses based on transport-specific requirements.
+// Delegates to the appropriate ResponseProcessor based on transport type.
+func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
+	return p.responseProcessor.ProcessResponse(resp)
 }
 
 // Start starts the transparent proxy.
@@ -318,7 +302,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		return p.modifyForSessionID(resp)
+		return p.modifyResponse(resp)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +364,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	server := p.server
 	go func() {
 		err := server.Serve(ln)
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {
 				// Expected when listener is closed—silently return
@@ -405,9 +389,24 @@ func (p *TransparentProxy) CloseListener() error {
 	return nil
 }
 
+// healthCheckRetryConfig holds retry configuration for health checks.
+// These values are designed to handle transient network issues like
+// VPN/firewall idle connection timeouts (commonly 5-10 minutes).
+const (
+	// healthCheckRetryCount is the number of consecutive failures before marking unhealthy.
+	// This prevents immediate shutdown on transient network issues.
+	healthCheckRetryCount = 3
+
+	// healthCheckRetryDelay is the delay between retry attempts.
+	// Using a shorter interval than the main ticker allows faster recovery.
+	healthCheckRetryDelay = 5 * time.Second
+)
+
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -422,12 +421,50 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			if p.IsServerInitialized {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
-					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)
+					consecutiveFailures++
+					logger.Warnf("Health check failed for %s (attempt %d/%d): status=%s",
+						p.targetURI, consecutiveFailures, healthCheckRetryCount, alive.Status)
+
+					// Retry with backoff before giving up
+					if consecutiveFailures < healthCheckRetryCount {
+						// Wait and retry before the next ticker interval
+						retryTimer := time.NewTimer(healthCheckRetryDelay)
+						select {
+						case <-parentCtx.Done():
+							retryTimer.Stop()
+							return
+						case <-p.shutdownCh:
+							retryTimer.Stop()
+							return
+						case <-retryTimer.C:
+							// Retry health check immediately
+							retryAlive := p.healthChecker.CheckHealth(parentCtx)
+							if retryAlive.Status == healthcheck.StatusHealthy {
+								logger.Infof("Health check recovered for %s after retry", p.targetURI)
+								consecutiveFailures = 0
+							}
+							// If still unhealthy, the next ticker will increment consecutiveFailures
+						}
+						continue
+					}
+
+					// All retries exhausted, initiate shutdown
+					logger.Errorf("Health check failed for %s after %d consecutive attempts; initiating proxy shutdown",
+						p.targetURI, healthCheckRetryCount)
+					// Notify the runner about health check failure so it can update workload status
+					if p.onHealthCheckFailed != nil {
+						p.onHealthCheckFailed()
+					}
 					if err := p.Stop(parentCtx); err != nil {
 						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
 					}
 					return
 				}
+				// Reset failure count on successful health check
+				if consecutiveFailures > 0 {
+					logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
+				}
+				consecutiveFailures = 0
 			} else {
 				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
 			}
@@ -455,7 +492,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	// Stop the HTTP server
 	if p.server != nil {
 		err := p.server.Shutdown(ctx)
-		if err != nil && err != http.ErrServerClosed && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}

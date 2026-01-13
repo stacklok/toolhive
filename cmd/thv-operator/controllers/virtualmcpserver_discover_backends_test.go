@@ -33,6 +33,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestVirtualMCPServerDiscoverBackends tests the discoverBackends function
@@ -44,6 +45,8 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 		vmcp                *mcpv1alpha1.VirtualMCPServer
 		mcpGroup            *mcpv1alpha1.MCPGroup
 		mcpServers          []mcpv1alpha1.MCPServer
+		authConfigs         []mcpv1alpha1.MCPExternalAuthConfig // Auth configs referenced by MCPServers
+		secrets             []corev1.Secret                     // Secrets referenced by auth configs
 		expectedBackends    int
 		expectedStatuses    map[string]string // backend name -> status
 		expectedAuthConfigs map[string]string // backend name -> authConfigRef
@@ -57,9 +60,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -118,9 +119,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -153,6 +152,37 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					},
 				},
 			},
+			authConfigs: []mcpv1alpha1.MCPExternalAuthConfig{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-auth-config",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL: "https://auth.example.com/token",
+							ClientID: "test-client",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "my-auth-secret",
+								Key:  "client-secret",
+							},
+							Audience: "test-audience",
+						},
+					},
+				},
+			},
+			secrets: []corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-auth-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"client-secret": []byte("test-secret-value"),
+					},
+				},
+			},
 			expectedBackends: 1,
 			expectedStatuses: map[string]string{
 				"backend-1": "ready",
@@ -170,9 +200,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -232,9 +260,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -306,7 +332,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 				"healthy":   "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
 				"unhealthy": "unavailable", // MCPServerPhaseFailed -> BackendUnhealthy -> "unavailable"
 				"degraded":  "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
-				"unknown":   "unknown",     // MCPServerPhasePending -> BackendUnknown -> "unknown"
+				"unknown":   "unavailable", // MCPServerPhasePending -> BackendUnknown -> "unavailable" (controller override)
 			},
 			expectedAuthConfigs: map[string]string{},
 			expectError:         false,
@@ -319,11 +345,18 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
 
 			// Build objects list for fake client
 			objects := []client.Object{tt.vmcp, tt.mcpGroup}
 			for i := range tt.mcpServers {
 				objects = append(objects, &tt.mcpServers[i])
+			}
+			for i := range tt.authConfigs {
+				objects = append(objects, &tt.authConfigs[i])
+			}
+			for i := range tt.secrets {
+				objects = append(objects, &tt.secrets[i])
 			}
 
 			fakeClient := fake.NewClientBuilder().
@@ -389,9 +422,7 @@ func TestVirtualMCPServerStatusManagerDiscoveredBackends(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -427,7 +458,7 @@ func TestVirtualMCPServerStatusManagerDiscoveredBackends(t *testing.T) {
 
 	assert.True(t, updated, "status should be updated")
 	assert.Len(t, vmcpStatus.DiscoveredBackends, 3, "should have 3 discovered backends")
-	assert.Equal(t, 3, vmcpStatus.BackendCount, "backendCount should be 3")
+	assert.Equal(t, 2, vmcpStatus.BackendCount, "backendCount should be 2 (only ready backends)")
 
 	// Verify backend details
 	assert.Equal(t, "backend-1", vmcpStatus.DiscoveredBackends[0].Name)
@@ -460,9 +491,7 @@ func TestVirtualMCPServerReconcileWithBackendDiscovery(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 

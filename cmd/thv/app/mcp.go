@@ -88,10 +88,11 @@ func newMCPCommand() *cobra.Command {
 
 func addMCPFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&mcpServerURL, "server", "", "MCP server URL or name from ToolHive registry (required)")
-	cmd.Flags().StringVar(&mcpFormat, "format", FormatText, "Output format (json or text)")
+	AddFormatFlag(cmd, &mcpFormat)
 	cmd.Flags().DurationVar(&mcpTimeout, "timeout", 30*time.Second, "Connection timeout")
 	cmd.Flags().StringVar(&mcpTransport, "transport", "auto", "Transport type (auto, sse, streamable-http)")
 	_ = cmd.MarkFlagRequired("server")
+	cmd.PreRunE = ValidateFormat(&mcpFormat)
 }
 
 // mcpListCmdFunc lists all capabilities (tools, resources, prompts)
@@ -105,14 +106,21 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, err := createMCPClient(serverURL)
+	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
-	if err := initializeMCPClient(ctx, mcpClient); err != nil {
-		return err
+	if needsInit {
+		if err := initializeMCPClient(ctx, mcpClient); err != nil {
+			return err
+		}
 	}
 
 	// Collect all data
@@ -156,14 +164,21 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, err := createMCPClient(serverURL)
+	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
-	if err := initializeMCPClient(ctx, mcpClient); err != nil {
-		return err
+	if needsInit {
+		if err := initializeMCPClient(ctx, mcpClient); err != nil {
+			return err
+		}
 	}
 
 	result, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
@@ -185,14 +200,21 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, err := createMCPClient(serverURL)
+	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
-	if err := initializeMCPClient(ctx, mcpClient); err != nil {
-		return err
+	if needsInit {
+		if err := initializeMCPClient(ctx, mcpClient); err != nil {
+			return err
+		}
 	}
 
 	result, err := mcpClient.ListResources(ctx, mcp.ListResourcesRequest{})
@@ -214,14 +236,21 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, err := createMCPClient(serverURL)
+	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
 	if err != nil {
 		return err
 	}
-	defer mcpClient.Close()
+	defer func() {
+		if err := mcpClient.Close(); err != nil {
+			// Non-fatal: MCP client cleanup failure
+			logger.Warnf("Failed to close MCP client: %v", err)
+		}
+	}()
 
-	if err := initializeMCPClient(ctx, mcpClient); err != nil {
-		return err
+	if needsInit {
+		if err := initializeMCPClient(ctx, mcpClient); err != nil {
+			return err
+		}
 	}
 
 	result, err := mcpClient.ListPrompts(ctx, mcp.ListPromptsRequest{})
@@ -261,6 +290,20 @@ func resolveServerURL(ctx context.Context, serverInput string) (string, error) {
 	return workload.URL, nil
 }
 
+// createOrAutoDetectMCPClient creates an MCP client, using auto-detection if transport is "auto"
+// Returns the client, whether it needs initialization, and any error
+func createOrAutoDetectMCPClient(ctx context.Context, serverURL string) (*client.Client, bool, error) {
+	if mcpTransport == "auto" {
+		// Auto-detect: try streamable HTTP first, fall back to SSE
+		// The client is already initialized during auto-detection
+		mcpClient, err := createMCPClientWithAutoDetect(ctx, serverURL)
+		return mcpClient, false, err
+	}
+	// Explicit transport specified, needs initialization
+	mcpClient, err := createMCPClient(serverURL)
+	return mcpClient, true, err
+}
+
 // createMCPClient creates an MCP client based on the server URL and transport type
 func createMCPClient(serverURL string) (*client.Client, error) {
 	transportType := determineTransportType(serverURL, mcpTransport)
@@ -285,6 +328,55 @@ func createMCPClient(serverURL string) (*client.Client, error) {
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
+}
+
+// createMCPClientWithAutoDetect tries streamable HTTP first, then falls back to SSE
+func createMCPClientWithAutoDetect(ctx context.Context, serverURL string) (*client.Client, error) {
+	// Try streamable HTTP first
+	logger.Debugf("Trying streamable HTTP transport for %s", serverURL)
+	streamableClient, err := client.NewStreamableHttpClient(serverURL)
+	if err == nil {
+		if err := tryInitializeClient(ctx, streamableClient); err == nil {
+			logger.Debugf("Successfully connected using streamable HTTP transport")
+			return streamableClient, nil
+		}
+		_ = streamableClient.Close()
+		logger.Debugf("Streamable HTTP transport failed, trying SSE fallback")
+	}
+
+	// Fall back to SSE
+	logger.Debugf("Trying SSE transport for %s", serverURL)
+	sseClient, err := client.NewSSEMCPClient(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create MCP client (tried streamable HTTP and SSE): %w", err)
+	}
+
+	if err := tryInitializeClient(ctx, sseClient); err != nil {
+		_ = sseClient.Close()
+		return nil, fmt.Errorf("failed to connect using both streamable HTTP and SSE transports: %w", err)
+	}
+
+	logger.Debugf("Successfully connected using SSE transport")
+	return sseClient, nil
+}
+
+// tryInitializeClient attempts to start and initialize an MCP client
+func tryInitializeClient(ctx context.Context, mcpClient *client.Client) error {
+	if err := mcpClient.Start(ctx); err != nil {
+		return err
+	}
+
+	initRequest := mcp.InitializeRequest{}
+	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+	versionInfo := versions.GetVersionInfo()
+	initRequest.Params.ClientInfo = mcp.Implementation{
+		Name:    "toolhive-cli",
+		Version: versionInfo.Version,
+	}
+
+	_, err := mcpClient.Initialize(ctx, initRequest)
+	return err
 }
 
 // determineTransportType determines the transport type based on URL path and user preference
@@ -394,12 +486,23 @@ func outputMCPTools(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "TOOLS:")
-	fmt.Fprintln(w, "NAME\tDESCRIPTION")
-	for _, tool := range tools {
-		fmt.Fprintf(w, "%s\t%s\n", tool.Name, tool.Description)
+	if _, err := fmt.Fprintln(w, "TOOLS:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	for _, tool := range tools {
+		if _, err := fmt.Fprintf(w, "%s\t%s\n", tool.Name, tool.Description); err != nil {
+			logger.Debugf("Failed to write tool information: %v", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
 	return true
 }
 
@@ -410,13 +513,23 @@ func outputMCPResources(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "RESOURCES:")
-	fmt.Fprintln(w, "NAME\tURI\tDESCRIPTION\tMIME_TYPE")
-	for _, resource := range resources {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			resource.Name, resource.URI, resource.Description, resource.MIMEType)
+	if _, err := fmt.Fprintln(w, "RESOURCES:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, "NAME\tURI\tDESCRIPTION\tMIME_TYPE"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	for _, resource := range resources {
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			resource.Name, resource.URI, resource.Description, resource.MIMEType); err != nil {
+			logger.Debugf("Failed to write resource information: %v", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Debugf("Failed to write blank line: %v", err)
+	}
 	return true
 }
 
@@ -427,13 +540,23 @@ func outputMCPPrompts(w *tabwriter.Writer, data map[string]interface{}) bool {
 		return false
 	}
 
-	fmt.Fprintln(w, "PROMPTS:")
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tARGUMENTS")
+	if _, err := fmt.Fprintln(w, "PROMPTS:"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
+	if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION\tARGUMENTS"); err != nil {
+		logger.Warnf("Failed to write output: %v", err)
+		return false
+	}
 	for _, prompt := range prompts {
 		argStr := formatPromptArguments(prompt.Arguments)
-		fmt.Fprintf(w, "%s\t%s\t%s\n", prompt.Name, prompt.Description, argStr)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", prompt.Name, prompt.Description, argStr); err != nil {
+			logger.Debugf("Failed to write prompt information: %v", err)
+		}
 	}
-	fmt.Fprintln(w, "")
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		logger.Debugf("Failed to write blank line: %v", err)
+	}
 	return true
 }
 

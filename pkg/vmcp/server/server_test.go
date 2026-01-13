@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
@@ -76,7 +77,7 @@ func TestNew(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			require.NotNil(t, s)
 
@@ -100,9 +101,18 @@ func TestServer_Address(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "default configuration",
-			config:   &server.Config{},
+			name: "default host with explicit port",
+			config: &server.Config{
+				Port: 4483,
+			},
 			expected: "127.0.0.1:4483",
+		},
+		{
+			name: "port 0 for dynamic allocation",
+			config: &server.Config{
+				Port: 0,
+			},
+			expected: "127.0.0.1:0",
 		},
 		{
 			name: "custom host and port",
@@ -133,7 +143,7 @@ func TestServer_Address(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			addr := s.Address()
 			assert.Equal(t, tt.expected, addr)
@@ -155,7 +165,7 @@ func TestServer_Stop(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(&server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		s, err := server.New(context.Background(), &server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
@@ -178,3 +188,63 @@ func TestServer_Stop(t *testing.T) {
 // capabilities (including tool schemas) are discovered per-user via the discovery
 // middleware when requests are made. Schema validation now happens in the
 // aggregator and is tested there.
+
+func TestNew_WithAuditConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		auditConfig *audit.Config
+		wantErr     bool
+	}{
+		{
+			name:        "nil audit config is valid",
+			auditConfig: nil,
+			wantErr:     false,
+		},
+		{
+			name: "empty audit config is valid",
+			auditConfig: &audit.Config{
+				Component: "vmcp-server",
+			},
+			wantErr: false,
+		},
+		{
+			name: "full audit config is valid",
+			auditConfig: &audit.Config{
+				Component:           "vmcp-server",
+				IncludeRequestData:  true,
+				IncludeResponseData: true,
+				MaxDataSize:         1024,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockRouter := routerMocks.NewMockRouter(ctrl)
+			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+			config := &server.Config{
+				AuditConfig: tt.auditConfig,
+			}
+
+			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, s)
+		})
+	}
+}

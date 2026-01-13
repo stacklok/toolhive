@@ -20,6 +20,8 @@ func AddOIDCFlags(cmd *cobra.Command) {
 	cmd.Flags().String("oidc-introspection-url", "", "URL for token introspection endpoint")
 	cmd.Flags().String("oidc-client-id", "", "OIDC client ID")
 	cmd.Flags().String("oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
+	cmd.Flags().StringSlice("oidc-scopes", nil,
+		"OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)")
 }
 
 // GetStringFlagOrEmpty tries to get the string value of the given flag.
@@ -45,7 +47,7 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 // SetSecretsProvider sets the secrets provider type in the configuration.
 // It validates the input, tests the provider functionality, and updates the configuration.
 // Choices are `encrypted`, `1password`, and `none`.
-func SetSecretsProvider(provider secrets.ProviderType) error {
+func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) error {
 	// Validate input
 	if provider == "" {
 		fmt.Println("validation error: provider cannot be empty")
@@ -66,7 +68,6 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	}
 
 	// Validate that the provider can be created and works correctly
-	ctx := context.Background()
 	result := secrets.ValidateProvider(ctx, provider)
 	if !result.Success {
 		return fmt.Errorf("provider validation failed: %w", result.Error)
@@ -148,6 +149,26 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 	}
 
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// AddGroupFlag adds a --group flag to the provided command for filtering by group.
+// If withShorthand is true, adds the -g shorthand as well.
+func AddGroupFlag(cmd *cobra.Command, groupVar *string, withShorthand bool) {
+	if withShorthand {
+		cmd.Flags().StringVarP(groupVar, "group", "g", "", "Filter by group")
+	} else {
+		cmd.Flags().StringVar(groupVar, "group", "", "Filter by group")
+	}
+}
+
+// AddAllFlag adds an --all flag to the provided command.
+// If withShorthand is true, adds the -a shorthand as well.
+func AddAllFlag(cmd *cobra.Command, allVar *bool, withShorthand bool, description string) {
+	if withShorthand {
+		cmd.Flags().BoolVarP(allVar, "all", "a", false, description)
+	} else {
+		cmd.Flags().BoolVar(allVar, "all", false, description)
+	}
 }
 
 // ValidateGroupFlag returns a cobra PreRunE-compatible function

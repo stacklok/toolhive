@@ -119,6 +119,63 @@ func TestCapabilityAdapter_ToSDKTools(t *testing.T) {
 			tools:   []vmcp.Tool{},
 			wantNil: true,
 		},
+		{
+			// This test verifies that JSON Schema fields from issue #2775
+			// (description, default, required) are preserved when converting to MCP SDK format
+			name: "preserves JSON Schema fields (issue #2775)",
+			tools: []vmcp.Tool{
+				{
+					Name:        "deploy_app",
+					Description: "Deploy an application",
+					InputSchema: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"environment": map[string]any{
+								"type":        "string",
+								"description": "Target deployment environment",
+								"default":     "staging",
+							},
+							"replicas": map[string]any{
+								"type":        "integer",
+								"description": "Number of pod replicas",
+								"default":     3,
+							},
+						},
+						"required": []any{"environment"},
+					},
+					BackendID: "backend1",
+				},
+			},
+			setupMocks: func(mf *mocks.MockHandlerFactory) {
+				mf.EXPECT().CreateToolHandler("deploy_app").Return(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return &mcp.CallToolResult{}, nil
+				})
+			},
+			wantErr: false,
+			wantNil: false,
+			checkResult: func(t *testing.T, result []server.ServerTool) {
+				t.Helper()
+				require.Len(t, result, 1)
+
+				schema := string(result[0].Tool.RawInputSchema)
+
+				// Verify description fields are preserved
+				assert.Contains(t, schema, `"description":"Target deployment environment"`,
+					"environment description should be preserved")
+				assert.Contains(t, schema, `"description":"Number of pod replicas"`,
+					"replicas description should be preserved")
+
+				// Verify default fields are preserved
+				assert.Contains(t, schema, `"default":"staging"`,
+					"environment default should be preserved")
+				assert.Contains(t, schema, `"default":3`,
+					"replicas default should be preserved")
+
+				// Verify required array is preserved
+				assert.Contains(t, schema, `"required":["environment"]`,
+					"required array should be preserved")
+			},
+		},
 	}
 
 	for _, tt := range tests {

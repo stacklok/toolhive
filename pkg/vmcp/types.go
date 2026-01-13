@@ -1,6 +1,10 @@
 package vmcp
 
-import "context"
+import (
+	"context"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+)
 
 // This file contains shared domain types used across multiple vmcp subpackages.
 // Following DDD principles, these are core domain concepts that cross bounded contexts.
@@ -45,14 +49,10 @@ type BackendTarget struct {
 	//   client.CallTool(ctx, target, target.GetBackendCapabilityName(toolName), args)
 	OriginalCapabilityName string
 
-	// AuthStrategy identifies the authentication strategy for this backend.
+	// AuthConfig contains the typed authentication configuration for this backend.
 	// The actual authentication is handled by OutgoingAuthRegistry interface.
-	// Examples: "pass_through", "token_exchange", "client_credentials", "oauth_proxy"
-	AuthStrategy string
-
-	// AuthMetadata contains strategy-specific authentication metadata.
-	// This is opaque to the router and interpreted by the authenticator.
-	AuthMetadata map[string]any
+	// If nil, the backend requires no authentication.
+	AuthConfig *authtypes.BackendAuthStrategy
 
 	// SessionAffinity indicates if requests from the same session
 	// must be routed to this specific backend instance.
@@ -99,6 +99,9 @@ const (
 	BackendHealthy BackendHealthStatus = "healthy"
 
 	// BackendDegraded indicates the backend is operational but experiencing issues.
+	// This occurs when:
+	// - Health checks succeed but response times exceed the degraded threshold (slow but working)
+	// - Backend just recovered from failures and is in a stabilizing state
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.
@@ -128,11 +131,10 @@ type Backend struct {
 	// HealthStatus is the current health state.
 	HealthStatus BackendHealthStatus
 
-	// AuthStrategy identifies how to authenticate to this backend.
-	AuthStrategy string
-
-	// AuthMetadata contains strategy-specific auth configuration.
-	AuthMetadata map[string]any
+	// AuthConfig contains the typed authentication configuration for this backend.
+	// The actual authentication is handled by OutgoingAuthRegistry interface.
+	// If nil, the backend requires no authentication.
+	AuthConfig *authtypes.BackendAuthStrategy
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string
@@ -148,6 +150,10 @@ type Tool struct {
 
 	// InputSchema is the JSON Schema for tool parameters.
 	InputSchema map[string]any
+
+	// OutputSchema is the JSON Schema for tool output (optional).
+	// Per MCP specification, this describes the structure of the tool's response.
+	OutputSchema map[string]any
 
 	// BackendID identifies the backend that provides this tool.
 	BackendID string

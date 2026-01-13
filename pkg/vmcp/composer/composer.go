@@ -9,6 +9,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // Composer executes composite tool workflows that orchestrate multi-step
@@ -59,6 +61,10 @@ type WorkflowDefinition struct {
 	// Options: "abort" (default), "continue", "best_effort"
 	FailureMode string
 
+	// Output defines the structured output schema for this workflow.
+	// If nil, the workflow returns the last step's output (backward compatible).
+	Output *config.OutputConfig
+
 	// Metadata stores additional workflow information.
 	Metadata map[string]string
 }
@@ -103,6 +109,10 @@ type WorkflowStep struct {
 
 	// Metadata stores additional step information.
 	Metadata map[string]string
+
+	// DefaultResults provides fallback output values when this step is skipped
+	// (due to condition evaluating to false) or fails (when onError.action is "continue").
+	DefaultResults map[string]any
 }
 
 // StepType defines the type of workflow step.
@@ -331,8 +341,31 @@ type WorkflowContext struct {
 	// and does not require synchronization. Steps should not modify this map during execution.
 	Variables map[string]any
 
-	// mu protects concurrent access to Steps map during parallel execution.
+	// Workflow contains workflow-level metadata (ID, start time, step count, status).
+	// Access must be synchronized using mu.
+	Workflow *WorkflowMetadata
+
+	// mu protects concurrent access to Steps map and Workflow metadata during parallel execution.
 	mu sync.RWMutex
+}
+
+// WorkflowMetadata contains workflow-level metadata available in templates.
+type WorkflowMetadata struct {
+	// ID is the unique workflow execution ID.
+	ID string
+
+	// StartTime is when the workflow started execution.
+	StartTime time.Time
+
+	// StepCount is the number of steps executed so far.
+	StepCount int
+
+	// Status is the current workflow status.
+	Status WorkflowStatusType
+
+	// DurationMs is the workflow duration in milliseconds.
+	// This is calculated dynamically at template expansion time.
+	DurationMs int64
 }
 
 // WorkflowStateStore manages workflow execution state.
@@ -375,7 +408,7 @@ type ElicitationProtocolHandler interface {
 		ctx context.Context,
 		workflowID string,
 		stepID string,
-		config *ElicitationConfig,
+		elicitConfig *ElicitationConfig,
 	) (*ElicitationResponse, error)
 }
 

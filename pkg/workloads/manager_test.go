@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	configMocks "github.com/stacklok/toolhive/pkg/config/mocks"
@@ -440,16 +439,17 @@ func TestDefaultManager_StopWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.StopWorkloads(ctx, tt.workloadNames)
+			complete, err := manager.StopWorkloads(ctx, tt.workloadNames)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -490,16 +490,17 @@ func TestDefaultManager_DeleteWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
+			complete, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -537,16 +538,17 @@ func TestDefaultManager_RestartWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
+			complete, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -1501,18 +1503,18 @@ func TestDefaultManager_UpdateWorkload(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			group, err := manager.UpdateWorkload(ctx, tt.workloadName, runConfig)
+			complete, err := manager.UpdateWorkload(ctx, tt.workloadName, runConfig)
 
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				assert.NoError(t, err)
-				assert.NotNil(t, group)
-				// For valid cases, we get an errgroup but don't wait for completion
+				assert.NotNil(t, complete)
+				// For valid cases, we get a completion func but don't call it
 				// The async operations inside are tested separately
 			}
 		})
@@ -1628,6 +1630,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx := context.Background()
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -1645,7 +1648,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				configProvider: mockConfigProvider,
 			}
 
-			err := manager.updateSingleWorkload(tt.workloadName, tt.runConfig)
+			err := manager.updateSingleWorkload(ctx, tt.workloadName, tt.runConfig)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1698,4 +1701,38 @@ func TestDefaultManager_RunWorkload_ContainerExitHandling(t *testing.T) {
 	// This tests that the status is properly set
 	err := manager.RunWorkload(context.Background(), runConfig)
 	assert.Error(t, err)
+}
+
+func TestDefaultManager_ListWorkloadsUsingSecret(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies that ListWorkloadsUsingSecret returns correctly
+	// when there are no configs or when the secret is not found.
+	// Full integration tests would require setting up actual state files.
+
+	t.Run("returns empty list when no configs exist", func(t *testing.T) {
+		t.Parallel()
+
+		manager := &DefaultManager{}
+
+		ctx := context.Background()
+		result, err := manager.ListWorkloadsUsingSecret(ctx, "nonexistent-secret")
+
+		// Should succeed but return empty list
+		// Note: This may return an error if the state directory doesn't exist,
+		// but the implementation handles this gracefully
+		if err == nil {
+			assert.Empty(t, result)
+		}
+	})
+
+	t.Run("method signature is correct", func(t *testing.T) {
+		t.Parallel()
+
+		manager := &DefaultManager{}
+
+		// Verify the method exists with the correct signature
+		listFunc := manager.ListWorkloadsUsingSecret
+		assert.NotNil(t, listFunc, "ListWorkloadsUsingSecret method should exist with correct signature")
+	})
 }

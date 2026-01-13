@@ -15,7 +15,6 @@ const (
 	// defaultMaxParallelSteps is the default maximum number of steps to execute in parallel.
 	defaultMaxParallelSteps = 10
 	failureModeContinue     = "continue"
-	failureModeBestEffort   = "best_effort"
 )
 
 // dagExecutor executes workflow steps using a Directed Acyclic Graph (DAG) approach.
@@ -157,7 +156,7 @@ func (*dagExecutor) shouldContinueOnError(step *WorkflowStep, failureMode string
 	}
 
 	// Check workflow-level failure mode
-	return failureMode == failureModeContinue || failureMode == failureModeBestEffort
+	return failureMode == failureModeContinue
 }
 
 // buildExecutionLevels performs topological sort to build execution levels.

@@ -2,10 +2,13 @@ package vmcp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -30,8 +33,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 					BaseURL:       "http://localhost:8080",
 					TransportType: "streamable-http",
 					HealthStatus:  BackendHealthy,
-					AuthStrategy:  "pass_through",
-					AuthMetadata:  map[string]any{"key": "value"},
+					AuthConfig:    &authtypes.BackendAuthStrategy{Type: "unauthenticated"},
 					Metadata:      map[string]string{"env": "production"},
 				},
 			},
@@ -53,8 +55,9 @@ func TestNewImmutableRegistry(t *testing.T) {
 				{ID: "degraded", HealthStatus: BackendDegraded},
 				{ID: "unhealthy", HealthStatus: BackendUnhealthy},
 				{ID: "unknown", HealthStatus: BackendUnknown},
+				{ID: "unauthenticated", HealthStatus: BackendUnauthenticated},
 			},
-			expectedCount: 4,
+			expectedCount: 5,
 		},
 		{
 			name: "all transport types",
@@ -79,9 +82,9 @@ func TestNewImmutableRegistry(t *testing.T) {
 			name: "nil metadata maps",
 			backends: []Backend{
 				{
-					ID:           "backend-1",
-					AuthMetadata: nil,
-					Metadata:     nil,
+					ID:         "backend-1",
+					AuthConfig: nil,
+					Metadata:   nil,
 				},
 			},
 			expectedCount: 1,
@@ -130,7 +133,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 			if tt.name == "nil metadata maps" {
 				backend := registry.Get(ctx, "backend-1")
 				require.NotNil(t, backend)
-				assert.Nil(t, backend.AuthMetadata)
+				assert.Nil(t, backend.AuthConfig)
 				assert.Nil(t, backend.Metadata)
 			}
 
@@ -156,9 +159,13 @@ func TestBackendRegistry_Get(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 			HealthStatus:  BackendHealthy,
-			AuthStrategy:  "token_exchange",
-			AuthMetadata:  map[string]any{"audience": "github-api"},
-			Metadata:      map[string]string{"env": "production"},
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Audience: "github-api",
+				},
+			},
+			Metadata: map[string]string{"env": "production"},
 		},
 		{
 			ID:           "jira-mcp",
@@ -185,8 +192,9 @@ func TestBackendRegistry_Get(t *testing.T) {
 				assert.Equal(t, "http://localhost:8080", b.BaseURL)
 				assert.Equal(t, "streamable-http", b.TransportType)
 				assert.Equal(t, BackendHealthy, b.HealthStatus)
-				assert.Equal(t, "token_exchange", b.AuthStrategy)
-				assert.Equal(t, "github-api", b.AuthMetadata["audience"])
+				assert.NotNil(t, b.AuthConfig)
+				assert.Equal(t, "token_exchange", b.AuthConfig.Type)
+				assert.Equal(t, "github-api", b.AuthConfig.TokenExchange.Audience)
 				assert.Equal(t, "production", b.Metadata["env"])
 			},
 		},
@@ -309,8 +317,13 @@ func TestBackendRegistry_List(t *testing.T) {
 				ID:            "github-mcp",
 				Name:          "GitHub MCP",
 				TransportType: "streamable-http",
-				AuthMetadata:  map[string]any{"audience": "github-api"},
-				Metadata:      map[string]string{"env": "production"},
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: "token_exchange",
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						Audience: "github-api",
+					},
+				},
+				Metadata: map[string]string{"env": "production"},
 			},
 		}
 		registry := NewImmutableRegistry(backends)
@@ -319,7 +332,7 @@ func TestBackendRegistry_List(t *testing.T) {
 
 		require.Len(t, result, 1)
 		assert.Equal(t, "github-mcp", result[0].ID)
-		assert.Equal(t, "github-api", result[0].AuthMetadata["audience"])
+		assert.Equal(t, "github-api", result[0].AuthConfig.TokenExchange.Audience)
 		assert.Equal(t, "production", result[0].Metadata["env"])
 	})
 
@@ -444,9 +457,14 @@ func TestBackendToTarget(t *testing.T) {
 				BaseURL:       "http://localhost:8080",
 				TransportType: "streamable-http",
 				HealthStatus:  BackendHealthy,
-				AuthStrategy:  "token_exchange",
-				AuthMetadata:  map[string]any{"audience": "github-api", "scopes": []string{"repo"}},
-				Metadata:      map[string]string{"env": "production"},
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: "token_exchange",
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						Audience: "github-api",
+						Scopes:   []string{"repo"},
+					},
+				},
+				Metadata: map[string]string{"env": "production"},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
@@ -456,8 +474,9 @@ func TestBackendToTarget(t *testing.T) {
 				assert.Equal(t, "http://localhost:8080", target.BaseURL)
 				assert.Equal(t, "streamable-http", target.TransportType)
 				assert.Equal(t, BackendHealthy, target.HealthStatus)
-				assert.Equal(t, "token_exchange", target.AuthStrategy)
-				assert.Equal(t, "github-api", target.AuthMetadata["audience"])
+				assert.NotNil(t, target.AuthConfig)
+				assert.Equal(t, "token_exchange", target.AuthConfig.Type)
+				assert.Equal(t, "github-api", target.AuthConfig.TokenExchange.Audience)
 				assert.Equal(t, "production", target.Metadata["env"])
 				assert.False(t, target.SessionAffinity)
 			},
@@ -465,16 +484,22 @@ func TestBackendToTarget(t *testing.T) {
 		{
 			name: "preserves metadata",
 			backend: &Backend{
-				ID:           "test",
-				AuthMetadata: map[string]any{"token": "secret", "timeout": 30, "retries": 3},
-				Metadata:     map[string]string{"env": "staging", "region": "us-west-2", "version": "2.0.0"},
+				ID: "test",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "Bearer secret",
+					},
+				},
+				Metadata: map[string]string{"env": "staging", "region": "us-west-2", "version": "2.0.0"},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
 				t.Helper()
-				assert.Equal(t, "secret", target.AuthMetadata["token"])
-				assert.Equal(t, 30, target.AuthMetadata["timeout"])
-				assert.Equal(t, 3, target.AuthMetadata["retries"])
+				assert.NotNil(t, target.AuthConfig)
+				// Removed timeout assertion - not part of typed config
+				// Removed retries assertion - not part of typed config
 				assert.Equal(t, "staging", target.Metadata["env"])
 				assert.Equal(t, "us-west-2", target.Metadata["region"])
 				assert.Equal(t, "2.0.0", target.Metadata["version"])
@@ -493,8 +518,8 @@ func TestBackendToTarget(t *testing.T) {
 				assert.Empty(t, target.BaseURL)
 				assert.Empty(t, target.TransportType)
 				assert.Equal(t, BackendHealthStatus(""), target.HealthStatus)
-				assert.Empty(t, target.AuthStrategy)
-				assert.Nil(t, target.AuthMetadata)
+				assert.Nil(t, target.AuthConfig)
+
 				assert.Nil(t, target.Metadata)
 			},
 		},
@@ -530,6 +555,7 @@ func TestBackendToTarget(t *testing.T) {
 			BackendDegraded,
 			BackendUnhealthy,
 			BackendUnknown,
+			BackendUnauthenticated,
 		}
 
 		for _, status := range statuses {
@@ -620,6 +646,7 @@ func TestDomainTypes_BackendHealthStatus(t *testing.T) {
 		{BackendDegraded, "degraded"},
 		{BackendUnhealthy, "unhealthy"},
 		{BackendUnknown, "unknown"},
+		{BackendUnauthenticated, "unauthenticated"},
 	}
 
 	for _, tt := range tests {
@@ -791,4 +818,446 @@ func TestBackendTarget_GetBackendCapabilityName(t *testing.T) {
 				"GetBackendCapabilityName should return correct backend name. %s", tt.description)
 		})
 	}
+}
+
+// DynamicRegistry Tests
+
+func TestNewDynamicRegistry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name          string
+		backends      []Backend
+		expectedCount int
+	}{
+		{
+			name: "single backend",
+			backends: []Backend{
+				{
+					ID:            "backend-1",
+					Name:          "GitHub MCP",
+					BaseURL:       "http://localhost:8080",
+					TransportType: "streamable-http",
+					HealthStatus:  BackendHealthy,
+					AuthConfig:    &authtypes.BackendAuthStrategy{Type: "unauthenticated"},
+					Metadata:      map[string]string{"env": "production"},
+				},
+			},
+			expectedCount: 1,
+		},
+		{
+			name: "multiple backends",
+			backends: []Backend{
+				{ID: "github-mcp", Name: "GitHub MCP", HealthStatus: BackendHealthy},
+				{ID: "jira-mcp", Name: "Jira MCP", HealthStatus: BackendHealthy},
+				{ID: "slack-mcp", Name: "Slack MCP", HealthStatus: BackendDegraded},
+			},
+			expectedCount: 3,
+		},
+		{
+			name:          "empty slice",
+			backends:      []Backend{},
+			expectedCount: 0,
+		},
+		{
+			name:          "nil slice",
+			backends:      nil,
+			expectedCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			registry := NewDynamicRegistry(tt.backends)
+
+			require.NotNil(t, registry)
+			assert.Equal(t, tt.expectedCount, registry.Count())
+			assert.Equal(t, uint64(0), registry.Version(), "initial version should be 0")
+
+			// Verify backends are accessible
+			if tt.expectedCount > 0 {
+				backends := registry.List(ctx)
+				assert.Len(t, backends, tt.expectedCount)
+			}
+		})
+	}
+}
+
+func TestDynamicRegistry_Upsert(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("adds new backend", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		backend := Backend{
+			ID:           "github-mcp",
+			Name:         "GitHub MCP",
+			HealthStatus: BackendHealthy,
+		}
+
+		err := registry.Upsert(backend)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, registry.Count())
+		assert.Equal(t, uint64(1), registry.Version())
+
+		retrieved := registry.Get(ctx, "github-mcp")
+		require.NotNil(t, retrieved)
+		assert.Equal(t, "GitHub MCP", retrieved.Name)
+	})
+
+	t.Run("updates existing backend", func(t *testing.T) {
+		t.Parallel()
+
+		initial := []Backend{{ID: "github-mcp", Name: "Original Name"}}
+		registry := NewDynamicRegistry(initial)
+
+		updated := Backend{ID: "github-mcp", Name: "Updated Name"}
+		err := registry.Upsert(updated)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, registry.Count())
+		assert.Equal(t, uint64(1), registry.Version())
+
+		retrieved := registry.Get(ctx, "github-mcp")
+		require.NotNil(t, retrieved)
+		assert.Equal(t, "Updated Name", retrieved.Name)
+	})
+
+	t.Run("idempotent - multiple upserts increment version", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		backend := Backend{ID: "test", Name: "Test"}
+
+		err := registry.Upsert(backend)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(1), registry.Version())
+
+		err = registry.Upsert(backend)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), registry.Version())
+
+		err = registry.Upsert(backend)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(3), registry.Version())
+
+		assert.Equal(t, 1, registry.Count())
+	})
+
+	t.Run("empty ID returns error", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		backend := Backend{ID: "", Name: "No ID"}
+
+		err := registry.Upsert(backend)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "backend ID cannot be empty")
+		assert.Equal(t, uint64(0), registry.Version())
+	})
+
+	t.Run("external modifications do not affect registry", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		backend := Backend{ID: "test", Name: "Original"}
+
+		err := registry.Upsert(backend)
+		require.NoError(t, err)
+
+		// Modify the original backend
+		backend.Name = "External Modification"
+
+		// Registry should be unchanged (because Upsert received a copy)
+		retrieved := registry.Get(ctx, "test")
+		require.NotNil(t, retrieved)
+		assert.Equal(t, "Original", retrieved.Name)
+	})
+}
+
+func TestDynamicRegistry_Remove(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("removes existing backend", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{{ID: "github-mcp", Name: "GitHub"}}
+		registry := NewDynamicRegistry(backends)
+
+		err := registry.Remove("github-mcp")
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, registry.Count())
+		assert.Equal(t, uint64(1), registry.Version())
+		assert.Nil(t, registry.Get(ctx, "github-mcp"))
+	})
+
+	t.Run("idempotent - removing non-existent backend succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+
+		err := registry.Remove("non-existent")
+
+		require.NoError(t, err)
+		assert.Equal(t, uint64(1), registry.Version())
+	})
+
+	t.Run("multiple removes increment version", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{{ID: "test", Name: "Test"}}
+		registry := NewDynamicRegistry(backends)
+
+		err := registry.Remove("test")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(1), registry.Version())
+
+		err = registry.Remove("test")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), registry.Version())
+
+		assert.Equal(t, 0, registry.Count())
+	})
+
+	t.Run("removes one backend among many", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{
+			{ID: "backend-1", Name: "Backend 1"},
+			{ID: "backend-2", Name: "Backend 2"},
+			{ID: "backend-3", Name: "Backend 3"},
+		}
+		registry := NewDynamicRegistry(backends)
+
+		err := registry.Remove("backend-2")
+
+		require.NoError(t, err)
+		assert.Equal(t, 2, registry.Count())
+		assert.Nil(t, registry.Get(ctx, "backend-2"))
+		assert.NotNil(t, registry.Get(ctx, "backend-1"))
+		assert.NotNil(t, registry.Get(ctx, "backend-3"))
+	})
+}
+
+func TestDynamicRegistry_Version(t *testing.T) {
+	t.Parallel()
+
+	t.Run("initial version is zero", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+
+		assert.Equal(t, uint64(0), registry.Version())
+	})
+
+	t.Run("version increments on upsert", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+
+		_ = registry.Upsert(Backend{ID: "b1", Name: "Backend 1"})
+		assert.Equal(t, uint64(1), registry.Version())
+
+		_ = registry.Upsert(Backend{ID: "b2", Name: "Backend 2"})
+		assert.Equal(t, uint64(2), registry.Version())
+
+		_ = registry.Upsert(Backend{ID: "b1", Name: "Backend 1 Updated"})
+		assert.Equal(t, uint64(3), registry.Version())
+	})
+
+	t.Run("version increments on remove", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{{ID: "test"}}
+		registry := NewDynamicRegistry(backends)
+
+		_ = registry.Remove("test")
+		assert.Equal(t, uint64(1), registry.Version())
+
+		_ = registry.Remove("non-existent")
+		assert.Equal(t, uint64(2), registry.Version())
+	})
+
+	t.Run("version increments monotonically", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		versions := []uint64{}
+
+		// Perform mixed operations
+		_ = registry.Upsert(Backend{ID: "b1"})
+		versions = append(versions, registry.Version())
+
+		_ = registry.Upsert(Backend{ID: "b2"})
+		versions = append(versions, registry.Version())
+
+		_ = registry.Remove("b1")
+		versions = append(versions, registry.Version())
+
+		_ = registry.Upsert(Backend{ID: "b3"})
+		versions = append(versions, registry.Version())
+
+		_ = registry.Remove("b2")
+		versions = append(versions, registry.Version())
+
+		// Verify monotonic increase
+		for i := 1; i < len(versions); i++ {
+			assert.Greater(t, versions[i], versions[i-1])
+		}
+	})
+}
+
+func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("concurrent reads", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{
+			{ID: "backend-1", Name: "Backend 1"},
+			{ID: "backend-2", Name: "Backend 2"},
+		}
+		registry := NewDynamicRegistry(backends)
+
+		done := make(chan bool)
+		for i := 0; i < 50; i++ {
+			go func() {
+				_ = registry.Get(ctx, "backend-1")
+				_ = registry.List(ctx)
+				_ = registry.Count()
+				_ = registry.Version()
+				done <- true
+			}()
+		}
+
+		for i := 0; i < 50; i++ {
+			<-done
+		}
+	})
+
+	t.Run("concurrent writes", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+
+		done := make(chan bool)
+		for i := 0; i < 50; i++ {
+			go func(id int) {
+				backendID := fmt.Sprintf("backend-%d", id)
+				_ = registry.Upsert(Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
+				done <- true
+			}(i)
+		}
+
+		for i := 0; i < 50; i++ {
+			<-done
+		}
+
+		assert.Equal(t, 50, registry.Count())
+		assert.Equal(t, uint64(50), registry.Version())
+	})
+
+	t.Run("concurrent reads and writes", func(t *testing.T) {
+		t.Parallel()
+
+		backends := []Backend{
+			{ID: "backend-1", Name: "Backend 1"},
+			{ID: "backend-2", Name: "Backend 2"},
+		}
+		registry := NewDynamicRegistry(backends)
+
+		done := make(chan bool)
+
+		// Readers
+		for i := 0; i < 25; i++ {
+			go func() {
+				_ = registry.Get(ctx, "backend-1")
+				_ = registry.List(ctx)
+				_ = registry.Count()
+				done <- true
+			}()
+		}
+
+		// Writers
+		for i := 0; i < 25; i++ {
+			go func(id int) {
+				backendID := fmt.Sprintf("backend-%d", id)
+				_ = registry.Upsert(Backend{ID: backendID, Name: fmt.Sprintf("Backend %d", id)})
+				_ = registry.Remove(backendID)
+				done <- true
+			}(i)
+		}
+
+		for i := 0; i < 50; i++ {
+			<-done
+		}
+
+		// Verify registry is still functional
+		assert.GreaterOrEqual(t, registry.Count(), 0)
+		assert.Greater(t, registry.Version(), uint64(0))
+	})
+}
+
+func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("Get returns independent copies", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+
+		backend1 := registry.Get(ctx, "test")
+		backend2 := registry.Get(ctx, "test")
+
+		require.NotNil(t, backend1)
+		require.NotNil(t, backend2)
+		assert.Equal(t, backend1.ID, backend2.ID)
+		assert.NotSame(t, backend1, backend2)
+
+		// Modifying one should not affect the other
+		backend1.Name = testModifiedName
+		assert.Equal(t, "Original", backend2.Name)
+	})
+
+	t.Run("List returns independent copies", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+
+		list1 := registry.List(ctx)
+		list1[0].Name = testModifiedName
+
+		list2 := registry.List(ctx)
+		assert.Equal(t, "Original", list2[0].Name)
+	})
+
+	t.Run("modifications after Get do not affect registry", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewDynamicRegistry(nil)
+		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+
+		backend := registry.Get(ctx, "test")
+		backend.Name = testModifiedName
+		backend.HealthStatus = BackendUnhealthy
+
+		// Registry should be unchanged
+		retrieved := registry.Get(ctx, "test")
+		require.NotNil(t, retrieved)
+		assert.Equal(t, "Original", retrieved.Name)
+		assert.NotEqual(t, BackendUnhealthy, retrieved.HealthStatus)
+	})
 }

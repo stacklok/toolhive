@@ -129,73 +129,6 @@ func TestStatusCollector_SetAPIReadyCondition(t *testing.T) {
 		})
 	}
 }
-
-func TestStatusCollector_SetSyncStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		phase        mcpv1alpha1.SyncPhase
-		message      string
-		attemptCount int
-		lastSyncTime *metav1.Time
-		lastSyncHash string
-		serverCount  int
-	}{
-		{
-			name:         "sync status complete",
-			phase:        mcpv1alpha1.SyncPhaseComplete,
-			message:      "No sync required",
-			attemptCount: 0,
-			lastSyncTime: &metav1.Time{Time: metav1.Now().Time},
-			lastSyncHash: "abc123",
-			serverCount:  5,
-		},
-		{
-			name:         "sync status syncing",
-			phase:        mcpv1alpha1.SyncPhaseSyncing,
-			message:      "Sync in progress",
-			attemptCount: 1,
-			lastSyncTime: nil,
-			lastSyncHash: "",
-			serverCount:  0,
-		},
-		{
-			name:         "sync status failed",
-			phase:        mcpv1alpha1.SyncPhaseFailed,
-			message:      "Sync failed: connection timeout",
-			attemptCount: 3,
-			lastSyncTime: &metav1.Time{Time: metav1.Now().Time},
-			lastSyncHash: "old-hash",
-			serverCount:  2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			registry := &mcpv1alpha1.MCPRegistry{}
-			collector := NewStatusManager(registry).(*StatusCollector)
-
-			collector.SetSyncStatus(tt.phase, tt.message, tt.attemptCount, tt.lastSyncTime, tt.lastSyncHash, tt.serverCount)
-
-			assert.True(t, collector.hasChanges)
-			assert.NotNil(t, collector.syncStatus)
-
-			syncStatus := collector.syncStatus
-			assert.Equal(t, tt.phase, syncStatus.Phase)
-			assert.Equal(t, tt.message, syncStatus.Message)
-			assert.Equal(t, tt.attemptCount, syncStatus.AttemptCount)
-			assert.Equal(t, tt.lastSyncTime, syncStatus.LastSyncTime)
-			assert.Equal(t, tt.lastSyncHash, syncStatus.LastSyncHash)
-			assert.Equal(t, tt.serverCount, syncStatus.ServerCount)
-			// LastAttempt should be set to now
-			assert.NotNil(t, syncStatus.LastAttempt)
-		})
-	}
-}
-
 func TestStatusCollector_SetAPIStatus(t *testing.T) {
 	t.Parallel()
 
@@ -345,7 +278,6 @@ func TestStatusCollector_Apply(t *testing.T) {
 		// Set various status fields
 		collector.SetPhase(mcpv1alpha1.MCPRegistryPhaseReady)
 		collector.SetMessage("Registry is ready")
-		collector.SetSyncStatus(mcpv1alpha1.SyncPhaseComplete, "Sync complete", 0, &metav1.Time{}, "hash123", 5)
 		collector.SetAPIStatus(mcpv1alpha1.APIPhaseReady, "API ready", "http://test-api.default.svc.cluster.local:8080")
 		collector.SetAPIReadyCondition("APIReady", "API is ready", metav1.ConditionTrue)
 
@@ -355,8 +287,6 @@ func TestStatusCollector_Apply(t *testing.T) {
 		assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, *collector.phase)
 		assert.NotNil(t, collector.message)
 		assert.Equal(t, "Registry is ready", *collector.message)
-		assert.NotNil(t, collector.syncStatus)
-		assert.Equal(t, mcpv1alpha1.SyncPhaseComplete, collector.syncStatus.Phase)
 		assert.NotNil(t, collector.apiStatus)
 		assert.Equal(t, mcpv1alpha1.APIPhaseReady, collector.apiStatus.Phase)
 		assert.Equal(t, "http://test-api.default.svc.cluster.local:8080", collector.apiStatus.Endpoint)
@@ -423,23 +353,6 @@ func TestStatusCollector_NoUpdates(t *testing.T) {
 
 func TestStatusCollector_InterfaceMethods(t *testing.T) {
 	t.Parallel()
-
-	t.Run("Sync method returns sync collector", func(t *testing.T) {
-		t.Parallel()
-
-		registry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-registry",
-				Namespace: "default",
-			},
-		}
-		collector := newStatusCollector(registry)
-
-		syncCollector := collector.Sync()
-		assert.NotNil(t, syncCollector)
-		assert.IsType(t, &syncStatusCollector{}, syncCollector)
-	})
-
 	t.Run("API method returns API collector", func(t *testing.T) {
 		t.Parallel()
 
@@ -472,68 +385,6 @@ func TestStatusCollector_InterfaceMethods(t *testing.T) {
 		assert.True(t, collector.hasChanges)
 		assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, *collector.phase)
 		assert.Equal(t, "Test message", *collector.message)
-	})
-}
-
-func TestSyncStatusCollector_Methods(t *testing.T) {
-	t.Parallel()
-
-	t.Run("SetSyncCondition delegates correctly", func(t *testing.T) {
-		t.Parallel()
-
-		registry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-registry",
-				Namespace: "default",
-			},
-		}
-		collector := newStatusCollector(registry)
-		syncCollector := collector.Sync()
-
-		condition := metav1.Condition{
-			Type:    "TestCondition",
-			Status:  metav1.ConditionTrue,
-			Reason:  "TestReason",
-			Message: "Test message",
-		}
-
-		syncCollector.SetSyncCondition(condition)
-
-		assert.True(t, collector.hasChanges)
-		assert.Contains(t, collector.conditions, "TestCondition")
-		assert.Equal(t, condition, collector.conditions["TestCondition"])
-	})
-
-	t.Run("SetSyncStatus delegates correctly", func(t *testing.T) {
-		t.Parallel()
-
-		registry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-registry",
-				Namespace: "default",
-			},
-		}
-		collector := newStatusCollector(registry)
-		syncCollector := collector.Sync()
-
-		now := metav1.Now()
-		syncCollector.SetSyncStatus(
-			mcpv1alpha1.SyncPhaseComplete,
-			"Sync completed",
-			1,
-			&now,
-			"hash123",
-			5,
-		)
-
-		assert.True(t, collector.hasChanges)
-		assert.NotNil(t, collector.syncStatus)
-		assert.Equal(t, mcpv1alpha1.SyncPhaseComplete, collector.syncStatus.Phase)
-		assert.Equal(t, "Sync completed", collector.syncStatus.Message)
-		assert.Equal(t, 1, collector.syncStatus.AttemptCount)
-		assert.Equal(t, &now, collector.syncStatus.LastSyncTime)
-		assert.Equal(t, "hash123", collector.syncStatus.LastSyncHash)
-		assert.Equal(t, 5, collector.syncStatus.ServerCount)
 	})
 }
 

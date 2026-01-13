@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -93,7 +91,31 @@ You can specify the network mode for the container using the --network flag:
 - Custom network: $ thv run --network my-network <image>
 - Default (bridge): $ thv run <image>
 
-The --network flag accepts any Docker-compatible network mode.`,
+The --network flag accepts any Docker-compatible network mode.
+
+Examples:
+  # Run a server from the registry
+  thv run filesystem
+
+  # Run a server with custom arguments and toolsets
+  thv run github -- --toolsets repos
+
+  # Run from a container image
+  thv run ghcr.io/github/github-mcp-server
+
+  # Run using a protocol scheme (Python with uv)
+  thv run uvx://mcp-server-git
+
+  # Run using npx (Node.js)
+  thv run npx://@modelcontextprotocol/server-everything
+
+  # Run a server in a specific group
+  thv run filesystem --group production
+
+# Run a remote GitHub MCP server with authentication
+thv run github-remote --remote-auth \
+  --remote-auth-client-id <oauth-client-id> \
+  --remote-auth-client-secret <oauth-client-secret>`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {
@@ -126,24 +148,17 @@ func init() {
 	AddOIDCFlags(runCmd)
 }
 
-func cleanupAndWait(workloadManager workloads.Manager, name string, cancel context.CancelFunc, errCh <-chan error) {
+func cleanupAndWait(workloadManager workloads.Manager, name string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 
-	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	complete, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
 	if err != nil {
 		logger.Warnf("Failed to delete workload %q: %v", name, err)
-	} else if group != nil {
-		if err := group.Wait(); err != nil {
-			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+	} else if complete != nil {
+		if err := complete(); err != nil {
+			logger.Warnf("DeleteWorkloads error for %q: %v", name, err)
 		}
-	}
-
-	cancel()
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		logger.Warnf("Timeout waiting for workload to stop")
 	}
 }
 
@@ -193,11 +208,11 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	if runFlags.Name == "" {
@@ -206,7 +221,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
 	if err != nil {
-		return fmt.Errorf("failed to check if workload exists: %v", err)
+		return fmt.Errorf("failed to check if workload exists: %w", err)
 	}
 	if exists {
 		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
@@ -225,7 +240,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	// Always save the run config to disk before starting (both foreground and detached modes)
 	// NOTE: Save before secrets processing to avoid storing secrets in the state store
 	if err := runnerConfig.SaveState(ctx); err != nil {
-		return fmt.Errorf("failed to save run configuration: %v", err)
+		return fmt.Errorf("failed to save run configuration: %w", err)
 	}
 
 	if runFlags.Foreground {
@@ -304,28 +319,26 @@ func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
 	}()
 
-	select {
-	case sig := <-sigCh:
-		if !process.IsDetached() {
-			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
-			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
-		}
-		return nil
-	case err := <-errCh:
-		return err
+	// workloadManager.RunWorkload will block until the context is cancelled
+	// or an unrecoverable error is returned. In either case, it will stop the server.
+	// We wait until workloadManager.RunWorkload exits before deleting the workload,
+	// so stopping and deleting don't race.
+	//
+	// There's room for improvement in the factoring here.
+	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
+	err := <-errCh
+	if !process.IsDetached() {
+		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
+	return err
+
 }
 
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
@@ -347,7 +360,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 	// Create group manager
 	groupManager, err := groups.NewManager()
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %v", err)
+		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
 	// Check if the workload is already in a group
@@ -355,7 +368,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 	if err != nil {
 		// If the workload does not exist, we can proceed to create it
 		if !errors.Is(err, runtime.ErrWorkloadNotFound) {
-			return fmt.Errorf("failed to get workload: %v", err)
+			return fmt.Errorf("failed to get workload: %w", err)
 		}
 	} else if workload.Group != "" && workload.Group != runFlags.Group {
 		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, workload.Group)
@@ -365,7 +378,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 		// Validate that the group specified exists
 		exists, err := groupManager.Exists(ctx, runFlags.Group)
 		if err != nil {
-			return fmt.Errorf("failed to check if group exists: %v", err)
+			return fmt.Errorf("failed to check if group exists: %w", err)
 		}
 		if !exists {
 			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
@@ -423,7 +436,10 @@ func runFromConfigFile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to open configuration file '%s': %w", runFlags.FromConfig, err)
 	}
-	defer configFile.Close()
+	defer func() {
+		// Non-fatal: file cleanup failure after reading
+		_ = configFile.Close()
+	}()
 
 	// Deserialize the configuration
 	runConfig, err := runner.ReadJSON(configFile)
@@ -434,7 +450,7 @@ func runFromConfigFile(ctx context.Context) error {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	// Set the runtime in the config
@@ -443,13 +459,13 @@ func runFromConfigFile(ctx context.Context) error {
 	// Create workload manager
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	// Save the run config to disk in the usual directory (before running)
 	// This ensures that imported configs are persisted like normal runs
 	if err := runConfig.SaveState(ctx); err != nil {
-		return fmt.Errorf("failed to save run configuration: %v", err)
+		return fmt.Errorf("failed to save run configuration: %w", err)
 	}
 
 	// Run the workload based on foreground flag
@@ -485,11 +501,19 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 	// Validate --from-config flag usage
 	fromConfigFlag := cmd.Flags().Lookup("from-config")
 	if fromConfigFlag != nil && fromConfigFlag.Value.String() != "" {
-		// When --from-config is used, no other flags should be changed
+		// When --from-config is used, only execution-related flags are allowed
+		// Execution-related flags control HOW to run (foreground vs detached)
+		// Configuration flags control WHAT to run and should not be mixed with --from-config
+		allowedFlags := map[string]bool{
+			"from-config": true,
+			"foreground":  true,
+			"debug":       true, // Debug is also an execution flag
+		}
+
 		var conflictingFlags []string
 		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-			// Skip the from-config flag itself and only check flags that were changed
-			if flag.Name != "from-config" && flag.Changed {
+			// Skip allowed flags and only check flags that were changed
+			if !allowedFlags[flag.Name] && flag.Changed {
 				conflictingFlags = append(conflictingFlags, "--"+flag.Name)
 			}
 		})
@@ -497,6 +521,13 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 		if len(conflictingFlags) > 0 {
 			return fmt.Errorf("--from-config cannot be used with other configuration flags: %v", conflictingFlags)
 		}
+	}
+
+	// Show deprecation warning if --proxy-mode is explicitly set to SSE
+	proxyModeFlag := cmd.Flags().Lookup("proxy-mode")
+	if proxyModeFlag != nil && proxyModeFlag.Changed && proxyModeFlag.Value.String() == "sse" {
+		logger.Warn("The 'sse' proxy mode is deprecated and will be removed in a future release. " +
+			"Please migrate to 'streamable-http' (the new default).")
 	}
 
 	return nil

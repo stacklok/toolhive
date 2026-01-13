@@ -9,7 +9,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-09-08T12:00:00Z",
       "servers": {
@@ -150,8 +150,9 @@ spec:
   # - docker.io/anthropic/mcp-tools:v1.0.0
   # - docker.io/mcp/code-analyzer:v2.1.0 (from the development-tools group)
   enforceServers: true
-  source:
-    type: configmap
-    configMapRef:
-      name: enforcing-registry-data
-      key: registry.json
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: enforcing-registry-data
+        key: registry.json

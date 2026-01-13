@@ -830,7 +830,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 					Endpoint:                    "", // No endpoint to avoid network dependency
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.1,
+					SamplingRate:                "0.1",
 					Headers:                     map[string]string{"Authorization": "Bearer token"},
 					EnablePrometheusMetricsPath: false,
 					EnvironmentVariables:        []string{"NODE_ENV"},
@@ -850,7 +850,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 					Endpoint:                    "", // No endpoint - using Prometheus only
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.5,
+					SamplingRate:                "0.5",
 					Headers:                     map[string]string{},
 					EnablePrometheusMetricsPath: true,
 					EnvironmentVariables:        []string{},
@@ -872,7 +872,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 					Endpoint:                    "", // No OTLP endpoint
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.0,
+					SamplingRate:                "0.0",
 					Headers:                     map[string]string{},
 					Insecure:                    false,
 					EnablePrometheusMetricsPath: true,
@@ -895,7 +895,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 					Endpoint:                    "", // No OTLP endpoint
 					ServiceName:                 "minimal-service",
 					ServiceVersion:              "0.1.0",
-					SamplingRate:                0.0,
+					SamplingRate:                "0.0",
 					Headers:                     map[string]string{},
 					Insecure:                    false,
 					EnablePrometheusMetricsPath: false, // No Prometheus either
@@ -991,7 +991,7 @@ func TestCreateMiddleware_InvalidConfig(t *testing.T) {
 					Endpoint:                    "", // No endpoint to avoid network dependency
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.1,
+					SamplingRate:                "0.1",
 					EnablePrometheusMetricsPath: false,
 				},
 				ServerName: "", // Empty server name should still work
@@ -1009,7 +1009,7 @@ func TestCreateMiddleware_InvalidConfig(t *testing.T) {
 					Endpoint:                    "", // No endpoint to avoid network dependency
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.1,
+					SamplingRate:                "0.1",
 					EnablePrometheusMetricsPath: false,
 				},
 				ServerName: "github",
@@ -1084,7 +1084,7 @@ func TestFactoryMiddleware_Handler(t *testing.T) {
 					Endpoint:                    "", // No endpoint to avoid network dependency
 					ServiceName:                 "test-service",
 					ServiceVersion:              "1.0.0",
-					SamplingRate:                0.1,
+					SamplingRate:                "0.1",
 					EnablePrometheusMetricsPath: false,
 				}
 				return NewProvider(context.Background(), config)
@@ -1454,7 +1454,7 @@ func TestFactoryMiddleware_Integration(t *testing.T) {
 				Endpoint:                    "", // No endpoint to avoid network dependencies
 				ServiceName:                 "otlp-integration-test",
 				ServiceVersion:              "1.0.0",
-				SamplingRate:                0.1,
+				SamplingRate:                "0.1",
 				Headers:                     map[string]string{"Authorization": "Bearer test"},
 				EnablePrometheusMetricsPath: false,
 				EnvironmentVariables:        []string{"NODE_ENV", "SERVICE_ENV"},

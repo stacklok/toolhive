@@ -46,7 +46,7 @@ type HTTPMiddleware struct {
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
-// transport is the backend transport type ("stdio" or "sse")
+// transport is the backend transport type ("stdio", "sse", or "streamable-http").
 func NewHTTPMiddleware(
 	config Config,
 	tracerProvider trace.TracerProvider,
@@ -91,15 +91,9 @@ func NewHTTPMiddleware(
 // Handler implements the middleware function that wraps HTTP handlers.
 // This middleware should be placed after the MCP parsing middleware in the chain
 // to leverage the parsed MCP data.
+// Note: Panic recovery is handled by the dedicated recovery middleware.
 func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Ultimate safety net - telemetry must NEVER crash the service
-		defer func() {
-			if rec := recover(); rec != nil {
-				logger.Errorf("Telemetry middleware panic (non-fatal): %v", rec)
-			}
-		}()
-
 		ctx := r.Context()
 
 		// Handle SSE endpoints specially - they are long-lived connections
@@ -130,15 +124,7 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
 		spanName := m.createSpanName(ctx, r)
 		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
-		// End span with error handling - this is where OTLP export happens
-		defer func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					logger.Debugf("Telemetry span.End() panic (non-fatal): %v", rec)
-				}
-			}()
-			span.End()
-		}()
+		defer span.End()
 
 		// Create a response writer wrapper to capture response details
 		rw := &responseWriter{
@@ -420,16 +406,9 @@ type responseWriter struct {
 	bytesWritten int64
 }
 
-// WriteHeader captures the status code with panic protection.
+// WriteHeader captures the status code.
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.statusCode = statusCode
-
-	// Wrap the actual WriteHeader call to catch any panics (including duplicate calls)
-	defer func() {
-		if rec := recover(); rec != nil {
-			logger.Debugf("WriteHeader panic recovered (non-fatal): %v", rec)
-		}
-	}()
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 

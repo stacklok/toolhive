@@ -1,0 +1,208 @@
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmcp-audit-configuration
+spec:
+  description: Test VirtualMCPServer audit configuration CRD validation
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+  steps:
+    - name: verify-operator
+      description: Ensure operator is ready before testing
+      try:
+        - assert:
+            file: ../../setup/assert-operator-ready.yaml
+
+    - name: create-mcpgroup-for-audit
+      description: Create MCPGroup for audit testing
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPGroup
+              metadata:
+                name: test-audit-group
+                namespace: toolhive-system
+              spec:
+                description: "Test group for VirtualMCPServer audit validation"
+
+    - name: create-vmcp-with-audit-enabled
+      description: Create VirtualMCPServer with audit enabled
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-audit-enabled
+                namespace: toolhive-system
+              spec:
+                config:
+                  groupRef: test-audit-group
+                  audit:
+                    enabled: true
+                incomingAuth:
+                  type: anonymous
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-audit-enabled
+                namespace: toolhive-system
+
+    - name: verify-audit-enabled-in-spec
+      description: Verify audit configuration is persisted in the CRD spec
+      try:
+        - script:
+            content: |
+              #!/bin/bash
+              echo "Verifying audit configuration in VirtualMCPServer spec..."
+
+              # Get the audit.enabled field from the spec.config
+              AUDIT_ENABLED=$(kubectl get virtualmcpserver \
+                test-vmcp-audit-enabled -n toolhive-system \
+                -o jsonpath='{.spec.config.audit.enabled}' 2>/dev/null || echo "")
+
+              if [ "$AUDIT_ENABLED" = "true" ]; then
+                echo "✓ Audit is enabled in the spec"
+                exit 0
+              fi
+
+              echo "✗ Audit is not enabled or field is missing: '$AUDIT_ENABLED'"
+              kubectl get virtualmcpserver test-vmcp-audit-enabled \
+                -n toolhive-system -o yaml
+              exit 1
+
+    - name: create-vmcp-without-audit
+      description: Create VirtualMCPServer without audit configuration
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-no-audit
+                namespace: toolhive-system
+              spec:
+                config:
+                  groupRef: test-audit-group
+                incomingAuth:
+                  type: anonymous
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-no-audit
+                namespace: toolhive-system
+
+    - name: verify-no-audit-in-spec
+      description: Verify audit field is nil or disabled when not specified
+      try:
+        - script:
+            content: |
+              #!/bin/bash
+              echo "Verifying audit is not configured..."
+
+              # Get the audit field from the spec.config (should be null or not present)
+              AUDIT_FIELD=$(kubectl get virtualmcpserver test-vmcp-no-audit \
+                -n toolhive-system -o jsonpath='{.spec.config.audit}' \
+                2>/dev/null || echo "")
+
+              if [ -z "$AUDIT_FIELD" ] || [ "$AUDIT_FIELD" = "null" ]; then
+                echo "✓ Audit field is not set (as expected)"
+                exit 0
+              fi
+
+              # If audit field exists, check if enabled is false
+              AUDIT_ENABLED=$(kubectl get virtualmcpserver test-vmcp-no-audit \
+                -n toolhive-system -o jsonpath='{.spec.config.audit.enabled}' \
+                2>/dev/null || echo "")
+              if [ "$AUDIT_ENABLED" = "false" ] || [ -z "$AUDIT_ENABLED" ]
+              then
+                echo "✓ Audit is disabled or not set"
+                exit 0
+              fi
+
+              echo "✗ Unexpected audit configuration: \
+                audit field='$AUDIT_FIELD', enabled='$AUDIT_ENABLED'"
+              kubectl get virtualmcpserver test-vmcp-no-audit \
+                -n toolhive-system -o yaml
+              exit 1
+
+    - name: create-vmcp-with-audit-disabled
+      description: Create VirtualMCPServer with audit explicitly disabled
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-audit-disabled
+                namespace: toolhive-system
+              spec:
+                config:
+                  groupRef: test-audit-group
+                  audit:
+                    enabled: false
+                incomingAuth:
+                  type: anonymous
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-vmcp-audit-disabled
+                namespace: toolhive-system
+
+    - name: verify-audit-disabled-in-spec
+      description: Verify audit is explicitly disabled
+      try:
+        - script:
+            content: |
+              #!/bin/bash
+              echo "Verifying audit is explicitly disabled..."
+
+              AUDIT_ENABLED=$(kubectl get virtualmcpserver \
+                test-vmcp-audit-disabled -n toolhive-system \
+                -o jsonpath='{.spec.config.audit.enabled}' 2>/dev/null || echo "")
+
+              if [ "$AUDIT_ENABLED" = "false" ]; then
+                echo "✓ Audit is explicitly disabled"
+                exit 0
+              fi
+
+              echo "✗ Audit enabled value is not false: '$AUDIT_ENABLED'"
+              kubectl get virtualmcpserver test-vmcp-audit-disabled \
+                -n toolhive-system -o yaml
+              exit 1
+
+    - name: verify-crd-schema-accepts-audit
+      description: Verify CRD schema includes audit field
+      try:
+        - script:
+            content: |
+              #!/bin/bash
+              echo "Verifying VirtualMCPServer CRD schema includes audit..."
+
+              # Check if the CRD definition includes the audit field
+              AUDIT_SCHEMA=$(kubectl get crd \
+                virtualmcpservers.toolhive.stacklok.dev \
+                -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.audit}' \
+                2>/dev/null || echo "")
+
+              if [ -n "$AUDIT_SCHEMA" ] && [ "$AUDIT_SCHEMA" != "null" ]
+              then
+                echo "✓ CRD schema includes audit field"
+                echo "Audit field schema: $AUDIT_SCHEMA"
+                exit 0
+              fi
+
+              echo "✗ CRD schema does not include audit field"
+              kubectl get crd virtualmcpservers.toolhive.stacklok.dev \
+                -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' | jq .
+              exit 1

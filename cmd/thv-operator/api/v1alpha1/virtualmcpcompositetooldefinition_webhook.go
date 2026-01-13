@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
 	"text/template"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/xeipuuv/gojsonschema"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -85,12 +84,11 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 	// Validate failure mode
 	if r.Spec.FailureMode != "" {
 		validModes := map[string]bool{
-			"abort":       true,
-			"continue":    true,
-			"best_effort": true,
+			ErrorActionAbort:    true,
+			ErrorActionContinue: true,
 		}
 		if !validModes[r.Spec.FailureMode] {
-			errors = append(errors, "spec.failureMode must be one of: abort, continue, best_effort")
+			errors = append(errors, "spec.failureMode must be one of: abort, continue")
 		}
 	}
 
@@ -103,60 +101,37 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 
 // validateParameters validates the parameter schema using JSON Schema validation
 func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
-	if len(r.Spec.Parameters) == 0 {
+	if r.Spec.Parameters == nil || len(r.Spec.Parameters.Raw) == 0 {
 		return nil // No parameters to validate
 	}
 
-	// Build a JSON Schema object from the parameters
-	// Parameters map to a JSON Schema "properties" object
-	properties := make(map[string]interface{})
-	var required []string
-
-	for paramName, param := range r.Spec.Parameters {
-		if param.Type == "" {
-			return fmt.Errorf("spec.parameters[%s].type is required", paramName)
-		}
-
-		// Build a JSON Schema property definition
-		property := map[string]interface{}{
-			"type": param.Type,
-		}
-
-		if param.Description != "" {
-			property["description"] = param.Description
-		}
-
-		if param.Default != "" {
-			// Parse default value based on type
-			property["default"] = param.Default
-		}
-
-		if param.Required {
-			required = append(required, paramName)
-		}
-
-		properties[paramName] = property
+	// Parameters should be a JSON Schema object in RawExtension format
+	// Unmarshal to validate structure
+	var params map[string]interface{}
+	if err := json.Unmarshal(r.Spec.Parameters.Raw, &params); err != nil {
+		return fmt.Errorf("spec.parameters: invalid JSON: %w", err)
 	}
 
-	// Construct a full JSON Schema document
-	schemaDoc := map[string]interface{}{
-		"type":       "object",
-		"properties": properties,
+	// Validate that it has "type" field
+	typeVal, hasType := params["type"]
+	if !hasType {
+		return fmt.Errorf("spec.parameters: must have 'type' field (should be 'object' for JSON Schema)")
 	}
 
-	if len(required) > 0 {
-		schemaDoc["required"] = required
+	// Type must be a string
+	typeStr, ok := typeVal.(string)
+	if !ok {
+		return fmt.Errorf("spec.parameters: 'type' field must be a string")
 	}
 
-	// Marshal to JSON
-	schemaJSON, err := json.Marshal(schemaDoc)
-	if err != nil {
-		return fmt.Errorf("spec.parameters: failed to marshal schema: %v", err)
+	// Type should be "object" for parameter schemas
+	if typeStr != "object" {
+		return fmt.Errorf("spec.parameters: 'type' must be 'object' (got '%s')", typeStr)
 	}
 
 	// Validate using JSON Schema validator
-	if err := validateJSONSchema(schemaJSON); err != nil {
-		return fmt.Errorf("spec.parameters: invalid JSON Schema: %v", err)
+	if err := validateJSONSchema(r.Spec.Parameters.Raw); err != nil {
+		return fmt.Errorf("spec.parameters: invalid JSON Schema: %w", err)
 	}
 
 	return nil
@@ -189,7 +164,12 @@ func (r *VirtualMCPCompositeToolDefinition) validateSteps() error {
 	}
 
 	// Third pass: validate dependencies don't create cycles
-	return r.validateDependencyCycles()
+	if err := r.validateDependencyCycles(); err != nil {
+		return err
+	}
+
+	// Fourth pass: validate defaultResults for skippable steps
+	return validateDefaultResultsForSteps("spec.steps", r.Spec.Steps, r.Spec.Output)
 }
 
 // validateStep validates a single workflow step
@@ -214,7 +194,7 @@ func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step Workflo
 
 	if step.Timeout != "" {
 		if err := validateDuration(step.Timeout); err != nil {
-			return fmt.Errorf("spec.steps[%d].timeout: %v", index, err)
+			return fmt.Errorf("spec.steps[%d].timeout: %w", index, err)
 		}
 	}
 
@@ -254,28 +234,45 @@ func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step Workf
 
 // validateStepTemplates validates all template fields in a step
 func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step WorkflowStep) error {
-	for argName, argValue := range step.Arguments {
-		if err := validateTemplate(argValue); err != nil {
-			return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
+	return validateWorkflowStepTemplates("spec.steps", index, step)
+}
+
+// validateWorkflowStepTemplates validates all template fields in a workflow step.
+// This is a shared validation function used by both VirtualMCPServer and VirtualMCPCompositeToolDefinition webhooks.
+// The pathPrefix parameter allows customizing error message paths (e.g., "spec.steps" or "spec.compositeTools[0].steps").
+func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowStep) error {
+	// Validate template syntax in arguments (only for string values)
+	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
+		var args map[string]any
+		if err := json.Unmarshal(step.Arguments.Raw, &args); err != nil {
+			return fmt.Errorf("%s[%d].arguments: invalid JSON: %w", pathPrefix, index, err)
+		}
+		for argName, argValue := range args {
+			// Only validate template syntax for string values
+			if strValue, ok := argValue.(string); ok {
+				if err := validateTemplate(strValue); err != nil {
+					return fmt.Errorf("%s[%d].arguments[%s]: invalid template: %w", pathPrefix, index, argName, err)
+				}
+			}
 		}
 	}
 
 	if step.Condition != "" {
 		if err := validateTemplate(step.Condition); err != nil {
-			return fmt.Errorf("spec.steps[%d].condition: invalid template: %v", index, err)
+			return fmt.Errorf("%s[%d].condition: invalid template: %w", pathPrefix, index, err)
 		}
 	}
 
 	if step.Message != "" {
 		if err := validateTemplate(step.Message); err != nil {
-			return fmt.Errorf("spec.steps[%d].message: invalid template: %v", index, err)
+			return fmt.Errorf("%s[%d].message: invalid template: %w", pathPrefix, index, err)
 		}
 	}
 
 	// Validate JSON Schema for elicitation steps
 	if step.Schema != nil {
 		if err := validateJSONSchema(step.Schema.Raw); err != nil {
-			return fmt.Errorf("spec.steps[%d].schema: invalid JSON Schema: %v", index, err)
+			return fmt.Errorf("%s[%d].schema: invalid JSON Schema: %w", pathPrefix, index, err)
 		}
 	}
 
@@ -295,19 +292,19 @@ func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(index int, st
 // validateErrorHandling validates error handling configuration
 func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *ErrorHandling) error {
 	if errorHandling.Action == "" {
-		return nil // Action is optional, defaults to "abort"
+		return nil // Action is optional, defaults to ErrorActionAbort
 	}
 
 	validActions := map[string]bool{
-		"abort":    true,
-		"continue": true,
-		"retry":    true,
+		ErrorActionAbort:    true,
+		ErrorActionContinue: true,
+		ErrorActionRetry:    true,
 	}
 	if !validActions[errorHandling.Action] {
 		return fmt.Errorf("spec.steps[%d].onError.action must be one of: abort, continue, retry", stepIndex)
 	}
 
-	if errorHandling.Action == "retry" {
+	if errorHandling.Action == ErrorActionRetry {
 		if errorHandling.MaxRetries < 1 {
 			return fmt.Errorf("spec.steps[%d].onError.maxRetries must be at least 1 when action is retry", stepIndex)
 		}
@@ -363,7 +360,7 @@ func validateTemplate(tmpl string) error {
 	// Try to parse as Go template
 	_, err := template.New("validation").Parse(tmpl)
 	if err != nil {
-		return fmt.Errorf("invalid template syntax: %v", err)
+		return fmt.Errorf("invalid template syntax: %w", err)
 	}
 	return nil
 }
@@ -374,61 +371,27 @@ func validateJSONSchema(schemaBytes []byte) error {
 		return nil // Empty schema is allowed
 	}
 
-	// Parse the schema JSON
+	// Parse the schema JSON to verify it's valid JSON
 	var schemaDoc interface{}
 	if err := json.Unmarshal(schemaBytes, &schemaDoc); err != nil {
-		return fmt.Errorf("failed to parse JSON: %v", err)
+		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
-	// Compile the schema to validate it's a valid JSON Schema
-	compiler := jsonschema.NewCompiler()
-	schemaID := "schema://validation"
-	if err := compiler.AddResource(schemaID, schemaDoc); err != nil {
-		return formatJSONSchemaError(err)
-	}
+	// Use gojsonschema to validate the schema by attempting to use it as a schema
+	// We validate an empty object against the schema - if the schema itself is invalid,
+	// gojsonschema will return an error during schema loading
+	schemaLoader := gojsonschema.NewBytesLoader(schemaBytes)
+	documentLoader := gojsonschema.NewStringLoader("{}")
 
-	if _, err := compiler.Compile(schemaID); err != nil {
-		return formatJSONSchemaError(err)
+	// If this succeeds, the schema is valid JSON Schema
+	// If it fails during schema loading, the schema is invalid
+	_, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		// Check if error is about the schema itself (not validation failure)
+		return fmt.Errorf("invalid JSON Schema: %w", err)
 	}
 
 	return nil
-}
-
-// formatJSONSchemaError formats JSON Schema validation errors for better readability
-func formatJSONSchemaError(err error) error {
-	if validationErr, ok := err.(*jsonschema.ValidationError); ok {
-		var errorMessages []string
-		collectJSONSchemaErrors(validationErr, &errorMessages)
-		if len(errorMessages) > 0 {
-			return fmt.Errorf("%s", strings.Join(errorMessages, "; "))
-		}
-	}
-	return err
-}
-
-// collectJSONSchemaErrors recursively collects all validation error messages
-func collectJSONSchemaErrors(err *jsonschema.ValidationError, messages *[]string) {
-	if err == nil {
-		return
-	}
-
-	// If this error has causes, recurse into them
-	if len(err.Causes) > 0 {
-		for _, cause := range err.Causes {
-			collectJSONSchemaErrors(cause, messages)
-		}
-		return
-	}
-
-	// This is a leaf error - format it
-	output := err.BasicOutput()
-	if output != nil && output.Error != nil {
-		errorMsg := output.Error.String()
-		if output.InstanceLocation != "" {
-			errorMsg = fmt.Sprintf("%s at '%s'", errorMsg, output.InstanceLocation)
-		}
-		*messages = append(*messages, errorMsg)
-	}
 }
 
 // validateDuration validates duration format (e.g., "30s", "5m", "1h")

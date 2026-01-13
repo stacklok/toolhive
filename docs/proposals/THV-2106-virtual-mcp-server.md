@@ -440,7 +440,12 @@ composite_tools:
   - name: "deploy_and_notify"
     description: "Deploy PR with user confirmation and notification"
     parameters:
-      pr_number: {type: "integer"}
+      type: object
+      properties:
+        pr_number:
+          type: integer
+          description: "Pull request number to deploy"
+      required: ["pr_number"]
 
     # Workflow timeout
     timeout: "30m"
@@ -483,8 +488,16 @@ composite_tools:
   - name: "investigate_incident"
     description: "Gather logs and metrics from multiple sources for incident analysis"
     parameters:
-      incident_id: {type: "string"}
-      time_range: {type: "string", default: "1h"}
+      type: object
+      properties:
+        incident_id:
+          type: string
+          description: "Incident identifier"
+        time_range:
+          type: string
+          description: "Time range for data collection"
+          default: "1h"
+      required: ["incident_id"]
 
     steps:
       - id: "fetch_app_logs"
@@ -580,7 +593,7 @@ spec:
   # ===== OUTGOING AUTHENTICATION (Virtual MCP → Backends) =====
   outgoingAuth:
     # Configuration source
-    source: discovered  # inline | discovered | mixed
+    source: discovered  # inline | discovered
 
     # When source=discovered:
     # Virtual MCP queries each backend's MCPServer.spec.externalAuthConfigRef

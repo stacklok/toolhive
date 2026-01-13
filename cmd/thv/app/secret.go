@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 func newSecretCommand() *cobra.Command {
@@ -55,9 +57,9 @@ Valid secrets providers:
   - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
   - none: Disables secrets functionality`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			provider := args[0]
-			return SetSecretsProvider(secrets.ProviderType(provider))
+			return SetSecretsProvider(cmd.Context(), secrets.ProviderType(provider))
 		},
 	}
 }
@@ -112,14 +114,13 @@ Example:
 The command stores the secret securely using your configured secrets provider.
 Note that some providers (like 1Password) are read-only and do not support setting secrets.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			ctx := cmd.Context()
 
 			// Validate input
 			if name == "" {
-				fmt.Println("Validation Error: Secret name cannot be empty")
-				return
+				return fmt.Errorf("validation error: secret name cannot be empty")
 			}
 
 			var value string
@@ -134,8 +135,7 @@ Note that some providers (like 1Password) are read-only and do not support setti
 				var valueBytes []byte
 				valueBytes, err = io.ReadAll(os.Stdin)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error reading secret from stdin: %v\n", err)
-					return
+					return fmt.Errorf("error reading secret from stdin: %w", err)
 				}
 				value = string(valueBytes)
 				// Trim trailing newline if present
@@ -148,21 +148,18 @@ Note that some providers (like 1Password) are read-only and do not support setti
 				fmt.Println("") // Add a newline after the hidden input
 
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error reading secret from terminal: %v\n", err)
-					return
+					return fmt.Errorf("error reading secret from terminal: %w", err)
 				}
 				value = string(valueBytes)
 			}
 
 			if value == "" {
-				fmt.Println("Validation Error: Secret value cannot be empty")
-				return
+				return fmt.Errorf("validation error: secret value cannot be empty")
 			}
 
 			manager, err := getSecretsManager()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
-				return
+				return fmt.Errorf("failed to create secrets manager: %w", err)
 			}
 
 			// Check if the provider supports writing secrets
@@ -170,16 +167,19 @@ Note that some providers (like 1Password) are read-only and do not support setti
 				configProvider := config.NewDefaultProvider()
 				cfg := configProvider.GetConfig()
 				providerType, _ := cfg.Secrets.GetProviderType()
-				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
-				return
+				return fmt.Errorf("the %s secrets provider does not support setting secrets (read-only)", providerType)
 			}
 
 			err = manager.SetSecret(ctx, name, value)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
-				return
+				return fmt.Errorf("failed to set secret %s: %w", name, err)
 			}
 			fmt.Printf("Secret %s set successfully\n", name)
+
+			// Warn if any workloads use this secret
+			warnWorkloadsUsingSecret(ctx, name)
+
+			return nil
 		},
 	}
 }
@@ -196,28 +196,27 @@ suitable for use in scripts or command substitution.
 
 The secret must exist in your configured secrets provider, otherwise the command returns an error.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
 			if name == "" {
-				fmt.Println("Validation Error: Secret name cannot be empty")
-				return
+				return fmt.Errorf("validation error: secret name cannot be empty")
 			}
 
 			manager, err := getSecretsManager()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
-				return
+				return fmt.Errorf("failed to create secrets manager: %w", err)
 			}
 
 			value, err := manager.GetSecret(ctx, name)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
-				return
+				return fmt.Errorf("failed to get secret %s: %w", name, err)
 			}
 			fmt.Printf("%s\n", value)
+
+			return nil
 		},
 	}
 }
@@ -234,20 +233,18 @@ Once you delete a secret, you cannot recover it unless you have a backup.
 Note that some secrets providers may not support deletion operations.
 If your provider is read-only or doesn't support deletion, this command returns an error.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
 			if name == "" {
-				fmt.Println("Validation Error: Secret name cannot be empty")
-				return
+				return fmt.Errorf("validation error: secret name cannot be empty")
 			}
 
 			manager, err := getSecretsManager()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
-				return
+				return fmt.Errorf("failed to create secrets manager: %w", err)
 			}
 
 			// Check if the provider supports deleting secrets
@@ -255,16 +252,19 @@ If your provider is read-only or doesn't support deletion, this command returns 
 				configProvider := config.NewDefaultProvider()
 				cfg := configProvider.GetConfig()
 				providerType, _ := cfg.Secrets.GetProviderType()
-				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
-				return
+				return fmt.Errorf("the %s secrets provider does not support deleting secrets", providerType)
 			}
+
+			// Warn about affected workloads before deleting
+			warnWorkloadsUsingSecret(ctx, name)
 
 			err = manager.DeleteSecret(ctx, name)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
-				return
+				return fmt.Errorf("failed to delete secret %s: %w", name, err)
 			}
 			fmt.Printf("Secret %s deleted successfully\n", name)
+
+			return nil
 		},
 	}
 }
@@ -278,12 +278,11 @@ func newSecretListCommand() *cobra.Command {
 This command shows the names of all secrets stored in your secrets provider.
 If descriptions exist for the secrets, the command displays them alongside the names.`,
 		Args: cobra.NoArgs,
-		Run: func(cmd *cobra.Command, _ []string) {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			manager, err := getSecretsManager()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
-				return
+				return fmt.Errorf("failed to create secrets manager: %w", err)
 			}
 
 			// Check if the provider supports listing secrets
@@ -291,19 +290,17 @@ If descriptions exist for the secrets, the command displays them alongside the n
 				configProvider := config.NewDefaultProvider()
 				cfg := configProvider.GetConfig()
 				providerType, _ := cfg.Secrets.GetProviderType()
-				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
-				return
+				return fmt.Errorf("the %s secrets provider does not support listing secrets", providerType)
 			}
 
 			secrets, err := manager.ListSecrets(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
-				return
+				return fmt.Errorf("failed to list secrets: %w", err)
 			}
 
 			if len(secrets) == 0 {
 				fmt.Println("No secrets found")
-				return
+				return nil
 			}
 
 			fmt.Println("Available secrets:")
@@ -315,6 +312,8 @@ If descriptions exist for the secrets, the command displays them alongside the n
 				}
 				fmt.Println()
 			}
+
+			return nil
 		},
 	}
 }
@@ -339,12 +338,13 @@ your secrets again after resetting.
 
 This command only works with the 'encrypted' secrets provider.`,
 		Args: cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			if err := secrets.ResetKeyringSecret(); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to reset keyring secret: %v\n", err)
-				return
+				return fmt.Errorf("failed to reset keyring secret: %w", err)
 			}
 			fmt.Println("Successfully reset keyring secret")
+
+			return nil
 		},
 	}
 }
@@ -371,7 +371,7 @@ func getSecretsManager() (secrets.Provider, error) {
 	return manager, nil
 }
 
-func runSecretsSetup(_ *cobra.Command, _ []string) error {
+func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Printf(`
@@ -438,7 +438,7 @@ This provider is read-only and suitable for CI/CD and containerized environments
 
 	// SetSecretsProvider will handle validation and configuration
 	fmt.Println("Validating provider setup...")
-	if err := SetSecretsProvider(providerType); err != nil {
+	if err := SetSecretsProvider(cmd.Context(), providerType); err != nil {
 		return fmt.Errorf("failed to configure secrets provider: %w", err)
 	}
 
@@ -450,4 +450,28 @@ This provider is read-only and suitable for CI/CD and containerized environments
 	}
 
 	return nil
+}
+
+// warnWorkloadsUsingSecret checks if any workloads use the specified secret
+// and prints a warning message if so.
+func warnWorkloadsUsingSecret(ctx context.Context, secretName string) {
+	manager, err := workloads.NewManager(ctx)
+	if err != nil {
+		// If we can't create the manager, skip the warning silently
+		// This can happen if no container runtime is available
+		return
+	}
+
+	affectedWorkloads, err := manager.ListWorkloadsUsingSecret(ctx, secretName)
+	if err != nil {
+		// If we can't list workloads, skip the warning silently
+		return
+	}
+
+	if len(affectedWorkloads) > 0 {
+		fmt.Fprintf(os.Stderr, "\nWarning: The following MCP servers use this secret and may need to be restarted:\n")
+		for _, name := range affectedWorkloads {
+			fmt.Fprintf(os.Stderr, "  - %s\n", name)
+		}
+	}
 }

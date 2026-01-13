@@ -32,11 +32,17 @@ The config command provides subcommands to manage application configuration sett
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv config get-build-auth-file](thv_config_get-build-auth-file.md)	 - Get build auth file configuration
+* [thv config get-build-env](thv_config_get-build-env.md)	 - Get build environment variables
 * [thv config get-ca-cert](thv_config_get-ca-cert.md)	 - Get the currently configured CA certificate path
 * [thv config get-registry](thv_config_get-registry.md)	 - Get the currently configured registry
 * [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
+* [thv config set-build-auth-file](thv_config_set-build-auth-file.md)	 - Set an auth file for protocol builds
+* [thv config set-build-env](thv_config_set-build-env.md)	 - Set a build environment variable for protocol builds
 * [thv config set-ca-cert](thv_config_set-ca-cert.md)	 - Set the default CA certificate for container builds
 * [thv config set-registry](thv_config_set-registry.md)	 - Set the MCP server registry
+* [thv config unset-build-auth-file](thv_config_unset-build-auth-file.md)	 - Remove build auth file(s)
+* [thv config unset-build-env](thv_config_unset-build-env.md)	 - Remove build environment variable(s)
 * [thv config unset-ca-cert](thv_config_unset-ca-cert.md)	 - Remove the configured CA certificate
 * [thv config unset-registry](thv_config_unset-registry.md)	 - Remove the configured registry
 * [thv config usage-metrics](thv_config_usage-metrics.md)	 - Enable or disable anonymous usage metrics

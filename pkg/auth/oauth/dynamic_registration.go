@@ -21,6 +21,9 @@ const ToolHiveMCPClientName = "ToolHive MCP Client"
 // AuthorizationCode is the grant type for authorization code
 const AuthorizationCode = "authorization_code"
 
+// RefreshToken is the grant type for refresh token
+const RefreshToken = "refresh_token"
+
 // ResponseTypeCode is the response type for code
 const ResponseTypeCode = "code"
 
@@ -50,7 +53,7 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 		ClientName:              ToolHiveMCPClientName,
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: "none", // For PKCE flow
-		GrantTypes:              []string{AuthorizationCode},
+		GrantTypes:              []string{AuthorizationCode, RefreshToken},
 		ResponseTypes:           []string{ResponseTypeCode},
 		Scopes:                  scopes,
 	}
@@ -203,7 +206,7 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ClientName = ToolHiveMCPClientName
 	}
 	if len(request.GrantTypes) == 0 {
-		request.GrantTypes = []string{AuthorizationCode}
+		request.GrantTypes = []string{AuthorizationCode, RefreshToken}
 	}
 	if len(request.ResponseTypes) == 0 {
 		request.ResponseTypes = []string{ResponseTypeCode}
@@ -258,12 +261,31 @@ func getHTTPClient(client httpClient) httpClient {
 
 // handleHTTPResponse handles the HTTP response and validates it
 func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse, error) {
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		// Try to read error response
 		errorBody, _ := io.ReadAll(resp.Body)
+
+		// Detect if DCR is not supported by the provider
+		// Common HTTP status codes when DCR is unsupported:
+		// - 404 Not Found: endpoint doesn't exist
+		// - 405 Method Not Allowed: endpoint exists but POST not allowed
+		// - 501 Not Implemented: DCR feature not implemented
+		if resp.StatusCode == http.StatusNotFound ||
+			resp.StatusCode == http.StatusMethodNotAllowed ||
+			resp.StatusCode == http.StatusNotImplemented {
+			return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR) - HTTP %d. "+
+				"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, "+
+				"or register a client manually with the provider. Error details: %s",
+				resp.StatusCode, string(errorBody))
+		}
+
 		return nil, fmt.Errorf("dynamic client registration failed with status %d: %s", resp.StatusCode, string(errorBody))
 	}
 

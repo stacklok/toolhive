@@ -11,8 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/zap/zapcore"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,7 +68,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		UseExistingCluster: &useExistingCluster,
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "crds"),
+			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "files", "crds"),
 		},
 		ErrorIfCRDPathMissing: true,
 		BinaryAssetsDirectory: kubebuilderAssets,
@@ -138,63 +136,3 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
-
-// TestNamespace represents a test namespace with automatic cleanup
-type TestNamespace struct {
-	Name      string
-	Namespace *corev1.Namespace
-	Client    client.Client
-	ctx       context.Context
-}
-
-// NewTestNamespace creates a new test namespace with a unique name
-func NewTestNamespace(namePrefix string) *TestNamespace {
-	timestamp := time.Now().Unix()
-	name := fmt.Sprintf("%s-%d", namePrefix, timestamp)
-
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"test.toolhive.io/suite":  "operator-e2e",
-				"test.toolhive.io/prefix": namePrefix,
-			},
-		},
-	}
-
-	return &TestNamespace{
-		Name:      name,
-		Namespace: ns,
-		Client:    k8sClient,
-		ctx:       ctx,
-	}
-}
-
-// Create creates the namespace in the cluster
-func (tn *TestNamespace) Create() error {
-	return tn.Client.Create(tn.ctx, tn.Namespace)
-}
-
-// Delete deletes the namespace and all its resources
-func (tn *TestNamespace) Delete() error {
-	return tn.Client.Delete(tn.ctx, tn.Namespace)
-}
-
-// WaitForDeletion waits for the namespace to be fully deleted
-func (tn *TestNamespace) WaitForDeletion(timeout time.Duration) {
-	Eventually(func() bool {
-		ns := &corev1.Namespace{}
-		err := tn.Client.Get(tn.ctx, client.ObjectKey{Name: tn.Name}, ns)
-		return err != nil
-	}, timeout, time.Second).Should(BeTrue(), "namespace should be deleted")
-}
-
-// GetClient returns a client scoped to this namespace
-func (tn *TestNamespace) GetClient() client.Client {
-	return tn.Client
-}
-
-// GetContext returns the test context
-func (tn *TestNamespace) GetContext() context.Context {
-	return tn.ctx
-}

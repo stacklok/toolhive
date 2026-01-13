@@ -11,6 +11,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -159,7 +160,11 @@ func detectAuthWithRequest(
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if we got a 401 Unauthorized with WWW-Authenticate header
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -282,7 +287,7 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 	// Check for OAuth/Bearer authentication
 	// Note: We don't split by comma because Bearer parameters can contain commas in quoted values
 	if strings.HasPrefix(header, "Bearer") {
-		authInfo := &AuthInfo{Type: "OAuth"}
+		authInfo := &AuthInfo{Type: "Bearer"}
 
 		// Extract parameters after "Bearer"
 		params := strings.TrimSpace(strings.TrimPrefix(header, "Bearer"))
@@ -646,7 +651,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	// Start OAuth flow
 	tokenResult, err := flow.Start(oauthCtx, config.SkipBrowser)
 	if err != nil {
-		if oauthCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(oauthCtx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 		}
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
@@ -676,6 +681,13 @@ func registerDynamicClient(
 	config *OAuthFlowConfig,
 	discoveredDoc *oauth.OIDCDiscoveryDocument,
 ) (*oauth.DynamicClientRegistrationResponse, error) {
+
+	// Check if the provider supports Dynamic Client Registration
+	if discoveredDoc.RegistrationEndpoint == "" {
+		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
+			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
+			"or register a client manually with the provider")
+	}
 
 	// Use default client name if not provided
 	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
@@ -726,7 +738,11 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("metadata request failed with status %d", resp.StatusCode)

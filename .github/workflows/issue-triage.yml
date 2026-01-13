@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 0
 
@@ -80,6 +80,7 @@ jobs:
              - Consider platform labels (kubernetes) if applicable
              - If you find similar issues using mcp__github__search_issues, consider using a "duplicate" label if appropriate. Only do so if the issue is a duplicate of another OPEN issue.
              - DO NOT add labels that pertain to priority, such as p0, p1, p2, etc.
+             - DO NOT add the "good-first-issue" label ever
 
           5. Apply the selected labels:
              - Use mcp__github__update_issue to apply your selected labels

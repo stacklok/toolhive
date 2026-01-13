@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 func TestHeaderInjectionStrategy_Name(t *testing.T) {
@@ -22,17 +25,38 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		metadata      map[string]any
+		strategy      *authtypes.BackendAuthStrategy
+		setupCtx      func() context.Context
 		expectError   bool
 		errorContains string
 		checkHeader   func(t *testing.T, req *http.Request)
 	}{
 		{
-			name: "sets X-API-Key header correctly",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "secret-key-123",
+			name: "skips authentication for health checks",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-key-123",
+				},
 			},
+			setupCtx:    func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			expectError: false,
+			checkHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Empty(t, req.Header.Get("X-API-Key"), "X-API-Key header should not be set for health checks")
+			},
+		},
+		{
+			name: "sets X-API-Key header correctly",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-key-123",
+				},
+			},
+			setupCtx:    nil,
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()
@@ -41,9 +65,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "sets Authorization header with API key",
-			metadata: map[string]any{
-				"header_name":  "Authorization",
-				"header_value": "ApiKey my-secret-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "ApiKey my-secret-key",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -53,9 +80,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "sets custom header name",
-			metadata: map[string]any{
-				"header_name":  "X-Custom-Auth-Token",
-				"header_value": "custom-token-value",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-Custom-Auth-Token",
+					HeaderValue: "custom-token-value",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -65,9 +95,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "handles complex header values",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -78,9 +111,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "handles header value with special characters",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "key-with-!@#$%^&*()-_=+[]{}|;:,.<>?",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "key-with-!@#$%^&*()-_=+[]{}|;:,.<>?",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -89,96 +125,52 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "ignores additional metadata fields",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "my-key",
-				"extra_field":  "ignored",
-				"another":      123,
-			},
-			expectError: false,
-			checkHeader: func(t *testing.T, req *http.Request) {
-				t.Helper()
-				assert.Equal(t, "my-key", req.Header.Get("X-API-Key"))
-			},
-		},
-		{
 			name: "returns error when header_name is missing",
-			metadata: map[string]any{
-				"header_value": "my-key",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when header_name is empty string",
-			metadata: map[string]any{
-				"header_name":  "",
-				"header_value": "my-key",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when header_name is not a string",
-			metadata: map[string]any{
-				"header_name":  123,
-				"header_value": "my-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "",
+					HeaderValue: "my-key",
+				},
 			},
 			expectError:   true,
 			errorContains: "header_name required",
 		},
 		{
 			name: "returns error when header_value is missing",
-			metadata: map[string]any{
-				"header_name": "X-API-Key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "",
+				},
 			},
 			expectError:   true,
 			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when api_key is empty string",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "",
+			name:          "returns error when strategy is nil",
+			strategy:      nil,
+			expectError:   true,
+			errorContains: "header_injection configuration required",
+		},
+		{
+			name: "returns error when header_injection config is nil",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type:            authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: nil,
 			},
 			expectError:   true,
-			errorContains: "header_value required",
-		},
-		{
-			name: "returns error when header_value is not a string",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": 123,
-			},
-			expectError:   true,
-			errorContains: "header_value required",
-		},
-		{
-			name:          "returns error when metadata is nil",
-			metadata:      nil,
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name:          "returns error when metadata is empty",
-			metadata:      map[string]any{},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when both fields are missing",
-			metadata: map[string]any{
-				"unrelated": "field",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
+			errorContains: "header_injection configuration required",
 		},
 		{
 			name: "overwrites existing header value",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "new-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "new-key",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -189,9 +181,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "handles very long header values",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": string(make([]byte, 10000)) + "very-long-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: string(make([]byte, 10000)) + "very-long-key",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -202,9 +197,12 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name: "handles case-sensitive header names",
-			metadata: map[string]any{
-				"header_name":  "x-api-key", // lowercase
-				"header_value": "my-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "x-api-key", // lowercase
+					HeaderValue: "my-key",
+				},
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -222,6 +220,9 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 
 			strategy := NewHeaderInjectionStrategy()
 			ctx := context.Background()
+			if tt.setupCtx != nil {
+				ctx = tt.setupCtx()
+			}
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
 			// Special setup for the "overwrites existing header value" test
@@ -229,7 +230,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 				req.Header.Set("X-API-Key", "old-key")
 			}
 
-			err := strategy.Authenticate(ctx, req, tt.metadata)
+			err := strategy.Authenticate(ctx, req, tt.strategy)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -250,141 +251,91 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		metadata      map[string]any
+		strategy      *authtypes.BackendAuthStrategy
 		expectError   bool
 		errorContains string
 	}{
 		{
-			name: "valid metadata with all required fields",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "secret-key",
-			},
-			expectError: false,
-		},
-		{
-			name: "valid with extra metadata fields",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "secret-key",
-				"extra":        "ignored",
-				"count":        123,
+			name: "valid strategy with all required fields",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-key",
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid with different header name",
-			metadata: map[string]any{
-				"header_name":  "Authorization",
-				"header_value": "Bearer token",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "Bearer token",
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "returns error when header_name is missing",
-			metadata: map[string]any{
-				"header_value": "secret-key",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when header_name is empty",
-			metadata: map[string]any{
-				"header_name":  "",
-				"header_value": "secret-key",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when header_name is not a string",
-			metadata: map[string]any{
-				"header_name":  123,
-				"header_value": "secret-key",
-			},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when header_name is a boolean",
-			metadata: map[string]any{
-				"header_name":  true,
-				"header_value": "secret-key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "",
+					HeaderValue: "secret-key",
+				},
 			},
 			expectError:   true,
 			errorContains: "header_name required",
 		},
 		{
 			name: "returns error when header_value is missing",
-			metadata: map[string]any{
-				"header_name": "X-API-Key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "",
+				},
 			},
 			expectError:   true,
 			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when header_value is empty",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "",
+			name: "returns error when strategy is nil",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type:            authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: nil,
 			},
 			expectError:   true,
-			errorContains: "header_value required",
+			errorContains: "header_injection configuration required",
 		},
 		{
-			name: "returns error when header_value is not a string",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": 123,
-			},
+			name:          "returns error when strategy parameter is nil",
+			strategy:      nil,
 			expectError:   true,
-			errorContains: "header_value required",
-		},
-		{
-			name: "returns error when header_value is a map",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": map[string]any{"nested": "value"},
-			},
-			expectError:   true,
-			errorContains: "header_value required",
-		},
-		{
-			name:          "returns error when metadata is nil",
-			metadata:      nil,
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name:          "returns error when metadata is empty",
-			metadata:      map[string]any{},
-			expectError:   true,
-			errorContains: "header_name required",
-		},
-		{
-			name: "returns error when both fields are wrong type",
-			metadata: map[string]any{
-				"header_name":  123,
-				"header_value": false,
-			},
-			expectError:   true,
-			errorContains: "header_name required",
+			errorContains: "header_injection configuration required",
 		},
 		{
 			name: "returns error for whitespace in header_name",
-			metadata: map[string]any{
-				"header_name":  "X-Custom Header",
-				"header_value": "key",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-Custom Header",
+					HeaderValue: "key",
+				},
 			},
 			expectError:   true,
 			errorContains: "invalid header_name",
 		},
 		{
 			name: "accepts unicode in header_value",
-			metadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "key-with-unicode-日本語",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "key-with-unicode-日本語",
+				},
 			},
 			expectError: false,
 		},
@@ -395,7 +346,7 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 			t.Parallel()
 
 			strategy := NewHeaderInjectionStrategy()
-			err := strategy.Validate(tt.metadata)
+			err := strategy.Validate(tt.strategy)
 
 			if tt.expectError {
 				require.Error(t, err)

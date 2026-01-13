@@ -6,7 +6,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-09-08T12:00:00Z",
       "servers": {
@@ -221,22 +221,22 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Security & Compliance Tools"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: tag-filtering-registry-data
-      key: registry.json
-  syncPolicy:
-    interval: "20m"
-  filter:
-    tags:
-      include:
-        - "security"      # Security-related tools
-        - "compliance"    # Compliance tools
-        - "encryption"    # Encryption services
-      exclude:
-        - "experimental"  # No experimental security tools
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: tag-filtering-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "20m"
+      filter:
+        tags:
+          include:
+            - "security"      # Security-related tools
+            - "compliance"    # Compliance tools
+            - "encryption"    # Encryption services
+          exclude:
+            - "experimental"  # No experimental security tools
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -245,22 +245,22 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Utility & Support Tools"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: tag-filtering-registry-data
-      key: registry.json
-  filter:
-    tags:
-      include:
-        - "utility"       # Utility tools
-        - "backup"        # Backup services
-        - "monitoring"    # Monitoring tools
-        - "analysis"      # Analysis tools
-      exclude:
-        - "security"      # Exclude security tools (handled by other registry)
-        - "experimental"  # No experimental utilities
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: tag-filtering-registry-data
+        key: registry.json
+      filter:
+        tags:
+          include:
+            - "utility"       # Utility tools
+            - "backup"        # Backup services
+            - "monitoring"    # Monitoring tools
+            - "analysis"      # Analysis tools
+          exclude:
+            - "security"      # Exclude security tools (handled by other registry)
+            - "experimental"  # No experimental utilities
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -269,17 +269,17 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "AI & Machine Learning Tools"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: tag-filtering-registry-data
-      key: registry.json
-  filter:
-    tags:
-      include:
-        - "ai"               # AI tools
-        - "machine-learning" # ML tools
-        - "inference"        # Inference engines
-        - "models"           # Model management
-      # Note: No exclude filters - include all AI/ML tools even if experimental
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: tag-filtering-registry-data
+        key: registry.json
+      filter:
+        tags:
+          include:
+            - "ai"               # AI tools
+            - "machine-learning" # ML tools
+            - "inference"        # Inference engines
+            - "models"           # Model management
+          # Note: No exclude filters - include all AI/ML tools even if experimental

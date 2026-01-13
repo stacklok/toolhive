@@ -240,8 +240,11 @@ func isLoopbackURI(uri string) bool {
 	return networking.IsLocalhost(parsed.Hostname())
 }
 
-// hostnamesMatch checks if two hostnames should be considered equivalent for
-// loopback matching purposes.
+// hostnamesMatch checks if two hostnames (as returned by url.Hostname()) should
+// be considered equivalent for loopback matching purposes.
+//
+// The parameters are expected to be pre-parsed hostname strings from url.Hostname(),
+// not raw URIs. This function is called from matchesAsLoopback which handles URL parsing.
 //
 // Per RFC 8252, the hostname must match exactly. We normalize localhost to
 // be case-insensitive, but 127.0.0.1 and localhost are treated as different

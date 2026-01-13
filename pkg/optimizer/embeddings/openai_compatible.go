@@ -10,11 +10,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// OpenAICompatibleBackend implements the Backend interface using OpenAI-compatible API
-// This works with:
-// - vLLM (GPU-accelerated inference engine)
-// - Ollama (via /v1/embeddings endpoint)
-// - Any other OpenAI-compatible embedding service
+// OpenAICompatibleBackend implements the Backend interface for OpenAI-compatible APIs.
+//
+// Supported Services:
+//   - vLLM: Recommended for production Kubernetes deployments
+//     * High-throughput GPU-accelerated inference
+//     * PagedAttention for efficient GPU memory utilization  
+//     * Superior scalability for multi-user environments
+//   - Ollama: Good for local development (via /v1/embeddings endpoint)
+//   - OpenAI: For cloud-based embeddings
+//   - Any OpenAI-compatible embedding service
+//
+// For production deployments, vLLM is strongly recommended due to its performance
+// characteristics and Kubernetes-native design.
 type OpenAICompatibleBackend struct {
 	baseURL   string
 	model     string
@@ -37,8 +45,12 @@ type openaiEmbedResponse struct {
 	Model string `json:"model"`
 }
 
-// NewOpenAICompatibleBackend creates a new OpenAI-compatible backend
-// Works with vLLM, Ollama (OpenAI mode), and other compatible services
+// NewOpenAICompatibleBackend creates a new OpenAI-compatible backend.
+//
+// Examples:
+//   - vLLM: NewOpenAICompatibleBackend("http://vllm-service:8000", "sentence-transformers/all-MiniLM-L6-v2", 384)
+//   - Ollama: NewOpenAICompatibleBackend("http://localhost:11434", "nomic-embed-text", 768) 
+//   - OpenAI: NewOpenAICompatibleBackend("https://api.openai.com", "text-embedding-3-small", 1536)
 func NewOpenAICompatibleBackend(baseURL, model string, dimension int) (*OpenAICompatibleBackend, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("baseURL is required for OpenAI-compatible backend")

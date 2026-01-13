@@ -1,9 +1,27 @@
 package ingestion
 
-// Example: How to test with multiple servers and different tool sets
+// This file contains example code showing how to test with multiple servers.
+// It's not executed by `go test` because the filename doesn't match `*_test.go`.
+// To use this code:
+// 1. Copy the relevant parts to your own test file
+// 2. Or rename this file to `service_multiserver_test.go` and uncomment
 
 /*
+import (
+	"context"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/stacklok/toolhive/pkg/optimizer/db"
+	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/pkg/optimizer/models"
+)
+
+// Example: How to test with multiple servers and different tool sets
 func TestMultipleServers(t *testing.T) {
+	t.Parallel()
 	// Setup database and service (same as before)
 	dbPath := "/tmp/optimizer-test-multi.db"
 	config := &Config{
@@ -24,10 +42,10 @@ func TestMultipleServers(t *testing.T) {
 			ID:          uuid.New().String(),
 			Name:        "weather-service",
 			Description: stringPtr("Provides weather information"),
-			Transport:   models.TransportHTTP,
+			Transport:   models.TransportSSE,
 		},
 		URL:                "http://weather.example.com",
-		WorkloadIdentifier: "prod-weather",
+		BackendIdentifier: "prod-weather",
 		Status:             models.StatusRunning,
 	}
 
@@ -75,10 +93,10 @@ func TestMultipleServers(t *testing.T) {
 			ID:          uuid.New().String(),
 			Name:        "database-service",
 			Description: stringPtr("Database query and management tools"),
-			Transport:   models.TransportStreamable,
+			Transport:   models.TransportSSE,
 		},
 		URL:                "http://db.example.com:5432",
-		WorkloadIdentifier: "prod-database",
+		BackendIdentifier: "prod-database",
 		Status:             models.StatusRunning,
 	}
 
@@ -123,7 +141,7 @@ func TestMultipleServers(t *testing.T) {
 			Transport:   models.TransportSSE,
 		},
 		URL:                "http://github-mcp.example.com",
-		WorkloadIdentifier: "prod-github",
+		BackendIdentifier: "prod-github",
 		Status:             models.StatusRunning,
 	}
 
@@ -162,7 +180,7 @@ func TestMultipleServers(t *testing.T) {
 
 	for _, s := range servers {
 		// Create server
-		if err := svc.workloadServerOps.Create(ctx, s.server); err != nil {
+		if err := svc.backendServerOps.Create(ctx, s.server); err != nil {
 			t.Fatalf("Failed to create server %s: %v", s.server.Name, err)
 		}
 
@@ -174,17 +192,13 @@ func TestMultipleServers(t *testing.T) {
 		t.Logf("Synced %d tools for %s", count, s.server.Name)
 	}
 
-	// Now test semantic search across all servers
-	results, err := svc.workloadToolOps.SearchSimilar(ctx, "query database tables", 5)
-	if err != nil {
-		t.Fatalf("Search failed: %v", err)
-	}
+	// Verify all tools were created
+	t.Log("All servers and tools successfully ingested")
+	t.Logf("Total servers: 3 (weather, database, github)")
+	t.Logf("Total tools: %d", len(weatherTools)+len(dbTools)+len(githubTools))
 
-	// Should find database tools ranked higher
-	for i, result := range results {
-		t.Logf("%d. %s - %s (distance: %.4f)",
-			i+1, result.ServerName, result.ToolName, result.Distance)
-	}
+	// Note: Semantic search would require embedding generation and vector tables
+	// For this example test, we just verify the data was ingested correctly
 }
 
 func stringPtr(s string) *string {

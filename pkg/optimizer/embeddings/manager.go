@@ -96,7 +96,9 @@ func NewManager(config *Config) (*Manager, error) {
 		}
 
 	case "vllm", "unified", "openai":
-		// Use OpenAI-compatible API (vLLM, Ollama v1, OpenAI, etc.)
+		// Use OpenAI-compatible API
+		// vLLM is recommended for production Kubernetes deployments (GPU-accelerated, high-throughput)
+		// Also supports: Ollama v1 API, OpenAI, or any OpenAI-compatible service
 		if config.BaseURL == "" {
 			return nil, fmt.Errorf("BaseURL is required for %s backend", config.BackendType)
 		}

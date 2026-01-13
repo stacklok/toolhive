@@ -5,21 +5,34 @@ The optimizer package provides semantic tool discovery and ingestion for MCP ser
 ## Features
 
 - **Backend Discovery**: Automatically discovers MCP backends from Docker or Kubernetes
-- **Semantic Embeddings**: Generates embeddings using ONNX Runtime for semantic tool search
-- **Vector Search**: Uses sqlite-vec for efficient similarity search
+- **Semantic Embeddings**: Pluggable embedding backends (vLLM, Ollama, or placeholder)
+- **vLLM Support**: Production-ready with vLLM for high-throughput GPU-accelerated embeddings
+- **Vector Search**: SQLite-based semantic search with cosine similarity
 - **Token Counting**: Tracks token usage for LLM consumption metrics
-- **Dual Operation Modes**: Can run as a standalone command or integrated as a goroutine
+- **Pure Go**: No CGO required, works with `CGO_ENABLED=0`
 
 ## Architecture
 
 ```
 pkg/optimizer/
 ├── models/           # Domain models (Server, Tool, etc.)
-├── db/               # Database layer with SQLite + sqlite-vec
-├── embeddings/       # ONNX Runtime embedding manager
+├── db/               # Database layer with pure Go SQLite
+├── embeddings/       # Embedding backends (vLLM, Ollama, placeholder)
 ├── ingestion/        # Core ingestion service
 └── tokens/           # Token counting for LLM metrics
 ```
+
+## Embedding Backends
+
+The optimizer supports multiple embedding backends:
+
+| Backend | Use Case | Performance | Setup |
+|---------|----------|-------------|-------|
+| **vLLM** | **Production/Kubernetes (recommended)** | Excellent (GPU) | Deploy vLLM service |
+| Ollama | Local development, CPU-only | Good | `ollama serve` |
+| Placeholder | Testing, CI/CD | Fast (hash-based) | Zero setup |
+
+**For production Kubernetes deployments, vLLM is recommended** due to its high-throughput performance, GPU efficiency (PagedAttention), and scalability for multi-user environments.
 
 ## Quick Start
 
@@ -46,11 +59,14 @@ thv optimizer query "get current time" \
 thv optimizer status
 ```
 
-### Integrated with vMCP
+### Production Deployment with vLLM (Kubernetes)
+
+**vLLM is the recommended backend for production** due to high-throughput performance, GPU efficiency (PagedAttention), and scalability:
 
 ```go
 import (
     "context"
+    "os"
     "time"
     
     "github.com/stacklok/toolhive/pkg/optimizer/db"
@@ -59,33 +75,52 @@ import (
 )
 
 func main() {
-    // Create ingestion service
-    config := &ingestion.Config{
-        DBConfig: &db.Config{
-            DBPath: "/path/to/optimizer.db",
-        },
-        EmbeddingConfig: &embeddings.Config{
-            ModelPath:    "/path/to/model.onnx",
-            Dimension:    384,
-            EnableCache:  true,
-            MaxCacheSize: 1000,
-        },
-        RuntimeMode: "docker",
-    }
-    
-    svc, err := ingestion.NewService(config)
+    // Initialize database
+    database, err := db.NewDB(&db.Config{
+        Path: "/data/optimizer.db",
+    })
     if err != nil {
-        log.Fatal(err)
+        panic(err)
     }
-    defer svc.Close()
+    defer database.Close()
+
+    // Initialize embedding manager with vLLM (recommended for production)
+    embeddingMgr, err := embeddings.NewManager(&embeddings.Config{
+        BackendType:  "vllm",  // Use vLLM for production Kubernetes deployments
+        BaseURL:      os.Getenv("VLLM_URL"), // e.g., http://vllm-service:8000
+        Model:        "sentence-transformers/all-MiniLM-L6-v2",
+        Dimension:    384,
+        EnableCache:  true,
+        MaxCacheSize: 1000,
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer embeddingMgr.Close()
+
+    // Start ingestion service as background goroutine
+    svc, err := ingestion.NewService(&ingestion.Config{
+        DB:               database,
+        EmbeddingManager: embeddingMgr,
+        PollInterval:     30 * time.Second,
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    go func() {
+        if err := svc.Run(context.Background()); err != nil {
+            log.Printf("Ingestion service error: %v", err)
+        }
+    }()
     
-    // Start polling as goroutine
-    ctx := context.Background()
-    go svc.StartPolling(ctx, 30*time.Second)
-    
-    // Your vMCP server logic here...
+    // ... rest of vMCP initialization
 }
 ```
+
+### Local Development with Ollama
+
+For local development without GPU requirements:
 
 ## Configuration
 

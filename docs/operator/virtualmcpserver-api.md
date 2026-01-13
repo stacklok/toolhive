@@ -130,7 +130,7 @@ spec:
   - `external_auth_config_ref`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=external_auth_config_ref)
 
-### `.spec.aggregation` (optional)
+### `.spec.config.aggregation` (optional)
 
 Defines tool aggregation and conflict resolution strategies.
 
@@ -143,10 +143,13 @@ Defines tool aggregation and conflict resolution strategies.
   - `manual`: Explicitly define overrides for all conflicts
 - `conflictResolutionConfig` (ConflictResolutionConfig, optional): Configuration for the chosen strategy
 - `tools` ([]WorkloadToolConfig, optional): Per-workload tool filtering and overrides
+- `excludeAllTools` (bool, optional): Excludes all tools from aggregation when true
 
 **Example (prefix strategy)**:
 ```yaml
 spec:
+  config:
+    groupRef: my-services
   aggregation:
     conflictResolution: prefix
     conflictResolutionConfig:
@@ -162,6 +165,8 @@ spec:
 **Example (priority strategy)**:
 ```yaml
 spec:
+  config:
+    groupRef: my-services
   aggregation:
     conflictResolution: priority
     conflictResolutionConfig:
@@ -171,6 +176,8 @@ spec:
 **Example (manual strategy)**:
 ```yaml
 spec:
+  config:
+    groupRef: my-services
   aggregation:
     conflictResolution: manual
     tools:
@@ -194,9 +201,10 @@ spec:
 
 **Fields**:
 - `workload` (string, required): Name of the backend MCPServer workload
-- `toolConfigRef` (ToolConfigRef, optional): Reference to MCPToolConfig resource
+- `toolConfigRef` (ToolConfigRef, optional): Reference to MCPToolConfig resource for Kubernetes deployments
 - `filter` ([]string, optional): Inline list of tool names to allow (only used if toolConfigRef not specified)
 - `overrides` (map[string]ToolOverride, optional): Inline tool overrides (only used if toolConfigRef not specified)
+- `excludeAll` (bool, optional): Excludes all tools from this workload when true
 
 ### `.spec.compositeTools` (optional)
 
@@ -237,32 +245,35 @@ spec:
           dependsOn: ["confirm_deploy"]
 ```
 
-### `.spec.operational` (optional)
+### `.spec.config.operational` (optional)
 
 Defines operational settings like timeouts and health checks.
 
 **Type**: `OperationalConfig`
 
 **Fields**:
+- `logLevel` (string, optional): Log level for the Virtual MCP server. Set to "debug" to enable debug logging.
 - `timeouts` (TimeoutConfig, optional): Timeout configuration
 - `failureHandling` (FailureHandlingConfig, optional): Failure handling configuration
 
 **Example**:
 ```yaml
 spec:
-  operational:
-    timeouts:
-      default: 30s
-      perWorkload:
-        github: 45s
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
-      circuitBreaker:
-        enabled: true
-        failureThreshold: 5
-        timeout: 60s
+  config:
+    operational:
+      logLevel: debug
+      timeouts:
+        default: 30s
+        perWorkload:
+          github: 45s
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
+        circuitBreaker:
+          enabled: true
+          failureThreshold: 5
+          timeout: 60s
 ```
 
 ### `.spec.podTemplateSpec` (optional)
@@ -402,9 +413,20 @@ metadata:
   name: engineering-vmcp
   namespace: default
 spec:
-  # Reference to MCPGroup defining backend workloads
+  # Reference to MCPGroup defining backend workloads and tool aggregation
   config:
     groupRef: engineering-team
+    # Tool aggregation
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr"]
+        - workload: jira
+          toolConfigRef:
+            name: jira-tool-config
 
   # Client authentication
   incomingAuth:
@@ -436,18 +458,6 @@ spec:
           credentialsRef:
             name: slack-bot-token
             key: token
-
-  # Tool aggregation
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr"]
-      - workload: jira
-        toolConfigRef:
-          name: jira-tool-config
 
   # Composite tools
   compositeTools:

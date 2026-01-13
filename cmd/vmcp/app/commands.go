@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -414,6 +415,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
 		Watcher:             backendWatcher,
+	}
+
+	if cfg.Optimizer != nil {
+		// TODO: update this with the real optimizer.
+		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizer
 	}
 
 	// Convert composite tool configurations to workflow definitions

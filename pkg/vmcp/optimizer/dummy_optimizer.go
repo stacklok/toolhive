@@ -24,13 +24,13 @@ type DummyOptimizer struct {
 // NewDummyOptimizer creates a new DummyOptimizer with the given tools.
 //
 // The tools slice should contain all backend tools (as ServerTool with handlers).
-func NewDummyOptimizer(tools []server.ServerTool) *DummyOptimizer {
+func NewDummyOptimizer(tools []server.ServerTool) Optimizer {
 	toolMap := make(map[string]server.ServerTool, len(tools))
 	for _, tool := range tools {
 		toolMap[tool.Tool.Name] = tool
 	}
 
-	return &DummyOptimizer{
+	return DummyOptimizer{
 		tools: toolMap,
 	}
 }
@@ -43,7 +43,7 @@ func NewDummyOptimizer(tools []server.ServerTool) *DummyOptimizer {
 //
 // Returns all matching tools with a score of 1.0 (exact match semantics).
 // TokenMetrics are returned as zero values (not implemented in dummy).
-func (d *DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindToolOutput, error) {
+func (d DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindToolOutput, error) {
 	if input.ToolDescription == "" {
 		return nil, fmt.Errorf("tool_description is required")
 	}
@@ -80,7 +80,7 @@ func (d *DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*Find
 //
 // The tool is looked up by exact name match. If found, the handler
 // is invoked directly with the given parameters.
-func (d *DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
+func (d DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
 		return nil, fmt.Errorf("tool_name is required")
 	}

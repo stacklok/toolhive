@@ -416,6 +416,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:             backendWatcher,
 	}
 
+	// Enable optimizer for debug configuration
+	// TODO: This will be replaced by proper YAML config parsing in Phase 2
+	if cfg.Name == "vmcp-debug" {
+		logger.Info("🔬 Enabling optimizer integration for debug configuration")
+		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
+			Enabled:            true,
+			DBPath:             "/tmp/vmcp-optimizer-debug.db",
+			EmbeddingBackend:   "placeholder",
+			EmbeddingURL:       "",
+			EmbeddingModel:     "",
+			EmbeddingDimension: 384,
+		}
+		logger.Info("Optimizer configured: placeholder embeddings, DB at /tmp/vmcp-optimizer-debug.db")
+	}
+
 	// Convert composite tool configurations to workflow definitions
 	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
 	if err != nil {

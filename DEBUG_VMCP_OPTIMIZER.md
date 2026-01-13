@@ -88,14 +88,14 @@ aggregation:
   conflictResolution: prefix
 ```
 
-**Optimizer Config (Phase 2 - Not Yet Parsed):**
+**Optimizer Config:**
 
-The optimizer configuration structure is documented in the YAML file but not yet wired into the config parser. To enable the optimizer for debugging, you need to manually add it in code:
+✅ **The optimizer is now automatically enabled** when using the `vmcp-debug` configuration!
 
-**Option 1: Modify `cmd/vmcp/app/commands.go`** (around line 400 in `runServe` function):
+The code in `cmd/vmcp/app/commands.go` detects the debug config and enables the optimizer:
 
 ```go
-// After creating serverCfg, add:
+// Enable optimizer for debug configuration
 if cfg.Name == "vmcp-debug" {
     serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
         Enabled:            true,
@@ -108,7 +108,13 @@ if cfg.Name == "vmcp-debug" {
 }
 ```
 
-**Option 2: Wait for Phase 2** which will add proper YAML config parsing for the optimizer section.
+**What This Means:**
+- 🎯 Just press F5 in VS Code - optimizer is enabled automatically
+- 📊 Uses placeholder embeddings (no external service needed)
+- 💾 SQLite database at `/tmp/vmcp-optimizer-debug.db`
+- 🔧 384-dimensional vectors (standard for all-MiniLM-L6-v2)
+
+**Phase 2 Goal:** Move this configuration into the YAML file for full config-file control.
 
 ### Embedding Backends
 

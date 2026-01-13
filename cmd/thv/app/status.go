@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -45,57 +45,47 @@ func statusCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get workload status: %v", err)
 	}
-	stats, err := manager.GetWorkloadStats(ctx, workloadName)
-	if err != nil {
-		return fmt.Errorf("failed to get workload stats: %v", err)
-	}
 
 	// Output based on format
 	switch statusFormat {
 	case FormatJSON:
-		return printStatusJSONOutput(workload, stats)
+		return printStatusJSONOutput(workload)
 	default:
-		printStatusTextOutput(workload, stats)
+		printStatusTextOutput(workload)
 		return nil
 	}
 }
 
-func printStatusJSONOutput(workload core.Workload, stats rt.WorkloadStats) error {
+func printStatusJSONOutput(workload core.Workload) error {
 	uptime := ""
 	if !workload.StartedAt.IsZero() {
 		uptime = formatUptime(time.Since(workload.StartedAt))
 	}
 
 	output := struct {
-		Name        string `json:"name"`
-		Status      string `json:"status"`
-		Health      string `json:"health,omitempty"`
-		Package     string `json:"package"`
-		URL         string `json:"url"`
-		Port        int    `json:"port"`
-		Transport   string `json:"transport"`
-		ProxyMode   string `json:"proxy_mode,omitempty"`
-		Group       string `json:"group,omitempty"`
-		Uptime      string `json:"uptime,omitempty"`
-		PID         int    `json:"pid,omitempty"`
-		CPUUsage    string `json:"cpu_usage"`
-		MemoryUsage string `json:"memory_usage"`
-		MemoryLimit string `json:"memory_limit"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		Health    string `json:"health,omitempty"`
+		Package   string `json:"package"`
+		URL       string `json:"url"`
+		Port      int    `json:"port"`
+		Transport string `json:"transport"`
+		ProxyMode string `json:"proxy_mode,omitempty"`
+		Group     string `json:"group,omitempty"`
+		Uptime    string `json:"uptime,omitempty"`
+		PID       int    `json:"pid,omitempty"`
 	}{
-		Name:        workload.Name,
-		Status:      string(workload.Status),
-		Health:      workload.StatusContext,
-		Package:     workload.Package,
-		URL:         workload.URL,
-		Port:        workload.Port,
-		Transport:   string(workload.TransportType),
-		ProxyMode:   workload.ProxyMode,
-		Group:       workload.Group,
-		Uptime:      uptime,
-		PID:         workload.ProcessID,
-		CPUUsage:    fmt.Sprintf("%.2f%%", stats.CPUPercent),
-		MemoryUsage: formatBytes(stats.MemoryUsage),
-		MemoryLimit: formatBytes(stats.MemoryLimit),
+		Name:      workload.Name,
+		Status:    string(workload.Status),
+		Health:    workload.StatusContext,
+		Package:   workload.Package,
+		URL:       workload.URL,
+		Port:      workload.Port,
+		Transport: string(workload.TransportType),
+		ProxyMode: workload.ProxyMode,
+		Group:     workload.Group,
+		Uptime:    uptime,
+		PID:       workload.ProcessID,
 	}
 
 	jsonData, err := json.MarshalIndent(output, "", "  ")
@@ -107,10 +97,10 @@ func printStatusJSONOutput(workload core.Workload, stats rt.WorkloadStats) error
 	return nil
 }
 
-func printStatusTextOutput(workload core.Workload, stats rt.WorkloadStats) {
+func printStatusTextOutput(workload core.Workload) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	status := string(workload.Status)
-	if workload.Status == rt.WorkloadStatusUnauthenticated {
+	if workload.Status == runtime.WorkloadStatusUnauthenticated {
 		status = "⚠️  " + status
 	}
 
@@ -135,33 +125,17 @@ func printStatusTextOutput(workload core.Workload, stats rt.WorkloadStats) {
 		_, _ = fmt.Fprintf(w, "Remote:\t%v\n", workload.Remote)
 	}
 	if !workload.StartedAt.IsZero() {
-		_, _ = fmt.Fprintf(w, "Uptime: \t%s\n", formatUptime(time.Since(workload.StartedAt)))
+		_, _ = fmt.Fprintf(w, "Uptime:\t%s\n", formatUptime(time.Since(workload.StartedAt)))
 	}
 
 	if workload.ProcessID != 0 {
 		_, _ = fmt.Fprintf(w, "PID:\t%d\n", workload.ProcessID)
 	}
 
-	_, _ = fmt.Fprintf(w, "CPU Usage:\t%.2f%%\n", stats.CPUPercent)
-	_, _ = fmt.Fprintf(w, "Memory Usage:\t%s / %s\n", formatBytes(stats.MemoryUsage), formatBytes(stats.MemoryLimit))
-
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
 		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
 	}
-}
-
-func formatBytes(b uint64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func formatUptime(d time.Duration) string {

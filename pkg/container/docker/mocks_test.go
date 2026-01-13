@@ -20,7 +20,6 @@ type fakeDockerAPI struct {
 	createFunc func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *v1.Platform, containerName string) (container.CreateResponse, error)
 	startFunc  func(ctx context.Context, containerID string, options container.StartOptions) error
 	removeFunc func(ctx context.Context, containerID string, options container.RemoveOptions) error
-	statsFunc  func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 }
 
 func (f *fakeDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
@@ -117,9 +116,3 @@ func (f *fakeImageManager) makeImagePulled(imageName string) {
 	f.pulledImages[imageName] = struct{}{}
 }
 
-func (f *fakeDockerAPI) ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
-	if f.statsFunc != nil {
-		return f.statsFunc(ctx, containerID, stream)
-	}
-	return container.StatsResponseReader{}, nil
-}

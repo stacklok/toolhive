@@ -45,10 +45,10 @@ type Config struct {
 
 // Service handles ingestion of MCP backends and their tools
 type Service struct {
-	config            *Config
-	database          *db.DB
-	embeddingManager  *embeddings.Manager
-	tokenCounter      *tokens.Counter
+	config           *Config
+	database         *db.DB
+	embeddingManager *embeddings.Manager
+	tokenCounter     *tokens.Counter
 	backendServerOps *db.BackendServerOps
 	backendToolOps   *db.BackendToolOps
 }
@@ -93,10 +93,10 @@ func NewService(config *Config) (*Service, error) {
 	tokenCounter := tokens.NewCounter()
 
 	svc := &Service{
-		config:            config,
-		database:          database,
-		embeddingManager:  embeddingManager,
-		tokenCounter:      tokenCounter,
+		config:           config,
+		database:         database,
+		embeddingManager: embeddingManager,
+		tokenCounter:     tokenCounter,
 		backendServerOps: db.NewBackendServerOps(database),
 		backendToolOps:   db.NewBackendToolOps(database),
 	}

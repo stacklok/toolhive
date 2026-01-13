@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
@@ -67,12 +69,16 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool)
 		return fmt.Errorf("failed to insert backend tool: %w", err)
 	}
 
-	// Insert embedding into vector table if present
+	// Insert embedding into vector table if present and table exists
 	if len(tool.DetailsEmbedding) > 0 {
 		vecQuery := `INSERT INTO backend_tool_vectors (tool_id, embedding) VALUES (?, ?)`
 		_, err = tx.ExecContext(ctx, vecQuery, tool.ID, embeddingToBytes(tool.DetailsEmbedding))
 		if err != nil {
-			return fmt.Errorf("failed to insert tool embedding: %w", err)
+			// Ignore error if vector table doesn't exist (sqlite-vec not available)
+			if !strings.Contains(err.Error(), "no such table") {
+				return fmt.Errorf("failed to insert tool embedding: %w", err)
+			}
+			logger.Debug("Skipping vector insert (sqlite-vec not available)")
 		}
 	}
 
@@ -83,7 +89,7 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool)
 	`
 	// Get server name from server table
 	var serverName string
-	err = tx.QueryRowContext(ctx, "SELECT name FROM mcpservers_workload WHERE id = ?", tool.MCPServerID).Scan(&serverName)
+	err = tx.QueryRowContext(ctx, "SELECT name FROM mcpservers_backend WHERE id = ?", tool.MCPServerID).Scan(&serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server name: %w", err)
 	}
@@ -92,7 +98,11 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool)
 
 	_, err = tx.ExecContext(ctx, ftsQuery, tool.ID, serverName, tool.Details.Name, description)
 	if err != nil {
-		return fmt.Errorf("failed to insert into FTS table: %w", err)
+		// Ignore error if FTS table doesn't exist
+		if !strings.Contains(err.Error(), "no such table") {
+			return fmt.Errorf("failed to insert into FTS table: %w", err)
+		}
+		logger.Debug("Skipping FTS insert (table not available)")
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -191,7 +201,7 @@ func (ops *BackendToolOps) DeleteByServerID(ctx context.Context, serverID string
 		// Ignore errors as vec0 may not support all DELETE operations
 		_, _ = tx.ExecContext(ctx, "DELETE FROM backend_tool_vectors WHERE tool_id = ?", id)
 		_, err = tx.ExecContext(ctx, "DELETE FROM backend_tool_fts WHERE tool_id = ?", id)
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "no such table") {
 			return 0, fmt.Errorf("failed to delete from FTS table: %w", err)
 		}
 	}
@@ -227,7 +237,7 @@ func (ops *BackendToolOps) SearchByEmbedding(
 			s.name as server_name, s.description as server_description,
 			v.distance
 		FROM tools_backend t
-		JOIN mcpservers_workload s ON t.mcpserver_id = s.id
+		JOIN mcpservers_backend s ON t.mcpserver_id = s.id
 		JOIN (
 			SELECT tool_id, distance
 			FROM backend_tool_vectors

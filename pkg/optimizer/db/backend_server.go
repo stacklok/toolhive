@@ -6,10 +6,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
@@ -71,12 +73,16 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 		return fmt.Errorf("failed to insert backend server: %w", err)
 	}
 
-	// Insert embedding into vector table if present
+	// Insert embedding into vector table if present and table exists
 	if len(server.ServerEmbedding) > 0 {
 		vecQuery := `INSERT INTO backend_server_vector (server_id, embedding) VALUES (?, ?)`
 		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
 		if err != nil {
-			return fmt.Errorf("failed to insert server embedding: %w", err)
+			// Ignore error if vector table doesn't exist (sqlite-vec not available)
+			if !strings.Contains(err.Error(), "no such table") {
+				return fmt.Errorf("failed to insert server embedding: %w", err)
+			}
+			logger.Debug("Skipping vector insert (sqlite-vec not available)")
 		}
 	}
 

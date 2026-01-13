@@ -142,7 +142,7 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 // AddRemoteAuthFlags adds the common remote authentication flags to a command
 func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false,
-		"Enable OAuth/OIDC authentication to remote MCP server (default: false)")
+		"Enable OAuth/OIDC authentication to remote MCP server")
 	cmd.Flags().StringVar(&config.RemoteAuthIssuer, "remote-auth-issuer", "",
 		"OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)")
 	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "",
@@ -154,11 +154,11 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{},
 		"OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')")
 	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
-		"Skip opening browser for remote server OAuth flow (default: false)")
+		"Skip opening browser for remote server OAuth flow")
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
-		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default: 30s)")
+		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", runner.DefaultCallbackPort,
-		"Port for OAuth callback server during remote authentication (default: 8666)")
+		"Port for OAuth callback server during remote authentication")
 	cmd.Flags().StringVar(&config.RemoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
 		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
 	cmd.Flags().StringVar(&config.RemoteAuthTokenURL, "remote-auth-token-url", "",

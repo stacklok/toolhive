@@ -31,6 +31,7 @@ const (
 // This struct provides type-safe configuration for different authentication strategies
 // using HeaderInjection or TokenExchange fields based on the Type field.
 // +kubebuilder:object:generate=true
+// +gendoc
 type BackendAuthStrategy struct {
 	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
 	Type string `json:"type" yaml:"type"`
@@ -47,6 +48,7 @@ type BackendAuthStrategy struct {
 // HeaderInjectionConfig configures the header injection auth strategy.
 // This strategy injects a static or environment-sourced header value into requests.
 // +kubebuilder:object:generate=true
+// +gendoc
 type HeaderInjectionConfig struct {
 	// HeaderName is the name of the header to inject (e.g., "Authorization").
 	HeaderName string `json:"headerName" yaml:"headerName"`
@@ -64,6 +66,7 @@ type HeaderInjectionConfig struct {
 // TokenExchangeConfig configures the OAuth 2.0 token exchange auth strategy.
 // This strategy exchanges incoming tokens for backend-specific tokens using RFC 8693.
 // +kubebuilder:object:generate=true
+// +gendoc
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth token endpoint URL for token exchange.
 	TokenURL string `json:"tokenUrl" yaml:"tokenUrl"`

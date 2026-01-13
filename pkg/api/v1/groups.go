@@ -258,13 +258,13 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 
 	if withWorkloads {
 		// Delete all workloads in the group
-		group, err := s.workloadManager.DeleteWorkloads(ctx, workloadNames)
+		complete, err := s.workloadManager.DeleteWorkloads(ctx, workloadNames)
 		if err != nil {
 			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
 		}
 
 		// Wait for the deletion to complete
-		if err := group.Wait(); err != nil {
+		if err := complete(); err != nil {
 			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
 		}
 

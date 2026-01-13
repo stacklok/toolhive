@@ -165,10 +165,10 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Phase (Ready, Degraded, Pending, Failed)
 - URL for accessing the virtual server
 - Discovered backends with individual health status
-- Capabilities summary (tool/resource/prompt counts)
+- Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**Referenced by**: MCPGroup (via `spec.groupRef`)
+**References**: MCPGroup (via `spec.config.groupRef`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 
@@ -186,6 +186,18 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 4. **Status Reconciliation**: Robust status updates with conflict handling following Kubernetes optimistic concurrency control patterns
 
 5. **Backend Health Monitoring**: Periodic health checks with configurable intervals and automatic status updates
+
+### VirtualMCPCompositeToolDefinition
+
+Defines reusable composite tool workflows that can be shared across multiple VirtualMCPServers.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpcompositetooldefinition_types.go`
+
+Composite tools orchestrate calls to multiple backend tools in sequence or parallel, enabling complex workflows without client awareness of the underlying backends. Workflow steps form a DAG (Directed Acyclic Graph) with support for conditional execution and error handling.
+
+**Referenced by**: VirtualMCPServer (via `spec.compositeToolRefs`)
+
+**Status fields** track validation status and which VirtualMCPServers reference the definition.
 
 For examples, see the [`examples/operator/`](../../examples/operator/) directory.
 
@@ -471,4 +483,5 @@ spec:
 - [Deployment Modes](01-deployment-modes.md) - Kubernetes mode details
 - [Core Concepts](02-core-concepts.md) - Operator concepts
 - [Registry System](06-registry-system.md) - MCPRegistry CRD
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - VirtualMCPServer details
 - Operator Design: `cmd/thv-operator/DESIGN.md`

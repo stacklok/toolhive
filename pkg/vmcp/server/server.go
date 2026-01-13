@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -119,6 +120,10 @@ type Config struct {
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
+
+	// OptimizerFactory builds an optimizer from a list of tools.
+	// If not set, the optimizer is disabled.
+	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -705,6 +710,7 @@ func (s *Server) Ready() <-chan struct{} {
 //   - No previous capabilities exist, so no deletion needed
 //   - Capabilities are IMMUTABLE for the session lifetime (see limitation below)
 //   - Discovery middleware does not re-run for subsequent requests
+//   - If injectOptimizerCapabilities is called, this should not be called again.
 //
 // LIMITATION: Session capabilities are fixed at creation time.
 // If backends change (new tools added, resources removed), existing sessions won't see updates.
@@ -776,6 +782,53 @@ func (s *Server) injectCapabilities(
 		"resources", len(caps.Resources))
 
 	return nil
+}
+
+// injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
+// It should not be called if optimizer mode and replaces injectCapabilities.
+//
+// When optimizer mode is enabled, instead of exposing all backend tools directly,
+// vMCP exposes only two meta-tools:
+//   - find_tool: Search for tools by description
+//   - call_tool: Invoke a tool by name with parameters
+//
+// This method:
+// 1. Converts all tools (backend + composite) to SDK format with handlers
+// 2. Injects the optimizer capabilities into the session
+func (s *Server) injectOptimizerCapabilities(
+	sessionID string,
+	caps *aggregator.AggregatedCapabilities,
+) error {
+
+	tools := append([]vmcp.Tool{}, caps.Tools...)
+	tools = append(tools, caps.CompositeTools...)
+
+	sdkTools, err := s.capabilityAdapter.ToSDKTools(tools)
+	if err != nil {
+		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
+	}
+
+	// Create optimizer tools (find_tool, call_tool)
+	optimizerTools := adapter.CreateOptimizerTools(s.config.OptimizerFactory(sdkTools))
+
+	logger.Debugw("created optimizer tools for session",
+		"session_id", sessionID,
+		"backend_tool_count", len(caps.Tools),
+		"composite_tool_count", len(caps.CompositeTools),
+		"total_tools_indexed", len(sdkTools))
+
+	// Clear tools from caps - they're now wrapped by optimizer
+	// Resources and prompts are preserved and handled normally
+	caps.Tools = nil
+	caps.CompositeTools = nil
+
+	// Manually add the optimizer tools, since we don't want to bother converting
+	// optimizer tools into `vmcp.Tool`s as well.
+	if err := s.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
+		return fmt.Errorf("failed to add session tools: %w", err)
+	}
+
+	return s.injectCapabilities(sessionID, caps)
 }
 
 // handleSessionRegistration processes a new MCP session registration.
@@ -864,6 +917,18 @@ func (s *Server) handleSessionRegistration(
 		"tool_count", len(caps.RoutingTable.Tools),
 		"resource_count", len(caps.RoutingTable.Resources),
 		"prompt_count", len(caps.RoutingTable.Prompts))
+
+	if s.config.OptimizerFactory != nil {
+		err = s.injectOptimizerCapabilities(sessionID, caps)
+		if err != nil {
+			logger.Errorw("failed to create optimizer tools",
+				"error", err,
+				"session_id", sessionID)
+		} else {
+			logger.Infow("optimizer capabilities injected")
+		}
+		return
+	}
 
 	// Inject capabilities into SDK session
 	if err := s.injectCapabilities(sessionID, caps); err != nil {

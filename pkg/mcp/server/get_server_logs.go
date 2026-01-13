@@ -21,8 +21,8 @@ func (h *Handler) GetServerLogs(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Get logs
-	logs, err := h.workloadManager.GetLogs(ctx, args.Name, false)
+	// Get logs (default 100 lines, no offset)
+	logs, _, err := h.workloadManager.GetLogs(ctx, args.Name, false, 100, 0)
 	if err != nil {
 		// Check if it's a not found error
 		if strings.Contains(err.Error(), "not found") {

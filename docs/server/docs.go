@@ -3637,7 +3637,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/logs": {
             "get": {
-                "description": "Retrieve at most 100 lines of logs for a specific workload by name.",
+                "description": "Retrieve logs for a specific workload by name. By default returns last 100 lines.\nUse offset for pagination. Response includes X-Total-Lines, X-Offset, and X-Limit headers.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3646,6 +3646,22 @@ const docTemplate = `{
                         "required": true,
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Maximum number of log lines to return (default: 100, max: 1000)",
+                        "in": "query",
+                        "name": "lines",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Number of lines to skip before returning results (for pagination, default: 0)",
+                        "in": "query",
+                        "name": "offset",
+                        "schema": {
+                            "type": "integer"
                         }
                     }
                 ],
@@ -3658,7 +3674,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Logs for the specified workload"
+                        "description": "Logs for the specified workload",
+                        "headers": {
+                            "X-Limit": {
+                                "description": "Maximum number of lines returned (lines parameter)",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            },
+                            "X-Offset": {
+                                "description": "Number of lines skipped (offset parameter)",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            },
+                            "X-Total-Lines": {
+                                "description": "Total number of log lines available",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "content": {
@@ -3668,7 +3704,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid workload name"
+                        "description": "Invalid workload name, lines, or offset parameter"
                     },
                     "404": {
                         "content": {
@@ -3689,7 +3725,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/proxy-logs": {
             "get": {
-                "description": "Retrieve proxy logs for a specific workload by name from the file system.",
+                "description": "Retrieve proxy logs for a specific workload by name from the file system.\nBy default returns last 100 lines. Use offset for pagination.\nResponse includes X-Total-Lines, X-Offset, and X-Limit headers.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3698,6 +3734,22 @@ const docTemplate = `{
                         "required": true,
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Maximum number of log lines to return (default: 100, max: 1000)",
+                        "in": "query",
+                        "name": "lines",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Number of lines to skip before returning results (for pagination, default: 0)",
+                        "in": "query",
+                        "name": "offset",
+                        "schema": {
+                            "type": "integer"
                         }
                     }
                 ],
@@ -3710,7 +3762,27 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Proxy logs for the specified workload"
+                        "description": "Proxy logs for the specified workload",
+                        "headers": {
+                            "X-Limit": {
+                                "description": "Maximum number of lines returned (lines parameter)",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            },
+                            "X-Offset": {
+                                "description": "Number of lines skipped (offset parameter)",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            },
+                            "X-Total-Lines": {
+                                "description": "Total number of log lines available",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "content": {
@@ -3720,7 +3792,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid workload name"
+                        "description": "Invalid workload name, lines, or offset parameter"
                     },
                     "404": {
                         "content": {

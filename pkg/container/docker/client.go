@@ -468,22 +468,45 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 }
 
 // GetWorkloadLogs gets workload logs
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(
+	ctx context.Context, workloadName string, follow bool, maxLines int, offset int,
+) (string, int, error) {
+	// Handle maxLines and offset:
+	// - If maxLines <= 0: unlimited (for CLI usage)
+	// - If maxLines > 0: limit to that number (for API usage), cap at 1000
+	// - If offset > 0 or maxLines > 0: need total count for pagination, must read all logs
+	// - For API usage, always read all logs to get accurate total count
+
+	if maxLines > 1000 {
+		maxLines = 1000 // cap at max for API protection
+	}
+
+	// For pagination support (when maxLines > 0), we need to read all logs to get total count
+	// For CLI (maxLines <= 0), we can skip counting
+	needsTotalCount := maxLines > 0
+	tailLines := "all"
+
+	// If not paginating and not needing count, we could use Tail optimization
+	// But since we need total count for API responses, we always read all when maxLines > 0
+	if !needsTotalCount && maxLines > 0 {
+		tailLines = strconv.Itoa(maxLines)
+	}
+
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     follow,
-		Tail:       "100",
+		Tail:       tailLines,
 	}
 
 	workloadContainer, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	logs, err := c.client.ContainerLogs(ctx, workloadContainer.ID, options)
 	if err != nil {
-		return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to get workload logs: %v", err))
+		return "", 0, NewContainerError(err, workloadName, fmt.Sprintf("failed to get workload logs: %v", err))
 	}
 	defer func() {
 		if err := logs.Close(); err != nil {
@@ -496,7 +519,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 		_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, logs)
 		if err != nil && err != io.EOF {
 			logger.Errorf("Error reading workload logs: %v", err)
-			return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to follow workload logs: %v", err))
+			return "", 0, NewContainerError(err, workloadName, fmt.Sprintf("failed to follow workload logs: %v", err))
 		}
 	}
 
@@ -504,10 +527,27 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	var buf bytes.Buffer
 	_, err = stdcopy.StdCopy(&buf, &buf, logs)
 	if err != nil {
-		return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to read workload logs: %v", err))
+		return "", 0, NewContainerError(err, workloadName, fmt.Sprintf("failed to read workload logs: %v", err))
 	}
 
-	return buf.String(), nil
+	logContent := buf.String()
+
+	// Count total lines
+	totalLines := 0
+	if logContent != "" {
+		totalLines = strings.Count(logContent, "\n")
+		// If content doesn't end with newline, add 1 for the last line
+		if !strings.HasSuffix(logContent, "\n") {
+			totalLines++
+		}
+	}
+
+	// Apply offset and limit if needed for pagination
+	if offset > 0 || maxLines > 0 {
+		logContent = sliceLogLines(logContent, offset, maxLines)
+	}
+
+	return logContent, totalLines, nil
 }
 
 // IsWorkloadRunning checks if a workload is running
@@ -1774,4 +1814,28 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 	}
 
 	return c.api.ContainerInspect(ctx, containerID)
+}
+
+// sliceLogLines applies offset and limit to log content for pagination.
+// offset: number of lines to skip from the beginning
+// maxLines: maximum number of lines to return (0 = unlimited)
+func sliceLogLines(content string, offset int, maxLines int) string {
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+
+	// Apply offset
+	if offset >= len(lines) {
+		return "" // offset beyond available lines
+	}
+	lines = lines[offset:]
+
+	// Apply limit
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+
+	return strings.Join(lines, "\n")
 }

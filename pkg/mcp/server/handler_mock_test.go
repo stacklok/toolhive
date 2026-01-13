@@ -461,8 +461,8 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 			logs:       "2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080",
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
-					GetLogs(gomock.Any(), "test-server", false).
-					Return("2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080", nil)
+					GetLogs(gomock.Any(), "test-server", false, gomock.Any(), gomock.Any()).
+					Return("2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080", 0, nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
@@ -478,8 +478,8 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 			serverName: "nonexistent",
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
-					GetLogs(gomock.Any(), "nonexistent", false).
-					Return("", assert.AnError)
+					GetLogs(gomock.Any(), "nonexistent", false, gomock.Any(), gomock.Any()).
+					Return("", 0, assert.AnError)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {

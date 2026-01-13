@@ -241,7 +241,32 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 }
 
 // GetWorkloadLogs implements runtime.Runtime.
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(
+	ctx context.Context, workloadName string, follow bool, maxLines int, offset int,
+) (string, int, error) {
+	// Handle maxLines and offset:
+	// - If maxLines <= 0: unlimited (for CLI usage)
+	// - If maxLines > 0: limit to that number (for API usage), cap at 1000
+	// - If offset > 0 or maxLines > 0: need total count for pagination, must read all logs
+	// - For API usage, always read all logs to get accurate total count
+
+	if maxLines > 1000 {
+		maxLines = 1000 // cap at max for API protection
+	}
+
+	// For pagination support (when maxLines > 0), we need to read all logs to get total count
+	// For CLI (maxLines <= 0), we can skip counting
+	needsTotalCount := maxLines > 0
+	var tailLines *int64
+
+	// If not paginating and not needing count, we could use TailLines optimization
+	// But since we need total count for API responses, we always read all when maxLines > 0
+	if !needsTotalCount && maxLines > 0 {
+		tailLinesValue := int64(maxLines)
+		tailLines = &tailLinesValue
+	}
+	// If tailLines is nil, Kubernetes will return all logs
+
 	// In Kubernetes, workloadID is the statefulset name
 	namespace := c.getCurrentNamespace()
 
@@ -251,11 +276,11 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 		FieldSelector: fmt.Sprintf("metadata.name=%s", workloadName),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", workloadName, err)
+		return "", 0, fmt.Errorf("failed to list pods for statefulset %s: %w", workloadName, err)
 	}
 
 	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("%w: no pods found for statefulset %s", runtime.ErrWorkloadNotFound, workloadName)
+		return "", 0, fmt.Errorf("%w: no pods found for statefulset %s", runtime.ErrWorkloadNotFound, workloadName)
 	}
 
 	// Use the first pod
@@ -267,12 +292,13 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 		Follow:     follow,
 		Previous:   false,
 		Timestamps: true,
+		TailLines:  tailLines, // K8s requires pointer to int64, nil means all logs
 	}
 
 	req := c.client.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
 	podLogs, err := req.Stream(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to get logs for pod %s: %w", podName, err)
+		return "", 0, fmt.Errorf("failed to get logs for pod %s: %w", podName, err)
 	}
 	defer func() {
 		if err := podLogs.Close(); err != nil {
@@ -284,10 +310,51 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	// Read logs
 	logBytes, err := io.ReadAll(podLogs)
 	if err != nil {
-		return "", fmt.Errorf("failed to read logs for pod %s: %w", podName, err)
+		return "", 0, fmt.Errorf("failed to read logs for pod %s: %w", podName, err)
 	}
 
-	return string(logBytes), nil
+	logContent := string(logBytes)
+
+	// Count total lines
+	totalLines := 0
+	if logContent != "" {
+		totalLines = strings.Count(logContent, "\n")
+		// If content doesn't end with newline, add 1 for the last line
+		if !strings.HasSuffix(logContent, "\n") {
+			totalLines++
+		}
+	}
+
+	// Apply offset and limit if needed for pagination
+	if offset > 0 || maxLines > 0 {
+		logContent = sliceLogLines(logContent, offset, maxLines)
+	}
+
+	return logContent, totalLines, nil
+}
+
+// sliceLogLines applies offset and limit to log content for pagination.
+// offset: number of lines to skip from the beginning
+// maxLines: maximum number of lines to return (0 = unlimited)
+func sliceLogLines(content string, offset int, maxLines int) string {
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+
+	// Apply offset
+	if offset >= len(lines) {
+		return "" // offset beyond available lines
+	}
+	lines = lines[offset:]
+
+	// Apply limit
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // DeployWorkload implements runtime.Runtime.

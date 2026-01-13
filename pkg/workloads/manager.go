@@ -70,9 +70,15 @@ type Manager interface {
 	// The operation runs asynchronously unless the CompletionFunc is called.
 	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (CompletionFunc, error)
 	// GetLogs retrieves the logs of a container.
-	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
+	// maxLines limits the number of log lines returned (0 = unlimited for CLI).
+	// offset specifies the number of lines to skip before returning results (for pagination).
+	// Returns the log content, total number of lines available, and an error if any.
+	GetLogs(ctx context.Context, containerName string, follow bool, maxLines int, offset int) (string, int, error)
 	// GetProxyLogs retrieves the proxy logs from the filesystem.
-	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
+	// maxLines limits the number of log lines returned (0 = unlimited for CLI).
+	// offset specifies the number of lines to skip before returning results (for pagination).
+	// Returns the log content, total number of lines available, and an error if any.
+	GetProxyLogs(ctx context.Context, workloadName string, maxLines int, offset int) (string, int, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
@@ -617,26 +623,37 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 }
 
 // GetLogs retrieves the logs of a container.
-func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (d *DefaultManager) GetLogs(
+	ctx context.Context, workloadName string, follow bool, maxLines int, offset int,
+) (string, int, error) {
 	// Get the logs from the runtime
-	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow)
+	logs, totalLines, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow, maxLines, offset)
 	if err != nil {
 		// Propagate the error if the container is not found
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
-			return "", fmt.Errorf("%w: %s", rt.ErrWorkloadNotFound, workloadName)
+			return "", 0, fmt.Errorf("%w: %s", rt.ErrWorkloadNotFound, workloadName)
 		}
-		return "", fmt.Errorf("failed to get container logs %s: %w", workloadName, err)
+		return "", 0, fmt.Errorf("failed to get container logs %s: %w", workloadName, err)
 	}
 
-	return logs, nil
+	return logs, totalLines, nil
 }
 
 // GetProxyLogs retrieves proxy logs from the filesystem
-func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (string, error) {
+func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string, maxLines int, offset int) (string, int, error) {
+	// Handle maxLines and offset:
+	// - If maxLines <= 0: unlimited (for CLI usage, read entire file)
+	// - If maxLines > 0: limit to that number (for API usage), need to read all for total count
+	// - If offset > 0: pagination mode, read entire file and slice
+	// - Cap at 1000 for API protection
+	if maxLines > 1000 {
+		maxLines = 1000 // cap at max
+	}
+
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
-		return "", fmt.Errorf("failed to get proxy log file path for workload %s: %w", workloadName, err)
+		return "", 0, fmt.Errorf("failed to get proxy log file path for workload %s: %w", workloadName, err)
 	}
 
 	// Clean the file path to prevent path traversal
@@ -644,16 +661,34 @@ func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (str
 
 	// Check if the log file exists
 	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
-		return "", fmt.Errorf("proxy logs not found for workload %s", workloadName)
+		return "", 0, fmt.Errorf("proxy logs not found for workload %s", workloadName)
 	}
 
-	// Read and return the entire log file
-	content, err := os.ReadFile(cleanLogFilePath)
+	// Always read entire file to get accurate total count for API responses
+	// #nosec G304 - filePath is validated by caller via filepath.Clean
+	fileContent, err := os.ReadFile(cleanLogFilePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+		return "", 0, fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+	}
+	fullContent := string(fileContent)
+
+	// Count total lines
+	totalLines := 0
+	if fullContent != "" {
+		totalLines = strings.Count(fullContent, "\n")
+		// If content doesn't end with newline, add 1 for the last line
+		if !strings.HasSuffix(fullContent, "\n") {
+			totalLines++
+		}
 	}
 
-	return string(content), nil
+	// Apply offset and limit for pagination
+	content := fullContent
+	if offset > 0 || maxLines > 0 {
+		content = sliceProxyLogLines(fullContent, offset, maxLines)
+	}
+
+	return content, totalLines, nil
 }
 
 // deleteWorkload handles deletion of a single workload
@@ -1522,4 +1557,28 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 	}
 
 	return remoteWorkloads, nil
+}
+
+// sliceProxyLogLines applies offset and limit to log content for pagination.
+// offset: number of lines to skip from the beginning
+// maxLines: maximum number of lines to return (0 = unlimited)
+func sliceProxyLogLines(content string, offset int, maxLines int) string {
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+
+	// Apply offset
+	if offset >= len(lines) {
+		return "" // offset beyond available lines
+	}
+	lines = lines[offset:]
+
+	// Apply limit
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+
+	return strings.Join(lines, "\n")
 }

@@ -160,7 +160,10 @@ type Runtime interface {
 	// If follow is true, the logs will be streamed continuously.
 	// For workloads with multiple containers, this returns logs from the
 	// main MCP server container.
-	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error)
+	// maxLines limits the number of log lines returned (0 = unlimited for CLI).
+	// offset specifies the number of lines to skip before returning results (for pagination).
+	// Returns the log content, total number of lines available, and an error if any.
+	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, maxLines int, offset int) (string, int, error)
 
 	// GetWorkloadInfo retrieves detailed information about a workload.
 	// This includes status, resource usage, network configuration,

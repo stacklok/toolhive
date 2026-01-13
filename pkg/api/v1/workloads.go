@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -516,13 +517,19 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // getLogsForWorkload
 //
 // @Summary      Get logs for a specific workload
-// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Description  Retrieve logs for a specific workload by name. By default returns last 100 lines.
+// @Description  Use offset for pagination. Response includes X-Total-Lines, X-Offset, and X-Limit headers.
 // @Tags         logs
 // @Produce      text/plain
-// @Param        name  path      string  true  "Workload name"
-// @Success      200   {string}  string  "Logs for the specified workload"
-// @Failure      400   {string}  string  "Invalid workload name"
-// @Failure      404   {string}  string  "Not Found"
+// @Param        name    path   string  true   "Workload name"
+// @Param        lines   query  int     false  "Maximum number of log lines to return (default: 100, max: 1000)"
+// @Param        offset  query  int     false  "Number of lines to skip before returning results (for pagination, default: 0)"
+// @Success      200     {string}  string  "Logs for the specified workload"
+// @Header       200     {integer}  X-Total-Lines  "Total number of log lines available"
+// @Header       200     {integer}  X-Offset       "Number of lines skipped (offset parameter)"
+// @Header       200     {integer}  X-Limit        "Maximum number of lines returned (lines parameter)"
+// @Failure      400     {string}  string  "Invalid workload name, lines, or offset parameter"
+// @Failure      404     {string}  string  "Not Found"
 // @Router       /api/v1beta/workloads/{name}/logs [get]
 func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -534,7 +541,33 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	logs, err := s.workloadManager.GetLogs(ctx, name, false)
+	// Parse and validate lines parameter
+	maxLines := 100 // default
+	if linesParam := r.URL.Query().Get("lines"); linesParam != "" {
+		parsed, err := strconv.Atoi(linesParam)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "Invalid lines parameter: must be a positive integer", http.StatusBadRequest)
+			return
+		}
+		if parsed > 10000 {
+			http.Error(w, "Invalid lines parameter: maximum is 10000", http.StatusBadRequest)
+			return
+		}
+		maxLines = parsed
+	}
+
+	// Parse and validate offset parameter
+	offset := 0 // default
+	if offsetParam := r.URL.Query().Get("offset"); offsetParam != "" {
+		parsed, err := strconv.Atoi(offsetParam)
+		if err != nil || parsed < 0 {
+			http.Error(w, "Invalid offset parameter: must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		offset = parsed
+	}
+
+	logs, totalLines, err := s.workloadManager.GetLogs(ctx, name, false, maxLines, offset)
 	if err != nil {
 		if errors.Is(err, runtime.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
@@ -544,7 +577,13 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Failed to get logs", http.StatusInternalServerError)
 		return
 	}
+
+	// Set response headers with pagination metadata
 	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("X-Total-Lines", strconv.Itoa(totalLines))
+	w.Header().Set("X-Offset", strconv.Itoa(offset))
+	w.Header().Set("X-Limit", strconv.Itoa(maxLines))
+
 	_, err = w.Write([]byte(logs))
 	if err != nil {
 		logger.Errorf("Failed to write logs response: %v", err)
@@ -557,12 +596,19 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 //
 // @Summary      Get proxy logs for a specific workload
 // @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Description  By default returns last 100 lines. Use offset for pagination.
+// @Description  Response includes X-Total-Lines, X-Offset, and X-Limit headers.
 // @Tags         logs
 // @Produce      text/plain
-// @Param        name  path      string  true  "Workload name"
-// @Success      200   {string}  string  "Proxy logs for the specified workload"
-// @Failure      400   {string}  string  "Invalid workload name"
-// @Failure      404   {string}  string  "Proxy logs not found for workload"
+// @Param        name    path   string  true   "Workload name"
+// @Param        lines   query  int     false  "Maximum number of log lines to return (default: 100, max: 1000)"
+// @Param        offset  query  int     false  "Number of lines to skip before returning results (for pagination, default: 0)"
+// @Success      200     {string}  string  "Proxy logs for the specified workload"
+// @Header       200     {integer}  X-Total-Lines  "Total number of log lines available"
+// @Header       200     {integer}  X-Offset       "Number of lines skipped (offset parameter)"
+// @Header       200     {integer}  X-Limit        "Maximum number of lines returned (lines parameter)"
+// @Failure      400     {string}  string  "Invalid workload name, lines, or offset parameter"
+// @Failure      404     {string}  string  "Proxy logs not found for workload"
 // @Router       /api/v1beta/workloads/{name}/proxy-logs [get]
 func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -574,14 +620,45 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 		return
 	}
 
-	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
+	// Parse and validate lines parameter
+	maxLines := 100 // default
+	if linesParam := r.URL.Query().Get("lines"); linesParam != "" {
+		parsed, err := strconv.Atoi(linesParam)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "Invalid lines parameter: must be a positive integer", http.StatusBadRequest)
+			return
+		}
+		if parsed > 10000 {
+			http.Error(w, "Invalid lines parameter: maximum is 10000", http.StatusBadRequest)
+			return
+		}
+		maxLines = parsed
+	}
+
+	// Parse and validate offset parameter
+	offset := 0 // default
+	if offsetParam := r.URL.Query().Get("offset"); offsetParam != "" {
+		parsed, err := strconv.Atoi(offsetParam)
+		if err != nil || parsed < 0 {
+			http.Error(w, "Invalid offset parameter: must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		offset = parsed
+	}
+
+	logs, totalLines, err := s.workloadManager.GetProxyLogs(ctx, name, maxLines, offset)
 	if err != nil {
 		logger.Errorf("Failed to get proxy logs: %v", err)
 		http.Error(w, "Proxy logs not found for workload", http.StatusNotFound)
 		return
 	}
 
+	// Set response headers with pagination metadata
 	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("X-Total-Lines", strconv.Itoa(totalLines))
+	w.Header().Set("X-Offset", strconv.Itoa(offset))
+	w.Header().Set("X-Limit", strconv.Itoa(maxLines))
+
 	_, err = w.Write([]byte(logs))
 	if err != nil {
 		logger.Errorf("Failed to write proxy logs response: %v", err)

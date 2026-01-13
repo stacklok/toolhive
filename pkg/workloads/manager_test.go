@@ -347,7 +347,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "test-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false).Return("test log content", nil)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false, 100, 0).Return("test log content", 1, nil)
 			},
 			expectedLogs: "test log content",
 			expectError:  false,
@@ -357,7 +357,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "missing-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false).Return("", runtime.ErrWorkloadNotFound)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false, 100, 0).Return("", 0, runtime.ErrWorkloadNotFound)
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -368,7 +368,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "error-workload",
 			follow:       true,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true).Return("", errors.New("runtime failure"))
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true, 100, 0).Return("", 0, errors.New("runtime failure"))
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -391,7 +391,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow)
+			logs, _, err := manager.GetLogs(ctx, tt.workloadName, tt.follow, 100, 0)
 
 			if tt.expectError {
 				require.Error(t, err)

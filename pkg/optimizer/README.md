@@ -34,6 +34,43 @@ The optimizer supports multiple embedding backends:
 
 **For production Kubernetes deployments, vLLM is recommended** due to its high-throughput performance, GPU efficiency (PagedAttention), and scalability for multi-user environments.
 
+## Prerequisites
+
+### sqlite-vec Extension (REQUIRED)
+
+The optimizer requires the [sqlite-vec](https://github.com/asg017/sqlite-vec) extension for semantic vector search. This is the core functionality that enables intelligent tool discovery.
+
+**Installation:**
+
+```bash
+# macOS (Homebrew)
+brew install asg017/sqlite-vec/sqlite-vec
+
+# Or download from releases
+# https://github.com/asg017/sqlite-vec/releases
+
+# Set environment variable
+export SQLITE_VEC_PATH=/usr/local/lib/vec0.dylib  # macOS
+export SQLITE_VEC_PATH=/usr/local/lib/vec0.so     # Linux
+```
+
+**For Kubernetes deployments**, bundle the extension in your container image:
+
+```dockerfile
+# Example: Adding sqlite-vec to container
+FROM golang:1.21 as builder
+RUN wget https://github.com/asg017/sqlite-vec/releases/download/v0.1.1/sqlite-vec-0.1.1-linux-amd64.tar.gz && \
+    tar -xzf sqlite-vec-0.1.1-linux-amd64.tar.gz && \
+    mv vec0.so /usr/local/lib/
+
+ENV SQLITE_VEC_PATH=/usr/local/lib/vec0.so
+```
+
+**Why is this required?**
+- Enables cosine similarity search for semantic tool matching
+- Powers the "find tools for X" functionality
+- Without it, the optimizer is just a basic database - no intelligence
+
 ## Quick Start
 
 ### Standalone Command

@@ -19,7 +19,7 @@ func TestMultipleServers(t *testing.T) {
 	ctx := context.Background()
 
 	// Server 1: Weather Service
-	weatherServer := &models.WorkloadServer{
+	weatherServer := &models.BackendServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          uuid.New().String(),
 			Name:        "weather-service",
@@ -70,7 +70,7 @@ func TestMultipleServers(t *testing.T) {
 	}
 
 	// Server 2: Database Service
-	dbServer := &models.WorkloadServer{
+	dbServer := &models.BackendServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          uuid.New().String(),
 			Name:        "database-service",
@@ -115,7 +115,7 @@ func TestMultipleServers(t *testing.T) {
 	}
 
 	// Server 3: GitHub Service
-	githubServer := &models.WorkloadServer{
+	githubServer := &models.BackendServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          uuid.New().String(),
 			Name:        "github-service",
@@ -152,7 +152,7 @@ func TestMultipleServers(t *testing.T) {
 
 	// Ingest all servers
 	servers := []struct {
-		server *models.WorkloadServer
+		server *models.BackendServer
 		tools  []mcp.Tool
 	}{
 		{weatherServer, weatherTools},
@@ -167,7 +167,7 @@ func TestMultipleServers(t *testing.T) {
 		}
 
 		// Sync tools
-		count, err := svc.syncWorkloadTools(ctx, s.server.ID, s.server.Name, s.tools)
+		count, err := svc.syncBackendTools(ctx, s.server.ID, s.server.Name, s.tools)
 		if err != nil {
 			t.Fatalf("Failed to sync tools for %s: %v", s.server.Name, err)
 		}

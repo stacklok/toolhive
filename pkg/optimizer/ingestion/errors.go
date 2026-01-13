@@ -7,14 +7,14 @@ var (
 	// ErrIngestionFailed is returned when ingestion fails
 	ErrIngestionFailed = errors.New("ingestion failed")
 
-	// ErrWorkloadRetrievalFailed is returned when workload retrieval fails
-	ErrWorkloadRetrievalFailed = errors.New("workload retrieval failed")
+	// ErrBackendRetrievalFailed is returned when backend retrieval fails
+	ErrBackendRetrievalFailed = errors.New("backend retrieval failed")
 
 	// ErrToolHiveUnavailable is returned when ToolHive is unavailable
 	ErrToolHiveUnavailable = errors.New("ToolHive unavailable")
 
-	// ErrWorkloadStatusNil is returned when workload status is nil
-	ErrWorkloadStatusNil = errors.New("workload status cannot be nil")
+	// ErrBackendStatusNil is returned when backend status is nil
+	ErrBackendStatusNil = errors.New("backend status cannot be nil")
 
 	// ErrInvalidRuntimeMode is returned for invalid runtime mode
 	ErrInvalidRuntimeMode = errors.New("invalid runtime mode: must be 'docker' or 'k8s'")

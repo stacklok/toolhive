@@ -1,6 +1,6 @@
 // Package optimizer provides semantic tool discovery and ingestion for MCP servers.
 //
-// The optimizer package implements an ingestion service that discovers MCP workloads
+// The optimizer package implements an ingestion service that discovers MCP backends
 // from ToolHive, generates semantic embeddings for tools using ONNX Runtime, and stores
 // them in a SQLite database with vector search capabilities.
 //
@@ -18,8 +18,8 @@
 //	│   ├── db.go                // Database connection and config
 //	│   ├── migrations/          // SQL migration files
 //	│   │   └── 001_initial.sql
-//	│   ├── workload_server.go   // Workload server operations
-//	│   ├── workload_tool.go     // Workload tool operations
+//	│   ├── backend_server.go   // Backend server operations
+//	│   ├── backend_tool.go     // Backend tool operations
 //	│   ├── registry_server.go   // Registry server operations
 //	│   └── registry_tool.go     // Registry tool operations
 //	├── embeddings/              // Embedding generation
@@ -35,14 +35,14 @@
 //
 // # Core Concepts
 //
-// **Ingestion**: Discovers MCP workloads from ToolHive (via Docker or Kubernetes),
-// connects to each workload to list tools, generates embeddings, and stores in database.
+// **Ingestion**: Discovers MCP backends from ToolHive (via Docker or Kubernetes),
+// connects to each backend to list tools, generates embeddings, and stores in database.
 //
 // **Embeddings**: Uses ONNX Runtime to generate semantic embeddings for tools and servers.
 // Embeddings enable semantic search to find relevant tools based on natural language queries.
 //
 // **Database**: SQLite with sqlite-vec extension for vector similarity search. Separates
-// registry servers (from catalog) and workload servers (running instances).
+// registry servers (from catalog) and backend servers (running instances).
 //
 // **Token Counting**: Tracks token counts for tools to measure LLM consumption and
 // calculate token savings from semantic filtering.

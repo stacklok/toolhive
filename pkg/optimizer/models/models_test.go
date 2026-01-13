@@ -168,22 +168,22 @@ func TestTokenMetrics_Validate(t *testing.T) {
 	}
 }
 
-func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
+func TestBackendWithRegistry_EffectiveDescription(t *testing.T) {
 	t.Parallel()
 	registryDesc := "Registry description"
-	workloadDesc := "Workload description"
+	backendDesc := "Backend description"
 
 	tests := []struct {
 		name string
-		w    *WorkloadWithRegistry
+		w    *BackendWithRegistry
 		want *string
 	}{
 		{
 			name: "Uses registry description when available",
-			w: &WorkloadWithRegistry{
-				Workload: WorkloadServer{
+			w: &BackendWithRegistry{
+				Backend: BackendServer{
 					BaseMCPServer: BaseMCPServer{
-						Description: &workloadDesc,
+						Description: &backendDesc,
 					},
 				},
 				Registry: &RegistryServer{
@@ -195,21 +195,21 @@ func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
 			want: &registryDesc,
 		},
 		{
-			name: "Uses workload description when no registry",
-			w: &WorkloadWithRegistry{
-				Workload: WorkloadServer{
+			name: "Uses backend description when no registry",
+			w: &BackendWithRegistry{
+				Backend: BackendServer{
 					BaseMCPServer: BaseMCPServer{
-						Description: &workloadDesc,
+						Description: &backendDesc,
 					},
 				},
 				Registry: nil,
 			},
-			want: &workloadDesc,
+			want: &backendDesc,
 		},
 		{
 			name: "Returns nil when no description",
-			w: &WorkloadWithRegistry{
-				Workload: WorkloadServer{},
+			w: &BackendWithRegistry{
+				Backend: BackendServer{},
 				Registry: nil,
 			},
 			want: nil,
@@ -221,28 +221,28 @@ func TestWorkloadWithRegistry_EffectiveDescription(t *testing.T) {
 			t.Parallel()
 			got := tt.w.EffectiveDescription()
 			if (got == nil) != (tt.want == nil) {
-				t.Errorf("WorkloadWithRegistry.EffectiveDescription() = %v, want %v", got, tt.want)
+				t.Errorf("BackendWithRegistry.EffectiveDescription() = %v, want %v", got, tt.want)
 			}
 			if got != nil && tt.want != nil && *got != *tt.want {
-				t.Errorf("WorkloadWithRegistry.EffectiveDescription() = %v, want %v", *got, *tt.want)
+				t.Errorf("BackendWithRegistry.EffectiveDescription() = %v, want %v", *got, *tt.want)
 			}
 		})
 	}
 }
 
-func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
+func TestBackendWithRegistry_ServerNameForTools(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		w    *WorkloadWithRegistry
+		w    *BackendWithRegistry
 		want string
 	}{
 		{
 			name: "Uses registry name when available",
-			w: &WorkloadWithRegistry{
-				Workload: WorkloadServer{
+			w: &BackendWithRegistry{
+				Backend: BackendServer{
 					BaseMCPServer: BaseMCPServer{
-						Name: "workload-name",
+						Name: "backend-name",
 					},
 				},
 				Registry: &RegistryServer{
@@ -254,16 +254,16 @@ func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
 			want: "registry-name",
 		},
 		{
-			name: "Uses workload name when no registry",
-			w: &WorkloadWithRegistry{
-				Workload: WorkloadServer{
+			name: "Uses backend name when no registry",
+			w: &BackendWithRegistry{
+				Backend: BackendServer{
 					BaseMCPServer: BaseMCPServer{
-						Name: "workload-name",
+						Name: "backend-name",
 					},
 				},
 				Registry: nil,
 			},
-			want: "workload-name",
+			want: "backend-name",
 		},
 	}
 
@@ -271,7 +271,7 @@ func TestWorkloadWithRegistry_ServerNameForTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tt.w.ServerNameForTools(); got != tt.want {
-				t.Errorf("WorkloadWithRegistry.ServerNameForTools() = %v, want %v", got, tt.want)
+				t.Errorf("BackendWithRegistry.ServerNameForTools() = %v, want %v", got, tt.want)
 			}
 		})
 	}

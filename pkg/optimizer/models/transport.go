@@ -58,13 +58,13 @@ func (t *TransportType) Scan(value interface{}) error {
 	return nil
 }
 
-// MCPStatus represents the status of an MCP server workload.
+// MCPStatus represents the status of an MCP server backend.
 type MCPStatus string
 
 const (
-	// StatusRunning indicates the workload is running
+	// StatusRunning indicates the backend is running
 	StatusRunning MCPStatus = "running"
-	// StatusStopped indicates the workload is stopped
+	// StatusStopped indicates the backend is stopped
 	StatusStopped MCPStatus = "stopped"
 )
 

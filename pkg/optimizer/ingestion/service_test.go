@@ -62,12 +62,12 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create a mock workload server
+	// Create a mock backend server
 	serverID := uuid.New().String()
 	serverName := "test-server"
 	description := "Test MCP server"
 
-	server := &models.WorkloadServer{
+	server := &models.BackendServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          serverID,
 			Name:        serverName,
@@ -77,12 +77,12 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 			Transport:   models.TransportStreamable,
 		},
 		URL:                "http://localhost:8080",
-		WorkloadIdentifier: "test-workload",
+		BackendIdentifier: "test-backend",
 		Status:             models.StatusRunning,
 	}
 
 	// Create the server in database
-	if err := svc.workloadServerOps.Create(ctx, server); err != nil {
+	if err := svc.backendServerOps.Create(ctx, server); err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	}
 
 	// Ingest tools (with embeddings and token counting)
-	toolCount, err := svc.syncWorkloadTools(ctx, serverID, serverName, tools)
+	toolCount, err := svc.syncBackendTools(ctx, serverID, serverName, tools)
 	if err != nil {
 		t.Fatalf("Failed to sync tools: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	}
 
 	// Verify tools were created
-	createdTools, err := svc.workloadToolOps.GetByServerID(ctx, serverID)
+	createdTools, err := svc.backendToolOps.GetByServerID(ctx, serverID)
 	if err != nil {
 		t.Fatalf("Failed to retrieve tools: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 		t.Fatalf("Failed to generate query embedding: %v", err)
 	}
 
-	results, err := svc.workloadToolOps.SearchByEmbedding(ctx, queryEmbeddings[0], 10)
+	results, err := svc.backendToolOps.SearchByEmbedding(ctx, queryEmbeddings[0], 10)
 	if err != nil {
 		t.Fatalf("Failed to search by embedding: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 		},
 	}
 
-	toolCount, err = svc.syncWorkloadTools(ctx, serverID, serverName, updatedTools)
+	toolCount, err = svc.syncBackendTools(ctx, serverID, serverName, updatedTools)
 	if err != nil {
 		t.Fatalf("Failed to sync updated tools: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	}
 
 	// Verify old tools were deleted
-	finalTools, err := svc.workloadToolOps.GetByServerID(ctx, serverID)
+	finalTools, err := svc.backendToolOps.GetByServerID(ctx, serverID)
 	if err != nil {
 		t.Fatalf("Failed to retrieve final tools: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestServiceWithOllama(t *testing.T) {
 	// Create server
 	serverID := uuid.New().String()
 	description := "Test with real embeddings"
-	server := &models.WorkloadServer{
+	server := &models.BackendServer{
 		BaseMCPServer: models.BaseMCPServer{
 			ID:          serverID,
 			Name:        "ollama-test-server",
@@ -286,11 +286,11 @@ func TestServiceWithOllama(t *testing.T) {
 			Transport:   models.TransportStreamable,
 		},
 		URL:                "http://localhost:8080",
-		WorkloadIdentifier: "ollama-test-workload",
+		BackendIdentifier: "ollama-test-backend",
 		Status:             models.StatusRunning,
 	}
 
-	if err := svc.workloadServerOps.Create(ctx, server); err != nil {
+	if err := svc.backendServerOps.Create(ctx, server); err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestServiceWithOllama(t *testing.T) {
 		},
 	}
 
-	_, err = svc.syncWorkloadTools(ctx, serverID, server.Name, tools)
+	_, err = svc.syncBackendTools(ctx, serverID, server.Name, tools)
 	if err != nil {
 		t.Fatalf("Failed to sync tools: %v", err)
 	}
@@ -357,8 +357,8 @@ func TestCreateToolTextToEmbed(t *testing.T) {
 	}
 }
 
-// TestShouldSkipWorkload tests workload filtering
-func TestShouldSkipWorkload(t *testing.T) {
+// TestShouldSkipBackend tests backend filtering
+func TestShouldSkipBackend(t *testing.T) {
 	t.Parallel()
 	config := &Config{
 		RuntimeMode:      "docker",

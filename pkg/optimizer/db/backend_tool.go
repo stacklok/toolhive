@@ -11,18 +11,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
-// WorkloadToolOps provides database operations for workload tools
-type WorkloadToolOps struct {
+// BackendToolOps provides database operations for backend tools
+type BackendToolOps struct {
 	db *DB
 }
 
-// NewWorkloadToolOps creates a new WorkloadToolOps instance
-func NewWorkloadToolOps(db *DB) *WorkloadToolOps {
-	return &WorkloadToolOps{db: db}
+// NewBackendToolOps creates a new BackendToolOps instance
+func NewBackendToolOps(db *DB) *BackendToolOps {
+	return &BackendToolOps{db: db}
 }
 
-// Create creates a new workload tool
-func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadTool) error {
+// Create creates a new backend tool
+func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool) error {
 	// Generate ID if not provided
 	if tool.ID == "" {
 		tool.ID = uuid.New().String()
@@ -46,9 +46,9 @@ func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadToo
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Insert into tools_workload table
+	// Insert into tools_backend table
 	query := `
-		INSERT INTO tools_workload (
+		INSERT INTO tools_backend (
 			id, mcpserver_id, details, details_embedding, token_count,
 			last_updated, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -64,12 +64,12 @@ func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadToo
 		tool.CreatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to insert workload tool: %w", err)
+		return fmt.Errorf("failed to insert backend tool: %w", err)
 	}
 
 	// Insert embedding into vector table if present
 	if len(tool.DetailsEmbedding) > 0 {
-		vecQuery := `INSERT INTO workload_tool_vectors (tool_id, embedding) VALUES (?, ?)`
+		vecQuery := `INSERT INTO backend_tool_vectors (tool_id, embedding) VALUES (?, ?)`
 		_, err = tx.ExecContext(ctx, vecQuery, tool.ID, embeddingToBytes(tool.DetailsEmbedding))
 		if err != nil {
 			return fmt.Errorf("failed to insert tool embedding: %w", err)
@@ -78,7 +78,7 @@ func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadToo
 
 	// Insert into FTS table for text search
 	ftsQuery := `
-		INSERT INTO workload_tool_fts (tool_id, mcp_server_name, tool_name, tool_description)
+		INSERT INTO backend_tool_fts (tool_id, mcp_server_name, tool_name, tool_description)
 		VALUES (?, ?, ?, ?)
 	`
 	// Get server name from server table
@@ -103,24 +103,24 @@ func (ops *WorkloadToolOps) Create(ctx context.Context, tool *models.WorkloadToo
 }
 
 // GetByServerID retrieves all tools for a server
-func (ops *WorkloadToolOps) GetByServerID(ctx context.Context, serverID string) ([]*models.WorkloadTool, error) {
+func (ops *BackendToolOps) GetByServerID(ctx context.Context, serverID string) ([]*models.BackendTool, error) {
 	query := `
 		SELECT id, mcpserver_id, details, details_embedding, token_count,
 		       last_updated, created_at
-		FROM tools_workload
+		FROM tools_backend
 		WHERE mcpserver_id = ?
 		ORDER BY id
 	`
 
 	rows, err := ops.db.QueryContext(ctx, query, serverID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query workload tools: %w", err)
+		return nil, fmt.Errorf("failed to query backend tools: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var tools []*models.WorkloadTool
+	var tools []*models.BackendTool
 	for rows.Next() {
-		var tool models.WorkloadTool
+		var tool models.BackendTool
 		var detailsJSON string
 		var embeddingBytes []byte
 
@@ -134,7 +134,7 @@ func (ops *WorkloadToolOps) GetByServerID(ctx context.Context, serverID string) 
 			&tool.CreatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan workload tool: %w", err)
+			return nil, fmt.Errorf("failed to scan backend tool: %w", err)
 		}
 
 		// Parse tool details from JSON
@@ -153,14 +153,14 @@ func (ops *WorkloadToolOps) GetByServerID(ctx context.Context, serverID string) 
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating workload tools: %w", err)
+		return nil, fmt.Errorf("error iterating backend tools: %w", err)
 	}
 
 	return tools, nil
 }
 
 // DeleteByServerID deletes all tools for a server
-func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID string) (int64, error) {
+func (ops *BackendToolOps) DeleteByServerID(ctx context.Context, serverID string) (int64, error) {
 	tx, err := ops.db.BeginTx(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
@@ -168,7 +168,7 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 	defer func() { _ = tx.Rollback() }()
 
 	// Get tool IDs before deletion for cleanup
-	rows, err := tx.QueryContext(ctx, "SELECT id FROM tools_workload WHERE mcpserver_id = ?", serverID)
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM tools_backend WHERE mcpserver_id = ?", serverID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query tool IDs: %w", err)
 	}
@@ -189,17 +189,17 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 	for _, id := range toolIDs {
 		// Delete from vec0 table using primary key
 		// Ignore errors as vec0 may not support all DELETE operations
-		_, _ = tx.ExecContext(ctx, "DELETE FROM workload_tool_vectors WHERE tool_id = ?", id)
-		_, err = tx.ExecContext(ctx, "DELETE FROM workload_tool_fts WHERE tool_id = ?", id)
+		_, _ = tx.ExecContext(ctx, "DELETE FROM backend_tool_vectors WHERE tool_id = ?", id)
+		_, err = tx.ExecContext(ctx, "DELETE FROM backend_tool_fts WHERE tool_id = ?", id)
 		if err != nil {
 			return 0, fmt.Errorf("failed to delete from FTS table: %w", err)
 		}
 	}
 
 	// Delete from main table
-	result, err := tx.ExecContext(ctx, "DELETE FROM tools_workload WHERE mcpserver_id = ?", serverID)
+	result, err := tx.ExecContext(ctx, "DELETE FROM tools_backend WHERE mcpserver_id = ?", serverID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete workload tools: %w", err)
+		return 0, fmt.Errorf("failed to delete backend tools: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -215,22 +215,22 @@ func (ops *WorkloadToolOps) DeleteByServerID(ctx context.Context, serverID strin
 }
 
 // SearchByEmbedding searches for tools by embedding similarity
-func (ops *WorkloadToolOps) SearchByEmbedding(
+func (ops *BackendToolOps) SearchByEmbedding(
 	ctx context.Context,
 	embedding []float32,
 	limit int,
-) ([]*models.WorkloadToolWithMetadata, error) {
+) ([]*models.BackendToolWithMetadata, error) {
 	query := `
 		SELECT 
 			t.id, t.mcpserver_id, t.details, t.details_embedding, t.token_count,
 			t.last_updated, t.created_at,
 			s.name as server_name, s.description as server_description,
 			v.distance
-		FROM tools_workload t
+		FROM tools_backend t
 		JOIN mcpservers_workload s ON t.mcpserver_id = s.id
 		JOIN (
 			SELECT tool_id, distance
-			FROM workload_tool_vectors
+			FROM backend_tool_vectors
 			WHERE embedding MATCH ?
 			ORDER BY distance
 			LIMIT ?
@@ -240,13 +240,13 @@ func (ops *WorkloadToolOps) SearchByEmbedding(
 
 	rows, err := ops.db.QueryContext(ctx, query, embeddingToBytes(embedding), limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to search workload tools: %w", err)
+		return nil, fmt.Errorf("failed to search backend tools: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var results []*models.WorkloadToolWithMetadata
+	var results []*models.BackendToolWithMetadata
 	for rows.Next() {
-		var tool models.WorkloadTool
+		var tool models.BackendTool
 		var detailsJSON string
 		var embeddingBytes []byte
 		var serverName string
@@ -281,7 +281,7 @@ func (ops *WorkloadToolOps) SearchByEmbedding(
 			tool.DetailsEmbedding = bytesToEmbedding(embeddingBytes)
 		}
 
-		result := &models.WorkloadToolWithMetadata{
+		result := &models.BackendToolWithMetadata{
 			ServerName: serverName,
 			Distance:   distance,
 			Tool:       tool,

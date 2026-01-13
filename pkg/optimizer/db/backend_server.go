@@ -13,18 +13,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
-// WorkloadServerOps provides database operations for workload servers
-type WorkloadServerOps struct {
+// BackendServerOps provides database operations for backend servers
+type BackendServerOps struct {
 	db *DB
 }
 
-// NewWorkloadServerOps creates a new WorkloadServerOps instance
-func NewWorkloadServerOps(db *DB) *WorkloadServerOps {
-	return &WorkloadServerOps{db: db}
+// NewBackendServerOps creates a new BackendServerOps instance
+func NewBackendServerOps(db *DB) *BackendServerOps {
+	return &BackendServerOps{db: db}
 }
 
-// Create creates a new workload server
-func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.WorkloadServer) error {
+// Create creates a new backend server
+func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendServer) error {
 	// Generate ID if not provided
 	if server.ID == "" {
 		server.ID = uuid.New().String()
@@ -42,10 +42,10 @@ func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.Workloa
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Insert into mcpservers_workload table
+	// Insert into mcpservers_backend table
 	query := `
-		INSERT INTO mcpservers_workload (
-			id, name, url, workload_identifier, remote, transport, status,
+		INSERT INTO mcpservers_backend (
+			id, name, url, backend_identifier, remote, transport, status,
 			registry_server_id, registry_server_name, description, server_embedding,
 			"group", last_updated, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -55,7 +55,7 @@ func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.Workloa
 		server.ID,
 		server.Name,
 		server.URL,
-		server.WorkloadIdentifier,
+		server.BackendIdentifier,
 		server.Remote,
 		server.Transport.String(),
 		server.Status.String(),
@@ -68,12 +68,12 @@ func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.Workloa
 		server.CreatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to insert workload server: %w", err)
+		return fmt.Errorf("failed to insert backend server: %w", err)
 	}
 
 	// Insert embedding into vector table if present
 	if len(server.ServerEmbedding) > 0 {
-		vecQuery := `INSERT INTO workload_server_vector (server_id, embedding) VALUES (?, ?)`
+		vecQuery := `INSERT INTO backend_server_vector (server_id, embedding) VALUES (?, ?)`
 		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
 		if err != nil {
 			return fmt.Errorf("failed to insert server embedding: %w", err)
@@ -87,17 +87,17 @@ func (ops *WorkloadServerOps) Create(ctx context.Context, server *models.Workloa
 	return nil
 }
 
-// GetByID retrieves a workload server by ID
-func (ops *WorkloadServerOps) GetByID(ctx context.Context, id string) (*models.WorkloadServer, error) {
+// GetByID retrieves a backend server by ID
+func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, workload_identifier, remote, transport, status,
+		SELECT id, name, url, backend_identifier, remote, transport, status,
 		       registry_server_id, registry_server_name, description, server_embedding,
 		       "group", last_updated, created_at
-		FROM mcpservers_workload
+		FROM mcpservers_backend
 		WHERE id = ?
 	`
 
-	var server models.WorkloadServer
+	var server models.BackendServer
 	var embeddingBytes []byte
 	var description sql.NullString
 	var registryServerID, registryServerName sql.NullString
@@ -106,7 +106,7 @@ func (ops *WorkloadServerOps) GetByID(ctx context.Context, id string) (*models.W
 		&server.ID,
 		&server.Name,
 		&server.URL,
-		&server.WorkloadIdentifier,
+		&server.BackendIdentifier,
 		&server.Remote,
 		&server.Transport,
 		&server.Status,
@@ -119,10 +119,10 @@ func (ops *WorkloadServerOps) GetByID(ctx context.Context, id string) (*models.W
 		&server.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("workload server not found: %s", id)
+		return nil, fmt.Errorf("backend server not found: %s", id)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to query workload server: %w", err)
+		return nil, fmt.Errorf("failed to query backend server: %w", err)
 	}
 
 	// Set nullable fields
@@ -144,17 +144,17 @@ func (ops *WorkloadServerOps) GetByID(ctx context.Context, id string) (*models.W
 	return &server, nil
 }
 
-// GetByName retrieves a workload server by name
-func (ops *WorkloadServerOps) GetByName(ctx context.Context, name string) (*models.WorkloadServer, error) {
+// GetByName retrieves a backend server by name
+func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, workload_identifier, remote, transport, status,
+		SELECT id, name, url, backend_identifier, remote, transport, status,
 		       registry_server_id, registry_server_name, description, server_embedding,
 		       "group", last_updated, created_at
-		FROM mcpservers_workload
+		FROM mcpservers_backend
 		WHERE name = ?
 	`
 
-	var server models.WorkloadServer
+	var server models.BackendServer
 	var embeddingBytes []byte
 	var description sql.NullString
 	var registryServerID, registryServerName sql.NullString
@@ -163,7 +163,7 @@ func (ops *WorkloadServerOps) GetByName(ctx context.Context, name string) (*mode
 		&server.ID,
 		&server.Name,
 		&server.URL,
-		&server.WorkloadIdentifier,
+		&server.BackendIdentifier,
 		&server.Remote,
 		&server.Transport,
 		&server.Status,
@@ -179,7 +179,7 @@ func (ops *WorkloadServerOps) GetByName(ctx context.Context, name string) (*mode
 		return nil, nil // Not found, return nil without error
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to query workload server: %w", err)
+		return nil, fmt.Errorf("failed to query backend server: %w", err)
 	}
 
 	// Set nullable fields
@@ -201,25 +201,25 @@ func (ops *WorkloadServerOps) GetByName(ctx context.Context, name string) (*mode
 	return &server, nil
 }
 
-// ListAll retrieves all workload servers
-func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadServer, error) {
+// ListAll retrieves all backend servers
+func (ops *BackendServerOps) ListAll(ctx context.Context) ([]*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, workload_identifier, remote, transport, status,
+		SELECT id, name, url, backend_identifier, remote, transport, status,
 		       registry_server_id, registry_server_name, description, server_embedding,
 		       "group", last_updated, created_at
-		FROM mcpservers_workload
+		FROM mcpservers_backend
 		ORDER BY name
 	`
 
 	rows, err := ops.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query workload servers: %w", err)
+		return nil, fmt.Errorf("failed to query backend servers: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var servers []*models.WorkloadServer
+	var servers []*models.BackendServer
 	for rows.Next() {
-		var server models.WorkloadServer
+		var server models.BackendServer
 		var embeddingBytes []byte
 		var description sql.NullString
 		var registryServerID, registryServerName sql.NullString
@@ -228,7 +228,7 @@ func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadSe
 			&server.ID,
 			&server.Name,
 			&server.URL,
-			&server.WorkloadIdentifier,
+			&server.BackendIdentifier,
 			&server.Remote,
 			&server.Transport,
 			&server.Status,
@@ -241,7 +241,7 @@ func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadSe
 			&server.CreatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan workload server: %w", err)
+			return nil, fmt.Errorf("failed to scan backend server: %w", err)
 		}
 
 		// Set nullable fields
@@ -264,14 +264,14 @@ func (ops *WorkloadServerOps) ListAll(ctx context.Context) ([]*models.WorkloadSe
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating workload servers: %w", err)
+		return nil, fmt.Errorf("error iterating backend servers: %w", err)
 	}
 
 	return servers, nil
 }
 
-// Update updates a workload server
-func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.WorkloadServer) error {
+// Update updates a backend server
+func (ops *BackendServerOps) Update(ctx context.Context, server *models.BackendServer) error {
 	server.LastUpdated = time.Now()
 
 	tx, err := ops.db.BeginTx(ctx)
@@ -281,8 +281,8 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 	defer func() { _ = tx.Rollback() }()
 
 	query := `
-		UPDATE mcpservers_workload
-		SET name = ?, url = ?, workload_identifier = ?, remote = ?, transport = ?,
+		UPDATE mcpservers_backend
+		SET name = ?, url = ?, backend_identifier = ?, remote = ?, transport = ?,
 		    status = ?, registry_server_id = ?, registry_server_name = ?,
 		    description = ?, server_embedding = ?, "group" = ?, last_updated = ?
 		WHERE id = ?
@@ -291,7 +291,7 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 	result, err := tx.ExecContext(ctx, query,
 		server.Name,
 		server.URL,
-		server.WorkloadIdentifier,
+		server.BackendIdentifier,
 		server.Remote,
 		server.Transport.String(),
 		server.Status.String(),
@@ -304,7 +304,7 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 		server.ID,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to update workload server: %w", err)
+		return fmt.Errorf("failed to update backend server: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -312,19 +312,19 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("workload server not found: %s", server.ID)
+		return fmt.Errorf("backend server not found: %s", server.ID)
 	}
 
 	// Update embedding in vector table
 	if len(server.ServerEmbedding) > 0 {
 		// Delete old embedding
-		_, err = tx.ExecContext(ctx, "DELETE FROM workload_server_vector WHERE server_id = ?", server.ID)
+		_, err = tx.ExecContext(ctx, "DELETE FROM backend_server_vector WHERE server_id = ?", server.ID)
 		if err != nil {
 			return fmt.Errorf("failed to delete old server embedding: %w", err)
 		}
 
 		// Insert new embedding
-		vecQuery := `INSERT INTO workload_server_vector (server_id, embedding) VALUES (?, ?)`
+		vecQuery := `INSERT INTO backend_server_vector (server_id, embedding) VALUES (?, ?)`
 		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
 		if err != nil {
 			return fmt.Errorf("failed to insert server embedding: %w", err)
@@ -338,8 +338,8 @@ func (ops *WorkloadServerOps) Update(ctx context.Context, server *models.Workloa
 	return nil
 }
 
-// Delete deletes a workload server and its tools
-func (ops *WorkloadServerOps) Delete(ctx context.Context, id string) error {
+// Delete deletes a backend server and its tools
+func (ops *BackendServerOps) Delete(ctx context.Context, id string) error {
 	tx, err := ops.db.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -347,15 +347,15 @@ func (ops *WorkloadServerOps) Delete(ctx context.Context, id string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	// Delete from vector table
-	_, err = tx.ExecContext(ctx, "DELETE FROM workload_server_vector WHERE server_id = ?", id)
+	_, err = tx.ExecContext(ctx, "DELETE FROM backend_server_vector WHERE server_id = ?", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete server embedding: %w", err)
 	}
 
 	// Delete from main table (CASCADE will delete tools)
-	result, err := tx.ExecContext(ctx, "DELETE FROM mcpservers_workload WHERE id = ?", id)
+	result, err := tx.ExecContext(ctx, "DELETE FROM mcpservers_backend WHERE id = ?", id)
 	if err != nil {
-		return fmt.Errorf("failed to delete workload server: %w", err)
+		return fmt.Errorf("failed to delete backend server: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -363,7 +363,7 @@ func (ops *WorkloadServerOps) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("workload server not found: %s", id)
+		return fmt.Errorf("backend server not found: %s", id)
 	}
 
 	if err := tx.Commit(); err != nil {

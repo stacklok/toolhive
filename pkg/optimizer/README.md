@@ -4,7 +4,7 @@ The optimizer package provides semantic tool discovery and ingestion for MCP ser
 
 ## Features
 
-- **Workload Discovery**: Automatically discovers MCP workloads from Docker or Kubernetes
+- **Backend Discovery**: Automatically discovers MCP backends from Docker or Kubernetes
 - **Semantic Embeddings**: Generates embeddings using ONNX Runtime for semantic tool search
 - **Vector Search**: Uses sqlite-vec for efficient similarity search
 - **Token Counting**: Tracks token usage for LLM consumption metrics
@@ -26,7 +26,7 @@ pkg/optimizer/
 ### Standalone Command
 
 ```bash
-# Initialize and ingest workloads (one-time)
+# Initialize and ingest backends (one-time)
 thv optimizer ingest \
   --model-path /path/to/model.onnx \
   --runtime-mode docker
@@ -94,7 +94,7 @@ func main() {
 The optimizer uses SQLite with the sqlite-vec extension for vector similarity search:
 
 - **Default Location**: `~/.toolhive/optimizer.db`
-- **Schema**: Separates registry servers (from catalog) and workload servers (running instances)
+- **Schema**: Separates registry servers (from catalog) and backend servers (running instances)
 - **Vector Tables**: Uses `vec0` virtual tables with cosine distance for embeddings
 
 ### Embedding Model
@@ -107,29 +107,29 @@ The optimizer requires an ONNX embedding model:
 
 ### Runtime Modes
 
-- **docker**: Discovers workloads from Docker daemon (default)
-- **k8s**: Discovers workloads from Kubernetes API
+- **docker**: Discovers backends from Docker daemon (default)
+- **k8s**: Discovers backends from Kubernetes API
 
 ## Database Schema
 
 ### Tables
 
 - `mcpservers_registry`: Registry servers from catalog
-- `mcpservers_workload`: Running workload servers
+- `mcpservers_backend`: Running backend servers
 - `tools_registry`: Tools from registry servers
-- `tools_workload`: Tools from workload servers (with token counts)
+- `tools_backend`: Tools from backend servers (with token counts)
 
 ### Vector Tables
 
 - `registry_server_vector`: Server embeddings (registry)
 - `registry_tool_vectors`: Tool embeddings (registry)
-- `workload_server_vector`: Server embeddings (workload)
-- `workload_tool_vectors`: Tool embeddings (workload)
+- `backend_server_vector`: Server embeddings (backend)
+- `backend_tool_vectors`: Tool embeddings (backend)
 
 ### FTS Tables
 
 - `registry_tool_fts`: Full-text search for registry tools
-- `workload_tool_fts`: Full-text search for workload tools
+- `backend_tool_fts`: Full-text search for backend tools
 
 ## Testing
 
@@ -152,17 +152,40 @@ go test ./pkg/optimizer/models
 
 1. **Models**: Add new domain models in `pkg/optimizer/models/`
 2. **Database**: Add new operations in `pkg/optimizer/db/`
-3. **Migrations**: Create new SQL files in `pkg/optimizer/db/migrations/`
-4. **Tests**: Add unit tests following existing patterns
+3. **Tests**: Add unit tests following existing patterns
 
-### ONNX Model Integration
+### Using Real Embeddings
 
-The current implementation includes a placeholder for ONNX Runtime inference. To complete the integration:
+The current implementation uses placeholder embeddings for testing. To use real embeddings:
 
-1. Install ONNX Runtime C library
-2. Implement tokenization (BPE tokenizer)
-3. Replace `generatePlaceholderEmbedding()` with actual ONNX inference
-4. Handle input_ids and attention_mask tensors
+**Option 1: Ollama (Recommended for local development)**
+```bash
+# Start Ollama
+ollama serve
+
+# Pull an embedding model
+ollama pull nomic-embed-text
+
+# Use in code
+config := &embeddings.Config{
+    BackendType: "ollama",
+    BaseURL:     "http://localhost:11434",
+    Model:       "nomic-embed-text",
+}
+```
+
+**Option 2: vLLM (Recommended for production)**
+```bash
+# Start vLLM with an embedding model
+vllm serve sentence-transformers/all-MiniLM-L6-v2
+
+# Use in code
+config := &embeddings.Config{
+    BackendType: "vllm",
+    BaseURL:     "http://localhost:8000",
+    Model:       "sentence-transformers/all-MiniLM-L6-v2",
+}
+```
 
 ## Comparison with Python Version
 
@@ -170,8 +193,8 @@ This Go implementation follows the same architecture as the Python mcp-optimizer
 
 | Feature | Python | Go |
 |---------|--------|-----|
-| Database | SQLAlchemy + aiosqlite | database/sql + go-sqlite3 |
-| Embeddings | FastEmbed | ONNX Runtime |
+| Database | SQLAlchemy + aiosqlite | database/sql + modernc.org/sqlite |
+| Embeddings | FastEmbed | Ollama/vLLM (OpenAI-compatible) |
 | Vector Search | sqlite-vec | sqlite-vec |
 | CLI | Click | Cobra |
 | Testing | pytest | go test |
@@ -180,15 +203,15 @@ This Go implementation follows the same architecture as the Python mcp-optimizer
 ## Known Limitations
 
 1. **ONNX Integration**: Currently uses placeholder embeddings (requires tokenizer)
-2. **Workload Discovery**: Docker/K8s discovery not fully implemented
+2. **Backend Discovery**: Docker/K8s discovery not fully implemented
 3. **MCP Client**: Tool listing from MCP servers is simplified
 4. **Query Command**: Semantic search not yet implemented
 
 ## Future Enhancements
 
 - [ ] Complete ONNX Runtime integration with tokenizer
-- [ ] Implement Docker workload discovery
-- [ ] Implement Kubernetes workload discovery
+- [ ] Implement Docker backend discovery
+- [ ] Implement Kubernetes backend discovery
 - [ ] Add MCP client for tool listing
 - [ ] Implement semantic query search
 - [ ] Add registry server ingestion

@@ -39,11 +39,11 @@ func (r *RegistryServer) Validate() error {
 	return nil
 }
 
-// WorkloadServer represents a running MCP server workload.
-type WorkloadServer struct {
+// BackendServer represents a running MCP server backend.
+type BackendServer struct {
 	BaseMCPServer
 	URL                string    `json:"url"`
-	WorkloadIdentifier string    `json:"workload_identifier"`
+	BackendIdentifier  string    `json:"backend_identifier"`
 	Status             MCPStatus `json:"status"`
 	RegistryServerID   *string   `json:"registry_server_id,omitempty"`   // NULL if autonomous
 	RegistryServerName *string   `json:"registry_server_name,omitempty"` // Cached for tool embedding
@@ -64,8 +64,8 @@ type RegistryTool struct {
 	BaseTool
 }
 
-// WorkloadTool represents a tool from a workload MCP server.
-type WorkloadTool struct {
+// BackendTool represents a tool from a backend MCP server.
+type BackendTool struct {
 	BaseTool
 	TokenCount int `json:"token_count"` // Token count for LLM consumption
 }
@@ -89,12 +89,12 @@ func ToolDetailsFromJSON(data string) (*mcp.Tool, error) {
 	return &tool, nil
 }
 
-// WorkloadToolWithMetadata represents a workload tool with server information and similarity distance.
-type WorkloadToolWithMetadata struct {
-	ServerName        string       `json:"server_name"`
-	ServerDescription *string      `json:"server_description,omitempty"`
-	Distance          float64      `json:"distance"` // Cosine distance from query embedding
-	Tool              WorkloadTool `json:"tool"`
+// BackendToolWithMetadata represents a backend tool with server information and similarity distance.
+type BackendToolWithMetadata struct {
+	ServerName        string      `json:"server_name"`
+	ServerDescription *string     `json:"server_description,omitempty"`
+	Distance          float64     `json:"distance"` // Cosine distance from query embedding
+	Tool              BackendTool `json:"tool"`
 }
 
 // RegistryToolWithMetadata represents a registry tool with server information and similarity distance.
@@ -105,34 +105,34 @@ type RegistryToolWithMetadata struct {
 	Tool              RegistryTool `json:"tool"`
 }
 
-// WorkloadWithRegistry represents a workload server with its resolved registry relationship.
-type WorkloadWithRegistry struct {
-	Workload WorkloadServer  `json:"workload"`
+// BackendWithRegistry represents a backend server with its resolved registry relationship.
+type BackendWithRegistry struct {
+	Backend  BackendServer   `json:"backend"`
 	Registry *RegistryServer `json:"registry,omitempty"` // NULL if autonomous
 }
 
 // EffectiveDescription returns the description (inherited from registry or own).
-func (w *WorkloadWithRegistry) EffectiveDescription() *string {
-	if w.Registry != nil {
-		return w.Registry.Description
+func (b *BackendWithRegistry) EffectiveDescription() *string {
+	if b.Registry != nil {
+		return b.Registry.Description
 	}
-	return w.Workload.Description
+	return b.Backend.Description
 }
 
 // EffectiveEmbedding returns the embedding (inherited from registry or own).
-func (w *WorkloadWithRegistry) EffectiveEmbedding() []float32 {
-	if w.Registry != nil {
-		return w.Registry.ServerEmbedding
+func (b *BackendWithRegistry) EffectiveEmbedding() []float32 {
+	if b.Registry != nil {
+		return b.Registry.ServerEmbedding
 	}
-	return w.Workload.ServerEmbedding
+	return b.Backend.ServerEmbedding
 }
 
 // ServerNameForTools returns the server name to use as context for tool embeddings.
-func (w *WorkloadWithRegistry) ServerNameForTools() string {
-	if w.Registry != nil {
-		return w.Registry.Name
+func (b *BackendWithRegistry) ServerNameForTools() string {
+	if b.Registry != nil {
+		return b.Registry.Name
 	}
-	return w.Workload.Name
+	return b.Backend.Name
 }
 
 // TokenMetrics represents token efficiency metrics for tool filtering.

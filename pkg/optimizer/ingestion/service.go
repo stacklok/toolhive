@@ -43,14 +43,14 @@ type Config struct {
 	K8sAllNamespaces bool
 }
 
-// Service handles ingestion of MCP workloads and their tools
+// Service handles ingestion of MCP backends and their tools
 type Service struct {
 	config            *Config
 	database          *db.DB
 	embeddingManager  *embeddings.Manager
 	tokenCounter      *tokens.Counter
-	workloadServerOps *db.WorkloadServerOps
-	workloadToolOps   *db.WorkloadToolOps
+	backendServerOps *db.BackendServerOps
+	backendToolOps   *db.BackendToolOps
 }
 
 // NewService creates a new ingestion service
@@ -97,44 +97,44 @@ func NewService(config *Config) (*Service, error) {
 		database:          database,
 		embeddingManager:  embeddingManager,
 		tokenCounter:      tokenCounter,
-		workloadServerOps: db.NewWorkloadServerOps(database),
-		workloadToolOps:   db.NewWorkloadToolOps(database),
+		backendServerOps: db.NewBackendServerOps(database),
+		backendToolOps:   db.NewBackendToolOps(database),
 	}
 
 	logger.Infof("Ingestion service initialized (runtime: %s)", config.RuntimeMode)
 	return svc, nil
 }
 
-// IngestWorkloads discovers and ingests workloads from ToolHive
-func (*Service) IngestWorkloads(_ context.Context) error {
-	logger.Info("Starting workload ingestion")
+// IngestBackends discovers and ingests backends from ToolHive
+func (*Service) IngestBackends(_ context.Context) error {
+	logger.Info("Starting backend ingestion")
 
-	// TODO: Implement actual workload discovery from Docker or Kubernetes
+	// TODO: Implement actual backend discovery from Docker or Kubernetes
 	// For now, this is a placeholder implementation
 
 	// Example workflow:
-	// 1. Discover workloads from Docker/K8s
-	// 2. For each workload:
+	// 1. Discover backends from Docker/K8s
+	// 2. For each backend:
 	//    a. Check if it should be skipped
 	//    b. Connect to the MCP server
 	//    c. List tools
 	//    d. Generate embeddings for tools
 	//    e. Count tokens
 	//    f. Store in database
-	// 3. Clean up workloads that no longer exist
+	// 3. Clean up backends that no longer exist
 
-	logger.Info("Workload ingestion completed (placeholder)")
+	logger.Info("Backend ingestion completed (placeholder)")
 	return nil
 }
 
-// shouldSkipWorkload checks if a workload should be skipped
-func (s *Service) shouldSkipWorkload(workloadName string) bool {
-	if workloadName == "" {
+// shouldSkipWorkload checks if a backend should be skipped
+func (s *Service) shouldSkipWorkload(backendName string) bool {
+	if backendName == "" {
 		return true
 	}
 
 	for _, skipped := range s.config.SkippedWorkloads {
-		if strings.Contains(workloadName, skipped) {
+		if strings.Contains(backendName, skipped) {
 			return true
 		}
 	}
@@ -163,10 +163,10 @@ func (*Service) createToolTextToEmbed(tool mcp.Tool, serverName string) string {
 	return strings.Join(parts, " | ")
 }
 
-// syncWorkloadTools synchronizes tools for a workload server
-func (s *Service) syncWorkloadTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
+// syncBackendTools synchronizes tools for a backend server
+func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
 	// Delete existing tools
-	deleted, err := s.workloadToolOps.DeleteByServerID(ctx, serverID)
+	deleted, err := s.backendToolOps.DeleteByServerID(ctx, serverID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)
 	}
@@ -192,7 +192,7 @@ func (s *Service) syncWorkloadTools(ctx context.Context, serverID string, server
 
 	// Create tool records
 	for i, tool := range tools {
-		workloadTool := &models.WorkloadTool{
+		backendTool := &models.BackendTool{
 			BaseTool: models.BaseTool{
 				ID:               uuid.New().String(),
 				MCPServerID:      serverID,
@@ -204,7 +204,7 @@ func (s *Service) syncWorkloadTools(ctx context.Context, serverID string, server
 			TokenCount: s.tokenCounter.CountToolTokens(tool),
 		}
 
-		if err := s.workloadToolOps.Create(ctx, workloadTool); err != nil {
+		if err := s.backendToolOps.Create(ctx, backendTool); err != nil {
 			return 0, fmt.Errorf("failed to create tool: %w", err)
 		}
 	}
@@ -232,27 +232,27 @@ func (s *Service) Close() error {
 	return nil
 }
 
-// StartPolling starts periodic polling for workload changes
+// StartPolling starts periodic polling for backend changes
 func (s *Service) StartPolling(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	logger.Infof("Starting workload polling (interval: %s)", interval)
+	logger.Infof("Starting backend polling (interval: %s)", interval)
 
 	// Initial ingestion
-	if err := s.IngestWorkloads(ctx); err != nil {
-		logger.Errorf("Initial workload ingestion failed: %v", err)
+	if err := s.IngestBackends(ctx); err != nil {
+		logger.Errorf("Initial backend ingestion failed: %v", err)
 	}
 
 	// Periodic polling
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Stopping workload polling")
+			logger.Info("Stopping backend polling")
 			return
 		case <-ticker.C:
-			if err := s.IngestWorkloads(ctx); err != nil {
-				logger.Errorf("Workload ingestion failed: %v", err)
+		if err := s.IngestBackends(ctx); err != nil {
+			logger.Errorf("Backend ingestion failed: %v", err)
 			}
 		}
 	}

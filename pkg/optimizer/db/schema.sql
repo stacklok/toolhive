@@ -22,12 +22,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_url ON mcpservers_registry(url) W
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_package ON mcpservers_registry(package) WHERE remote = 0;
 CREATE INDEX IF NOT EXISTS idx_registry_remote ON mcpservers_registry(remote);
 
--- Create mcpservers_workload table
-CREATE TABLE IF NOT EXISTS mcpservers_workload (
+-- Create mcpservers_backend table
+CREATE TABLE IF NOT EXISTS mcpservers_backend (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     url TEXT NOT NULL,
-    workload_identifier TEXT NOT NULL,
+    backend_identifier TEXT NOT NULL,
     remote INTEGER NOT NULL,
     transport TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -42,10 +42,10 @@ CREATE TABLE IF NOT EXISTS mcpservers_workload (
         REFERENCES mcpservers_registry(id) ON DELETE SET NULL
 );
 
--- Create indexes for workload servers
-CREATE INDEX IF NOT EXISTS idx_workload_registry_id ON mcpservers_workload(registry_server_id);
-CREATE INDEX IF NOT EXISTS idx_workload_remote ON mcpservers_workload(remote);
-CREATE INDEX IF NOT EXISTS idx_workload_status ON mcpservers_workload(status);
+-- Create indexes for backend servers
+CREATE INDEX IF NOT EXISTS idx_backend_registry_id ON mcpservers_backend(registry_server_id);
+CREATE INDEX IF NOT EXISTS idx_backend_remote ON mcpservers_backend(remote);
+CREATE INDEX IF NOT EXISTS idx_backend_status ON mcpservers_backend(status);
 
 -- Create tools_registry table
 CREATE TABLE IF NOT EXISTS tools_registry (
@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS tools_registry (
 -- Create index for registry tools
 CREATE INDEX IF NOT EXISTS idx_tools_registry_server ON tools_registry(mcpserver_id);
 
--- Create tools_workload table
-CREATE TABLE IF NOT EXISTS tools_workload (
+-- Create tools_backend table
+CREATE TABLE IF NOT EXISTS tools_backend (
     id TEXT PRIMARY KEY,
     mcpserver_id TEXT NOT NULL,
     details TEXT NOT NULL,
@@ -70,11 +70,11 @@ CREATE TABLE IF NOT EXISTS tools_workload (
     token_count INTEGER NOT NULL DEFAULT 0,
     last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (mcpserver_id) REFERENCES mcpservers_workload(id) ON DELETE CASCADE
+    FOREIGN KEY (mcpserver_id) REFERENCES mcpservers_backend(id) ON DELETE CASCADE
 );
 
--- Create index for workload tools
-CREATE INDEX IF NOT EXISTS idx_tools_workload_server ON tools_workload(mcpserver_id);
+-- Create index for backend tools
+CREATE INDEX IF NOT EXISTS idx_tools_backend_server ON tools_backend(mcpserver_id);
 
 -- Create virtual tables for registry (sqlite-vec and FTS5)
 -- Note: vec0 uses cosine distance by default
@@ -100,20 +100,20 @@ USING fts5(
     tokenize='porter'
 );
 
--- Create virtual tables for workload (sqlite-vec and FTS5)
-CREATE VIRTUAL TABLE IF NOT EXISTS workload_server_vector
+-- Create virtual tables for backend (sqlite-vec and FTS5)
+CREATE VIRTUAL TABLE IF NOT EXISTS backend_server_vector
 USING vec0(
     server_id TEXT PRIMARY KEY,
     embedding FLOAT[384] distance_metric=cosine
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS workload_tool_vectors
+CREATE VIRTUAL TABLE IF NOT EXISTS backend_tool_vectors
 USING vec0(
     tool_id TEXT PRIMARY KEY,
     embedding FLOAT[384] distance_metric=cosine
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS workload_tool_fts
+CREATE VIRTUAL TABLE IF NOT EXISTS backend_tool_fts
 USING fts5(
     tool_id UNINDEXED,
     mcp_server_name,

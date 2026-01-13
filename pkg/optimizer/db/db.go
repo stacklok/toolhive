@@ -1,22 +1,21 @@
 // Package db provides database operations for the optimizer.
-// It manages SQLite connections, migrations, and CRUD operations for MCP servers and tools.
+// It manages SQLite connections and CRUD operations for MCP servers and tools.
+// The database is ephemeral and recreated on each server start.
 package db
 
 import (
 	"context"
 	"database/sql"
-	"embed"
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
-
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
+//go:embed schema.sql
+var schemaSQL string
 
 // Config holds database configuration
 type Config struct {
@@ -59,10 +58,10 @@ func NewDB(config *Config) (*DB, error) {
 		return nil, fmt.Errorf("failed to load extensions: %w", err)
 	}
 
-	// Run migrations
-	if err := db.runMigrations(); err != nil {
+	// Initialize schema (ephemeral database - no migrations needed)
+	if err := db.initializeSchema(); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
 	return db, nil
@@ -126,67 +125,17 @@ func (db *DB) loadExtensions() error {
 	return nil
 }
 
-// runMigrations applies database migrations
-func (db *DB) runMigrations() error {
-	// Create migrations table if it doesn't exist
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS migrations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
+// initializeSchema creates the database schema
+// Since this is ephemeral storage, we don't need migrations - just create everything on startup
+func (db *DB) initializeSchema() error {
+	// Execute the schema SQL
+	// All CREATE TABLE statements use IF NOT EXISTS, so this is idempotent
+	_, err := db.Exec(schemaSQL)
 	if err != nil {
-		return fmt.Errorf("failed to create migrations table: %w", err)
+		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	// Read all migration files
-	entries, err := migrationsFS.ReadDir("migrations")
-	if err != nil {
-		return fmt.Errorf("failed to read migrations directory: %w", err)
-	}
-
-	// Apply each migration
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-
-		// Check if migration was already applied
-		var count int
-		err := db.QueryRow("SELECT COUNT(*) FROM migrations WHERE name = ?", name).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("failed to check migration %s: %w", name, err)
-		}
-
-		if count > 0 {
-			logger.Debugf("Migration %s already applied, skipping", name)
-			continue
-		}
-
-		// Read migration file
-		content, err := migrationsFS.ReadFile(filepath.Join("migrations", name))
-		if err != nil {
-			return fmt.Errorf("failed to read migration %s: %w", name, err)
-		}
-
-		// Execute migration
-		_, err = db.Exec(string(content))
-		if err != nil {
-			return fmt.Errorf("failed to execute migration %s: %w", name, err)
-		}
-
-		// Record migration
-		_, err = db.Exec("INSERT INTO migrations (name) VALUES (?)", name)
-		if err != nil {
-			return fmt.Errorf("failed to record migration %s: %w", name, err)
-		}
-
-		logger.Infof("Applied migration: %s", name)
-	}
-
+	logger.Info("Database schema initialized")
 	return nil
 }
 

@@ -67,7 +67,6 @@ operator:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     runAsNonRoot: true
-    runAsUser:
     capabilities:
       drop:
       - ALL

@@ -39,7 +39,12 @@ jobs:
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        run: |
+          GOBIN=$(go env GOPATH)/bin
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.2
+          mkdir -p $HOME/.cosign
+          ln -s $GOBIN/cosign $HOME/.cosign/cosign
+          echo "$GOBIN" >> $GITHUB_PATH
 
       - name: Build and Push Image to GHCR
         env:
@@ -125,7 +130,12 @@ jobs:
 
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        run: |
+          GOBIN=$(go env GOPATH)/bin
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.2
+          mkdir -p $HOME/.cosign
+          ln -s $GOBIN/cosign $HOME/.cosign/cosign
+          echo "$GOBIN" >> $GITHUB_PATH
 
       - name: Sign container image
         if: startsWith(github.ref, 'refs/tags/')
@@ -194,7 +204,12 @@ jobs:
             maintainer=Stacklok
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        run: |
+          GOBIN=$(go env GOPATH)/bin
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.2
+          mkdir -p $HOME/.cosign
+          ln -s $GOBIN/cosign $HOME/.cosign/cosign
+          echo "$GOBIN" >> $GITHUB_PATH
 
       - name: Build and Push Image to GHCR
         env:
@@ -295,7 +310,12 @@ jobs:
             maintainer=Stacklok
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        run: |
+          GOBIN=$(go env GOPATH)/bin
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.2
+          mkdir -p $HOME/.cosign
+          ln -s $GOBIN/cosign $HOME/.cosign/cosign
+          echo "$GOBIN" >> $GITHUB_PATH
 
       - name: Build and Push Image to GHCR
         env:
@@ -390,7 +410,12 @@ jobs:
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        run: |
+          GOBIN=$(go env GOPATH)/bin
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.2
+          mkdir -p $HOME/.cosign
+          ln -s $GOBIN/cosign $HOME/.cosign/cosign
+          echo "$GOBIN" >> $GITHUB_PATH
 
       - name: Build and Push Image to GHCR
         env:

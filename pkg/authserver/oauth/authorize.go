@@ -305,7 +305,8 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Create our authorization code using fosite
-	ourCode, err := r.createAuthorizationCode(ctx, pending, sessionID, userInfo)
+	// Pass idTokenSubject as fallback when userInfo is unavailable
+	ourCode, err := r.createAuthorizationCode(ctx, pending, sessionID, userInfo, idTokenSubject)
 	if err != nil {
 		logger.Errorw("failed to create authorization code",
 			"error", err.Error(),
@@ -328,11 +329,14 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 // createAuthorizationCode creates a fosite authorization code for the client.
+// idTokenSubject is used as a fallback when userInfo is unavailable (e.g., when
+// upstream IDP doesn't support userinfo endpoint without openid scope).
 func (r *Router) createAuthorizationCode(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
 	sessionID string,
 	userInfo *idp.UserInfo,
+	idTokenSubject string,
 ) (string, error) {
 	// Get the client from storage
 	client, err := r.storage.GetClient(ctx, pending.ClientID)
@@ -340,10 +344,23 @@ func (r *Router) createAuthorizationCode(
 		return "", err
 	}
 
-	// Determine subject from user info
+	// Determine subject with fallback chain:
+	// 1. UserInfo subject (most authoritative)
+	// 2. ID token subject (from validated ID token)
+	// 3. Session ID (unique per authorization, used when upstream doesn't provide subject)
 	subject := ""
-	if userInfo != nil {
+	if userInfo != nil && userInfo.Subject != "" {
 		subject = userInfo.Subject
+	} else if idTokenSubject != "" {
+		subject = idTokenSubject
+	} else {
+		// Fallback: use sessionID as subject when upstream IDP doesn't provide user identity
+		// This ensures OIDC compliance (sub claim is required) while maintaining uniqueness
+		subject = sessionID
+		logger.Warnw("using session ID as subject fallback - upstream IDP did not provide user identity",
+			"session_id", sessionID,
+			"client_id", pending.ClientID,
+		)
 	}
 
 	// Create the session with IDP session reference and client ID for binding

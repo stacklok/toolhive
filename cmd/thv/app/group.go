@@ -357,9 +357,7 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 	// Find the group in the registry
 	registryGroup, found := reg.GetGroupByName(groupName)
 	if !found {
-		return fmt.Errorf(
-			"group '%s' not found in registry. "+
-				"Hint: use 'thv search --groups' to see available registry groups", groupName)
+		return fmt.Errorf("group '%s' not found in registry", groupName)
 	}
 
 	totalServers := len(registryGroup.Servers) + len(registryGroup.RemoteServers)

@@ -276,10 +276,11 @@ spec:
 ```
 
 **Deployment:**
-- Kubernetes only (operator-based deployment)
-- Creates Deployment, Service, and ConfigMap
-- Mounts vmcp configuration as ConfigMap
-- Uses `thv-proxyrunner` to run vmcp binary
+- Kubernetes: Via VirtualMCPServer CRD managed by the operator
+  - Creates Deployment, Service, and ConfigMap
+  - Mounts vmcp configuration as ConfigMap
+  - Uses `thv-proxyrunner` to run vmcp binary
+- CLI: Standalone via the `vmcp` binary for development or non-Kubernetes environments
 
 **Implementation:**
 - CRD: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`

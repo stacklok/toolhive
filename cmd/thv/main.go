@@ -42,6 +42,10 @@ func main() {
 		// Handles the auto-discovery flag depreciation, only executes once on old config files
 		client.CheckAndPerformAutoDiscoveryMigration()
 
+		// Check and perform telemetry config migration if needed
+		// Converts telemetry_config.samplingRate from float64 to string in run configs
+		migration.CheckAndPerformTelemetryConfigMigration()
+
 		// Check and perform default group migration if needed
 		// Migrates existing workloads to the default group, only executes once
 		migration.CheckAndPerformDefaultGroupMigration()

@@ -117,11 +117,19 @@ Groups provide a logical boundary for client configuration. The client manager c
 - `frontend-team` - Frontend development tools
 - `data-team` - Data analysis tools
 
+## Virtual MCP Integration
+
+Groups are the foundation for **Virtual MCP Servers**. A VirtualMCPServer references an MCPGroup and aggregates all backends in that group into a single unified interface.
+
+See [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) for details on:
+- Backend discovery from groups
+- Tool aggregation and conflict resolution
+- Composite tool workflows
+
 ## Future Features
 
-Groups serve as the foundation for upcoming features:
+Groups may serve as the foundation for additional features:
 
-- **Virtual MCP Servers**: Aggregate multiple servers in a group into a single unified interface (proposed, under consideration)
 - **Group-level policies**: Apply authorization at group level
 - **Group metrics**: Aggregate telemetry from all group members
 - **Group health**: Overall health status of group
@@ -131,3 +139,4 @@ Groups serve as the foundation for upcoming features:
 - [Core Concepts](02-core-concepts.md) - Group concept definition
 - [Registry System](06-registry-system.md) - Groups in registry
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Group operations
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Group-based aggregation

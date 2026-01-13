@@ -54,7 +54,6 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Group concept and use cases
    - Registry groups
    - Client configuration
-   - Future: Virtual MCP aggregation (proposal pending)
 
 9. **[Workloads Lifecycle Management](08-workloads-lifecycle.md)**
    - Workloads API interface
@@ -64,11 +63,18 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Async operations
 
 10. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
-    - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig)
+    - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig, VirtualMCPServer)
     - Two-binary architecture (operator + proxy-runner)
     - Deployment pattern
     - Status management
     - Design principles
+
+11. **[Virtual MCP Server Architecture](10-virtual-mcp-architecture.md)**
+    - MCP Gateway for aggregating multiple backends
+    - Backend discovery and capability aggregation
+    - Conflict resolution strategies
+    - Two-boundary authentication model
+    - Composite tool workflows
 
 ### Existing Documentation
 
@@ -111,6 +117,7 @@ graph TB
     subgraph "Runtime Management"
         Workloads[08: Workloads Lifecycle<br/>Deploy, stop, restart, delete]
         Operator[09: Kubernetes Operator<br/>CRDs & reconciliation]
+        vMCP[10: Virtual MCP<br/>Aggregation & Gateway]
     end
 
     %% Navigation paths
@@ -133,8 +140,10 @@ graph TB
     Registry --> Workloads
 
     Groups --> Workloads
+    Groups --> vMCP
 
     Workloads --> Operator
+    vMCP --> Operator
 
     %% Styling
     style Overview fill:#e1f5fe,stroke:#01579b,stroke-width:3px
@@ -148,6 +157,7 @@ graph TB
     style Groups fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     style Workloads fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style Operator fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -233,7 +243,7 @@ ToolHive is a **platform** for MCP server management, providing:
 - Middleware system for custom processing
 - Custom registries
 - Protocol builds (uvx://, npx://, go://)
-- Virtual MCP composition (upcoming)
+- [Virtual MCP composition](10-virtual-mcp-architecture.md)
 
 ### 5. Cloud Native
 

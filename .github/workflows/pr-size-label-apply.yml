@@ -123,7 +123,7 @@ jobs:
               hasXLLabel: hasXLLabel,
               hasJustification: hasJustification,
               needsEnforcement: hasXLLabel && !hasJustification,
-              shouldDismiss: hasXLLabel && hasJustification
+              shouldDismiss: (hasXLLabel && hasJustification) || !hasXLLabel
             };
 
       - name: Request changes if no justification
@@ -195,22 +195,30 @@ jobs:
             );
 
             if (botReview) {
+              const dismissMessage = result.hasXLLabel
+                ? 'Large PR justification has been provided. Thank you!'
+                : 'PR size has been reduced below the XL threshold. Thank you for splitting this up!';
+
               await github.rest.pulls.dismissReview({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber,
                 review_id: botReview.id,
-                message: 'Large PR justification has been provided. Thank you!'
+                message: dismissMessage
               });
 
               console.log('Dismissed previous review:', botReview.id);
 
               // Add a comment confirming unblock
+              const commentBody = result.hasXLLabel
+                ? '✅ Large PR justification has been provided. The size review has been dismissed and this PR can now proceed with normal review.'
+                : '✅ PR size has been reduced below the XL threshold. The size review has been dismissed and this PR can now proceed with normal review. Thank you for splitting this up!';
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: '✅ Large PR justification has been provided. The size review has been dismissed and this PR can now proceed with normal review.'
+                body: commentBody
               });
             } else {
               console.log('No previous blocking review found to dismiss');

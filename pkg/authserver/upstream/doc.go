@@ -26,6 +26,54 @@
 //   - RefreshTokens: Refresh expired tokens
 //   - UserInfo: Fetch user claims
 //
+// # OAuth 2.0 vs OIDC: Protocol Boundaries
+//
+// This package implements both OAuth 2.0 (RFC 6749) and OpenID Connect (OIDC) functionality.
+// Understanding which components belong to which protocol helps when extending the package
+// or integrating with providers that support only OAuth 2.0.
+//
+// ## OAuth 2.0 Generic (works with any OAuth 2.0 provider)
+//
+// These components implement pure OAuth 2.0 per RFC 6749:
+//
+//   - Config: Client credentials (client_id, client_secret, redirect_uri, scopes)
+//   - ValidateRedirectURI: RFC 6749 Section 3.1.2 redirect URI validation
+//   - Authorization Code Flow: response_type=code, state parameter
+//   - Token Exchange: authorization_code and refresh_token grants
+//   - PKCE (RFC 7636): code_challenge and code_verifier parameters
+//   - Token response: access_token, refresh_token, expires_in, token_type
+//
+// ## OIDC-Specific (requires OIDC-compliant provider)
+//
+// These components require OIDC Core specification support:
+//
+//   - ID Tokens: JWT tokens containing user identity claims (OIDC Core Section 2)
+//   - IDTokenClaims: Parsed claims including sub, iss, aud, exp, nonce, auth_time
+//   - idTokenValidator: Validates ID Tokens per OIDC Core Section 3.1.3.7
+//   - Nonce parameter: Replay protection in authorization request (Section 3.1.2.1)
+//   - UserInfo endpoint: Fetches user claims (OIDC Core Section 5.3)
+//   - Discovery: .well-known/openid-configuration endpoint (OIDC Discovery spec)
+//   - Subject validation: UserInfo subject must match ID Token (Section 5.3.4)
+//
+// ## Provider Types
+//
+// Use ProviderTypeOIDC for providers that support OIDC discovery (Google, Okta, Azure AD).
+// Use ProviderTypeOAuth2 for pure OAuth 2.0 providers with explicit endpoint configuration.
+//
+// ## Checking Optional Capabilities
+//
+// Not all providers support all features. Use type assertions to check capabilities:
+//
+//	// Check if provider supports UserInfo
+//	if uip, ok := provider.(upstream.UserInfoProvider); ok {
+//	    userInfo, err := uip.UserInfo(ctx, accessToken)
+//	}
+//
+//	// Check if provider supports ID token validation with nonce
+//	if validator, ok := provider.(upstream.IDTokenNonceValidator); ok {
+//	    claims, err := validator.ValidateIDTokenWithNonce(idToken, nonce)
+//	}
+//
 // # Optional Capability Interfaces
 //
 // Implementations may also implement optional capability interfaces for

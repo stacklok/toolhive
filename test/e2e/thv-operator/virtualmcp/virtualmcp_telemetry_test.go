@@ -146,7 +146,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 	It("should preserve telemetry config in ConfigMap", func() {
 		By("Getting the ConfigMap for VirtualMCPServer")
 		configMap := &corev1.ConfigMap{}
-		configMapName := fmt.Sprintf("%s-config", vmcpServerName)
+		configMapName := fmt.Sprintf("%s-vmcp-config", vmcpServerName)
 
 		Eventually(func() error {
 			return k8sClient.Get(ctx, types.NamespacedName{

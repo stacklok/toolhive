@@ -29,7 +29,6 @@ spec:
             name: deploy_and_verify
             description: Deploy application and verify deployment status
             timeout: 10m
-            failureMode: abort
             steps:
             - id: deploy
               type: tool

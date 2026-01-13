@@ -105,25 +105,88 @@ func NewService(config *Config) (*Service, error) {
 	return svc, nil
 }
 
-// IngestBackends discovers and ingests backends from ToolHive
-func (*Service) IngestBackends(_ context.Context) error {
-	logger.Info("Starting backend ingestion")
+// IngestServer ingests a single MCP server and its tools into the optimizer database.
+// This is called by vMCP during startup for each configured server.
+//
+// Parameters:
+//   - serverID: Unique identifier for the backend server
+//   - serverName: Human-readable server name
+//   - serverURL: Server URL (for connection)
+//   - transport: Transport type (sse, streamable-http)
+//   - description: Optional server description
+//   - tools: List of tools available from this server
+//
+// This method will:
+//  1. Create or update the backend server record
+//  2. Generate embeddings for server and tools
+//  3. Count tokens for each tool
+//  4. Store everything in the database for semantic search
+func (s *Service) IngestServer(
+	ctx context.Context,
+	serverID string,
+	serverName string,
+	serverURL string,
+	transport models.TransportType,
+	description *string,
+	tools []mcp.Tool,
+) error {
+	logger.Infof("Ingesting server: %s (%d tools)", serverName, len(tools))
 
-	// TODO: Implement actual backend discovery from Docker or Kubernetes
-	// For now, this is a placeholder implementation
+	// Create backend server record
+	backendServer := &models.BackendServer{
+		BaseMCPServer: models.BaseMCPServer{
+			ID:          serverID,
+			Name:        serverName,
+			Description: description,
+			Transport:   transport,
+			Remote:      false, // vMCP servers are local/managed
+		},
+		URL:               serverURL,
+		BackendIdentifier: serverID, // Use serverID as identifier
+		Status:            models.StatusRunning,
+	}
 
-	// Example workflow:
-	// 1. Discover backends from Docker/K8s
-	// 2. For each backend:
-	//    a. Check if it should be skipped
-	//    b. Connect to the MCP server
-	//    c. List tools
-	//    d. Generate embeddings for tools
-	//    e. Count tokens
-	//    f. Store in database
-	// 3. Clean up backends that no longer exist
+	// Generate server embedding if description is provided
+	if description != nil && *description != "" {
+		embeddings, err := s.embeddingManager.GenerateEmbedding([]string{*description})
+		if err != nil {
+			logger.Warnf("Failed to generate server embedding for %s: %v", serverName, err)
+		} else if len(embeddings) > 0 {
+			backendServer.ServerEmbedding = embeddings[0]
+		}
+	}
 
-	logger.Info("Backend ingestion completed (placeholder)")
+	// Create or update server
+	existing, err := s.backendServerOps.GetByID(ctx, serverID)
+	if err == nil && existing != nil {
+		// Update existing
+		if err := s.backendServerOps.Update(ctx, backendServer); err != nil {
+			return fmt.Errorf("failed to update server %s: %w", serverName, err)
+		}
+		logger.Debugf("Updated existing server: %s", serverName)
+	} else {
+		// Create new
+		if err := s.backendServerOps.Create(ctx, backendServer); err != nil {
+			return fmt.Errorf("failed to create server %s: %w", serverName, err)
+		}
+		logger.Debugf("Created new server: %s", serverName)
+	}
+
+	// Sync tools for this server
+	toolCount, err := s.syncBackendTools(ctx, serverID, serverName, tools)
+	if err != nil {
+		return fmt.Errorf("failed to sync tools for %s: %w", serverName, err)
+	}
+
+	logger.Infof("Successfully ingested server %s with %d tools", serverName, toolCount)
+	return nil
+}
+
+// IngestBackends is deprecated. Use IngestServer for each vMCP server instead.
+// This method is kept for backward compatibility but logs a deprecation warning.
+func (s *Service) IngestBackends(_ context.Context) error {
+	logger.Warn("IngestBackends is deprecated. Use IngestServer for each vMCP server instead.")
+	logger.Info("Backend ingestion skipped (use IngestServer)")
 	return nil
 }
 
@@ -232,28 +295,11 @@ func (s *Service) Close() error {
 	return nil
 }
 
-// StartPolling starts periodic polling for backend changes
+// StartPolling is deprecated. vMCP now calls IngestServer directly during startup.
+// This method is kept for backward compatibility but does nothing.
 func (s *Service) StartPolling(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	logger.Infof("Starting backend polling (interval: %s)", interval)
-
-	// Initial ingestion
-	if err := s.IngestBackends(ctx); err != nil {
-		logger.Errorf("Initial backend ingestion failed: %v", err)
-	}
-
-	// Periodic polling
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("Stopping backend polling")
-			return
-		case <-ticker.C:
-		if err := s.IngestBackends(ctx); err != nil {
-			logger.Errorf("Backend ingestion failed: %v", err)
-			}
-		}
-	}
+	logger.Warn("StartPolling is deprecated. vMCP now uses IngestServer during startup.")
+	logger.Info("Polling disabled - ingestion is event-driven from vMCP")
+	<-ctx.Done()
+	logger.Info("Polling context cancelled")
 }

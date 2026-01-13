@@ -70,7 +70,7 @@ graph TB
    - Spawns detached proxy process
 
 4. **Proxy Process**:
-   - Runs as independent process (via `thv restart --foreground`)
+   - Runs as independent process (via `thv start --foreground`)
    - Attaches to container (for stdio) or forwards HTTP traffic
    - Applies middleware chain
    - Exposes local HTTP endpoint for MCP clients
@@ -112,12 +112,12 @@ When running in detached mode (`thv run` without `--foreground`):
 sequenceDiagram
     participant User
     participant THV as thv (parent)
-    participant THV2 as thv restart<br/>(detached child)
+    participant THV2 as thv start<br/>(detached child)
     participant Container
 
     User->>THV: thv run server-name
     THV->>THV: Save RunConfig to state
-    THV->>THV2: Fork: thv restart --foreground
+    THV->>THV2: Fork: thv start --foreground
     Note over THV2: Detached process<br/>with new session
     THV->>User: Return (PID written)
     THV2->>Container: Attach or proxy

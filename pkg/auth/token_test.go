@@ -161,7 +161,7 @@ func TestTokenValidator(t *testing.T) {
 			if tc.expectErr {
 				if err == nil {
 					t.Errorf("Expected error but got nil")
-				} else if tc.errType != nil && err != tc.errType {
+				} else if tc.errType != nil && !errors.Is(err, tc.errType) {
 					t.Errorf("Expected error %v but got %v", tc.errType, err)
 				}
 			} else {
@@ -680,7 +680,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		}
 
 		validator, err := NewTokenValidator(ctx, config)
-		if err != ErrMissingIssuerAndJWKSURL {
+		if !errors.Is(err, ErrMissingIssuerAndJWKSURL) {
 			t.Errorf("Expected error %v but got %v", ErrMissingIssuerAndJWKSURL, err)
 		}
 		if validator != nil {

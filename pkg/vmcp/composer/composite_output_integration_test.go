@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -254,19 +255,19 @@ func TestCompositeToolWithOutputConfig_DefaultValues(t *testing.T) {
 					Type:        "string",
 					Description: "Status",
 					Value:       "{{.steps.fetch.output.status}}",
-					Default:     "unknown",
+					Default:     thvjson.NewAny("unknown"),
 				},
 				"priority": {
 					Type:        "integer",
 					Description: "Priority level",
 					Value:       "{{.steps.fetch.output.priority}}",
-					Default:     1,
+					Default:     thvjson.NewAny(1),
 				},
 				"enabled": {
 					Type:        "boolean",
 					Description: "Enabled flag",
 					Value:       "{{.steps.fetch.output.enabled}}",
-					Default:     false,
+					Default:     thvjson.NewAny(false),
 				},
 			},
 		},
@@ -467,7 +468,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				Type:        "integer",
 				Description: "Count",
 				Value:       "{{.steps.fetch.output.count}}",
-				Default:     99,
+				Default:     thvjson.NewAny(99),
 			},
 			stepOutput: map[string]any{
 				"count": "not_a_number",
@@ -504,7 +505,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				Type:        "object",
 				Description: "Data",
 				Value:       "{{.steps.fetch.output.data}}",
-				Default:     map[string]any{"fallback": true},
+				Default:     thvjson.NewAny(map[string]any{"fallback": true}),
 			},
 			stepOutput: map[string]any{
 				"data": "not valid json",
@@ -545,7 +546,7 @@ func TestCompositeToolWithOutputConfig_TypeCoercionErrors(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, WorkflowStatusCompleted, result.Status)
 				// Verify default value was used
-				if tt.propDef.Default != nil {
+				if !tt.propDef.Default.IsEmpty() {
 					assert.NotNil(t, result.Output["value"])
 				}
 			}
@@ -583,7 +584,7 @@ func TestCompositeToolWithOutputConfig_ConditionalStepsWithOutput(t *testing.T) 
 					Type:        "string",
 					Description: "Processed data",
 					Value:       "{{.steps.conditional.output.result}}",
-					Default:     "not_processed",
+					Default:     thvjson.NewAny("not_processed"),
 				},
 			},
 		},

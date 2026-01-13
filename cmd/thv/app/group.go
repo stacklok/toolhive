@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -124,7 +125,9 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	// Create a tabwriter for table output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME")
+	if _, err := fmt.Fprintln(w, "NAME"); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
+	}
 
 	// Print group names in table format
 	for _, group := range allGroups {
@@ -132,7 +135,9 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 		if group.Name == mcpOptimizerGroup {
 			continue
 		}
-		fmt.Fprintf(w, "%s\n", group.Name)
+		if _, err := fmt.Fprintf(w, "%s\n", group.Name); err != nil {
+			logger.Debugf("Failed to write group name: %v", err)
+		}
 	}
 
 	// Flush the tabwriter
@@ -271,13 +276,13 @@ func deleteWorkloadsInGroup(
 	}
 
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
 	// Wait for the deletion to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 

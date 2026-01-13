@@ -189,7 +189,12 @@ func createTempEgressSquidConf(
 	if err != nil {
 		return "", err
 	}
-	defer tmpFile.Close()
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			// Non-fatal: temp file cleanup failure
+			logger.Warnf("Failed to close temp file: %v", err)
+		}
+	}()
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
 		return "", fmt.Errorf("failed to write to temporary file: %w", err)
@@ -284,7 +289,12 @@ func createTempIngressSquidConf(
 	if err != nil {
 		return "", err
 	}
-	defer tmpFile.Close()
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			// Non-fatal: temp file cleanup failure
+			logger.Warnf("Failed to close temp file: %v", err)
+		}
+	}()
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
 		return "", fmt.Errorf("failed to write to temporary file: %w", err)

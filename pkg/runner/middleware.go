@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
@@ -26,6 +27,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		telemetry.MiddlewareType:         telemetry.CreateMiddleware,
 		authz.MiddlewareType:             authz.CreateMiddleware,
 		audit.MiddlewareType:             audit.CreateMiddleware,
+		recovery.MiddlewareType:          recovery.CreateMiddleware,
 	}
 }
 
@@ -142,6 +144,15 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		}
 		middlewareConfigs = append(middlewareConfigs, *auditConfig)
 	}
+
+	// Recovery middleware (always present, added last to be outermost wrapper)
+	// Middleware is applied in reverse order, so adding last means it executes first
+	// and catches panics from all other middleware and handlers.
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create recovery middleware config: %w", err)
+	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
 
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs

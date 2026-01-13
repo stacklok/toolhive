@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -43,8 +42,8 @@ var (
 
 func init() {
 	stopCmd.Flags().IntVar(&stopTimeout, "timeout", 30, "Timeout in seconds before forcibly stopping the workload")
-	stopCmd.Flags().BoolVar(&stopAll, "all", false, "Stop all running MCP servers")
-	stopCmd.Flags().StringVarP(&stopGroup, "group", "g", "", "Stop all MCP servers in a specific group")
+	AddAllFlag(stopCmd, &stopAll, true, "Stop all running MCP servers")
+	AddGroupFlag(stopCmd, &stopGroup, true)
 
 	// Mark the flags as mutually exclusive
 	stopCmd.MarkFlagsMutuallyExclusive("all", "group")
@@ -85,8 +84,6 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
-	var group *errgroup.Group
-
 	if stopAll {
 		return stopAllWorkloads(ctx, workloadManager)
 	}
@@ -97,7 +94,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Stop specified workloads
 	workloadNames := args
-	group, err = workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		// If the workload is not found or not running, treat as a non-fatal error.
 		if errors.Is(err, rt.ErrWorkloadNotFound) ||
@@ -109,15 +106,15 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unexpected error stopping workloads: %w", err)
 	}
 
-	// Since the stop operation is asynchronous, wait for the group to finish.
-	if err := group.Wait(); err != nil {
+	// Wait for the stop operation to complete
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to stop workloads %v: %w", workloadNames, err)
 	}
 	if len(workloadNames) == 1 {
-		fmt.Printf("workload %s stopped successfully\n", workloadNames[0])
+		fmt.Printf("Workload %s stopped successfully\n", workloadNames[0])
 	} else {
 		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("workloads %v stopped successfully\n", formattedNames)
+		fmt.Printf("Workloads %s stopped successfully\n", formattedNames)
 	}
 
 	return nil
@@ -142,13 +139,13 @@ func stopAllWorkloads(ctx context.Context, workloadManager workloads.Manager) er
 	}
 
 	// Stop all workloads using the bulk method
-	group, err := workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to stop all workloads: %w", err)
 	}
 
-	// Since the stop operation is asynchronous, wait for the group to finish.
-	if err := group.Wait(); err != nil {
+	// Wait for the stop operation to complete
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to stop all workloads: %w", err)
 	}
 	fmt.Println("All workloads stopped successfully")
@@ -195,13 +192,13 @@ func stopWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager
 	}
 
 	// Stop workloads in the group
-	subtasks, err := workloadManager.StopWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to stop workloads in group '%s': %w", groupName, err)
 	}
 
 	// Wait for the stop operation to complete
-	if err := subtasks.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to stop workloads in group '%s': %w", groupName, err)
 	}
 

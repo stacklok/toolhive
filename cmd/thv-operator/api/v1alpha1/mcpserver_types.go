@@ -174,6 +174,12 @@ type MCPServerSpec struct {
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios where the ingress
+	// strips a path prefix before forwarding to the backend.
+	// +optional
+	EndpointPrefix string `json:"endpointPrefix,omitempty"`
+
 	// GroupRef is the name of the MCPGroup this server belongs to
 	// Must reference an existing MCPGroup in the same namespace
 	// +optional

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -44,7 +45,7 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 				Steps: []*config.WorkflowStepConfig{{
 					ID: "s1", Type: "elicitation",
 					Message: "Confirm?",
-					Schema:  map[string]any{"type": "object"},
+					Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
 				}},
 			}},
 			wantCount: 1,
@@ -90,7 +91,7 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 		},
 		{
 			name:        "elicitation without message",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Schema: map[string]any{}}}}},
+			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Schema: thvjson.NewMap(map[string]any{})}}}},
 			wantError:   true,
 			errContains: "message is required",
 		},
@@ -228,7 +229,7 @@ func TestConvertSteps_ComplexWorkflow(t *testing.T) {
 			ID:        "confirm",
 			Type:      "elicitation",
 			Message:   "Deploy?",
-			Schema:    map[string]any{"type": "object"},
+			Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
 			Timeout:   config.Duration(5 * time.Minute),
 			DependsOn: []string{"merge"},
 			OnDecline: &config.ElicitationResponseConfig{Action: "abort"},

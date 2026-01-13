@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -216,6 +218,54 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Nil(t, result.OAuthConfig.ClientSecret)
 	})
 
+	t.Run("with remote OAuth config with bearer token", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			RemoteAuthConfig: &remote.Config{
+				Issuer:      "https://oauth.example.com",
+				ClientID:    "test-client",
+				BearerToken: "bearer-token-secret,target=bearer_token",
+				Scopes:      []string{"read", "write"},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.OAuthConfig)
+		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
+
+		// Verify that bearer token is parsed correctly from CLI format
+		require.NotNil(t, result.OAuthConfig.BearerToken)
+		assert.Equal(t, "bearer-token-secret", result.OAuthConfig.BearerToken.Name)
+		assert.Equal(t, "bearer_token", result.OAuthConfig.BearerToken.Target)
+	})
+
+	t.Run("with remote OAuth config with bearer token without secret key (CLI case)", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			RemoteAuthConfig: &remote.Config{
+				Issuer:      "https://oauth.example.com",
+				ClientID:    "test-client",
+				BearerToken: "actual-bearer-token-value", // Plain text token (CLI case)
+				Scopes:      []string{"read", "write"},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.OAuthConfig)
+		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
+
+		// When no secret key is stored (CLI case), BearerToken should be nil
+		assert.Nil(t, result.OAuthConfig.BearerToken)
+	})
+
 	t.Run("with permission profile", func(t *testing.T) {
 		t.Parallel()
 
@@ -281,5 +331,91 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		result := runConfigToCreateRequest(nil)
 		assert.Nil(t, result)
+	})
+}
+
+func TestCreateRequestToRemoteAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with bearer token", func(t *testing.T) {
+		t.Parallel()
+
+		bearerTokenParam := &secrets.SecretParameter{
+			Name:   "bearer-token-secret",
+			Target: "bearer_token",
+		}
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL: "https://example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{
+					ClientID:    "test-client",
+					BearerToken: bearerTokenParam,
+					Scopes:      []string{"read", "write"},
+				},
+			},
+		}
+
+		result := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, result)
+		assert.Equal(t, "test-client", result.ClientID)
+		assert.Equal(t, []string{"read", "write"}, result.Scopes)
+		// Verify bearer token is converted to CLI format
+		assert.Equal(t, "bearer-token-secret,target=bearer_token", result.BearerToken)
+	})
+
+	t.Run("with bearer token and client secret", func(t *testing.T) {
+		t.Parallel()
+
+		clientSecretParam := &secrets.SecretParameter{
+			Name:   "oauth-client-secret",
+			Target: "oauth_secret",
+		}
+		bearerTokenParam := &secrets.SecretParameter{
+			Name:   "bearer-token-secret",
+			Target: "bearer_token",
+		}
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL: "https://example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{
+					ClientID:     "test-client",
+					ClientSecret: clientSecretParam,
+					BearerToken:  bearerTokenParam,
+					Scopes:       []string{"read", "write"},
+				},
+			},
+		}
+
+		result := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, result)
+		assert.Equal(t, "test-client", result.ClientID)
+		// Verify both secrets are converted to CLI format
+		assert.Equal(t, "oauth-client-secret,target=oauth_secret", result.ClientSecret)
+		assert.Equal(t, "bearer-token-secret,target=bearer_token", result.BearerToken)
+	})
+
+	t.Run("without bearer token", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL: "https://example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{
+					ClientID: "test-client",
+					Scopes:   []string{"read", "write"},
+				},
+			},
+		}
+
+		result := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, result)
+		assert.Equal(t, "test-client", result.ClientID)
+		// Bearer token should be empty when not provided
+		assert.Empty(t, result.BearerToken)
 	})
 }

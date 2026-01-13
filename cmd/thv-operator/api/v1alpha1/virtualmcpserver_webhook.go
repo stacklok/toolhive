@@ -41,9 +41,9 @@ func (*VirtualMCPServer) ValidateDelete(_ context.Context, _ runtime.Object) (ad
 // Validate performs validation for VirtualMCPServer
 // This method can be called by the controller during reconciliation or by the webhook
 func (r *VirtualMCPServer) Validate() error {
-	// Validate GroupRef is set (required field)
-	if r.Spec.GroupRef.Name == "" {
-		return fmt.Errorf("spec.groupRef.name is required")
+	// Validate Group is set (required field)
+	if r.Spec.Config.Group == "" {
+		return fmt.Errorf("spec.config.groupRef is required")
 	}
 
 	// Validate IncomingAuth configuration

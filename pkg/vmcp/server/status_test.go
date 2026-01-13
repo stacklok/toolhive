@@ -75,7 +75,7 @@ func createTestServerWithBackends(t *testing.T, backends []vmcp.Backend, groupRe
 		Host:     "127.0.0.1",
 		Port:     port,
 		GroupRef: groupRef,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	t.Cleanup(cancel)

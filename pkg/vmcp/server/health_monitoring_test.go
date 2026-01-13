@@ -43,7 +43,8 @@ func TestServer_HealthMonitoring_Disabled(t *testing.T) {
 		HealthMonitorConfig: nil, // Health monitoring disabled
 	}
 
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
@@ -110,7 +111,8 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 		},
 	}
 
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
@@ -202,7 +204,8 @@ func TestServer_HealthMonitoring_StartupFailure(t *testing.T) {
 	}
 
 	// This should fail during New() because of invalid health monitor config
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.Error(t, err)
 	require.Nil(t, srv)
 	assert.Contains(t, err.Error(), "failed to create health monitor")
@@ -232,7 +235,8 @@ func TestServer_HandleBackendHealth_Disabled(t *testing.T) {
 		HealthMonitorConfig: nil,
 	}
 
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Create test request
@@ -289,7 +293,8 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 		},
 	}
 
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server
@@ -366,7 +371,8 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 		},
 	}
 
-	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(backends)
+	srv, err := New(context.Background(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, backendRegistry, nil)
 	require.NoError(t, err)
 
 	// Start server

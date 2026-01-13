@@ -47,7 +47,11 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return time.Since(start), fmt.Errorf("failed to connect to SSE server: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	duration := time.Since(start)
 

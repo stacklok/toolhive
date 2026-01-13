@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"golang.org/x/exp/jsonrpc2"
+	"golang.org/x/oauth2"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
@@ -75,6 +76,7 @@ type MiddlewareRunner interface {
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration
 type RunnerConfig interface {
+	GetName() string
 	GetPort() int
 }
 
@@ -100,6 +102,22 @@ type Transport interface {
 
 	// IsRunning checks if the transport is currently running.
 	IsRunning(ctx context.Context) (bool, error)
+
+	// SetRemoteURL sets the remote URL for the MCP server.
+	// For transports that don't support remote servers (e.g., stdio), this is a no-op.
+	SetRemoteURL(remoteURL string)
+
+	// SetTokenSource sets the OAuth token source for remote authentication.
+	// For transports that don't support remote authentication (e.g., stdio), this is a no-op.
+	SetTokenSource(tokenSource oauth2.TokenSource)
+
+	// SetOnHealthCheckFailed sets the callback for health check failures.
+	// For transports that don't support health checks (e.g., stdio), this is a no-op.
+	SetOnHealthCheckFailed(callback HealthCheckFailedCallback)
+
+	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
+	// For transports that don't support this (e.g., stdio), this is a no-op.
+	SetOnUnauthorizedResponse(callback UnauthorizedResponseCallback)
 }
 
 // TransportType represents the type of transport to use.
@@ -164,6 +182,10 @@ type Proxy interface {
 // This allows the transport to notify the runner/status manager when remote servers become unhealthy.
 type HealthCheckFailedCallback func()
 
+// UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
+// This allows the transport to notify the runner/status manager when bearer tokens become invalid.
+type UnauthorizedResponseCallback func()
+
 // Config contains configuration options for a transport.
 type Config struct {
 	// Type is the type of transport to use.
@@ -208,6 +230,10 @@ type Config struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
+
+	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios.
+	EndpointPrefix string
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

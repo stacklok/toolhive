@@ -4,8 +4,8 @@ metadata:
   name: test-vmcp-controller
   namespace: toolhive-system
 spec:
-  groupRef:
-    name: test-group-controller
+  config:
+    groupRef: test-group-controller
   incomingAuth:
     # Using anonymous authentication for testing
     type: anonymous

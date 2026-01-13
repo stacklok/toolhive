@@ -116,6 +116,12 @@ spec:
                 required:
                 - type
                 type: object
+              endpointPrefix:
+                description: |-
+                  EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+                  This is used to handle path-based ingress routing scenarios where the ingress
+                  strips a path prefix before forwarding to the backend.
+                type: string
               externalAuthConfigRef:
                 description: |-
                   ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.

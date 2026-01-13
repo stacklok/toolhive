@@ -525,6 +525,37 @@ For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, 
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
 
+### SSE Endpoint URL Rewriting
+
+**Problem**: When using path-based ingress routing that strips path prefixes:
+
+1. Ingress receives `GET /playwright/sse`, rewrites to `GET /sse`
+2. Backend MCP server responds with `event: endpoint\ndata: /sse?sessionId=abc`
+3. Client constructs incorrect URL without prefix
+
+**Solution**: The transparent proxy rewrites SSE endpoint URLs with the correct prefix.
+
+**Priority order for prefix determination:**
+1. Explicit `--endpoint-prefix` configuration (highest priority)
+2. `X-Forwarded-Prefix` header (when `--trust-proxy-headers` is true)
+3. No rewriting (default)
+
+**Example:**
+```bash
+thv run --transport sse --endpoint-prefix /playwright playwright
+```
+
+**Kubernetes CRD:**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+spec:
+  endpointPrefix: /playwright
+  trustProxyHeaders: true
+```
+
+**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
+
 ## Transport Factory
 
 **Implementation**: `pkg/transport/factory.go`

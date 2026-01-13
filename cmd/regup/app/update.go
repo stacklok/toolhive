@@ -375,7 +375,11 @@ func getGitHubRepoInfo(owner, repo, serverName string, currentPulls int) (stars 
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {

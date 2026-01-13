@@ -347,89 +347,9 @@ func New(
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
-	// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
-	// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
-	//
-	// The discovery middleware populates capabilities in the context, which is available here.
-	// We inject them into the SDK session and store the routing table for subsequent requests.
-	//
-	// IMPORTANT: Session capabilities are immutable after injection.
-	// - Capabilities discovered during initialize are fixed for the session lifetime
-	// - Backend changes (new tools, removed resources) won't be reflected in existing sessions
-	// - Clients must create new sessions to see updated capabilities
-	// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
+	// See handleSessionRegistration for implementation details.
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
-		sessionID := session.SessionID()
-		logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
-
-		// Get capabilities from context (discovered by middleware)
-		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-		if !ok || caps == nil {
-			logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
-				"session_id", sessionID)
-			return
-		}
-
-		// Validate that routing table exists
-		if caps.RoutingTable == nil {
-			logger.Warnw("routing table is nil in discovered capabilities",
-				"session_id", sessionID)
-			return
-		}
-
-		// Add composite tools to capabilities
-		// Composite tools are static (from configuration) and not discovered from backends
-		// They are added here to be exposed alongside backend tools in the session
-		if len(srv.workflowDefs) > 0 {
-			compositeTools := convertWorkflowDefsToTools(srv.workflowDefs)
-
-			// Validate no conflicts between composite tool names and backend tool names
-			if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
-				logger.Errorw("composite tool name conflict detected",
-					"session_id", sessionID,
-					"error", err)
-				// Don't add composite tools if there are conflicts
-				// This prevents ambiguity in routing/execution
-				return
-			}
-
-			caps.CompositeTools = compositeTools
-			logger.Debugw("added composite tools to session capabilities",
-				"session_id", sessionID,
-				"composite_tool_count", len(compositeTools))
-		}
-
-		// Store routing table in VMCPSession for subsequent requests
-		// This enables the middleware to reconstruct capabilities from session
-		// without re-running discovery for every request
-		vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
-		if err != nil {
-			logger.Errorw("failed to get VMCPSession for routing table storage",
-				"error", err,
-				"session_id", sessionID)
-			return
-		}
-
-		vmcpSess.SetRoutingTable(caps.RoutingTable)
-		vmcpSess.SetTools(caps.Tools)
-		logger.Debugw("routing table and tools stored in VMCPSession",
-			"session_id", sessionID,
-			"tool_count", len(caps.RoutingTable.Tools),
-			"resource_count", len(caps.RoutingTable.Resources),
-			"prompt_count", len(caps.RoutingTable.Prompts))
-
-		// Inject capabilities into SDK session
-		if err := srv.injectCapabilities(sessionID, caps); err != nil {
-			logger.Errorw("failed to inject session capabilities",
-				"error", err,
-				"session_id", sessionID)
-			return
-		}
-
-		logger.Infow("session capabilities injected",
-			"session_id", sessionID,
-			"tool_count", len(caps.Tools),
-			"resource_count", len(caps.Resources))
+		srv.handleSessionRegistration(ctx, session, sessionManager)
 	})
 
 	return srv, nil
@@ -856,6 +776,107 @@ func (s *Server) injectCapabilities(
 		"resources", len(caps.Resources))
 
 	return nil
+}
+
+// handleSessionRegistration processes a new MCP session registration.
+//
+// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
+// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
+//
+// The discovery middleware populates capabilities in the context, which is available here.
+// We inject them into the SDK session and store the routing table for subsequent requests.
+//
+// This method performs the following steps:
+//  1. Retrieves discovered capabilities from context
+//  2. Adds composite tools from configuration
+//  3. Stores routing table in VMCPSession for request routing
+//  4. Injects capabilities into the SDK session
+//
+// IMPORTANT: Session capabilities are immutable after injection.
+//   - Capabilities discovered during initialize are fixed for the session lifetime
+//   - Backend changes (new tools, removed resources) won't be reflected in existing sessions
+//   - Clients must create new sessions to see updated capabilities
+//
+// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
+//
+// The sessionManager parameter is passed explicitly because this method is called
+// from a closure registered before the Server is fully constructed.
+func (s *Server) handleSessionRegistration(
+	ctx context.Context,
+	session server.ClientSession,
+	sessionManager *transportsession.Manager,
+) {
+	sessionID := session.SessionID()
+	logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
+
+	// Get capabilities from context (discovered by middleware)
+	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || caps == nil {
+		logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
+			"session_id", sessionID)
+		return
+	}
+
+	// Validate that routing table exists
+	if caps.RoutingTable == nil {
+		logger.Warnw("routing table is nil in discovered capabilities",
+			"session_id", sessionID)
+		return
+	}
+
+	// Add composite tools to capabilities
+	// Composite tools are static (from configuration) and not discovered from backends
+	// They are added here to be exposed alongside backend tools in the session
+	if len(s.workflowDefs) > 0 {
+		compositeTools := convertWorkflowDefsToTools(s.workflowDefs)
+
+		// Validate no conflicts between composite tool names and backend tool names
+		if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
+			logger.Errorw("composite tool name conflict detected",
+				"session_id", sessionID,
+				"error", err)
+			// Don't add composite tools if there are conflicts
+			// This prevents ambiguity in routing/execution
+			return
+		}
+
+		caps.CompositeTools = compositeTools
+		logger.Debugw("added composite tools to session capabilities",
+			"session_id", sessionID,
+			"composite_tool_count", len(compositeTools))
+	}
+
+	// Store routing table in VMCPSession for subsequent requests
+	// This enables the middleware to reconstruct capabilities from session
+	// without re-running discovery for every request
+	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
+	if err != nil {
+		logger.Errorw("failed to get VMCPSession for routing table storage",
+			"error", err,
+			"session_id", sessionID)
+		return
+	}
+
+	vmcpSess.SetRoutingTable(caps.RoutingTable)
+	vmcpSess.SetTools(caps.Tools)
+	logger.Debugw("routing table and tools stored in VMCPSession",
+		"session_id", sessionID,
+		"tool_count", len(caps.RoutingTable.Tools),
+		"resource_count", len(caps.RoutingTable.Resources),
+		"prompt_count", len(caps.RoutingTable.Prompts))
+
+	// Inject capabilities into SDK session
+	if err := s.injectCapabilities(sessionID, caps); err != nil {
+		logger.Errorw("failed to inject session capabilities",
+			"error", err,
+			"session_id", sessionID)
+		return
+	}
+
+	logger.Infow("session capabilities injected",
+		"session_id", sessionID,
+		"tool_count", len(caps.Tools),
+		"resource_count", len(caps.Resources))
 }
 
 // validateAndCreateExecutors validates workflow definitions and creates executors.

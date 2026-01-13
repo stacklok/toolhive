@@ -87,7 +87,7 @@ thv run go://package-name
 
 Manages MCP servers in Kubernetes clusters using custom resources.
 
-The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, and `MCPExternalAuthConfig` CRDs, reconciling them into Kubernetes resources (Deployments, StatefulSets, Services).
+The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, `MCPExternalAuthConfig`, `MCPGroup`, and `VirtualMCPServer` CRDs, reconciling them into Kubernetes resources (Deployments, StatefulSets, Services).
 
 **For details**, see:
 - [`cmd/thv-operator/README.md`](../../cmd/thv-operator/README.md) - Operator overview and usage
@@ -122,6 +122,18 @@ A registry API server for hosting custom MCP server registries. Located in `cmd/
 - Future support for upstream MCP registry format
 - Provide file-based and Kubernetes ConfigMap storage
 
+### 5. Virtual MCP Server (vmcp)
+
+An MCP Gateway that aggregates multiple backend MCP servers into a single unified interface. Located in `cmd/vmcp/`.
+
+**Key responsibilities:**
+- Aggregate tools, resources, and prompts from multiple backends
+- Resolve naming conflicts when backends expose duplicate tool names
+- Execute composite workflows across multiple backends
+- Handle two-boundary authentication (incoming clients and outgoing backends)
+
+**For details**, see [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md).
+
 ## Core Concepts
 
 For detailed definitions and relationships, see [Core Concepts](02-core-concepts.md).
@@ -134,6 +146,7 @@ For detailed definitions and relationships, see [Core Concepts](02-core-concepts
 - **Permission Profiles** - Security policies
 - **Groups** - Logical server collections
 - **Registry** - Catalog of trusted MCP servers
+- **Virtual MCP Server** - Aggregates multiple backends into unified interface
 
 ## Deployment Modes
 
@@ -246,6 +259,7 @@ These are automatically converted to container images at runtime.
 - [Groups](07-groups.md) - Groups and organization
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Workload management
 - [Operator Architecture](09-operator-architecture.md) - Kubernetes operator design
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - MCP Gateway and aggregation
 
 ## Getting Started
 

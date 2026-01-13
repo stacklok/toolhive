@@ -9,7 +9,7 @@ const docTemplate = `{
     "components": {
         "schemas": {
             "audit.Config": {
-                "description": "AuditConfig contains the audit logging configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
                 "properties": {
                     "component": {
                         "description": "Component is the component name to use in audit events.\n+optional",
@@ -55,7 +55,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "auth.TokenValidatorConfig": {
-                "description": "OIDCConfig contains OIDC configuration",
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
                     "allowPrivateIP": {
                         "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
@@ -112,7 +112,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authz.Config": {
-                "description": "AuthzConfig contains the authorization configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
                     "type": {
                         "description": "Type is the type of authorization configuration (e.g., \"cedarv1\").",
@@ -750,14 +750,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/audit.Config"
                     },
                     "audit_config_path": {
-                        "description": "AuditConfigPath is the path to the audit configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
                         "type": "string"
                     },
                     "authz_config": {
                         "$ref": "#/components/schemas/authz.Config"
                     },
                     "authz_config_path": {
-                        "description": "AuthzConfigPath is the path to the authorization configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
                         "type": "string"
                     },
                     "base_name": {
@@ -792,7 +792,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "env_file_dir": {
-                        "description": "EnvFileDir is the directory path to load environment files from",
+                        "description": "DEPRECATED: No longer appears to be used.\nEnvFileDir is the directory path to load environment files from",
                         "type": "string"
                     },
                     "env_vars": {
@@ -822,7 +822,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "jwks_auth_token_file": {
-                        "description": "JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
+                        "description": "DEPRECATED: No longer appears to be used.\nJWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
                         "type": "string"
                     },
                     "k8s_pod_template_patch": {
@@ -889,14 +889,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/telemetry.Config"
                     },
                     "thv_ca_bundle": {
-                        "description": "ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
+                        "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
                         "type": "string"
                     },
                     "token_exchange_config": {
                         "$ref": "#/components/schemas/tokenexchange.Config"
                     },
                     "tools_filter": {
-                        "description": "ToolsFilter is the list of tools to filter",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
                         "items": {
                             "type": "string"
                         },
@@ -907,7 +907,7 @@ const docTemplate = `{
                         "additionalProperties": {
                             "$ref": "#/components/schemas/runner.ToolOverride"
                         },
-                        "description": "ToolsOverride is a map from an actual tool to its overridden name and/or description",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsOverride is a map from an actual tool to its overridden name and/or description",
                         "type": "object"
                     },
                     "transport": {
@@ -980,7 +980,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "telemetry.Config": {
-                "description": "TelemetryConfig contains the OpenTelemetry configuration",
+                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
                     "customAttributes": {
                         "additionalProperties": {

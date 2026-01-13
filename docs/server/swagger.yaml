@@ -1,7 +1,9 @@
 components:
   schemas:
     audit.Config:
-      description: AuditConfig contains the audit logging configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        AuditConfig contains the audit logging configuration
       properties:
         component:
           description: |-
@@ -57,7 +59,9 @@ components:
           type: integer
       type: object
     auth.TokenValidatorConfig:
-      description: OIDCConfig contains OIDC configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        OIDCConfig contains OIDC configuration
       properties:
         allowPrivateIP:
           description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
@@ -107,7 +111,9 @@ components:
           type: array
       type: object
     authz.Config:
-      description: AuthzConfig contains the authorization configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        AuthzConfig contains the authorization configuration
       properties:
         type:
           description: Type is the type of authorization configuration (e.g., "cedarv1").
@@ -650,13 +656,16 @@ components:
         audit_config:
           $ref: '#/components/schemas/audit.Config'
         audit_config_path:
-          description: AuditConfigPath is the path to the audit configuration file
+          description: |-
+            DEPRECATED: Middleware configuration.
+            AuditConfigPath is the path to the audit configuration file
           type: string
         authz_config:
           $ref: '#/components/schemas/authz.Config'
         authz_config_path:
-          description: AuthzConfigPath is the path to the authorization configuration
-            file
+          description: |-
+            DEPRECATED: Middleware configuration.
+            AuthzConfigPath is the path to the authorization configuration file
           type: string
         base_name:
           description: BaseName is the base name used for the container (without prefixes)
@@ -684,8 +693,9 @@ components:
             This is used to handle path-based ingress routing scenarios.
           type: string
         env_file_dir:
-          description: EnvFileDir is the directory path to load environment files
-            from
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            EnvFileDir is the directory path to load environment files from
           type: string
         env_vars:
           additionalProperties:
@@ -709,8 +719,9 @@ components:
             the container
           type: boolean
         jwks_auth_token_file:
-          description: JWKSAuthTokenFile is the path to file containing auth token
-            for JWKS/OIDC requests
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
           type: string
         k8s_pod_template_patch:
           description: |-
@@ -768,13 +779,16 @@ components:
         telemetry_config:
           $ref: '#/components/schemas/telemetry.Config'
         thv_ca_bundle:
-          description: ThvCABundle is the path to the CA certificate bundle for ToolHive
-            HTTP operations
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
         token_exchange_config:
           $ref: '#/components/schemas/tokenexchange.Config'
         tools_filter:
-          description: ToolsFilter is the list of tools to filter
+          description: |-
+            DEPRECATED: Middleware configuration.
+            ToolsFilter is the list of tools to filter
           items:
             type: string
           type: array
@@ -782,8 +796,9 @@ components:
         tools_override:
           additionalProperties:
             $ref: '#/components/schemas/runner.ToolOverride'
-          description: ToolsOverride is a map from an actual tool to its overridden
-            name and/or description
+          description: |-
+            DEPRECATED: Middleware configuration.
+            ToolsOverride is a map from an actual tool to its overridden name and/or description
           type: object
         transport:
           $ref: '#/components/schemas/types.TransportType'
@@ -841,7 +856,9 @@ components:
           type: string
       type: object
     telemetry.Config:
-      description: TelemetryConfig contains the OpenTelemetry configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        TelemetryConfig contains the OpenTelemetry configuration
       properties:
         customAttributes:
           additionalProperties:

@@ -165,10 +165,10 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Phase (Ready, Degraded, Pending, Failed)
 - URL for accessing the virtual server
 - Discovered backends with individual health status
-- Capabilities summary (tool/resource/prompt counts)
+- Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**Referenced by**: MCPGroup (via `spec.groupRef`)
+**References**: MCPGroup (via `spec.config.groupRef`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 

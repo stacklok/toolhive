@@ -119,6 +119,31 @@ type Config struct {
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
+
+	// OptimizerConfig is the optional optimizer configuration.
+	// If nil or Enabled=false, optimizer tools (optim.find_tool, optim.call_tool) are not available.
+	OptimizerConfig *OptimizerConfig
+}
+
+// OptimizerConfig holds optimizer-specific configuration for vMCP integration.
+type OptimizerConfig struct {
+	// Enabled controls whether optimizer tools are available
+	Enabled bool
+
+	// DBPath is the path to SQLite database for embeddings storage
+	DBPath string
+
+	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
+	EmbeddingBackend string
+
+	// EmbeddingURL is the URL for the embedding service (vLLM or Ollama)
+	EmbeddingURL string
+
+	// EmbeddingModel is the model name for embeddings
+	EmbeddingModel string
+
+	// EmbeddingDimension is the embedding vector dimension
+	EmbeddingDimension int
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -187,6 +212,23 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// optimizerIntegration provides semantic tool discovery via optim.find_tool and optim.call_tool.
+	// Nil if optimizer is disabled.
+	optimizerIntegration OptimizerIntegration
+}
+
+// OptimizerIntegration is the interface for optimizer functionality in vMCP.
+// This is defined as an interface to avoid circular dependencies and allow testing.
+type OptimizerIntegration interface {
+	// OnRegisterSession generates embeddings for session tools
+	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *vmcp.DiscoveredCapabilities) error
+
+	// RegisterTools adds optim.find_tool and optim.call_tool to the session
+	RegisterTools(ctx context.Context, session server.ClientSession) error
+
+	// Close cleans up optimizer resources
+	Close() error
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -326,21 +368,39 @@ func New(
 		logger.Info("Health monitoring disabled")
 	}
 
+	// Initialize optimizer integration if enabled
+	var optimizerInteg OptimizerIntegration
+	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
+		// Import optimizer package dynamically to avoid circular dependencies
+		// This will be implemented in pkg/vmcp/optimizer/optimizer.go
+		logger.Infow("Initializing optimizer integration",
+			"db_path", cfg.OptimizerConfig.DBPath,
+			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
+		
+		// TODO: Initialize optimizer integration
+		// optimizerInteg, err = optimizer.NewIntegration(ctx, cfg.OptimizerConfig, backendClient)
+		// if err != nil {
+		//     return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
+		// }
+		logger.Warn("Optimizer integration not yet fully implemented - optim.* tools will not be available")
+	}
+
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		workflowDefs:      workflowDefs,
-		workflowExecutors: workflowExecutors,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
+		config:               cfg,
+		mcpServer:            mcpServer,
+		router:               rt,
+		backendClient:        backendClient,
+		handlerFactory:       handlerFactory,
+		discoveryMgr:         discoveryMgr,
+		backendRegistry:      backendRegistry,
+		sessionManager:       sessionManager,
+		capabilityAdapter:    capabilityAdapter,
+		workflowDefs:         workflowDefs,
+		workflowExecutors:    workflowExecutors,
+		ready:                make(chan struct{}),
+		healthMonitor:        healthMon,
+		optimizerIntegration: optimizerInteg,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -427,6 +487,30 @@ func New(
 			"session_id", sessionID,
 			"tool_count", len(caps.Tools),
 			"resource_count", len(caps.Resources))
+
+		// Generate embeddings and register optimizer tools if enabled
+		if srv.optimizerIntegration != nil {
+			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
+			
+			// Generate embeddings for all tools in this session
+			if err := srv.optimizerIntegration.OnRegisterSession(ctx, session, caps); err != nil {
+				logger.Errorw("failed to generate embeddings for optimizer",
+					"error", err,
+					"session_id", sessionID)
+				// Don't fail session initialization - continue without optimizer
+			} else {
+				// Register optimizer tools (optim.find_tool, optim.call_tool)
+				if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
+					logger.Errorw("failed to register optimizer tools",
+						"error", err,
+						"session_id", sessionID)
+					// Don't fail session initialization - continue without optimizer tools
+				} else {
+					logger.Infow("optimizer tools registered",
+						"session_id", sessionID)
+				}
+			}
+		}
 	})
 
 	return srv, nil

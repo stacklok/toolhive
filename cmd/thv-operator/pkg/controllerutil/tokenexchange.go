@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -116,6 +117,8 @@ func AddExternalAuthConfigOptions(
 		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
 		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+		return addAWSStsConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No config to add for unauthenticated
 		return nil
@@ -199,5 +202,54 @@ func addHeaderInjectionConfig(
 	// This is a placeholder to avoid the "unsupported auth type" error
 	// MCPServer's ExternalAuthConfigRef is meant for incoming auth configuration
 	// but header injection doesn't make sense in that context
+	return nil
+}
+
+// addAWSStsConfig adds AWS STS configuration to runner options
+func addAWSStsConfig(
+	_ context.Context,
+	_ client.Client,
+	_ string,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	awsStsSpec := externalAuthConfig.Spec.AWSSts
+	if awsStsSpec == nil {
+		return fmt.Errorf("AWS STS configuration is nil for type awsSts")
+	}
+
+	// Convert CRD RoleMappings to runtime RoleMappings
+	var roleMappings []awssts.RoleMapping
+	for _, mapping := range awsStsSpec.RoleMappings {
+		priority := 0
+		if mapping.Priority != nil {
+			priority = int(*mapping.Priority)
+		}
+
+		roleMappings = append(roleMappings, awssts.RoleMapping{
+			Claim:    mapping.Claim,
+			RoleArn:  mapping.RoleArn,
+			Priority: priority,
+		})
+	}
+
+	// Build AWS STS configuration
+	awsStsConfig := &awssts.Config{
+		Region:       awsStsSpec.Region,
+		Service:      awsStsSpec.Service,
+		RoleArn:      awsStsSpec.RoleArn,
+		RoleMappings: roleMappings,
+		RoleClaim:    awsStsSpec.RoleClaim,
+	}
+
+	// Set SessionDuration if specified
+	if awsStsSpec.SessionDuration != nil {
+		awsStsConfig.SessionDuration = *awsStsSpec.SessionDuration
+	}
+
+	// Use WithAWSStsConfig to add configuration
+	// The middleware will be automatically created by PopulateMiddlewareConfigs() in the correct order
+	*options = append(*options, runner.WithAWSStsConfig(awsStsConfig))
+
 	return nil
 }

@@ -71,6 +71,17 @@ func (r *MCPExternalAuthConfig) validate() error {
 			return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
 		}
 
+	case ExternalAuthTypeAWSSts:
+		if r.Spec.AWSSts == nil {
+			return fmt.Errorf("awsSts configuration is required when type is 'awsSts'")
+		}
+		if r.Spec.TokenExchange != nil {
+			return fmt.Errorf("tokenExchange must not be set when type is 'awsSts'")
+		}
+		if r.Spec.HeaderInjection != nil {
+			return fmt.Errorf("headerInjection must not be set when type is 'awsSts'")
+		}
+
 	case ExternalAuthTypeUnauthenticated:
 		if r.Spec.TokenExchange != nil {
 			return fmt.Errorf("tokenExchange must not be set when type is 'unauthenticated'")

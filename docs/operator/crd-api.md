@@ -625,6 +625,30 @@ _Appears in:_
 | `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  |  |
 
 
+#### api.v1alpha1.AWSStsConfig
+
+
+
+AWSStsConfig holds configuration for AWS STS authentication with SigV4 request signing.
+This configuration exchanges incoming authentication tokens (typically OIDC JWT) for AWS STS
+temporary credentials, then signs requests to AWS services using SigV4.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `region` _string_ | Region is the AWS region for the STS endpoint and service |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `service` _string_ | Service is the AWS service name for SigV4 signing<br />Defaults to "execute-api" for API Gateway endpoints | execute-api |  |
+| `roleArn` _string_ | RoleArn is the default IAM role ARN to assume<br />This role is used when no role mappings match or RoleMappings is empty |  | Pattern: `^arn:aws:iam::\d\{12\}:role/[a-zA-Z0-9+=,.@\-_/]+$` <br />Required: \{\} <br /> |
+| `roleMappings` _[api.v1alpha1.RoleMapping](#apiv1alpha1rolemapping) array_ | RoleMappings defines claim-based role selection rules<br />Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles<br />Higher priority mappings are evaluated first |  |  |
+| `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation<br />Defaults to "groups" to match common OIDC group claims | groups |  |
+| `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session<br />Must be between 900 (15 minutes) and 43200 (12 hours)<br />Defaults to 3600 (1 hour) if not specified | 3600 | Maximum: 43200 <br />Minimum: 900 <br /> |
+| `sessionTags` _[api.v1alpha1.SessionTag](#apiv1alpha1sessiontag) array_ | SessionTags are AWS session tags to pass to AssumeRole<br />Tags can use static values or be sourced from JWT claims |  |  |
+
+
 
 
 #### api.v1alpha1.AggregationConfig
@@ -916,6 +940,7 @@ _Appears in:_
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
+| `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 
 
 #### api.v1alpha1.FailureHandlingConfig
@@ -1121,9 +1146,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated] <br />Required: \{\} <br /> |
+| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated awsSts] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
+| `awsSts` _[api.v1alpha1.AWSStsConfig](#apiv1alpha1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  |  |
 
 
 #### api.v1alpha1.MCPExternalAuthConfigStatus
@@ -2184,6 +2210,26 @@ _Appears in:_
 | `retryableErrors` _string array_ | RetryableErrors defines which errors should trigger retry<br />If empty, all errors are retryable<br />Supports regex patterns |  |  |
 
 
+#### api.v1alpha1.RoleMapping
+
+
+
+RoleMapping defines a rule for mapping JWT claims to IAM roles.
+Mappings are evaluated in priority order (highest first), and the first
+matching rule determines which IAM role to assume.
+
+
+
+_Appears in:_
+- [api.v1alpha1.AWSStsConfig](#apiv1alpha1awsstsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claim` _string_ | Claim is the claim value to match against<br />The claim type is specified by AWSStsConfig.RoleClaim<br />For example, if RoleClaim is "groups", this would be a group name |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `roleArn` _string_ | RoleArn is the IAM role ARN to assume when this mapping matches |  | Pattern: `^arn:aws:iam::\d\{12\}:role/[a-zA-Z0-9+=,.@\-_/]+$` <br />Required: \{\} <br /> |
+| `priority` _integer_ | Priority determines evaluation order (higher values evaluated first)<br />Allows fine-grained control over role selection precedence<br />Defaults to 0 if not specified | 0 | Minimum: 0 <br /> |
+
+
 #### api.v1alpha1.SecretKeyRef
 
 
@@ -2219,6 +2265,25 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  |  |
+
+
+#### api.v1alpha1.SessionTag
+
+
+
+SessionTag represents an AWS session tag that can be passed to AssumeRole.
+Tags can have static values or be dynamically sourced from JWT claims.
+
+
+
+_Appears in:_
+- [api.v1alpha1.AWSStsConfig](#apiv1alpha1awsstsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `key` _string_ | Key is the session tag key<br />Must comply with AWS session tag key requirements |  | MaxLength: 128 <br />MinLength: 1 <br />Pattern: `^[\w+=,.@-]+$` <br />Required: \{\} <br /> |
+| `value` _string_ | Value is the static value for the session tag<br />Used when ClaimSource is not specified |  | MaxLength: 256 <br /> |
+| `claimSource` _string_ | ClaimSource is the JWT claim to use as the tag value<br />When specified, the tag value is sourced from this claim in the incoming JWT<br />Takes precedence over the static Value field |  |  |
 
 
 #### api.v1alpha1.StorageReference

@@ -16,6 +16,9 @@ const (
 	// This should only be used for backends on trusted networks (e.g., localhost, VPC)
 	// or when authentication is handled by network-level security
 	ExternalAuthTypeUnauthenticated ExternalAuthType = "unauthenticated"
+
+	// ExternalAuthTypeAWSSts is the type for AWS STS authentication
+	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -26,7 +29,7 @@ type ExternalAuthType string
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated;awsSts
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -39,6 +42,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "headerInjection"
 	// +optional
 	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty"`
+
+	// AWSSts configures AWS STS authentication with SigV4 request signing
+	// Only used when Type is "awsSts"
+	// +optional
+	AWSSts *AWSStsConfig `json:"awsSts,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -108,6 +116,103 @@ type SecretKeyRef struct {
 	// Key is the key within the secret
 	// +kubebuilder:validation:Required
 	Key string `json:"key"`
+}
+
+// AWSStsConfig holds configuration for AWS STS authentication with SigV4 request signing.
+// This configuration exchanges incoming authentication tokens (typically OIDC JWT) for AWS STS
+// temporary credentials, then signs requests to AWS services using SigV4.
+type AWSStsConfig struct {
+	// Region is the AWS region for the STS endpoint and service
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Region string `json:"region"`
+
+	// Service is the AWS service name for SigV4 signing
+	// Defaults to "execute-api" for API Gateway endpoints
+	// +kubebuilder:default="execute-api"
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// RoleArn is the default IAM role ARN to assume
+	// This role is used when no role mappings match or RoleMappings is empty
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^arn:aws:iam::\d{12}:role/[a-zA-Z0-9+=,.@\-_/]+$`
+	RoleArn string `json:"roleArn"`
+
+	// RoleMappings defines claim-based role selection rules
+	// Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
+	// Higher priority mappings are evaluated first
+	// +optional
+	RoleMappings []RoleMapping `json:"roleMappings,omitempty"`
+
+	// RoleClaim is the JWT claim to use for role mapping evaluation
+	// Defaults to "groups" to match common OIDC group claims
+	// +kubebuilder:default="groups"
+	// +optional
+	RoleClaim string `json:"roleClaim,omitempty"`
+
+	// SessionDuration is the duration in seconds for the STS session
+	// Must be between 900 (15 minutes) and 43200 (12 hours)
+	// Defaults to 3600 (1 hour) if not specified
+	// +kubebuilder:validation:Minimum=900
+	// +kubebuilder:validation:Maximum=43200
+	// +kubebuilder:default=3600
+	// +optional
+	SessionDuration *int32 `json:"sessionDuration,omitempty"`
+
+	// SessionTags are AWS session tags to pass to AssumeRole
+	// Tags can use static values or be sourced from JWT claims
+	// +optional
+	SessionTags []SessionTag `json:"sessionTags,omitempty"`
+}
+
+// RoleMapping defines a rule for mapping JWT claims to IAM roles.
+// Mappings are evaluated in priority order (highest first), and the first
+// matching rule determines which IAM role to assume.
+type RoleMapping struct {
+	// Claim is the claim value to match against
+	// The claim type is specified by AWSStsConfig.RoleClaim
+	// For example, if RoleClaim is "groups", this would be a group name
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Claim string `json:"claim"`
+
+	// RoleArn is the IAM role ARN to assume when this mapping matches
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^arn:aws:iam::\d{12}:role/[a-zA-Z0-9+=,.@\-_/]+$`
+	RoleArn string `json:"roleArn"`
+
+	// Priority determines evaluation order (higher values evaluated first)
+	// Allows fine-grained control over role selection precedence
+	// Defaults to 0 if not specified
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=0
+	// +optional
+	Priority *int32 `json:"priority,omitempty"`
+}
+
+// SessionTag represents an AWS session tag that can be passed to AssumeRole.
+// Tags can have static values or be dynamically sourced from JWT claims.
+type SessionTag struct {
+	// Key is the session tag key
+	// Must comply with AWS session tag key requirements
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[\w+=,.@-]+$`
+	Key string `json:"key"`
+
+	// Value is the static value for the session tag
+	// Used when ClaimSource is not specified
+	// +kubebuilder:validation:MaxLength=256
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// ClaimSource is the JWT claim to use as the tag value
+	// When specified, the tag value is sourced from this claim in the incoming JWT
+	// Takes precedence over the static Value field
+	// +optional
+	ClaimSource string `json:"claimSource,omitempty"`
 }
 
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig

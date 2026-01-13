@@ -450,6 +450,10 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
+	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+		// No secrets to mount for AWS STS (uses IRSA/OIDC federation)
+		return nil, nil
+
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
 		return nil, nil

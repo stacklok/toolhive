@@ -56,6 +56,118 @@ spec:
               MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
               MCPServer resources in the same namespace.
             properties:
+              awsSts:
+                description: |-
+                  AWSSts configures AWS STS authentication with SigV4 request signing
+                  Only used when Type is "awsSts"
+                properties:
+                  region:
+                    description: Region is the AWS region for the STS endpoint and
+                      service
+                    minLength: 1
+                    type: string
+                  roleArn:
+                    description: |-
+                      RoleArn is the default IAM role ARN to assume
+                      This role is used when no role mappings match or RoleMappings is empty
+                    pattern: ^arn:aws:iam::\d{12}:role/[a-zA-Z0-9+=,.@\-_/]+$
+                    type: string
+                  roleClaim:
+                    default: groups
+                    description: |-
+                      RoleClaim is the JWT claim to use for role mapping evaluation
+                      Defaults to "groups" to match common OIDC group claims
+                    type: string
+                  roleMappings:
+                    description: |-
+                      RoleMappings defines claim-based role selection rules
+                      Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
+                      Higher priority mappings are evaluated first
+                    items:
+                      description: |-
+                        RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                        Mappings are evaluated in priority order (highest first), and the first
+                        matching rule determines which IAM role to assume.
+                      properties:
+                        claim:
+                          description: |-
+                            Claim is the claim value to match against
+                            The claim type is specified by AWSStsConfig.RoleClaim
+                            For example, if RoleClaim is "groups", this would be a group name
+                          minLength: 1
+                          type: string
+                        priority:
+                          default: 0
+                          description: |-
+                            Priority determines evaluation order (higher values evaluated first)
+                            Allows fine-grained control over role selection precedence
+                            Defaults to 0 if not specified
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        roleArn:
+                          description: RoleArn is the IAM role ARN to assume when
+                            this mapping matches
+                          pattern: ^arn:aws:iam::\d{12}:role/[a-zA-Z0-9+=,.@\-_/]+$
+                          type: string
+                      required:
+                      - claim
+                      - roleArn
+                      type: object
+                    type: array
+                  service:
+                    default: execute-api
+                    description: |-
+                      Service is the AWS service name for SigV4 signing
+                      Defaults to "execute-api" for API Gateway endpoints
+                    type: string
+                  sessionDuration:
+                    default: 3600
+                    description: |-
+                      SessionDuration is the duration in seconds for the STS session
+                      Must be between 900 (15 minutes) and 43200 (12 hours)
+                      Defaults to 3600 (1 hour) if not specified
+                    format: int32
+                    maximum: 43200
+                    minimum: 900
+                    type: integer
+                  sessionTags:
+                    description: |-
+                      SessionTags are AWS session tags to pass to AssumeRole
+                      Tags can use static values or be sourced from JWT claims
+                    items:
+                      description: |-
+                        SessionTag represents an AWS session tag that can be passed to AssumeRole.
+                        Tags can have static values or be dynamically sourced from JWT claims.
+                      properties:
+                        claimSource:
+                          description: |-
+                            ClaimSource is the JWT claim to use as the tag value
+                            When specified, the tag value is sourced from this claim in the incoming JWT
+                            Takes precedence over the static Value field
+                          type: string
+                        key:
+                          description: |-
+                            Key is the session tag key
+                            Must comply with AWS session tag key requirements
+                          maxLength: 128
+                          minLength: 1
+                          pattern: ^[\w+=,.@-]+$
+                          type: string
+                        value:
+                          description: |-
+                            Value is the static value for the session tag
+                            Used when ClaimSource is not specified
+                          maxLength: 256
+                          type: string
+                      required:
+                      - key
+                      type: object
+                    type: array
+                required:
+                - region
+                - roleArn
+                type: object
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -148,6 +260,7 @@ spec:
                 - tokenExchange
                 - headerInjection
                 - unauthenticated
+                - awsSts
                 type: string
             required:
             - type

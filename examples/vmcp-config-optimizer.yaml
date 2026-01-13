@@ -1,7 +1,7 @@
-# vMCP Configuration with Optimizer Enabled (for Development/Debug)
-# This config enables the optimizer integration for semantic tool discovery
+# vMCP Configuration for Development/Debug (Working Config)
+# Simplified config that works with current vMCP implementation
 
-name: "vmcp-debug-optimizer"
+name: "vmcp-debug"
 
 # Reference to ToolHive group containing MCP servers
 groupRef: "default"
@@ -21,57 +21,43 @@ aggregation:
   conflictResolution: prefix
   conflictResolutionConfig:
     prefixFormat: "{workload}_"
-  tools:
-    # Optional: Filter tools (useful for testing specific backends)
-    # include:
-    #   - "weather_*"
-    #   - "github_*"
 
-# Optimizer Configuration (EXPERIMENTAL - RFC-0022)
-# NOTE: This is not yet wired into the YAML config loader
-# For now, optimizer needs to be enabled programmatically in code
-# or via environment variables/command-line flags (to be implemented)
-optimizer:
-  enabled: true
-  dbPath: "/tmp/vmcp-optimizer-debug.db"
-  embedding:
-    # Backend: "vllm" | "ollama" | "placeholder"
-    backend: "placeholder"  # Use placeholder for development (no external service needed)
-    
-    # For vLLM (production):
-    # backend: "vllm"
-    # url: "http://vllm-service:8080/v1"
-    # model: "BAAI/bge-small-en-v1.5"
-    # dimension: 384
-    
-    # For Ollama (local development):
-    # backend: "ollama"
-    # url: "http://localhost:11434"
-    # model: "all-minilm"
-    # dimension: 384
-    
-    url: ""           # Not needed for placeholder
-    model: ""         # Not needed for placeholder  
-    dimension: 384    # Standard dimension for all-MiniLM-L6-v2
-
-# Operational settings
+# Operational settings - use correct structure
 operational:
-  healthCheck:
-    enabled: true
-    interval: "30s"
-    timeout: "5s"
+  timeouts:
+    default: 30s
+  failureHandling:
+    healthCheckInterval: 30s
     unhealthyThreshold: 3
-    degradedThreshold: 1
+    partialFailureMode: fail
 
-# Telemetry (optional - disable for cleaner debug logs)
-# telemetry:
+# =============================================================================
+# OPTIMIZER CONFIGURATION (NOT YET IMPLEMENTED IN CONFIG PARSER)
+# =============================================================================
+# The optimizer integration exists in code but config parsing is Phase 2.
+# For now, the optimizer needs to be enabled programmatically.
+# 
+# Planned config structure (for reference):
+#
+# optimizer:
 #   enabled: true
-#   serviceName: "vmcp-debug"
-#   endpoint: "localhost:4317"
-
-# Audit logging (optional - useful for debugging auth flows)
-# audit:
-#   enabled: true
-#   logLevel: "debug"
-#   outputs:
-#     - type: "stdout"
+#   dbPath: "/tmp/vmcp-optimizer-debug.db"
+#   embedding:
+#     backend: "placeholder"  # vllm | ollama | placeholder
+#     url: ""                 # For vLLM/Ollama
+#     model: ""               # Model name
+#     dimension: 384          # Vector dimension
+#
+# To enable optimizer for debugging, you'll need to modify:
+#   cmd/vmcp/app/commands.go in runServe() function
+#
+# Example code to add after line ~400:
+#   if cfg.Name == "vmcp-debug" {
+#       serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
+#           Enabled: true,
+#           DBPath: "/tmp/vmcp-optimizer-debug.db",
+#           EmbeddingBackend: "placeholder",
+#           EmbeddingDimension: 384,
+#       }
+#   }
+# =============================================================================

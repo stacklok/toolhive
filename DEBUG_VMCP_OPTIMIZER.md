@@ -71,20 +71,44 @@ Three debug configurations are available in `.vscode/launch.json`:
 
 ## Configuration
 
-### Optimizer Config (`examples/vmcp-config-optimizer.yaml`)
+### Config File (`examples/vmcp-config-optimizer.yaml`)
+
+The config file is now **valid and working**, but the optimizer section is commented out because config parsing isn't implemented yet:
 
 ```yaml
-optimizer:
-  enabled: true
-  dbPath: "/tmp/vmcp-optimizer-debug.db"
-  embedding:
-    backend: "placeholder"  # No external service needed
-    dimension: 384
+name: "vmcp-debug"
+groupRef: "default"
+incomingAuth:
+  type: anonymous
+outgoingAuth:
+  source: inline
+  default:
+    type: unauthenticated
+aggregation:
+  conflictResolution: prefix
 ```
 
-**Note:** The optimizer config is not yet wired into the YAML config loader. For now, you'll need to:
-1. Manually enable it in `cmd/vmcp/app/commands.go` in the `runServe` function, OR
-2. Wait for Phase 2 which will add config parsing
+**Optimizer Config (Phase 2 - Not Yet Parsed):**
+
+The optimizer configuration structure is documented in the YAML file but not yet wired into the config parser. To enable the optimizer for debugging, you need to manually add it in code:
+
+**Option 1: Modify `cmd/vmcp/app/commands.go`** (around line 400 in `runServe` function):
+
+```go
+// After creating serverCfg, add:
+if cfg.Name == "vmcp-debug" {
+    serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
+        Enabled:            true,
+        DBPath:             "/tmp/vmcp-optimizer-debug.db",
+        EmbeddingBackend:   "placeholder",
+        EmbeddingURL:       "",
+        EmbeddingModel:     "",
+        EmbeddingDimension: 384,
+    }
+}
+```
+
+**Option 2: Wait for Phase 2** which will add proper YAML config parsing for the optimizer section.
 
 ### Embedding Backends
 

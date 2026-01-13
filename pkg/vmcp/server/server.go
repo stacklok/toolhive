@@ -376,7 +376,7 @@ func New(
 		logger.Infow("Initializing optimizer integration",
 			"db_path", cfg.OptimizerConfig.DBPath,
 			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
-		
+
 		// TODO: Initialize optimizer integration
 		// optimizerInteg, err = optimizer.NewIntegration(ctx, cfg.OptimizerConfig, backendClient)
 		// if err != nil {
@@ -491,7 +491,7 @@ func New(
 		// Generate embeddings and register optimizer tools if enabled
 		if srv.optimizerIntegration != nil {
 			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
-			
+
 			// Generate embeddings for all tools in this session
 			if err := srv.optimizerIntegration.OnRegisterSession(ctx, session, caps); err != nil {
 				logger.Errorw("failed to generate embeddings for optimizer",

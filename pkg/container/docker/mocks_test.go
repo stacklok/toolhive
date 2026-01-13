@@ -115,4 +115,3 @@ func (f *fakeImageManager) makeImagePulled(imageName string) {
 
 	f.pulledImages[imageName] = struct{}{}
 }
-

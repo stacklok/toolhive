@@ -11,6 +11,9 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.
@@ -25,8 +28,8 @@ type Optimizer interface {
 
 	// CallTool invokes a tool by name with the given parameters.
 	// Returns the tool's result or an error if the tool is not found or execution fails.
-	// The return type matches BackendClient.CallTool for direct passthrough.
-	CallTool(ctx context.Context, input CallToolInput) (map[string]any, error)
+	// Returns the MCP CallToolResult directly from the underlying tool handler.
+	CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error)
 }
 
 // FindToolInput contains the parameters for finding tools.
@@ -56,7 +59,8 @@ type ToolMatch struct {
 	Description string `json:"description"`
 
 	// Parameters is the JSON schema for the tool's input parameters.
-	Parameters map[string]any `json:"parameters"`
+	// Uses json.RawMessage to preserve the original schema format.
+	Parameters json.RawMessage `json:"parameters"`
 
 	// Score indicates how well this tool matches the search criteria (0.0-1.0).
 	Score float64 `json:"score"`

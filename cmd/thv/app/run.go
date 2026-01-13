@@ -152,12 +152,12 @@ func cleanupAndWait(workloadManager workloads.Manager, name string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 
-	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	complete, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
 	if err != nil {
 		logger.Warnf("Failed to delete workload %q: %v", name, err)
-	} else if group != nil {
-		if err := group.Wait(); err != nil {
-			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+	} else if complete != nil {
+		if err := complete(); err != nil {
+			logger.Warnf("DeleteWorkloads error for %q: %v", name, err)
 		}
 	}
 }
@@ -436,7 +436,10 @@ func runFromConfigFile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to open configuration file '%s': %w", runFlags.FromConfig, err)
 	}
-	defer configFile.Close()
+	defer func() {
+		// Non-fatal: file cleanup failure after reading
+		_ = configFile.Close()
+	}()
 
 	// Deserialize the configuration
 	runConfig, err := runner.ReadJSON(configFile)

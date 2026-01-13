@@ -1,15 +1,9 @@
-<p float="left">
-  <picture>
-    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive logo" height="100" align="middle" />
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-wordmark-white.png">
-    <img src="docs/images/toolhive-wordmark-black.png" alt="ToolHive wordmark" width="500" align="middle" hspace="20" />
-  </picture>
-  <picture>
-    <img src="docs/images/toolhive-mascot.png" alt="ToolHive mascot" width="125" align="middle"/>
-  </picture>
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-byline-white.svg">
+  <img src="docs/images/toolhive-byline-black.svg" alt="ToolHive logo" width="500"/>
+</picture>
+
+<br>
 
 [![Release][release-img]][release] [![Build status][ci-img]][ci]
 [![Coverage Status][coveralls-img]][coveralls]
@@ -179,6 +173,8 @@ We welcome contributions and feedback from the community!
 
 If you have ideas, suggestions, or want to get involved, check out our contributing guide or open an issue. Join us in making ToolHive even better!
 
+<table><tr><td>
+
 Contribute to the CLI, API, and Kubernetes Operator (this repo):
 
 - 🤝 [Contributing guide](./CONTRIBUTING.md)
@@ -192,6 +188,15 @@ Contribute to the UI, registry, and docs:
 - 📦 [ToolHive registry server repository](https://github.com/stacklok/toolhive-registry-server)
 - 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-registry)
 - 📚 [Documentation repository](https://github.com/stacklok/docs-website)
+
+</td>
+<td>
+
+<picture>
+  <img src="docs/images/toolhive-mascot.png" alt="ToolHive mascot" width="250" align="middle"/>
+</picture>
+
+</td></tr></table>
 
 ---
 

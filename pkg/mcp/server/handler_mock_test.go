@@ -7,12 +7,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/sync/errgroup"
 
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
+	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -290,10 +290,10 @@ func TestHandler_StopServer_WithMocks(t *testing.T) {
 			name:       "successful stop",
 			serverName: "test-server",
 			setupMocks: func(m *workloadsmocks.MockManager) {
-				group := &errgroup.Group{}
+				complete := func() error { return nil }
 				m.EXPECT().
 					StopWorkloads(gomock.Any(), []string{"test-server"}).
-					Return(group, nil)
+					Return(workloads.CompletionFunc(complete), nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
@@ -374,10 +374,10 @@ func TestHandler_RemoveServer_WithMocks(t *testing.T) {
 			name:       "successful remove",
 			serverName: "test-server",
 			setupMocks: func(m *workloadsmocks.MockManager) {
-				group := &errgroup.Group{}
+				complete := func() error { return nil }
 				m.EXPECT().
 					DeleteWorkloads(gomock.Any(), []string{"test-server"}).
-					Return(group, nil)
+					Return(workloads.CompletionFunc(complete), nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {

@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	clientmocks "github.com/stacklok/toolhive/pkg/client/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -90,10 +89,10 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/",
 			body:   `{"name":"existinggroup"}`,
 			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
-				gm.EXPECT().Create(gomock.Any(), "existinggroup").Return(errors.NewGroupAlreadyExistsError("group 'existinggroup' already exists", nil))
+				gm.EXPECT().Create(gomock.Any(), "existinggroup").Return(fmt.Errorf("%w: existinggroup", groups.ErrGroupAlreadyExists))
 			},
 			expectedStatus: http.StatusConflict,
-			expectedBody:   "group_already_exists: group 'existinggroup' already exists",
+			expectedBody:   "group already exists: existinggroup\n",
 		},
 		{
 			name:   "create group invalid json",

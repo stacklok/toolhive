@@ -112,6 +112,11 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
+// GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
+func (c *RunConfig) GetName() string {
+	return c.Name
+}
+
 // GetPort returns the port from the runner config (implements types.RunnerConfig)
 func (c *RunConfig) GetPort() int {
 	return c.Port
@@ -138,6 +143,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Deployer:          r.Config.Deployer,
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
+		EndpointPrefix:    r.Config.EndpointPrefix,
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -163,13 +169,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
+	// Process secrets if provided (regular secrets or RemoteAuthConfig secrets in CLI format)
 	hasRegularSecrets := len(r.Config.Secrets) > 0
-	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
+		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
 
 	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
 	if hasRemoteAuthSecret {
-		logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		if r.Config.RemoteAuthConfig.ClientSecret != "" {
+			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		}
+		if r.Config.RemoteAuthConfig.BearerToken != "" {
+			logger.Debugf("RemoteAuthConfig.BearerToken: %s", r.Config.RemoteAuthConfig.BearerToken)
+		}
 	}
 
 	if hasRegularSecrets || hasRemoteAuthSecret {
@@ -187,7 +199,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error instantiating secret manager %w", err)
 		}
 
-		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
+		// Process secrets (including RemoteAuthConfig.ClientSecret and BearerToken resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
@@ -239,9 +251,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// For remote MCP servers, set the remote URL on HTTP transports
 	if r.Config.RemoteURL != "" {
-		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
-			httpTransport.SetRemoteURL(r.Config.RemoteURL)
-		}
+		transportHandler.SetRemoteURL(r.Config.RemoteURL)
 
 		// Handle remote authentication if configured
 		tokenSource, err := r.handleRemoteAuthentication(ctx)
@@ -260,27 +270,35 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
 
-		// Set the token source on the HTTP transport
-		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
-			httpTransport.SetTokenSource(tokenSource)
-		}
+		// Set the token source on the transport
+		transportHandler.SetTokenSource(tokenSource)
 
 		// Set the health check failure callback for remote servers
-		if httpTransport, ok := transportHandler.(interface {
-			SetOnHealthCheckFailed(types.HealthCheckFailedCallback)
-		}); ok {
-			httpTransport.SetOnHealthCheckFailed(func() {
-				logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
-				if err := r.statusManager.SetWorkloadStatus(
-					context.Background(),
-					r.Config.BaseName,
-					rt.WorkloadStatusUnhealthy,
-					"Health check failed",
-				); err != nil {
-					logger.Errorf("Failed to update workload status: %v", err)
-				}
-			})
-		}
+		transportHandler.SetOnHealthCheckFailed(func() {
+			logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnhealthy,
+				"Health check failed",
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
+
+		// Set the unauthorized response callback for bearer token authentication
+		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
+		transportHandler.SetOnUnauthorizedResponse(func() {
+			logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusUnauthenticated,
+				errorMsg,
+			); err != nil {
+				logger.Errorf("Failed to update workload status: %v", err)
+			}
+		})
 	}
 
 	// Start the transport (which also starts the container and monitoring)
@@ -407,9 +425,22 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
-		// If we can't set the status to `running` - treat it as a fatal error.
-		return fmt.Errorf("failed to set workload status: %w", err)
+	// However, we should preserve unauthenticated status if it was already set
+	// (e.g., if bearer token authentication failed during initialization)
+	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
+		logger.Warnf("Failed to get current workload status: %v", err)
+	}
+
+	// Only set status to running if it's not already unauthenticated
+	// This preserves the unauthenticated state when bearer token authentication fails
+	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
+		logger.Debugf("Preserving unauthenticated status for workload %s", r.Config.BaseName)
+	} else {
+		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
+			// If we can't set the status to `running` - treat it as a fatal error.
+			return fmt.Errorf("failed to set workload status: %w", err)
+		}
 	}
 
 	// Wait for either a signal or the done channel to be closed

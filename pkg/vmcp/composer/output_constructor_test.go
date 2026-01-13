@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -158,7 +159,7 @@ func TestConstructOutputFromConfig(t *testing.T) {
 						Type:        "string",
 						Description: "The result",
 						Value:       "{{.steps.missing_step.output.data}}",
-						Default:     "default_value",
+						Default:     thvjson.NewAny("default_value"),
 					},
 				},
 			},
@@ -178,13 +179,13 @@ func TestConstructOutputFromConfig(t *testing.T) {
 						Type:        "integer",
 						Description: "Count",
 						Value:       "{{.steps.missing.output.count}}",
-						Default:     "123",
+						Default:     thvjson.NewAny(123),
 					},
 					"enabled": {
 						Type:        "boolean",
 						Description: "Enabled",
 						Value:       "{{.steps.missing.output.enabled}}",
-						Default:     "true",
+						Default:     thvjson.NewAny(true),
 					},
 				},
 			},
@@ -307,7 +308,7 @@ func TestConstructOutputFromConfig(t *testing.T) {
 						Type:        "string",
 						Description: "Result",
 						Value:       "{{.steps.step1.output.nonexistent}}",
-						Default:     "default_value",
+						Default:     thvjson.NewAny("default_value"),
 					},
 				},
 			},
@@ -335,7 +336,7 @@ func TestConstructOutputFromConfig(t *testing.T) {
 						Type:        "integer",
 						Description: "Count",
 						Value:       "{{.steps.step1.output.missing_count}}",
-						Default:     42,
+						Default:     thvjson.NewAny(42),
 					},
 				},
 			},
@@ -362,13 +363,13 @@ func TestConstructOutputFromConfig(t *testing.T) {
 						Type:        "string",
 						Description: "Empty string from backend",
 						Value:       "{{.steps.step1.output.empty}}",
-						Default:     "should_not_be_used",
+						Default:     thvjson.NewAny("should_not_be_used"),
 					},
 					"value2": {
 						Type:        "string",
 						Description: "Missing field",
 						Value:       "{{.steps.step1.output.missing}}",
-						Default:     "should_be_used",
+						Default:     thvjson.NewAny("should_be_used"),
 					},
 				},
 			},

@@ -49,7 +49,7 @@ type Config struct {
     Endpoint        string
     ServiceName     string
     ServiceVersion  string
-    SamplingRate    float64
+    SamplingRate    string
     Headers         map[string]string
     Insecure        bool
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -351,7 +352,7 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 // Start starts the OIDC mock server
 func (m *OIDCMockServer) Start() error {
 	go func() {
-		if err := m.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := m.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("OIDC mock server error: %v\n", err)
 		}
 	}()
@@ -410,7 +411,10 @@ func (*OIDCMockServer) CompleteAuthRequest(authReq *AuthRequest) error {
 	if err != nil {
 		return fmt.Errorf("failed to complete auth request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Error ignored in test cleanup
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("callback failed with status: %d", resp.StatusCode)

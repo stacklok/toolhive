@@ -28,7 +28,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "streamable-http", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "sse", nil, nil, "", false)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -48,7 +48,7 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
 	proxyURL.FlushInterval = -1
 	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	proxyURL.ModifyResponse = proxy.modifyForSessionID
+	proxyURL.ModifyResponse = proxy.modifyResponse
 
 	// hit the proxy
 	rec := httptest.NewRecorder()
@@ -78,14 +78,14 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 	}
 	proxy.FlushInterval = -1
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
-	proxy.ModifyResponse = p.modifyForSessionID
+	proxy.ModifyResponse = p.modifyResponse
 	return proxy
 }
 
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -111,7 +111,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -151,7 +151,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil)
+	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil, nil, "", false)
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
@@ -360,7 +360,7 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
 
 	ctx := context.Background()
 
@@ -388,7 +388,7 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy but don't start it
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
 
 	ctx := context.Background()
 
@@ -397,6 +397,554 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	// This may return an error or succeed depending on implementation
 	// The key is it shouldn't panic
 	_ = err
+}
+
+// TestTransparentProxy_UnauthorizedResponseCallback tests that 401 responses trigger the callback
+func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
+	t.Parallel()
+
+	callbackCalled := false
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCalled = true
+	}
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+
+	// Verify callback is set
+	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	tracingTrans := &tracingTransport{base: http.DefaultTransport, p: proxy}
+	reverseProxy.Transport = tracingTrans
+
+	// Make a request through the proxy
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 401 was returned
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Verify callback was called
+	mu.Lock()
+	actualCalled := callbackCalled
+	mu.Unlock()
+	assert.True(t, actualCalled, "Unauthorized response callback should have been called")
+}
+
+func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T) {
+	t.Parallel()
+
+	callbackCallCount := 0
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCallCount++
+	}
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make multiple requests through the proxy
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", target.URL, nil)
+		reverseProxy.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	}
+
+	// Verify callback was called for each 401 response
+	mu.Lock()
+	actualCount := callbackCallCount
+	mu.Unlock()
+	assert.Equal(t, 5, actualCount, "Callback should be called for each 401 response")
+}
+
+func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	callbackCalled := false
+	var mu sync.Mutex
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackCalled = true
+	}
+
+	// Create a test server that returns 200 OK
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create a proxy with unauthorized response callback and set targetURI
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make a request through the proxy
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 200 was returned
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify callback was NOT called
+	mu.Lock()
+	actualCalled := callbackCalled
+	mu.Unlock()
+	assert.False(t, actualCalled, "Unauthorized response callback should NOT have been called for 200 OK")
+}
+
+func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy with nil unauthorized response callback
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+
+	// Create a test server that returns 401
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "Unauthorized"}`))
+	}))
+	defer target.Close()
+
+	// Parse target URL
+	targetURL, err := url.Parse(target.URL)
+	assert.NoError(t, err)
+
+	// Create reverse proxy with tracing transport
+	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+	reverseProxy.FlushInterval = -1
+	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+
+	// Make a request through the proxy - should not panic
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	reverseProxy.ServeHTTP(rec, req)
+
+	// Verify 401 was returned
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestHealthCheckRetryConstants verifies the retry configuration constants
+func TestHealthCheckRetryConstants(t *testing.T) {
+	t.Parallel()
+
+	// Verify retry count is reasonable (not too low, not too high)
+	assert.GreaterOrEqual(t, healthCheckRetryCount, 2, "Should retry at least twice before giving up")
+	assert.LessOrEqual(t, healthCheckRetryCount, 10, "Should not retry too many times")
+
+	// Verify retry delay is reasonable
+	assert.GreaterOrEqual(t, healthCheckRetryDelay, 1*time.Second, "Retry delay should be at least 1 second")
+	assert.LessOrEqual(t, healthCheckRetryDelay, 30*time.Second, "Retry delay should not be too long")
+}
+
+// TestRewriteEndpointURL tests the rewriteEndpointURL function
+func TestRewriteEndpointURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		originalURL string
+		config      sseRewriteConfig
+		expected    string
+		expectError bool
+	}{
+		{
+			name:        "no rewrite config",
+			originalURL: "/sse?sessionId=abc123",
+			config:      sseRewriteConfig{},
+			expected:    "/sse?sessionId=abc123",
+		},
+		{
+			name:        "prefix only - relative URL",
+			originalURL: "/sse?sessionId=abc123",
+			config:      sseRewriteConfig{prefix: "/playwright"},
+			expected:    "/playwright/sse?sessionId=abc123",
+		},
+		{
+			name:        "prefix without leading slash",
+			originalURL: "/sse?sessionId=abc123",
+			config:      sseRewriteConfig{prefix: "playwright"},
+			expected:    "/playwright/sse?sessionId=abc123",
+		},
+		{
+			name:        "prefix with trailing slash",
+			originalURL: "/sse?sessionId=abc123",
+			config:      sseRewriteConfig{prefix: "/playwright/"},
+			expected:    "/playwright/sse?sessionId=abc123",
+		},
+		{
+			name:        "prefix only - absolute URL",
+			originalURL: "http://backend:8080/sse?sessionId=abc123",
+			config:      sseRewriteConfig{prefix: "/playwright"},
+			expected:    "http://backend:8080/playwright/sse?sessionId=abc123",
+		},
+		{
+			name:        "full rewrite - absolute URL",
+			originalURL: "http://backend:8080/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				prefix: "/playwright",
+				scheme: "https",
+				host:   "public.example.com",
+			},
+			expected: "https://public.example.com/playwright/sse?sessionId=abc123",
+		},
+		{
+			name:        "scheme and host only - absolute URL",
+			originalURL: "http://backend:8080/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				scheme: "https",
+				host:   "public.example.com",
+			},
+			expected: "https://public.example.com/sse?sessionId=abc123",
+		},
+		{
+			name:        "scheme and host only - relative URL becomes absolute",
+			originalURL: "/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				scheme: "https",
+				host:   "public.example.com",
+			},
+			expected: "https://public.example.com/sse?sessionId=abc123",
+		},
+		{
+			name:        "preserves complex query string",
+			originalURL: "/sse?sessionId=abc123&foo=bar&baz=qux",
+			config:      sseRewriteConfig{prefix: "/api/v1"},
+			expected:    "/api/v1/sse?sessionId=abc123&foo=bar&baz=qux",
+		},
+		{
+			name:        "handles URL with fragment",
+			originalURL: "/sse?sessionId=abc123#section",
+			config:      sseRewriteConfig{prefix: "/playwright"},
+			expected:    "/playwright/sse?sessionId=abc123#section",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := rewriteEndpointURL(tt.originalURL, tt.config)
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestGetSSERewriteConfig tests the getSSERewriteConfig method
+func TestGetSSERewriteConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		endpointPrefix    string
+		trustProxyHeaders bool
+		headers           map[string]string
+		expectedPrefix    string
+		expectedScheme    string
+		expectedHost      string
+	}{
+		{
+			name:              "no config, no headers",
+			endpointPrefix:    "",
+			trustProxyHeaders: false,
+			headers:           nil,
+			expectedPrefix:    "",
+			expectedScheme:    "",
+			expectedHost:      "",
+		},
+		{
+			name:              "explicit endpoint prefix takes priority",
+			endpointPrefix:    "/explicit",
+			trustProxyHeaders: true,
+			headers: map[string]string{
+				"X-Forwarded-Prefix": "/from-header",
+			},
+			expectedPrefix: "/explicit",
+			expectedScheme: "",
+			expectedHost:   "",
+		},
+		{
+			name:              "X-Forwarded-Prefix used when trust enabled and no explicit prefix",
+			endpointPrefix:    "",
+			trustProxyHeaders: true,
+			headers: map[string]string{
+				"X-Forwarded-Prefix": "/from-header",
+			},
+			expectedPrefix: "/from-header",
+			expectedScheme: "",
+			expectedHost:   "",
+		},
+		{
+			name:              "X-Forwarded-Prefix ignored when trust disabled",
+			endpointPrefix:    "",
+			trustProxyHeaders: false,
+			headers: map[string]string{
+				"X-Forwarded-Prefix": "/from-header",
+			},
+			expectedPrefix: "",
+			expectedScheme: "",
+			expectedHost:   "",
+		},
+		{
+			name:              "all X-Forwarded headers used when trust enabled",
+			endpointPrefix:    "",
+			trustProxyHeaders: true,
+			headers: map[string]string{
+				"X-Forwarded-Prefix": "/playwright",
+				"X-Forwarded-Proto":  "https",
+				"X-Forwarded-Host":   "public.example.com",
+			},
+			expectedPrefix: "/playwright",
+			expectedScheme: "https",
+			expectedHost:   "public.example.com",
+		},
+		{
+			name:              "X-Forwarded-Proto and Host without Prefix",
+			endpointPrefix:    "",
+			trustProxyHeaders: true,
+			headers: map[string]string{
+				"X-Forwarded-Proto": "https",
+				"X-Forwarded-Host":  "public.example.com",
+			},
+			expectedPrefix: "",
+			expectedScheme: "https",
+			expectedHost:   "public.example.com",
+		},
+		{
+			name:              "explicit prefix with X-Forwarded-Proto and Host",
+			endpointPrefix:    "/explicit",
+			trustProxyHeaders: true,
+			headers: map[string]string{
+				"X-Forwarded-Prefix": "/ignored",
+				"X-Forwarded-Proto":  "https",
+				"X-Forwarded-Host":   "public.example.com",
+			},
+			expectedPrefix: "/explicit",
+			expectedScheme: "https",
+			expectedHost:   "public.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := NewTransparentProxy(
+				"127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil,
+				tt.endpointPrefix, tt.trustProxyHeaders,
+			)
+
+			req := httptest.NewRequest("GET", "/sse", nil)
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+
+			// Access the SSE response processor to test configuration
+			sseProcessor, ok := proxy.responseProcessor.(*SSEResponseProcessor)
+			assert.True(t, ok, "expected SSE response processor")
+			config := sseProcessor.getSSERewriteConfig(req)
+
+			assert.Equal(t, tt.expectedPrefix, config.prefix)
+			assert.Equal(t, tt.expectedScheme, config.scheme)
+			assert.Equal(t, tt.expectedHost, config.host)
+		})
+	}
+}
+
+// TestSSEEndpointRewriting tests end-to-end SSE endpoint URL rewriting
+func TestSSEEndpointRewriting(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy with X-Forwarded-Prefix trust enabled
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "", true)
+
+	// Create a mock SSE server that returns an endpoint event
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(200)
+
+		// Send an endpoint event (this is what MCP servers send)
+		w.Write([]byte("event: endpoint\n"))
+		w.Write([]byte("data: /sse?sessionId=ABC123\n"))
+		w.Write([]byte("\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+
+	// Set up reverse proxy
+	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
+	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
+	proxyURL.FlushInterval = -1
+	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.ModifyResponse = proxy.modifyResponse
+
+	// Create request with X-Forwarded-Prefix header
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	req.Header.Set("X-Forwarded-Prefix", "/playwright")
+	proxyURL.ServeHTTP(rec, req)
+
+	// Read all SSE lines
+	sc := bufio.NewScanner(rec.Body)
+	var bodyLines []string
+	for sc.Scan() {
+		bodyLines = append(bodyLines, sc.Text())
+	}
+
+	// Verify the endpoint URL was rewritten
+	assert.Contains(t, bodyLines, "data: /playwright/sse?sessionId=ABC123",
+		"Endpoint URL should be rewritten with prefix")
+	assert.Contains(t, bodyLines, "event: endpoint")
+
+	// Session should still be tracked
+	_, ok := proxy.sessionManager.Get("ABC123")
+	assert.True(t, ok, "sessionManager should have stored ABC123")
+}
+
+// TestSSEEndpointRewritingWithExplicitPrefix tests SSE endpoint rewriting with explicit prefix
+func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy with explicit endpoint prefix
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/api/mcp", false)
+
+	// Create a mock SSE server
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(200)
+
+		w.Write([]byte("event: endpoint\n"))
+		w.Write([]byte("data: /sse?sessionId=DEF456\n"))
+		w.Write([]byte("\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+
+	// Set up reverse proxy
+	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
+	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
+	proxyURL.FlushInterval = -1
+	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.ModifyResponse = proxy.modifyResponse
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	proxyURL.ServeHTTP(rec, req)
+
+	// Read all SSE lines
+	sc := bufio.NewScanner(rec.Body)
+	var bodyLines []string
+	for sc.Scan() {
+		bodyLines = append(bodyLines, sc.Text())
+	}
+
+	// Verify the endpoint URL was rewritten with the explicit prefix
+	assert.Contains(t, bodyLines, "data: /api/mcp/sse?sessionId=DEF456",
+		"Endpoint URL should be rewritten with explicit prefix")
+}
+
+// TestSSEMessageEventNotRewritten tests that message events are not rewritten
+func TestSSEMessageEventNotRewritten(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy with prefix configuration
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/playwright", false)
+
+	// Create a mock SSE server that sends both endpoint and message events
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(200)
+
+		// Endpoint event - should be rewritten
+		w.Write([]byte("event: endpoint\n"))
+		w.Write([]byte("data: /sse?sessionId=ABC123\n"))
+		w.Write([]byte("\n"))
+
+		// Message event - should NOT be rewritten
+		w.Write([]byte("event: message\n"))
+		w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}\n"))
+		w.Write([]byte("\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+
+	// Set up reverse proxy
+	parsedURL, _ := http.NewRequest("GET", target.URL, nil)
+	proxyURL := httputil.NewSingleHostReverseProxy(parsedURL.URL)
+	proxyURL.FlushInterval = -1
+	proxyURL.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
+	proxyURL.ModifyResponse = proxy.modifyResponse
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", target.URL, nil)
+	proxyURL.ServeHTTP(rec, req)
+
+	// Read all SSE lines
+	sc := bufio.NewScanner(rec.Body)
+	var bodyLines []string
+	for sc.Scan() {
+		bodyLines = append(bodyLines, sc.Text())
+	}
+
+	// Endpoint event should be rewritten
+	assert.Contains(t, bodyLines, "data: /playwright/sse?sessionId=ABC123",
+		"Endpoint URL should be rewritten")
+
+	// Message event should NOT be rewritten
+	assert.Contains(t, bodyLines, "data: {\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}",
+		"Message data should not be rewritten")
 }
 
 // callbackTracker is a helper to track callback invocations in a thread-safe manner
@@ -442,6 +990,9 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		true, // isRemote
 		"sse",
 		callback,
+		nil,
+		"",
+		false,
 		nil, // middlewares
 		withHealthCheckInterval(100*time.Millisecond), // Use 100ms for faster tests
 	)

@@ -23,7 +23,10 @@ func LoadToolsOverride(path string) (*map[string]runner.ToolOverride, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tools override file: %w", err)
 	}
-	defer jsonFile.Close()
+	defer func() {
+		// Non-fatal: file cleanup failure after reading
+		_ = jsonFile.Close()
+	}()
 
 	var toolsOverride toolsOverrideJSON
 	decoder := json.NewDecoder(jsonFile)

@@ -148,8 +148,12 @@ func validateOutputProperty(name string, prop config.OutputProperty, depth int) 
 	}
 
 	// Validate default value type matches declared type
-	if prop.Default != nil {
-		if err := validateDefaultValueType(prop.Default, prop.Type, name); err != nil {
+	if !prop.Default.IsEmpty() {
+		defaultVal, err := prop.Default.ToAny()
+		if err != nil {
+			return fmt.Errorf("output property %q: failed to parse default value: %w", name, err)
+		}
+		if err := validateDefaultValueType(defaultVal, prop.Type, name); err != nil {
 			return err
 		}
 	}

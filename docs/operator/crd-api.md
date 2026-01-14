@@ -604,22 +604,22 @@ _Appears in:_
 
 ## toolhive.stacklok.dev/v1alpha1
 ### Resource Types
-- [MCPExternalAuthConfig](#mcpexternalauthconfig)
-- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
-- [MCPGroup](#mcpgroup)
-- [MCPGroupList](#mcpgrouplist)
-- [MCPRegistry](#mcpregistry)
-- [MCPRegistryList](#mcpregistrylist)
-- [MCPRemoteProxy](#mcpremoteproxy)
-- [MCPRemoteProxyList](#mcpremoteproxylist)
-- [MCPServer](#mcpserver)
-- [MCPServerList](#mcpserverlist)
-- [MCPToolConfig](#mcptoolconfig)
-- [MCPToolConfigList](#mcptoolconfiglist)
-- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
-- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
-- [VirtualMCPServer](#virtualmcpserver)
-- [VirtualMCPServerList](#virtualmcpserverlist)
+- [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
+- [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
+- [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
+- [api.v1alpha1.MCPGroupList](#apiv1alpha1mcpgrouplist)
+- [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
+- [api.v1alpha1.MCPRegistryList](#apiv1alpha1mcpregistrylist)
+- [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
+- [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
+- [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
+- [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
+- [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionList](#apiv1alpha1virtualmcpcompositetooldefinitionlist)
+- [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
+- [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
 
 
 

@@ -182,14 +182,6 @@ func (s *Service) IngestServer(
 	return nil
 }
 
-// IngestBackends is deprecated. Use IngestServer for each vMCP server instead.
-// This method is kept for backward compatibility but logs a deprecation warning.
-func (s *Service) IngestBackends(_ context.Context) error {
-	logger.Warn("IngestBackends is deprecated. Use IngestServer for each vMCP server instead.")
-	logger.Info("Backend ingestion skipped (use IngestServer)")
-	return nil
-}
-
 // shouldSkipWorkload checks if a backend should be skipped
 func (s *Service) shouldSkipWorkload(backendName string) bool {
 	if backendName == "" {
@@ -293,13 +285,4 @@ func (s *Service) Close() error {
 	}
 
 	return nil
-}
-
-// StartPolling is deprecated. vMCP now calls IngestServer directly during startup.
-// This method is kept for backward compatibility but does nothing.
-func (s *Service) StartPolling(ctx context.Context, interval time.Duration) {
-	logger.Warn("StartPolling is deprecated. vMCP now uses IngestServer during startup.")
-	logger.Info("Polling disabled - ingestion is event-driven from vMCP")
-	<-ctx.Done()
-	logger.Info("Polling context cancelled")
 }

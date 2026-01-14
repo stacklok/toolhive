@@ -49,32 +49,32 @@
 //
 // # Usage
 //
-// The optimizer can be used in two ways:
+// The optimizer is integrated into vMCP as native tools:
 //
-//  1. **Standalone Command**: Run as a separate `thv optimizer` command for testing
-//     and development.
+//  1. **vMCP Integration**: The optimizer runs as part of vMCP, exposing
+//     optim.find_tool and optim.call_tool to clients.
 //
-//  2. **Integrated Service**: Run as a goroutine within the vMCP process for production
-//     use, enabling semantic tool discovery and routing.
+//  2. **Event-Driven Ingestion**: Tools are ingested when vMCP sessions
+//     are registered, not via polling.
 //
-// Example standalone usage:
+// Example vMCP integration (see pkg/vmcp/optimizer):
 //
-//	// Start ingestion
-//	thv optimizer ingest --runtime docker
+//	import (
+//	    "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+//	    "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+//	)
 //
-//	// Query tools
-//	thv optimizer query "get current time"
-//
-// Example integrated usage:
-//
-//	import "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+//	// Create embedding manager
+//	embMgr, err := embeddings.NewManager(embeddings.Config{
+//	    BackendType: "placeholder", // or "ollama" or "openai-compatible"
+//	    Dimension:   384,
+//	})
 //
 //	// Create ingestion service
-//	svc, err := ingestion.NewService(config)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
+//	svc, err := ingestion.NewService(ctx, ingestion.Config{
+//	    DBConfig:    dbConfig,
+//	}, embMgr)
 //
-//	// Run as goroutine with periodic polling
-//	go svc.StartPolling(ctx, 30*time.Second)
+//	// Ingest a server (called by vMCP's OnRegisterSession hook)
+//	err = svc.IngestServer(ctx, "weather-service", tools, target)
 package optimizer

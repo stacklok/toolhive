@@ -22,6 +22,11 @@ import (
 // TestVMCPIntegrationExample demonstrates how vMCP would use the optimizer
 func TestVMCPIntegrationExample(t *testing.T) {
 	t.Parallel()
+	
+	// Skip if sqlite-vec is not available (e.g., in CI with CGO_ENABLED=0)
+	if os.Getenv("SQLITE_VEC_PATH") == "" {
+		t.Skip("Skipping test: SQLITE_VEC_PATH not set (sqlite-vec extension not available)")
+	}
 
 	// This is how vMCP would initialize the optimizer service at startup
 	fmt.Println("\n🚀 vMCP Starting Up...")

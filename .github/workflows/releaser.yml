@@ -151,6 +151,7 @@ jobs:
     uses: ./.github/workflows/update-docs-website.yml
     with:
       version: ${{ github.ref_name }}
+      assign_to: ${{ github.actor }}
     secrets:
       DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
 

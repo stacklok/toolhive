@@ -38,6 +38,8 @@ type Config struct {
 }
 
 // OptimizerIntegration manages optimizer functionality within vMCP.
+//
+//nolint:revive // Name is intentional for clarity in external packages
 type OptimizerIntegration struct {
 	config           *Config
 	ingestionService *ingestion.Service

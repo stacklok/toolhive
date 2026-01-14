@@ -17,12 +17,25 @@ type MCPPinger struct {
 	client    *http.Client
 }
 
+const (
+	// DefaultPingerTimeout is the default timeout for health check pings
+	DefaultPingerTimeout = 5 * time.Second
+)
+
 // NewMCPPinger creates a new MCP pinger for transparent proxies
 func NewMCPPinger(targetURL string) healthcheck.MCPPinger {
+	return NewMCPPingerWithTimeout(targetURL, DefaultPingerTimeout)
+}
+
+// NewMCPPingerWithTimeout creates a new MCP pinger with a custom timeout
+func NewMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthcheck.MCPPinger {
+	if timeout <= 0 {
+		timeout = DefaultPingerTimeout
+	}
 	return &MCPPinger{
 		targetURL: targetURL,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

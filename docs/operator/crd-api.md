@@ -364,7 +364,7 @@ _Appears in:_
 | `embeddingURL` _string_ | EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "http://localhost:11434"<br />- vLLM: "http://vllm-service:8000/v1"<br />- OpenAI: "https://api.openai.com/v1" |  |  |
 | `embeddingModel` _string_ | EmbeddingModel is the model name to use for embeddings.<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "nomic-embed-text", "all-minilm"<br />- vLLM: "BAAI/bge-small-en-v1.5"<br />- OpenAI: "text-embedding-3-small" |  |  |
 | `embeddingDimension` _integer_ | EmbeddingDimension is the dimension of the embedding vectors.<br />Common values:<br />- 384: all-MiniLM-L6-v2, nomic-embed-text<br />- 768: BAAI/bge-small-en-v1.5<br />- 1536: OpenAI text-embedding-3-small |  | Minimum: 1 <br /> |
-| `dbPath` _string_ | DBPath is the filesystem path to the SQLite database for storing embeddings.<br />The database persists tool metadata, embeddings, and semantic search indices. |  |  |
+| `persistPath` _string_ | PersistPath is the optional filesystem path for persisting the chromem-go database.<br />If empty, the database will be in-memory only (ephemeral).<br />When set, tool metadata and embeddings are persisted to disk for faster restarts. |  |  |
 | `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).<br />This is an alternative to EmbeddingURL for in-cluster deployments.<br />When set, vMCP will resolve the service DNS name for the embedding API. |  |  |
 
 

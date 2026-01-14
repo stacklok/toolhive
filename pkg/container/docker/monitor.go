@@ -100,8 +100,9 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			return
 		case <-ticker.C:
 			// Check if the container is still running
-			// Create a short timeout context for this check
-			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Create a short timeout context for this check, derived from parent
+			// to respect parent cancellation while having its own timeout
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			running, err := m.runtime.IsWorkloadRunning(checkCtx, m.containerName)
 			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
@@ -122,8 +123,8 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 
 			if !running {
 				// Container has exited, get logs and info
-				// Create a short timeout context for these operations
-				infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// Create a short timeout context for these operations, derived from parent
+				infoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerName, false)
 				info, _ := m.runtime.GetWorkloadInfo(infoCtx, m.containerName)
 				cancel() // Always cancel the context to avoid leaks
@@ -139,7 +140,8 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			}
 
 			// Container is running - check if it was restarted (different start time)
-			infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Derive timeout from parent context to respect cancellation
+			infoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			info, err := m.runtime.GetWorkloadInfo(infoCtx, m.containerName)
 			cancel()
 			if err == nil && !info.StartedAt.IsZero() && !info.StartedAt.Equal(m.initialStartTime) {

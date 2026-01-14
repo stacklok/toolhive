@@ -219,6 +219,22 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
 	}
 
+	// Set up field indexing for MCPEmbedding.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPEmbedding{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpEmbedding := obj.(*mcpv1alpha1.MCPEmbedding)
+			if mcpEmbedding.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpEmbedding.Spec.GroupRef}
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPEmbedding spec.groupRef: %w", err)
+	}
+
 	// Set image validation mode based on whether registry is enabled
 	// If ENABLE_REGISTRY is enabled, enforce registry-based image validation
 	// Otherwise, allow all images
@@ -262,6 +278,17 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
+	}
+
+	// Set up MCPEmbedding controller
+	if err := (&controllers.MCPEmbeddingReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("mcpembedding-controller"),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		ImageValidation:  imageValidation,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPEmbedding: %w", err)
 	}
 
 	return nil

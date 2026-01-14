@@ -73,48 +73,50 @@ Three debug configurations are available in `.vscode/launch.json`:
 
 ### Config File (`examples/vmcp-config-optimizer.yaml`)
 
-The config file is now **valid and working**, but the optimizer section is commented out because config parsing isn't implemented yet:
+✅ **The optimizer now supports full YAML-based configuration!**
+
+The optimizer can be configured directly in the YAML file:
 
 ```yaml
 name: "vmcp-debug"
 groupRef: "default"
+
 incomingAuth:
   type: anonymous
+
 outgoingAuth:
   source: inline
   default:
     type: unauthenticated
+
 aggregation:
   conflictResolution: prefix
+
+# Optimizer configuration (YAML-based!)
+optimizer:
+  enabled: true
+  embeddingBackend: placeholder      # "ollama" | "openai-compatible" | "placeholder"
+  embeddingDimension: 384            # Vector dimension
+  dbPath: /tmp/vmcp-optimizer-debug.db
 ```
 
-**Optimizer Config:**
+**Configuration Fields:**
 
-✅ **The optimizer is now automatically enabled** when using the `vmcp-debug` configuration!
-
-The code in `cmd/vmcp/app/commands.go` detects the debug config and enables the optimizer:
-
-```go
-// Enable optimizer for debug configuration
-if cfg.Name == "vmcp-debug" {
-    serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
-        Enabled:            true,
-        DBPath:             "/tmp/vmcp-optimizer-debug.db",
-        EmbeddingBackend:   "placeholder",
-        EmbeddingURL:       "",
-        EmbeddingModel:     "",
-        EmbeddingDimension: 384,
-    }
-}
-```
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `enabled` | bool | Enable/disable optimizer | `false` |
+| `embeddingBackend` | string | Embedding provider: `"ollama"`, `"openai-compatible"`, or `"placeholder"` | - |
+| `embeddingURL` | string | Base URL for embedding service (Ollama/OpenAI-compatible) | - |
+| `embeddingModel` | string | Model name to use for embeddings | - |
+| `embeddingDimension` | int | Dimension of embedding vectors | - |
+| `dbPath` | string | Path to SQLite database for storing embeddings | - |
+| `embeddingService` | string | Kubernetes Service name (K8s only) | - |
 
 **What This Means:**
-- 🎯 Just press F5 in VS Code - optimizer is enabled automatically
-- 📊 Uses placeholder embeddings (no external service needed)
-- 💾 SQLite database at `/tmp/vmcp-optimizer-debug.db`
-- 🔧 384-dimensional vectors (standard for all-MiniLM-L6-v2)
-
-**Phase 2 Goal:** Move this configuration into the YAML file for full config-file control.
+- 🎯 Press F5 in VS Code - optimizer loads from YAML config
+- 📊 Configure any embedding backend (Ollama, vLLM, OpenAI, placeholder)
+- 💾 Full control over database path, model, dimensions
+- 🔧 No hardcoded values - everything in YAML!
 
 ### Embedding Backends
 

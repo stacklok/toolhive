@@ -108,6 +108,13 @@ type Config struct {
 	// See audit.Config for available configuration options.
 	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
+
+	// Optimizer configures the MCP optimizer for context optimization on large toolsets.
+	// When enabled, vMCP exposes optim.find_tool and optim.call_tool operations to clients
+	// instead of all backend tools directly. This reduces token usage by allowing
+	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// +optional
+	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -472,6 +479,64 @@ type OutputProperty struct {
 	// Type coercion is applied to match the declared Type.
 	// +optional
 	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
+}
+
+// OptimizerConfig configures the MCP optimizer for semantic tool discovery.
+// The optimizer reduces token usage by allowing LLMs to discover relevant tools
+// on demand rather than receiving all tool definitions upfront.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OptimizerConfig struct {
+	// Enabled determines whether the optimizer is active.
+	// When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools.
+	// +optional
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".
+	// - "ollama": Uses local Ollama HTTP API for embeddings
+	// - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
+	// - "placeholder": Uses deterministic hash-based embeddings (for testing/development)
+	// +kubebuilder:validation:Enum=ollama;openai-compatible;placeholder
+	// +optional
+	EmbeddingBackend string `json:"embeddingBackend,omitempty" yaml:"embeddingBackend,omitempty"`
+
+	// EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).
+	// Required when EmbeddingBackend is "ollama" or "openai-compatible".
+	// Examples:
+	// - Ollama: "http://localhost:11434"
+	// - vLLM: "http://vllm-service:8000/v1"
+	// - OpenAI: "https://api.openai.com/v1"
+	// +optional
+	EmbeddingURL string `json:"embeddingURL,omitempty" yaml:"embeddingURL,omitempty"`
+
+	// EmbeddingModel is the model name to use for embeddings.
+	// Required when EmbeddingBackend is "ollama" or "openai-compatible".
+	// Examples:
+	// - Ollama: "nomic-embed-text", "all-minilm"
+	// - vLLM: "BAAI/bge-small-en-v1.5"
+	// - OpenAI: "text-embedding-3-small"
+	// +optional
+	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
+
+	// EmbeddingDimension is the dimension of the embedding vectors.
+	// Common values:
+	// - 384: all-MiniLM-L6-v2, nomic-embed-text
+	// - 768: BAAI/bge-small-en-v1.5
+	// - 1536: OpenAI text-embedding-3-small
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	EmbeddingDimension int `json:"embeddingDimension,omitempty" yaml:"embeddingDimension,omitempty"`
+
+	// DBPath is the filesystem path to the SQLite database for storing embeddings.
+	// The database persists tool metadata, embeddings, and semantic search indices.
+	// +optional
+	DBPath string `json:"dbPath,omitempty" yaml:"dbPath,omitempty"`
+
+	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
+	// This is an alternative to EmbeddingURL for in-cluster deployments.
+	// When set, vMCP will resolve the service DNS name for the embedding API.
+	// +optional
+	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
 }
 
 // Validator validates configuration.

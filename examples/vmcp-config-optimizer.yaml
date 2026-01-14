@@ -1,5 +1,5 @@
-# vMCP Configuration for Development/Debug (Working Config)
-# Simplified config that works with current vMCP implementation
+# vMCP Configuration with Optimizer Enabled
+# This configuration enables the optimizer for semantic tool discovery
 
 name: "vmcp-debug"
 
@@ -22,7 +22,7 @@ aggregation:
   conflictResolutionConfig:
     prefixFormat: "{workload}_"
 
-# Operational settings - use correct structure
+# Operational settings
 operational:
   timeouts:
     default: 30s
@@ -32,32 +32,73 @@ operational:
     partialFailureMode: fail
 
 # =============================================================================
-# OPTIMIZER CONFIGURATION (NOT YET IMPLEMENTED IN CONFIG PARSER)
+# OPTIMIZER CONFIGURATION
 # =============================================================================
-# The optimizer integration exists in code but config parsing is Phase 2.
-# For now, the optimizer needs to be enabled programmatically.
-# 
-# Planned config structure (for reference):
+# When enabled, vMCP exposes optim.find_tool and optim.call_tool instead of
+# all backend tools directly. This reduces token usage by allowing LLMs to
+# discover relevant tools on demand via semantic search.
 #
-# optimizer:
-#   enabled: true
-#   dbPath: "/tmp/vmcp-optimizer-debug.db"
-#   embedding:
-#     backend: "placeholder"  # vllm | ollama | placeholder
-#     url: ""                 # For vLLM/Ollama
-#     model: ""               # Model name
-#     dimension: 384          # Vector dimension
-#
-# To enable optimizer for debugging, you'll need to modify:
-#   cmd/vmcp/app/commands.go in runServe() function
-#
-# Example code to add after line ~400:
-#   if cfg.Name == "vmcp-debug" {
-#       serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
-#           Enabled: true,
-#           DBPath: "/tmp/vmcp-optimizer-debug.db",
-#           EmbeddingBackend: "placeholder",
-#           EmbeddingDimension: 384,
-#       }
-#   }
+# The optimizer ingests tools from all backends in the group, generates
+# embeddings, and provides semantic search capabilities.
+
+optimizer:
+  # Enable the optimizer
+  enabled: true
+  
+  # Embedding backend: "ollama", "openai-compatible", or "placeholder"
+  # - "ollama": Uses local Ollama HTTP API for embeddings
+  # - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
+  # - "placeholder": Uses deterministic hash-based embeddings (for testing)
+  embeddingBackend: placeholder
+  
+  # Embedding dimension (common values: 384, 768, 1536)
+  # 384 is standard for all-MiniLM-L6-v2 and nomic-embed-text
+  embeddingDimension: 384
+  
+  # Database path for storing embeddings and tool metadata
+  # Requires sqlite-vec extension to be available
+  dbPath: /tmp/vmcp-optimizer-debug.db
+  
+  # =============================================================================
+  # PRODUCTION CONFIGURATIONS (Commented Examples)
+  # =============================================================================
+  
+  # Option 1: Local Ollama (good for development/testing)
+  # embeddingBackend: ollama
+  # embeddingURL: http://localhost:11434
+  # embeddingModel: nomic-embed-text
+  # embeddingDimension: 384
+  
+  # Option 2: vLLM (recommended for production with GPU acceleration)
+  # embeddingBackend: openai-compatible
+  # embeddingURL: http://vllm-service:8000/v1
+  # embeddingModel: BAAI/bge-small-en-v1.5
+  # embeddingDimension: 768
+  
+  # Option 3: OpenAI API (cloud-based)
+  # embeddingBackend: openai-compatible
+  # embeddingURL: https://api.openai.com/v1
+  # embeddingModel: text-embedding-3-small
+  # embeddingDimension: 1536
+  # (requires OPENAI_API_KEY environment variable)
+  
+  # Option 4: Kubernetes in-cluster service (K8s deployments)
+  # embeddingService: embedding-service-name
+  # (vMCP will resolve the service DNS name)
+
 # =============================================================================
+# USAGE
+# =============================================================================
+# 1. Start MCP backends in the group:
+#    thv run weather --group default
+#    thv run github --group default
+#
+# 2. Start vMCP with optimizer:
+#    thv vmcp serve --config examples/vmcp-config-optimizer.yaml
+#
+# 3. Connect MCP client to vMCP
+#
+# 4. Available tools from vMCP:
+#    - optim.find_tool: Search for tools by semantic query
+#    - optim.call_tool: Execute a tool by name
+#    - (backend tools are NOT directly exposed when optimizer is enabled)

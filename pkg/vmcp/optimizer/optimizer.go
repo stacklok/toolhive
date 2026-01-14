@@ -22,7 +22,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-	"github.com/stacklok/toolhive/pkg/optimizer/models"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
 
@@ -152,23 +151,12 @@ func (o *OptimizerIntegration) OnRegisterSession(
 			"backend_name", bt.backendName,
 			"tool_count", len(bt.tools))
 
-		// Convert transport string to models.TransportType
-		var transport models.TransportType
-		switch bt.transport {
-		case "streamable":
-			transport = models.TransportStreamable
-		case "sse":
-			transport = models.TransportSSE
-		default:
-			transport = models.TransportStreamable
-		}
-
+		// Ingest server with simplified metadata
+		// Note: URL and transport are not stored - vMCP manages backend lifecycle
 		err := o.ingestionService.IngestServer(
 			ctx,
 			bt.backendID,
 			bt.backendName,
-			bt.backendURL,
-			transport,
 			nil, // description
 			bt.tools,
 		)

@@ -45,25 +45,17 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 	// Insert into mcpservers_backend table
 	query := `
 		INSERT INTO mcpservers_backend (
-			id, name, url, backend_identifier, remote, transport, status,
-			registry_server_id, registry_server_name, description, server_embedding,
-			"group", last_updated, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, name, description, "group", server_embedding,
+			last_updated, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = tx.ExecContext(ctx, query,
 		server.ID,
 		server.Name,
-		server.URL,
-		server.BackendIdentifier,
-		server.Remote,
-		server.Transport.String(),
-		server.Status.String(),
-		server.RegistryServerID,
-		server.RegistryServerName,
 		server.Description,
-		embeddingToBytes(server.ServerEmbedding),
 		server.Group,
+		embeddingToBytes(server.ServerEmbedding),
 		server.LastUpdated,
 		server.CreatedAt,
 	)
@@ -90,9 +82,8 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 // GetByID retrieves a backend server by ID
 func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, backend_identifier, remote, transport, status,
-		       registry_server_id, registry_server_name, description, server_embedding,
-		       "group", last_updated, created_at
+		SELECT id, name, description, "group", server_embedding,
+		       last_updated, created_at
 		FROM mcpservers_backend
 		WHERE id = ?
 	`
@@ -100,21 +91,13 @@ func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.Ba
 	var server models.BackendServer
 	var embeddingBytes []byte
 	var description sql.NullString
-	var registryServerID, registryServerName sql.NullString
 
 	err := ops.db.QueryRowContext(ctx, query, id).Scan(
 		&server.ID,
 		&server.Name,
-		&server.URL,
-		&server.BackendIdentifier,
-		&server.Remote,
-		&server.Transport,
-		&server.Status,
-		&registryServerID,
-		&registryServerName,
 		&description,
-		&embeddingBytes,
 		&server.Group,
+		&embeddingBytes,
 		&server.LastUpdated,
 		&server.CreatedAt,
 	)
@@ -129,12 +112,6 @@ func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.Ba
 	if description.Valid {
 		server.Description = &description.String
 	}
-	if registryServerID.Valid {
-		server.RegistryServerID = &registryServerID.String
-	}
-	if registryServerName.Valid {
-		server.RegistryServerName = &registryServerName.String
-	}
 
 	// Convert embedding bytes to float32 slice
 	if len(embeddingBytes) > 0 {
@@ -147,9 +124,8 @@ func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.Ba
 // GetByName retrieves a backend server by name
 func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, backend_identifier, remote, transport, status,
-		       registry_server_id, registry_server_name, description, server_embedding,
-		       "group", last_updated, created_at
+		SELECT id, name, description, "group", server_embedding,
+		       last_updated, created_at
 		FROM mcpservers_backend
 		WHERE name = ?
 	`
@@ -157,21 +133,13 @@ func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*model
 	var server models.BackendServer
 	var embeddingBytes []byte
 	var description sql.NullString
-	var registryServerID, registryServerName sql.NullString
 
 	err := ops.db.QueryRowContext(ctx, query, name).Scan(
 		&server.ID,
 		&server.Name,
-		&server.URL,
-		&server.BackendIdentifier,
-		&server.Remote,
-		&server.Transport,
-		&server.Status,
-		&registryServerID,
-		&registryServerName,
 		&description,
-		&embeddingBytes,
 		&server.Group,
+		&embeddingBytes,
 		&server.LastUpdated,
 		&server.CreatedAt,
 	)
@@ -186,12 +154,6 @@ func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*model
 	if description.Valid {
 		server.Description = &description.String
 	}
-	if registryServerID.Valid {
-		server.RegistryServerID = &registryServerID.String
-	}
-	if registryServerName.Valid {
-		server.RegistryServerName = &registryServerName.String
-	}
 
 	// Convert embedding bytes to float32 slice
 	if len(embeddingBytes) > 0 {
@@ -204,9 +166,8 @@ func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*model
 // ListAll retrieves all backend servers
 func (ops *BackendServerOps) ListAll(ctx context.Context) ([]*models.BackendServer, error) {
 	query := `
-		SELECT id, name, url, backend_identifier, remote, transport, status,
-		       registry_server_id, registry_server_name, description, server_embedding,
-		       "group", last_updated, created_at
+		SELECT id, name, description, "group", server_embedding,
+		       last_updated, created_at
 		FROM mcpservers_backend
 		ORDER BY name
 	`
@@ -222,21 +183,13 @@ func (ops *BackendServerOps) ListAll(ctx context.Context) ([]*models.BackendServ
 		var server models.BackendServer
 		var embeddingBytes []byte
 		var description sql.NullString
-		var registryServerID, registryServerName sql.NullString
 
 		err := rows.Scan(
 			&server.ID,
 			&server.Name,
-			&server.URL,
-			&server.BackendIdentifier,
-			&server.Remote,
-			&server.Transport,
-			&server.Status,
-			&registryServerID,
-			&registryServerName,
 			&description,
-			&embeddingBytes,
 			&server.Group,
+			&embeddingBytes,
 			&server.LastUpdated,
 			&server.CreatedAt,
 		)
@@ -247,12 +200,6 @@ func (ops *BackendServerOps) ListAll(ctx context.Context) ([]*models.BackendServ
 		// Set nullable fields
 		if description.Valid {
 			server.Description = &description.String
-		}
-		if registryServerID.Valid {
-			server.RegistryServerID = &registryServerID.String
-		}
-		if registryServerName.Valid {
-			server.RegistryServerName = &registryServerName.String
 		}
 
 		// Convert embedding bytes to float32 slice
@@ -282,24 +229,15 @@ func (ops *BackendServerOps) Update(ctx context.Context, server *models.BackendS
 
 	query := `
 		UPDATE mcpservers_backend
-		SET name = ?, url = ?, backend_identifier = ?, remote = ?, transport = ?,
-		    status = ?, registry_server_id = ?, registry_server_name = ?,
-		    description = ?, server_embedding = ?, "group" = ?, last_updated = ?
+		SET name = ?, description = ?, "group" = ?, server_embedding = ?, last_updated = ?
 		WHERE id = ?
 	`
 
 	result, err := tx.ExecContext(ctx, query,
 		server.Name,
-		server.URL,
-		server.BackendIdentifier,
-		server.Remote,
-		server.Transport.String(),
-		server.Status.String(),
-		server.RegistryServerID,
-		server.RegistryServerName,
 		server.Description,
-		embeddingToBytes(server.ServerEmbedding),
 		server.Group,
+		embeddingToBytes(server.ServerEmbedding),
 		server.LastUpdated,
 		server.ID,
 	)

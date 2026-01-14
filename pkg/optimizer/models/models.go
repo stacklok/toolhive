@@ -40,13 +40,16 @@ func (r *RegistryServer) Validate() error {
 }
 
 // BackendServer represents a running MCP server backend.
+// Simplified: Only stores metadata needed for tool organization and search results.
+// vMCP manages backend lifecycle (URL, status, transport, etc.)
 type BackendServer struct {
-	BaseMCPServer
-	URL                string    `json:"url"`
-	BackendIdentifier  string    `json:"backend_identifier"`
-	Status             MCPStatus `json:"status"`
-	RegistryServerID   *string   `json:"registry_server_id,omitempty"`   // NULL if autonomous
-	RegistryServerName *string   `json:"registry_server_name,omitempty"` // Cached for tool embedding
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Description     *string   `json:"description,omitempty"`
+	Group           string    `json:"group"`
+	ServerEmbedding []float32 `json:"-"` // Excluded from JSON, stored as BLOB
+	LastUpdated     time.Time `json:"last_updated"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // BaseTool represents the common fields for tools.

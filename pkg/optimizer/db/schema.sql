@@ -23,29 +23,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_package ON mcpservers_registry(pa
 CREATE INDEX IF NOT EXISTS idx_registry_remote ON mcpservers_registry(remote);
 
 -- Create mcpservers_backend table
+-- Simplified: Only stores metadata needed for tool search results and organization
+-- vMCP manages backend lifecycle (URL, status, transport, etc.)
 CREATE TABLE IF NOT EXISTS mcpservers_backend (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    url TEXT NOT NULL,
-    backend_identifier TEXT NOT NULL,
-    remote INTEGER NOT NULL,
-    transport TEXT NOT NULL,
-    status TEXT NOT NULL,
-    registry_server_id TEXT,
-    registry_server_name TEXT,
     description TEXT,
-    server_embedding BLOB,
     "group" TEXT NOT NULL DEFAULT 'default',
+    server_embedding BLOB,
     last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (registry_server_id)
-        REFERENCES mcpservers_registry(id) ON DELETE SET NULL
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create indexes for backend servers
-CREATE INDEX IF NOT EXISTS idx_backend_registry_id ON mcpservers_backend(registry_server_id);
-CREATE INDEX IF NOT EXISTS idx_backend_remote ON mcpservers_backend(remote);
-CREATE INDEX IF NOT EXISTS idx_backend_status ON mcpservers_backend(status);
+-- Create index for group-based queries
+CREATE INDEX IF NOT EXISTS idx_backend_group ON mcpservers_backend("group");
 
 -- Create tools_registry table
 CREATE TABLE IF NOT EXISTS tools_registry (

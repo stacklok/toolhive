@@ -96,44 +96,36 @@ func NewService(config *Config) (*Service, error) {
 }
 
 // IngestServer ingests a single MCP server and its tools into the optimizer database.
-// This is called by vMCP during startup for each configured server.
+// This is called by vMCP during session registration for each backend server.
 //
 // Parameters:
 //   - serverID: Unique identifier for the backend server
-//   - serverName: Human-readable server name
-//   - serverURL: Server URL (for connection)
-//   - transport: Transport type (sse, streamable-http)
+//   - serverName: Human-readable server name  
 //   - description: Optional server description
 //   - tools: List of tools available from this server
 //
 // This method will:
-//  1. Create or update the backend server record
+//  1. Create or update the backend server record (simplified metadata only)
 //  2. Generate embeddings for server and tools
 //  3. Count tokens for each tool
 //  4. Store everything in the database for semantic search
+//
+// Note: URL, transport, status are NOT stored - vMCP manages backend lifecycle
 func (s *Service) IngestServer(
 	ctx context.Context,
 	serverID string,
 	serverName string,
-	serverURL string,
-	transport models.TransportType,
 	description *string,
 	tools []mcp.Tool,
 ) error {
 	logger.Infof("Ingesting server: %s (%d tools)", serverName, len(tools))
 
-	// Create backend server record
+	// Create backend server record (simplified - vMCP manages lifecycle)
 	backendServer := &models.BackendServer{
-		BaseMCPServer: models.BaseMCPServer{
-			ID:          serverID,
-			Name:        serverName,
-			Description: description,
-			Transport:   transport,
-			Remote:      false, // vMCP servers are local/managed
-		},
-		URL:               serverURL,
-		BackendIdentifier: serverID, // Use serverID as identifier
-		Status:            models.StatusRunning,
+		ID:          serverID,
+		Name:        serverName,
+		Description: description,
+		Group:       "default", // TODO: Pass group from vMCP if needed
 	}
 
 	// Generate server embedding if description is provided

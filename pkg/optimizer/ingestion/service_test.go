@@ -68,17 +68,12 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	description := "Test MCP server"
 
 	server := &models.BackendServer{
-		BaseMCPServer: models.BaseMCPServer{
-			ID:          serverID,
-			Name:        serverName,
-			Description: &description,
-			CreatedAt:   time.Now(),
-			LastUpdated: time.Now(),
-			Transport:   models.TransportStreamable,
-		},
-		URL:                "http://localhost:8080",
-		BackendIdentifier: "test-backend",
-		Status:             models.StatusRunning,
+		ID:          serverID,
+		Name:        serverName,
+		Description: &description,
+		Group:       "default",
+		CreatedAt:   time.Now(),
+		LastUpdated: time.Now(),
 	}
 
 	// Create the server in database
@@ -277,17 +272,12 @@ func TestServiceWithOllama(t *testing.T) {
 	serverID := uuid.New().String()
 	description := "Test with real embeddings"
 	server := &models.BackendServer{
-		BaseMCPServer: models.BaseMCPServer{
-			ID:          serverID,
-			Name:        "ollama-test-server",
-			Description: &description,
-			CreatedAt:   time.Now(),
-			LastUpdated: time.Now(),
-			Transport:   models.TransportStreamable,
-		},
-		URL:                "http://localhost:8080",
-		BackendIdentifier: "ollama-test-backend",
-		Status:             models.StatusRunning,
+		ID:          serverID,
+		Name:        "ollama-test-server",
+		Description: &description,
+		Group:       "default",
+		CreatedAt:   time.Now(),
+		LastUpdated: time.Now(),
 	}
 
 	if err := svc.backendServerOps.Create(ctx, server); err != nil {

@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/util"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -685,7 +686,7 @@ func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string, maxL
 	// Apply offset and limit for pagination
 	content := fullContent
 	if offset > 0 || maxLines > 0 {
-		content = sliceProxyLogLines(fullContent, offset, maxLines)
+		content = util.SliceLogLines(fullContent, offset, maxLines)
 	}
 
 	return content, totalLines, nil
@@ -1557,28 +1558,4 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 	}
 
 	return remoteWorkloads, nil
-}
-
-// sliceProxyLogLines applies offset and limit to log content for pagination.
-// offset: number of lines to skip from the beginning
-// maxLines: maximum number of lines to return (0 = unlimited)
-func sliceProxyLogLines(content string, offset int, maxLines int) string {
-	if content == "" {
-		return ""
-	}
-
-	lines := strings.Split(content, "\n")
-
-	// Apply offset
-	if offset >= len(lines) {
-		return "" // offset beyond available lines
-	}
-	lines = lines[offset:]
-
-	// Apply limit
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
-
-	return strings.Join(lines, "\n")
 }

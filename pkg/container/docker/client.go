@@ -34,6 +34,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/util"
 )
 
 // DnsImage is the default DNS image used for network permissions
@@ -544,7 +545,7 @@ func (c *Client) GetWorkloadLogs(
 
 	// Apply offset and limit if needed for pagination
 	if offset > 0 || maxLines > 0 {
-		logContent = sliceLogLines(logContent, offset, maxLines)
+		logContent = util.SliceLogLines(logContent, offset, maxLines)
 	}
 
 	return logContent, totalLines, nil
@@ -1814,28 +1815,4 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 	}
 
 	return c.api.ContainerInspect(ctx, containerID)
-}
-
-// sliceLogLines applies offset and limit to log content for pagination.
-// offset: number of lines to skip from the beginning
-// maxLines: maximum number of lines to return (0 = unlimited)
-func sliceLogLines(content string, offset int, maxLines int) string {
-	if content == "" {
-		return ""
-	}
-
-	lines := strings.Split(content, "\n")
-
-	// Apply offset
-	if offset >= len(lines) {
-		return "" // offset beyond available lines
-	}
-	lines = lines[offset:]
-
-	// Apply limit
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
-
-	return strings.Join(lines, "\n")
 }

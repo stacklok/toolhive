@@ -25,7 +25,7 @@ import (
 // 4. Query the database
 func TestServiceCreationAndIngestion(t *testing.T) {
 	t.Parallel()
-	
+
 	// Skip if sqlite-vec is not available
 	if os.Getenv("SQLITE_VEC_PATH") == "" {
 		t.Skip("Skipping test: SQLITE_VEC_PATH not set (sqlite-vec extension not available)")
@@ -246,12 +246,12 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 // This test is skipped by default and can be enabled with -tags=integration
 func TestServiceWithOllama(t *testing.T) {
 	t.Parallel()
-	
+
 	// Skip if sqlite-vec is not available
 	if os.Getenv("SQLITE_VEC_PATH") == "" {
 		t.Skip("Skipping test: SQLITE_VEC_PATH not set (sqlite-vec extension not available)")
 	}
-	
+
 	// Skip if not in integration mode
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

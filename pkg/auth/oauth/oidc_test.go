@@ -1067,7 +1067,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			defer cancel()
 
 			// Test the production function with TLS-skipping client for test servers
-			var client httpClient
+			var client networking.HTTPClient
 			if tt.serverResponse != nil {
 				client = &http.Client{
 					Timeout: 30 * time.Second,
@@ -1190,7 +1190,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 			defer cancel()
 
 			// Test the production function with TLS-skipping client for test servers
-			var client httpClient
+			var client networking.HTTPClient
 			if tt.issuer == server.URL {
 				client = &http.Client{
 					Timeout: 30 * time.Second,

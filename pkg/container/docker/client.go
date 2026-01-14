@@ -481,17 +481,7 @@ func (c *Client) GetWorkloadLogs(
 	if maxLines > 1000 {
 		maxLines = 1000 // cap at max for API protection
 	}
-
-	// For pagination support (when maxLines > 0), we need to read all logs to get total count
-	// For CLI (maxLines <= 0), we can skip counting
-	needsTotalCount := maxLines > 0
 	tailLines := "all"
-
-	// If not paginating and not needing count, we could use Tail optimization
-	// But since we need total count for API responses, we always read all when maxLines > 0
-	if !needsTotalCount && maxLines > 0 {
-		tailLines = strconv.Itoa(maxLines)
-	}
 
 	options := container.LogsOptions{
 		ShowStdout: true,

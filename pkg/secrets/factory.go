@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/adrg/xdg"
 	"golang.org/x/term"
 
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets/keyring"
@@ -59,11 +61,17 @@ const (
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
-var ErrUnknownManagerType = errors.New("unknown secret manager type")
+var ErrUnknownManagerType = thverrors.WithCode(
+	errors.New("unknown secret manager type"),
+	http.StatusBadRequest,
+)
 
 // ErrSecretsNotSetup is returned when secrets functionality is used before running setup.
-var ErrSecretsNotSetup = errors.New("secrets provider not configured. " +
-	"Please run 'thv secret setup' to configure a secrets provider first")
+var ErrSecretsNotSetup = thverrors.WithCode(
+	errors.New("secrets provider not configured. "+
+		"Please run 'thv secret setup' to configure a secrets provider first"),
+	http.StatusNotFound,
+)
 
 // SetupResult contains the result of a provider setup operation
 type SetupResult struct {
@@ -194,10 +202,13 @@ func validateNoneProvider(result *SetupResult) *SetupResult {
 }
 
 // ErrKeyringNotAvailable is returned when the OS keyring is not available for the encrypted provider.
-var ErrKeyringNotAvailable = errors.New("OS keyring is not available. " +
-	"The encrypted provider requires an OS keyring to securely store passwords. " +
-	"Please use a different secrets provider (e.g., 1password) " +
-	"or ensure your system has a keyring service available")
+var ErrKeyringNotAvailable = thverrors.WithCode(
+	errors.New("OS keyring is not available. "+
+		"The encrypted provider requires an OS keyring to securely store passwords. "+
+		"Please use a different secrets provider (e.g., 1password) "+
+		"or ensure your system has a keyring service available"),
+	http.StatusBadRequest,
+)
 
 // IsKeyringAvailable tests if any keyring backend is available
 func IsKeyringAvailable() bool {

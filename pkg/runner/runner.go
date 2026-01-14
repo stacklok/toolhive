@@ -276,6 +276,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Set the health check failure callback for remote servers
 		transportHandler.SetOnHealthCheckFailed(func() {
 			logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+			// Use Background context for status update callback - this is triggered by health check
+			// failure and is independent of any request context. The callback is fired asynchronously
+			// and needs its own lifecycle separate from the transport's parent context.
 			if err := r.statusManager.SetWorkloadStatus(
 				context.Background(),
 				r.Config.BaseName,
@@ -290,6 +293,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
 		transportHandler.SetOnUnauthorizedResponse(func() {
 			logger.Warnf("Received 401 Unauthorized response for remote server %s, marking as unauthenticated", r.Config.BaseName)
+			// Use Background context for status update callback - this is triggered by 401 response
+			// and is independent of any request context. The callback is fired asynchronously
+			// and needs its own lifecycle separate from the transport's parent context.
 			if err := r.statusManager.SetWorkloadStatus(
 				context.Background(),
 				r.Config.BaseName,
@@ -351,7 +357,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
-		// Use a background context to avoid cancellation of the main context.
+		// Use Background context for cleanup operations. The parent context may already be
+		// cancelled when this cleanup function runs (e.g., on graceful shutdown or context
+		// cancellation). We need a fresh context with its own timeout to ensure cleanup
+		// operations complete successfully regardless of the parent context state.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
 		defer cleanupCancel()
 		logger.Infof("Stopping MCP server: %s", reason)

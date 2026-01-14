@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -66,8 +67,8 @@ type TransparentProxy struct {
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
-	// If mcp server has been initialized
-	IsServerInitialized bool
+	// If mcp server has been initialized (atomic access)
+	isServerInitialized atomic.Bool
 
 	// Listener for the HTTP server
 	listener net.Listener
@@ -93,7 +94,62 @@ type TransparentProxy struct {
 
 	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
 	trustProxyHeaders bool
+
+	// Health check interval (default: 10 seconds)
+	healthCheckInterval time.Duration
+
+	// Health check retry delay (default: 5 seconds)
+	healthCheckRetryDelay time.Duration
+
+	// Health check ping timeout (default: 5 seconds)
+	healthCheckPingTimeout time.Duration
 }
+
+const (
+	// DefaultHealthCheckInterval is the default interval for health checks
+	DefaultHealthCheckInterval = 10 * time.Second
+
+	// DefaultHealthCheckRetryDelay is the default delay between retry attempts
+	DefaultHealthCheckRetryDelay = 5 * time.Second
+)
+
+// Option is a functional option for configuring TransparentProxy
+type Option func(*TransparentProxy)
+
+// withHealthCheckInterval sets the health check interval.
+// This is primarily useful for testing with shorter intervals.
+// Ignores non-positive intervals; default will be used.
+func withHealthCheckInterval(interval time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if interval > 0 {
+			p.healthCheckInterval = interval
+		}
+	}
+}
+
+// withHealthCheckRetryDelay sets the health check retry delay.
+// This is primarily useful for testing with shorter delays.
+// Ignores non-positive delays; default will be used.
+func withHealthCheckRetryDelay(delay time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if delay > 0 {
+			p.healthCheckRetryDelay = delay
+		}
+	}
+}
+
+// withHealthCheckPingTimeout sets the health check ping timeout.
+// This is primarily useful for testing with shorter timeouts.
+// Ignores non-positive timeouts; default will be used.
+func withHealthCheckPingTimeout(timeout time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if timeout > 0 {
+			p.healthCheckPingTimeout = timeout
+		}
+	}
+}
+
+// NewTransparentProxy creates a new transparent proxy with optional middlewares and configuration options.
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
@@ -113,6 +169,40 @@ func NewTransparentProxy(
 	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
+	return newTransparentProxyWithOptions(
+		host,
+		port,
+		targetURI,
+		prometheusHandler,
+		authInfoHandler,
+		enableHealthCheck,
+		isRemote,
+		transportType,
+		onHealthCheckFailed,
+		onUnauthorizedResponse,
+		endpointPrefix,
+		trustProxyHeaders,
+		middlewares,
+	)
+}
+
+// newTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
+func newTransparentProxyWithOptions(
+	host string,
+	port int,
+	targetURI string,
+	prometheusHandler http.Handler,
+	authInfoHandler http.Handler,
+	enableHealthCheck bool,
+	isRemote bool,
+	transportType string,
+	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onUnauthorizedResponse types.UnauthorizedResponseCallback,
+	endpointPrefix string,
+	trustProxyHeaders bool,
+	middlewares []types.NamedMiddleware,
+	options ...Option,
+) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:                   host,
 		port:                   port,
@@ -128,6 +218,14 @@ func NewTransparentProxy(
 		onUnauthorizedResponse: onUnauthorizedResponse,
 		endpointPrefix:         endpointPrefix,
 		trustProxyHeaders:      trustProxyHeaders,
+		healthCheckInterval:    DefaultHealthCheckInterval,
+		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
+		healthCheckPingTimeout: DefaultPingerTimeout,
+	}
+
+	// Apply options
+	for _, opt := range options {
+		opt(proxy)
 	}
 
 	// Create appropriate response processor based on transport type
@@ -141,7 +239,11 @@ func NewTransparentProxy(
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
-		mcpPinger = NewMCPPinger(targetURI)
+		pingTimeout := proxy.healthCheckPingTimeout
+		if pingTimeout == 0 {
+			pingTimeout = DefaultPingerTimeout
+		}
+		mcpPinger = NewMCPPingerWithTimeout(targetURI, pingTimeout)
 	}
 	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
 
@@ -154,12 +256,14 @@ type tracingTransport struct {
 }
 
 func (p *TransparentProxy) setServerInitialized() {
-	if !p.IsServerInitialized {
-		p.mutex.Lock()
-		p.IsServerInitialized = true
-		p.mutex.Unlock()
+	if p.isServerInitialized.CompareAndSwap(false, true) {
 		logger.Infof("Server was initialized successfully for %s", p.targetURI)
 	}
+}
+
+// serverInitialized returns whether the server has been initialized (thread-safe)
+func (p *TransparentProxy) serverInitialized() bool {
+	return p.isServerInitialized.Load()
 }
 
 func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
@@ -226,7 +330,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			return resp, nil
 		}
 		// status was ok and we saw an initialize call
-		if sawInitialize && !t.p.IsServerInitialized {
+		if sawInitialize && !t.p.serverInitialized() {
 			t.p.setServerInitialized()
 			return resp, nil
 		}
@@ -396,14 +500,70 @@ const (
 	// healthCheckRetryCount is the number of consecutive failures before marking unhealthy.
 	// This prevents immediate shutdown on transient network issues.
 	healthCheckRetryCount = 3
-
-	// healthCheckRetryDelay is the delay between retry attempts.
-	// Using a shorter interval than the main ticker allows faster recovery.
-	healthCheckRetryDelay = 5 * time.Second
 )
 
+// performHealthCheckRetry performs a retry health check after a delay
+// Returns true if the retry was successful (health check recovered), false otherwise
+func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
+	retryDelay := p.healthCheckRetryDelay
+	if retryDelay == 0 {
+		retryDelay = DefaultHealthCheckRetryDelay
+	}
+
+	retryTimer := time.NewTimer(retryDelay)
+	defer retryTimer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-p.shutdownCh:
+		return false
+	case <-retryTimer.C:
+		retryAlive := p.healthChecker.CheckHealth(ctx)
+		if retryAlive.Status == healthcheck.StatusHealthy {
+			logger.Infof("Health check recovered for %s after retry", p.targetURI)
+			return true
+		}
+		return false
+	}
+}
+
+// handleHealthCheckFailure handles a failed health check, including retry logic and shutdown.
+// Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
+func (p *TransparentProxy) handleHealthCheckFailure(
+	ctx context.Context,
+	consecutiveFailures int,
+	status healthcheck.HealthStatus,
+) (int, bool) {
+	consecutiveFailures++
+	logger.Warnf("Health check failed for %s (attempt %d/%d): status=%s",
+		p.targetURI, consecutiveFailures, healthCheckRetryCount, status)
+
+	if consecutiveFailures < healthCheckRetryCount {
+		if p.performHealthCheckRetry(ctx) {
+			consecutiveFailures = 0
+		}
+		return consecutiveFailures, true
+	}
+
+	// All retries exhausted, initiate shutdown
+	logger.Errorf("Health check failed for %s after %d consecutive attempts; initiating proxy shutdown",
+		p.targetURI, healthCheckRetryCount)
+	if p.onHealthCheckFailed != nil {
+		p.onHealthCheckFailed()
+	}
+	if err := p.Stop(ctx); err != nil {
+		logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
+	}
+	return consecutiveFailures, false
+}
+
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	interval := p.healthCheckInterval
+	if interval == 0 {
+		interval = DefaultHealthCheckInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
@@ -417,57 +577,26 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
-			// Perform health check only if mcp server has been initialized
-			if p.IsServerInitialized {
-				alive := p.healthChecker.CheckHealth(parentCtx)
-				if alive.Status != healthcheck.StatusHealthy {
-					consecutiveFailures++
-					logger.Warnf("Health check failed for %s (attempt %d/%d): status=%s",
-						p.targetURI, consecutiveFailures, healthCheckRetryCount, alive.Status)
+			if !p.serverInitialized() {
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
+				continue
+			}
 
-					// Retry with backoff before giving up
-					if consecutiveFailures < healthCheckRetryCount {
-						// Wait and retry before the next ticker interval
-						retryTimer := time.NewTimer(healthCheckRetryDelay)
-						select {
-						case <-parentCtx.Done():
-							retryTimer.Stop()
-							return
-						case <-p.shutdownCh:
-							retryTimer.Stop()
-							return
-						case <-retryTimer.C:
-							// Retry health check immediately
-							retryAlive := p.healthChecker.CheckHealth(parentCtx)
-							if retryAlive.Status == healthcheck.StatusHealthy {
-								logger.Infof("Health check recovered for %s after retry", p.targetURI)
-								consecutiveFailures = 0
-							}
-							// If still unhealthy, the next ticker will increment consecutiveFailures
-						}
-						continue
-					}
-
-					// All retries exhausted, initiate shutdown
-					logger.Errorf("Health check failed for %s after %d consecutive attempts; initiating proxy shutdown",
-						p.targetURI, healthCheckRetryCount)
-					// Notify the runner about health check failure so it can update workload status
-					if p.onHealthCheckFailed != nil {
-						p.onHealthCheckFailed()
-					}
-					if err := p.Stop(parentCtx); err != nil {
-						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
-					}
+			alive := p.healthChecker.CheckHealth(parentCtx)
+			if alive.Status != healthcheck.StatusHealthy {
+				var shouldContinue bool
+				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
+				if !shouldContinue {
 					return
 				}
-				// Reset failure count on successful health check
-				if consecutiveFailures > 0 {
-					logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
-				}
-				consecutiveFailures = 0
-			} else {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
+				continue
 			}
+
+			// Reset failure count on successful health check
+			if consecutiveFailures > 0 {
+				logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
+			}
+			consecutiveFailures = 0
 		}
 	}
 }

@@ -244,8 +244,10 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Add the transport's existing middlewares
 	middlewares = append(middlewares, t.middlewares...)
 
+	isRemote := t.remoteURL != ""
+
 	// Add OAuth token injection middleware for remote authentication if we have a token source
-	if t.remoteURL != "" && t.tokenSource != nil {
+	if isRemote && t.tokenSource != nil {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",
@@ -260,8 +262,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		true,
-		t.remoteURL != "",
+		!isRemote, // TODO: reinstate this universally once we figure out how to make the checks less brittle.
+		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,
 		t.onUnauthorizedResponse,
@@ -275,7 +277,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
-	if t.remoteURL != "" {
+	if isRemote {
 		return nil
 	}
 

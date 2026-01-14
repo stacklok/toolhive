@@ -2,6 +2,7 @@ package ingestion
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -75,16 +76,29 @@ func NewService(config *Config) (*Service, error) {
 	// Initialize token counter
 	tokenCounter := tokens.NewCounter()
 
+	// Create chromem-go embeddingFunc from our embedding manager
+	embeddingFunc := func(ctx context.Context, text string) ([]float32, error) {
+		// Our manager takes a slice, so wrap the single text
+		embeddings, err := embeddingManager.GenerateEmbedding([]string{text})
+		if err != nil {
+			return nil, err
+		}
+		if len(embeddings) == 0 {
+			return nil, fmt.Errorf("no embeddings generated")
+		}
+		return embeddings[0], nil
+	}
+
 	svc := &Service{
 		config:           config,
 		database:         database,
 		embeddingManager: embeddingManager,
 		tokenCounter:     tokenCounter,
-		backendServerOps: db.NewBackendServerOps(database),
-		backendToolOps:   db.NewBackendToolOps(database),
+		backendServerOps: db.NewBackendServerOps(database, embeddingFunc),
+		backendToolOps:   db.NewBackendToolOps(database, embeddingFunc),
 	}
 
-	logger.Info("Ingestion service initialized for event-driven ingestion")
+	logger.Info("Ingestion service initialized for event-driven ingestion (chromem-go)")
 	return svc, nil
 }
 
@@ -114,38 +128,21 @@ func (s *Service) IngestServer(
 	logger.Infof("Ingesting server: %s (%d tools)", serverName, len(tools))
 
 	// Create backend server record (simplified - vMCP manages lifecycle)
+	// chromem-go will generate embeddings automatically from the content
 	backendServer := &models.BackendServer{
 		ID:          serverID,
 		Name:        serverName,
 		Description: description,
 		Group:       "default", // TODO: Pass group from vMCP if needed
+		CreatedAt:   time.Now(),
+		LastUpdated: time.Now(),
 	}
 
-	// Generate server embedding if description is provided
-	if description != nil && *description != "" {
-		serverEmbeddings, err := s.embeddingManager.GenerateEmbedding([]string{*description})
-		if err != nil {
-			logger.Warnf("Failed to generate server embedding for %s: %v", serverName, err)
-		} else if len(serverEmbeddings) > 0 {
-			backendServer.ServerEmbedding = serverEmbeddings[0]
-		}
+	// Create or update server (chromem-go handles embeddings)
+	if err := s.backendServerOps.Update(ctx, backendServer); err != nil {
+		return fmt.Errorf("failed to create/update server %s: %w", serverName, err)
 	}
-
-	// Create or update server
-	existing, err := s.backendServerOps.GetByID(ctx, serverID)
-	if err == nil && existing != nil {
-		// Update existing
-		if err := s.backendServerOps.Update(ctx, backendServer); err != nil {
-			return fmt.Errorf("failed to update server %s: %w", serverName, err)
-		}
-		logger.Debugf("Updated existing server: %s", serverName)
-	} else {
-		// Create new
-		if err := s.backendServerOps.Create(ctx, backendServer); err != nil {
-			return fmt.Errorf("failed to create server %s: %w", serverName, err)
-		}
-		logger.Debugf("Created new server: %s", serverName)
-	}
+	logger.Debugf("Created/updated server: %s", serverName)
 
 	// Sync tools for this server
 	toolCount, err := s.syncBackendTools(ctx, serverID, serverName, tools)
@@ -196,46 +193,38 @@ func (*Service) createToolTextToEmbed(tool mcp.Tool, serverName string) string {
 // syncBackendTools synchronizes tools for a backend server
 func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
 	// Delete existing tools
-	deleted, err := s.backendToolOps.DeleteByServerID(ctx, serverID)
-	if err != nil {
+	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)
-	}
-
-	if deleted > 0 {
-		logger.Debugf("Deleted %d existing tools for server %s", deleted, serverName)
 	}
 
 	if len(tools) == 0 {
 		return 0, nil
 	}
 
-	// Generate embeddings for all tools
-	texts := make([]string, len(tools))
-	for i, tool := range tools {
-		texts[i] = s.createToolTextToEmbed(tool, serverName)
-	}
-
-	toolEmbeddings, err := s.embeddingManager.GenerateEmbedding(texts)
-	if err != nil {
-		return 0, fmt.Errorf("failed to generate embeddings: %w", err)
-	}
-
-	// Create tool records
-	for i, tool := range tools {
+	// Create tool records (chromem-go will generate embeddings automatically)
+	for _, tool := range tools {
+		// Extract description for embedding
+		description := tool.Description
+		
+		// Convert InputSchema to JSON
+		schemaJSON, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			return 0, fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
+		}
+		
 		backendTool := &models.BackendTool{
-			BaseTool: models.BaseTool{
-				ID:               uuid.New().String(),
-				MCPServerID:      serverID,
-				Details:          tool,
-				DetailsEmbedding: toolEmbeddings[i],
-				CreatedAt:        time.Now(),
-				LastUpdated:      time.Now(),
-			},
-			TokenCount: s.tokenCounter.CountToolTokens(tool),
+			ID:           uuid.New().String(),
+			MCPServerID:  serverID,
+			ToolName:     tool.Name,
+			Description:  &description,
+			InputSchema:  schemaJSON,
+			TokenCount:   s.tokenCounter.CountToolTokens(tool),
+			CreatedAt:    time.Now(),
+			LastUpdated:  time.Now(),
 		}
 
 		if err := s.backendToolOps.Create(ctx, backendTool); err != nil {
-			return 0, fmt.Errorf("failed to create tool: %w", err)
+			return 0, fmt.Errorf("failed to create tool %s: %w", tool.Name, err)
 		}
 	}
 

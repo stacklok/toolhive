@@ -1,24 +1,24 @@
 # Optimizer Package
 
-The optimizer package provides semantic tool discovery and ingestion for MCP servers in ToolHive. It's a Go port of the [mcp-optimizer](https://github.com/stacklok/mcp-optimizer) Python implementation.
+The optimizer package provides semantic tool discovery and ingestion for MCP servers in ToolHive's vMCP. It enables intelligent, context-aware tool selection to reduce token usage and improve LLM performance.
 
 ## Features
 
-- **Backend Discovery**: Automatically discovers MCP backends from Docker or Kubernetes
-- **Semantic Embeddings**: Pluggable embedding backends (vLLM, Ollama, or placeholder)
-- **vLLM Support**: Production-ready with vLLM for high-throughput GPU-accelerated embeddings
-- **Vector Search**: SQLite-based semantic search with cosine similarity via sqlite-vec
+- **Pure Go**: No CGO dependencies - uses [chromem-go](https://github.com/philippgille/chromem-go) for vector search
+- **In-Memory by Default**: Fast ephemeral database with optional persistence
+- **Pluggable Embeddings**: Supports vLLM, Ollama, and placeholder backends
+- **Event-Driven**: Integrates with vMCP's `OnRegisterSession` hook for automatic ingestion
+- **Semantic Search**: Cosine similarity search for intelligent tool discovery
 - **Token Counting**: Tracks token usage for LLM consumption metrics
-- **CGO-based**: Uses `mattn/go-sqlite3` for sqlite-vec extension loading and FTS5 support
 
 ## Architecture
 
 ```
 pkg/optimizer/
 ├── models/           # Domain models (Server, Tool, etc.)
-├── db/               # Database layer with mattn/go-sqlite3 (CGO-based)
+├── db/               # chromem-go database layer (pure Go)
 ├── embeddings/       # Embedding backends (vLLM, Ollama, placeholder)
-├── ingestion/        # Core ingestion service
+├── ingestion/        # Event-driven ingestion service
 └── tokens/           # Token counting for LLM metrics
 ```
 
@@ -34,77 +34,36 @@ The optimizer supports multiple embedding backends:
 
 **For production Kubernetes deployments, vLLM is recommended** due to its high-throughput performance, GPU efficiency (PagedAttention), and scalability for multi-user environments.
 
-## Prerequisites
-
-### sqlite-vec Extension (REQUIRED)
-
-The optimizer requires the [sqlite-vec](https://github.com/asg017/sqlite-vec) extension for semantic vector search. This is the core functionality that enables intelligent tool discovery.
-
-**Installation:**
-
-```bash
-# macOS (Homebrew)
-brew install asg017/sqlite-vec/sqlite-vec
-
-# Or download from releases
-# https://github.com/asg017/sqlite-vec/releases
-
-# Set environment variable
-export SQLITE_VEC_PATH=/usr/local/lib/vec0.dylib  # macOS
-export SQLITE_VEC_PATH=/usr/local/lib/vec0.so     # Linux
-```
-
-**For Kubernetes deployments**, bundle the extension in your container image:
-
-```dockerfile
-# Example: Adding sqlite-vec to container
-FROM golang:1.21 as builder
-RUN wget https://github.com/asg017/sqlite-vec/releases/download/v0.1.1/sqlite-vec-0.1.1-linux-amd64.tar.gz && \
-    tar -xzf sqlite-vec-0.1.1-linux-amd64.tar.gz && \
-    mv vec0.so /usr/local/lib/
-
-ENV SQLITE_VEC_PATH=/usr/local/lib/vec0.so
-```
-
-**Why is this required?**
-- Enables cosine similarity search for semantic tool matching
-- Powers the "find tools for X" functionality
-- Without it, the optimizer is just a basic database - no intelligence
-
 ## Quick Start
 
-### Standalone Command
+### vMCP Integration (Recommended)
 
-```bash
-# Initialize and ingest backends (one-time)
-thv optimizer ingest \
-  --model-path /path/to/model.onnx \
-  --runtime-mode docker
+The optimizer is designed to work as part of vMCP, not standalone:
 
-# Continuous polling mode
-thv optimizer ingest \
-  --model-path /path/to/model.onnx \
-  --poll-interval 30 \
-  --runtime-mode docker
-
-# Query tools semantically
-thv optimizer query "get current time" \
-  --model-path /path/to/model.onnx \
-  --limit 10
-
-# Check status
-thv optimizer status
+```yaml
+# examples/vmcp-config-optimizer.yaml
+optimizer:
+  enabled: true
+  embeddingBackend: placeholder  # or "ollama", "openai-compatible"
+  embeddingDimension: 384
+  # persistPath: /data/optimizer  # Optional: for persistence
 ```
 
-### Production Deployment with vLLM (Kubernetes)
+Start vMCP with optimizer:
 
-**vLLM is the recommended backend for production** due to high-throughput performance, GPU efficiency (PagedAttention), and scalability:
+```bash
+thv vmcp serve --config examples/vmcp-config-optimizer.yaml
+```
+
+When optimizer is enabled, vMCP exposes:
+- `optim.find_tool`: Semantic search for tools
+- `optim.call_tool`: Dynamic tool invocation
+
+### Programmatic Usage
 
 ```go
 import (
     "context"
-    "os"
-    "time"
     
     "github.com/stacklok/toolhive/pkg/optimizer/db"
     "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
@@ -112,96 +71,124 @@ import (
 )
 
 func main() {
-    // Initialize database
+    ctx := context.Background()
+
+    // Initialize database (in-memory)
     database, err := db.NewDB(&db.Config{
-        Path: "/data/optimizer.db",
+        PersistPath: "", // Empty = in-memory only
     })
     if err != nil {
         panic(err)
     }
-    defer database.Close()
 
-    // Initialize embedding manager with vLLM (recommended for production)
+    // Initialize embedding manager with placeholder (no external dependencies)
     embeddingMgr, err := embeddings.NewManager(&embeddings.Config{
-        BackendType:  "vllm",  // Use vLLM for production Kubernetes deployments
-        BaseURL:      os.Getenv("VLLM_URL"), // e.g., http://vllm-service:8000
-        Model:        "sentence-transformers/all-MiniLM-L6-v2",
-        Dimension:    384,
-        EnableCache:  true,
-        MaxCacheSize: 1000,
+        BackendType: "placeholder",
+        Dimension:   384,
     })
     if err != nil {
         panic(err)
     }
-    defer embeddingMgr.Close()
 
-    // Start ingestion service as background goroutine
+    // Create ingestion service
     svc, err := ingestion.NewService(&ingestion.Config{
-        DB:               database,
-        EmbeddingManager: embeddingMgr,
-        PollInterval:     30 * time.Second,
+        DBConfig:        &db.Config{PersistPath: ""},
+        EmbeddingConfig: embeddingMgr.Config(),
     })
     if err != nil {
         panic(err)
     }
+    defer svc.Close()
 
-    go func() {
-        if err := svc.Run(context.Background()); err != nil {
-            log.Printf("Ingestion service error: %v", err)
-        }
-    }()
-    
-    // ... rest of vMCP initialization
+    // Ingest a server (called by vMCP on session registration)
+    err = svc.IngestServer(ctx, "server-id", "MyServer", nil, []mcp.Tool{...})
+    if err != nil {
+        panic(err)
+    }
 }
+```
+
+### Production Deployment with vLLM (Kubernetes)
+
+```yaml
+optimizer:
+  enabled: true
+  embeddingBackend: openai-compatible
+  embeddingURL: http://vllm-service:8000/v1
+  embeddingModel: BAAI/bge-small-en-v1.5
+  embeddingDimension: 768
+  persistPath: /data/optimizer  # Persistent storage for faster restarts
+```
+
+Deploy vLLM alongside vMCP:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-embeddings
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        args:
+          - --model
+          - BAAI/bge-small-en-v1.5
+          - --port
+          - "8000"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
 ```
 
 ### Local Development with Ollama
 
-For local development without GPU requirements:
+```bash
+# Start Ollama
+ollama serve
+
+# Pull an embedding model
+ollama pull nomic-embed-text
+```
+
+Configure vMCP:
+
+```yaml
+optimizer:
+  enabled: true
+  embeddingBackend: ollama
+  embeddingURL: http://localhost:11434
+  embeddingModel: nomic-embed-text
+  embeddingDimension: 384
+```
 
 ## Configuration
 
 ### Database
 
-The optimizer uses SQLite with the sqlite-vec extension for vector similarity search:
+- **Storage**: chromem-go (pure Go, no CGO)
+- **Default**: In-memory (ephemeral)
+- **Persistence**: Optional via `persistPath`
+- **Format**: Binary (gob encoding)
 
-- **Default Location**: `~/.toolhive/optimizer.db`
-- **Schema**: Separates registry servers (from catalog) and backend servers (running instances)
-- **Vector Tables**: Uses `vec0` virtual tables with cosine distance for embeddings
+### Embedding Models
 
-### Embedding Model
+Common embedding dimensions:
+- **384**: all-MiniLM-L6-v2, nomic-embed-text (default)
+- **768**: BAAI/bge-small-en-v1.5
+- **1536**: OpenAI text-embedding-3-small
 
-The optimizer requires an ONNX embedding model:
+### Performance
 
-- **Default Model**: BAAI/bge-small-en-v1.5 (384 dimensions)
-- **Format**: ONNX model file (.onnx)
-- **Environment**: Set `SQLITE_VEC_PATH` for sqlite-vec extension location
+From chromem-go benchmarks (mid-range 2020 Intel laptop):
+- **1,000 tools**: ~0.5ms query time
+- **5,000 tools**: ~2.2ms query time
+- **25,000 tools**: ~9.9ms query time
+- **100,000 tools**: ~39.6ms query time
 
-### Runtime Modes
-
-- **docker**: Discovers backends from Docker daemon (default)
-- **k8s**: Discovers backends from Kubernetes API
-
-## Database Schema
-
-### Tables
-
-- `mcpservers_registry`: Registry servers from catalog
-- `mcpservers_backend`: Running backend servers
-- `tools_registry`: Tools from registry servers
-- `tools_backend`: Tools from backend servers (with token counts)
-
-### Vector Tables
-
-- `registry_server_vector`: Server embeddings (registry)
-- `registry_tool_vectors`: Tool embeddings (registry)
-- `backend_server_vector`: Server embeddings (backend)
-- `backend_tool_vectors`: Tool embeddings (backend)
-
-### FTS Tables
-
-- `registry_tool_fts`: Full-text search for registry tools
-- `backend_tool_fts`: Full-text search for backend tools
+Perfect for typical vMCP deployments (hundreds to thousands of tools).
 
 ## Testing
 
@@ -226,72 +213,44 @@ go test ./pkg/optimizer/models
 2. **Database**: Add new operations in `pkg/optimizer/db/`
 3. **Tests**: Add unit tests following existing patterns
 
-### Using Real Embeddings
+### chromem-go Integration
 
-The current implementation uses placeholder embeddings for testing. To use real embeddings:
+The optimizer uses chromem-go collections:
+- **backend_servers**: Server metadata and embeddings
+- **backend_tools**: Tool metadata and embeddings
 
-**Option 1: Ollama (Recommended for local development)**
-```bash
-# Start Ollama
-ollama serve
+Each collection stores:
+- **ID**: Unique identifier
+- **Content**: Text for embedding (name + description)
+- **Metadata**: JSON-serialized data (server/tool details)
+- **Embedding**: Generated automatically by chromem-go
 
-# Pull an embedding model
-ollama pull nomic-embed-text
+## Comparison with sqlite-vec Version
 
-# Use in code
-config := &embeddings.Config{
-    BackendType: "ollama",
-    BaseURL:     "http://localhost:11434",
-    Model:       "nomic-embed-text",
-}
-```
-
-**Option 2: vLLM (Recommended for production)**
-```bash
-# Start vLLM with an embedding model
-vllm serve sentence-transformers/all-MiniLM-L6-v2
-
-# Use in code
-config := &embeddings.Config{
-    BackendType: "vllm",
-    BaseURL:     "http://localhost:8000",
-    Model:       "sentence-transformers/all-MiniLM-L6-v2",
-}
-```
-
-## Comparison with Python Version
-
-This Go implementation follows the same architecture as the Python mcp-optimizer:
-
-| Feature | Python | Go |
-|---------|--------|-----|
-| Database | SQLAlchemy + aiosqlite | database/sql + mattn/go-sqlite3 (CGO) |
-| Embeddings | FastEmbed | Ollama/vLLM (OpenAI-compatible) |
-| Vector Search | sqlite-vec | sqlite-vec |
-| CLI | Click | Cobra |
-| Testing | pytest | go test |
-| Async | asyncio | goroutines |
+| Feature | sqlite-vec (CGO) | chromem-go (Pure Go) |
+|---------|------------------|----------------------|
+| Database | mattn/go-sqlite3 | chromem-go |
+| Dependencies | CGO required | Zero CGO |
+| Vector Search | sqlite-vec extension | Built-in cosine similarity |
+| Performance | Good | Excellent for <100K docs |
+| Cross-compilation | Complex | Simple |
+| Container Size | Larger | Smaller |
+| Setup | Extension loading | Zero setup |
 
 ## Known Limitations
 
-1. **ONNX Integration**: Currently uses placeholder embeddings (requires tokenizer)
-2. **Backend Discovery**: Docker/K8s discovery not fully implemented
-3. **MCP Client**: Tool listing from MCP servers is simplified
-4. **Query Command**: Semantic search not yet implemented
+1. **Scale**: Optimized for <100,000 tools (more than sufficient for typical vMCP deployments)
+2. **Approximate Search**: chromem-go uses exhaustive search (not HNSW), but this is fine for our scale
+3. **Persistence Format**: Binary gob format (not human-readable)
 
 ## Future Enhancements
 
-- [ ] Complete ONNX Runtime integration with tokenizer
-- [ ] Implement Docker backend discovery
-- [ ] Implement Kubernetes backend discovery
-- [ ] Add MCP client for tool listing
-- [ ] Implement semantic query search
-- [ ] Add registry server ingestion
-- [ ] Add batch ingestion optimization
-- [ ] Add connection pooling for MCP clients
+- [ ] Implement `optim.find_tool` semantic search handler
+- [ ] Implement `optim.call_tool` dynamic invocation handler
+- [ ] Add batch embedding optimization
+- [ ] Add prometheus metrics for query performance
+- [ ] Add query result caching
 
 ## License
 
 This package is part of ToolHive and follows the same license.
-
-

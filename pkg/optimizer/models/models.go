@@ -68,9 +68,17 @@ type RegistryTool struct {
 }
 
 // BackendTool represents a tool from a backend MCP server.
+// With chromem-go, embeddings are managed by the database.
 type BackendTool struct {
-	BaseTool
-	TokenCount int `json:"token_count"` // Token count for LLM consumption
+	ID            string          `json:"id"`
+	MCPServerID   string          `json:"mcpserver_id"`
+	ToolName      string          `json:"tool_name"`
+	Description   *string         `json:"description,omitempty"`
+	InputSchema   json.RawMessage `json:"input_schema,omitempty"`
+	ToolEmbedding []float32       `json:"-"` // Managed by chromem-go
+	TokenCount    int             `json:"token_count"`
+	LastUpdated   time.Time       `json:"last_updated"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 // ToolDetailsToJSON converts mcp.Tool to JSON for storage in the database.
@@ -92,12 +100,10 @@ func ToolDetailsFromJSON(data string) (*mcp.Tool, error) {
 	return &tool, nil
 }
 
-// BackendToolWithMetadata represents a backend tool with server information and similarity distance.
+// BackendToolWithMetadata represents a backend tool with similarity score.
 type BackendToolWithMetadata struct {
-	ServerName        string      `json:"server_name"`
-	ServerDescription *string     `json:"server_description,omitempty"`
-	Distance          float64     `json:"distance"` // Cosine distance from query embedding
-	Tool              BackendTool `json:"tool"`
+	BackendTool
+	Similarity float32 `json:"similarity"` // Cosine similarity from chromem-go (0-1, higher is better)
 }
 
 // RegistryToolWithMetadata represents a registry tool with server information and similarity distance.

@@ -132,8 +132,8 @@ type OptimizerConfig struct {
 	// Enabled controls whether optimizer tools are available
 	Enabled bool
 
-	// DBPath is the path to SQLite database for embeddings storage
-	DBPath string
+	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
+	PersistPath string
 
 	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
 	EmbeddingBackend string
@@ -373,14 +373,14 @@ func New(
 	// Initialize optimizer integration if enabled
 	var optimizerInteg OptimizerIntegration
 	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
-		logger.Infow("Initializing optimizer integration",
-			"db_path", cfg.OptimizerConfig.DBPath,
+		logger.Infow("Initializing optimizer integration (chromem-go)",
+			"persist_path", cfg.OptimizerConfig.PersistPath,
 			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
 
 		// Convert server config to optimizer config
 		optimizerCfg := &optimizer.Config{
-			Enabled: cfg.OptimizerConfig.Enabled,
-			DBPath:  cfg.OptimizerConfig.DBPath,
+			Enabled:     cfg.OptimizerConfig.Enabled,
+			PersistPath: cfg.OptimizerConfig.PersistPath,
 			EmbeddingConfig: &embeddings.Config{
 				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
 				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,

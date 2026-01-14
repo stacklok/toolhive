@@ -418,19 +418,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Configure optimizer if enabled in YAML config
 	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
-		logger.Info("🔬 Optimizer enabled via configuration")
+		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
 		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
 			Enabled:            cfg.Optimizer.Enabled,
-			DBPath:             cfg.Optimizer.DBPath,
+			PersistPath:        cfg.Optimizer.PersistPath,
 			EmbeddingBackend:   cfg.Optimizer.EmbeddingBackend,
 			EmbeddingURL:       cfg.Optimizer.EmbeddingURL,
 			EmbeddingModel:     cfg.Optimizer.EmbeddingModel,
 			EmbeddingDimension: cfg.Optimizer.EmbeddingDimension,
 		}
-		logger.Infof("Optimizer configured: backend=%s, dimension=%d, dbPath=%s",
+		persistInfo := "in-memory"
+		if cfg.Optimizer.PersistPath != "" {
+			persistInfo = cfg.Optimizer.PersistPath
+		}
+		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s",
 			cfg.Optimizer.EmbeddingBackend,
 			cfg.Optimizer.EmbeddingDimension,
-			cfg.Optimizer.DBPath)
+			persistInfo)
 	}
 
 	// Convert composite tool configurations to workflow definitions

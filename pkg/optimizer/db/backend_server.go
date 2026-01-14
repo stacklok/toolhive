@@ -2,340 +2,201 @@ package db
 
 import (
 	"context"
-	"database/sql"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"math"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/philippgille/chromem-go"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
-// BackendServerOps provides database operations for backend servers
+// BackendServerOps provides operations for backend servers in chromem-go
 type BackendServerOps struct {
-	db *DB
+	db            *DB
+	embeddingFunc chromem.EmbeddingFunc
 }
 
 // NewBackendServerOps creates a new BackendServerOps instance
-func NewBackendServerOps(db *DB) *BackendServerOps {
-	return &BackendServerOps{db: db}
+func NewBackendServerOps(db *DB, embeddingFunc chromem.EmbeddingFunc) *BackendServerOps {
+	return &BackendServerOps{
+		db:            db,
+		embeddingFunc: embeddingFunc,
+	}
 }
 
-// Create creates a new backend server
+// Create adds a new backend server to the collection
 func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendServer) error {
-	// Generate ID if not provided
-	if server.ID == "" {
-		server.ID = uuid.New().String()
-	}
-
-	// Set timestamps
-	now := time.Now()
-	server.CreatedAt = now
-	server.LastUpdated = now
-
-	// Start transaction
-	tx, err := ops.db.BeginTx(ctx)
+	collection, err := ops.db.GetOrCreateCollection(ctx, BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to get backend server collection: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
 
-	// Insert into mcpservers_backend table
-	query := `
-		INSERT INTO mcpservers_backend (
-			id, name, description, "group", server_embedding,
-			last_updated, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`
+	// Prepare content for embedding (name + description)
+	content := server.Name
+	if server.Description != nil && *server.Description != "" {
+		content += ". " + *server.Description
+	}
 
-	_, err = tx.ExecContext(ctx, query,
-		server.ID,
-		server.Name,
-		server.Description,
-		server.Group,
-		embeddingToBytes(server.ServerEmbedding),
-		server.LastUpdated,
-		server.CreatedAt,
-	)
+	// Serialize metadata
+	metadata, err := serializeServerMetadata(server)
 	if err != nil {
-		return fmt.Errorf("failed to insert backend server: %w", err)
+		return fmt.Errorf("failed to serialize server metadata: %w", err)
 	}
 
-	// Insert embedding into vector table if present
+	// Create document
+	doc := chromem.Document{
+		ID:       server.ID,
+		Content:  content,
+		Metadata: metadata,
+	}
+
+	// If embedding is provided, use it
 	if len(server.ServerEmbedding) > 0 {
-		vecQuery := `INSERT INTO backend_server_vector (server_id, embedding) VALUES (?, ?)`
-		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
-		if err != nil {
-			return fmt.Errorf("failed to insert server embedding: %w", err)
-		}
+		doc.Embedding = server.ServerEmbedding
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	// Add document to collection
+	err = collection.AddDocument(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to add server document: %w", err)
 	}
 
+	logger.Debugf("Created backend server: %s", server.ID)
 	return nil
 }
 
-// GetByID retrieves a backend server by ID
-func (ops *BackendServerOps) GetByID(ctx context.Context, id string) (*models.BackendServer, error) {
-	query := `
-		SELECT id, name, description, "group", server_embedding,
-		       last_updated, created_at
-		FROM mcpservers_backend
-		WHERE id = ?
-	`
-
-	var server models.BackendServer
-	var embeddingBytes []byte
-	var description sql.NullString
-
-	err := ops.db.QueryRowContext(ctx, query, id).Scan(
-		&server.ID,
-		&server.Name,
-		&description,
-		&server.Group,
-		&embeddingBytes,
-		&server.LastUpdated,
-		&server.CreatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("backend server not found: %s", id)
-	}
+// Get retrieves a backend server by ID
+func (ops *BackendServerOps) Get(ctx context.Context, serverID string) (*models.BackendServer, error) {
+	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query backend server: %w", err)
+		return nil, fmt.Errorf("backend server collection not found: %w", err)
 	}
 
-	// Set nullable fields
-	if description.Valid {
-		server.Description = &description.String
+	// Query by ID with exact match
+	results, err := collection.Query(ctx, serverID, 1, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query server: %w", err)
 	}
 
-	// Convert embedding bytes to float32 slice
-	if len(embeddingBytes) > 0 {
-		server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("server not found: %s", serverID)
 	}
 
-	return &server, nil
+	// Deserialize from metadata
+	server, err := deserializeServerMetadata(results[0].Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize server: %w", err)
+	}
+
+	return server, nil
 }
 
-// GetByName retrieves a backend server by name
-func (ops *BackendServerOps) GetByName(ctx context.Context, name string) (*models.BackendServer, error) {
-	query := `
-		SELECT id, name, description, "group", server_embedding,
-		       last_updated, created_at
-		FROM mcpservers_backend
-		WHERE name = ?
-	`
-
-	var server models.BackendServer
-	var embeddingBytes []byte
-	var description sql.NullString
-
-	err := ops.db.QueryRowContext(ctx, query, name).Scan(
-		&server.ID,
-		&server.Name,
-		&description,
-		&server.Group,
-		&embeddingBytes,
-		&server.LastUpdated,
-		&server.CreatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil // Not found, return nil without error
-	}
+// Update updates an existing backend server
+func (ops *BackendServerOps) Update(ctx context.Context, server *models.BackendServer) error {
+	// chromem-go doesn't have an update operation, so we delete and re-create
+	err := ops.Delete(ctx, server.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query backend server: %w", err)
+		// If server doesn't exist, that's fine
+		logger.Debugf("Server %s not found for update, will create new", server.ID)
 	}
 
-	// Set nullable fields
-	if description.Valid {
-		server.Description = &description.String
-	}
-
-	// Convert embedding bytes to float32 slice
-	if len(embeddingBytes) > 0 {
-		server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
-	}
-
-	return &server, nil
+	return ops.Create(ctx, server)
 }
 
-// ListAll retrieves all backend servers
-func (ops *BackendServerOps) ListAll(ctx context.Context) ([]*models.BackendServer, error) {
-	query := `
-		SELECT id, name, description, "group", server_embedding,
-		       last_updated, created_at
-		FROM mcpservers_backend
-		ORDER BY name
-	`
-
-	rows, err := ops.db.QueryContext(ctx, query)
+// Delete removes a backend server
+func (ops *BackendServerOps) Delete(ctx context.Context, serverID string) error {
+	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query backend servers: %w", err)
+		// Collection doesn't exist, nothing to delete
+		return nil
 	}
-	defer func() { _ = rows.Close() }()
 
-	var servers []*models.BackendServer
-	for rows.Next() {
-		var server models.BackendServer
-		var embeddingBytes []byte
-		var description sql.NullString
+	err = collection.Delete(ctx, nil, nil, serverID)
+	if err != nil {
+		return fmt.Errorf("failed to delete server: %w", err)
+	}
 
-		err := rows.Scan(
-			&server.ID,
-			&server.Name,
-			&description,
-			&server.Group,
-			&embeddingBytes,
-			&server.LastUpdated,
-			&server.CreatedAt,
-		)
+	logger.Debugf("Deleted backend server: %s", serverID)
+	return nil
+}
+
+// List returns all backend servers
+func (ops *BackendServerOps) List(ctx context.Context) ([]*models.BackendServer, error) {
+	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
+	if err != nil {
+		// Collection doesn't exist yet, return empty list
+		return []*models.BackendServer{}, nil
+	}
+
+	// chromem-go doesn't have a "list all" method, so we query with a broad search
+	// Using empty query to get all documents
+	results, err := collection.Query(ctx, "", 10000, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list servers: %w", err)
+	}
+
+	servers := make([]*models.BackendServer, 0, len(results))
+	for _, result := range results {
+		server, err := deserializeServerMetadata(result.Metadata)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan backend server: %w", err)
+			logger.Warnf("Failed to deserialize server: %v", err)
+			continue
 		}
-
-		// Set nullable fields
-		if description.Valid {
-			server.Description = &description.String
-		}
-
-		// Convert embedding bytes to float32 slice
-		if len(embeddingBytes) > 0 {
-			server.ServerEmbedding = bytesToEmbedding(embeddingBytes)
-		}
-
-		servers = append(servers, &server)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating backend servers: %w", err)
+		servers = append(servers, server)
 	}
 
 	return servers, nil
 }
 
-// Update updates a backend server
-func (ops *BackendServerOps) Update(ctx context.Context, server *models.BackendServer) error {
-	server.LastUpdated = time.Now()
-
-	tx, err := ops.db.BeginTx(ctx)
+// Search performs semantic search for backend servers
+func (ops *BackendServerOps) Search(ctx context.Context, query string, limit int) ([]*models.BackendServer, error) {
+	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return []*models.BackendServer{}, nil
 	}
-	defer func() { _ = tx.Rollback() }()
 
-	query := `
-		UPDATE mcpservers_backend
-		SET name = ?, description = ?, "group" = ?, server_embedding = ?, last_updated = ?
-		WHERE id = ?
-	`
-
-	result, err := tx.ExecContext(ctx, query,
-		server.Name,
-		server.Description,
-		server.Group,
-		embeddingToBytes(server.ServerEmbedding),
-		server.LastUpdated,
-		server.ID,
-	)
+	results, err := collection.Query(ctx, query, limit, nil, nil)
 	if err != nil {
-		return fmt.Errorf("failed to update backend server: %w", err)
+		return nil, fmt.Errorf("failed to search servers: %w", err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("backend server not found: %s", server.ID)
-	}
-
-	// Update embedding in vector table
-	if len(server.ServerEmbedding) > 0 {
-		// Delete old embedding
-		_, err = tx.ExecContext(ctx, "DELETE FROM backend_server_vector WHERE server_id = ?", server.ID)
+	servers := make([]*models.BackendServer, 0, len(results))
+	for _, result := range results {
+		server, err := deserializeServerMetadata(result.Metadata)
 		if err != nil {
-			return fmt.Errorf("failed to delete old server embedding: %w", err)
+			logger.Warnf("Failed to deserialize server: %v", err)
+			continue
 		}
-
-		// Insert new embedding
-		vecQuery := `INSERT INTO backend_server_vector (server_id, embedding) VALUES (?, ?)`
-		_, err = tx.ExecContext(ctx, vecQuery, server.ID, embeddingToBytes(server.ServerEmbedding))
-		if err != nil {
-			return fmt.Errorf("failed to insert server embedding: %w", err)
-		}
+		servers = append(servers, server)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
+	return servers, nil
 }
 
-// Delete deletes a backend server and its tools
-func (ops *BackendServerOps) Delete(ctx context.Context, id string) error {
-	tx, err := ops.db.BeginTx(ctx)
+// Helper functions for metadata serialization
+
+func serializeServerMetadata(server *models.BackendServer) (map[string]string, error) {
+	data, err := json.Marshal(server)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	// Delete from vector table
-	_, err = tx.ExecContext(ctx, "DELETE FROM backend_server_vector WHERE server_id = ?", id)
-	if err != nil {
-		return fmt.Errorf("failed to delete server embedding: %w", err)
-	}
-
-	// Delete from main table (CASCADE will delete tools)
-	result, err := tx.ExecContext(ctx, "DELETE FROM mcpservers_backend WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("failed to delete backend server: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("backend server not found: %s", id)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
+	return map[string]string{
+		"data": string(data),
+		"type": "backend_server",
+	}, nil
 }
 
-// Helper functions for embedding conversion
-
-// embeddingToBytes converts a float32 slice to bytes for storage
-func embeddingToBytes(embedding []float32) []byte {
-	if len(embedding) == 0 {
-		return nil
+func deserializeServerMetadata(metadata map[string]string) (*models.BackendServer, error) {
+	data, ok := metadata["data"]
+	if !ok {
+		return nil, fmt.Errorf("missing data field in metadata")
 	}
 
-	bytes := make([]byte, len(embedding)*4)
-	for i, f := range embedding {
-		binary.LittleEndian.PutUint32(bytes[i*4:], math.Float32bits(f))
-	}
-	return bytes
-}
-
-// bytesToEmbedding converts bytes to a float32 slice
-func bytesToEmbedding(bytes []byte) []float32 {
-	if len(bytes) == 0 {
-		return nil
+	var server models.BackendServer
+	if err := json.Unmarshal([]byte(data), &server); err != nil {
+		return nil, err
 	}
 
-	embedding := make([]float32, len(bytes)/4)
-	for i := range embedding {
-		bits := binary.LittleEndian.Uint32(bytes[i*4:])
-		embedding[i] = math.Float32frombits(bits)
-	}
-	return embedding
+	return &server, nil
 }

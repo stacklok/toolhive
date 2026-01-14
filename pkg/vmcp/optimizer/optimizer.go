@@ -30,8 +30,8 @@ type Config struct {
 	// Enabled controls whether optimizer tools are available
 	Enabled bool
 
-	// DBPath is the path to SQLite database for embeddings storage
-	DBPath string
+	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
+	PersistPath string
 
 	// EmbeddingConfig configures the embedding backend (vLLM, Ollama, placeholder)
 	EmbeddingConfig *embeddings.Config
@@ -58,7 +58,7 @@ func NewIntegration(
 
 	// Initialize ingestion service with embedding backend
 	ingestionCfg := &ingestion.Config{
-		DBConfig:        &db.Config{DBPath: cfg.DBPath},
+		DBConfig:        &db.Config{PersistPath: cfg.PersistPath},
 		EmbeddingConfig: cfg.EmbeddingConfig,
 	}
 

@@ -55,9 +55,9 @@ optimizer:
   # 384 is standard for all-MiniLM-L6-v2 and nomic-embed-text
   embeddingDimension: 384
   
-  # Database path for storing embeddings and tool metadata
-  # Requires sqlite-vec extension to be available
-  dbPath: /tmp/vmcp-optimizer-debug.db
+  # Optional: Path for persisting the chromem-go database
+  # If omitted, the database will be in-memory only (ephemeral)
+  # persistPath: /tmp/vmcp-optimizer-debug
   
   # =============================================================================
   # PRODUCTION CONFIGURATIONS (Commented Examples)

@@ -1,163 +1,121 @@
-// Package db provides database operations for the optimizer.
-// It manages SQLite connections and CRUD operations for MCP servers and tools.
-// The database is ephemeral and recreated on each server start.
 package db
 
 import (
 	"context"
-	"database/sql"
-	_ "embed"
 	"fmt"
-	"os"
-	"path/filepath"
+	"sync"
+
+	"github.com/philippgille/chromem-go"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-//go:embed schema.sql
-var schemaSQL string
-
 // Config holds database configuration
 type Config struct {
-	DBPath string
+	// PersistPath is the optional path for persistence.
+	// If empty, the database will be in-memory only.
+	PersistPath string
 }
 
-// DB wraps a SQL database connection with helper methods
+// DB represents the chromem-go database with collections for optimizer data
 type DB struct {
-	*sql.DB
 	config *Config
+	db     *chromem.DB
+	mu     sync.RWMutex
 }
 
-// NewDB creates a new database connection
+// Collection names
+const (
+	BackendServerCollection = "backend_servers"
+	BackendToolCollection   = "backend_tools"
+)
+
+// NewDB creates a new chromem-go database
 func NewDB(config *Config) (*DB, error) {
-	// Create parent directory if it doesn't exist
-	dbDir := filepath.Dir(config.DBPath)
-	if err := os.MkdirAll(dbDir, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
+	var chromemDB *chromem.DB
+	var err error
 
-	// Open database with extended query parameters for performance and safety
-	// mattn/go-sqlite3 registers as "sqlite3"
-	dbURL := fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", config.DBPath)
-	sqlDB, err := sql.Open("sqlite3", dbURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+	if config.PersistPath != "" {
+		logger.Infof("Creating chromem-go database with persistence at: %s", config.PersistPath)
+		chromemDB, err = chromem.NewPersistentDB(config.PersistPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create persistent database: %w", err)
+		}
+	} else {
+		logger.Info("Creating in-memory chromem-go database")
+		chromemDB = chromem.NewDB()
 	}
-
-	// Set connection pool settings
-	sqlDB.SetMaxOpenConns(1) // SQLite supports only one writer
-	sqlDB.SetMaxIdleConns(1)
 
 	db := &DB{
-		DB:     sqlDB,
 		config: config,
+		db:     chromemDB,
 	}
 
-	// Load sqlite-vec extension (REQUIRED for semantic search)
-	if err := db.loadExtensions(); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf(
-			"failed to load sqlite-vec extension: %w\n\n"+
-				"The optimizer requires sqlite-vec for semantic tool search.\n"+
-				"See pkg/optimizer/README.md for setup instructions",
-			err,
-		)
-	}
-
-	// Initialize schema (ephemeral database - no migrations needed)
-	if err := db.initializeSchema(); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
-	}
-
+	logger.Info("chromem-go database initialized successfully")
 	return db, nil
 }
 
-// loadExtensions loads SQLite extensions (sqlite-vec)
-func (db *DB) loadExtensions() error {
-	// Get the sqlite-vec extension path
-	// In production, this should be bundled with the binary or available in the system
-	// For now, we'll check if it exists and load it
-	vecPath := os.Getenv("SQLITE_VEC_PATH")
-	if vecPath == "" {
-		// Try common locations
-		possiblePaths := []string{
-			"/usr/local/lib/vec0.dylib",
-			"/usr/local/lib/vec0.so",
-			"/usr/lib/vec0.dylib",
-			"/usr/lib/vec0.so",
-			"./vec0.dylib",
-			"./vec0.so",
-		}
-		for _, path := range possiblePaths {
-			if _, err := os.Stat(path); err == nil {
-				vecPath = path
-				break
-			}
-		}
+// GetOrCreateCollection gets an existing collection or creates a new one
+func (db *DB) GetOrCreateCollection(ctx context.Context, name string, embeddingFunc chromem.EmbeddingFunc) (*chromem.Collection, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Try to get existing collection first
+	collection := db.db.GetCollection(name, embeddingFunc)
+	if collection != nil {
+		return collection, nil
 	}
 
-	if vecPath == "" {
-		return fmt.Errorf("sqlite-vec extension not found. Set SQLITE_VEC_PATH environment variable")
-	}
-
-	// Use the raw connection to enable extension loading
-	// This is required for go-sqlite3
-	conn, err := db.Conn(context.Background())
+	// Create new collection if it doesn't exist
+	collection, err := db.db.CreateCollection(name, nil, embeddingFunc)
 	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	err = conn.Raw(func(driverConn interface{}) error {
-		type sqliteConn interface {
-			LoadExtension(file string, entryPoint string) error
-		}
-
-		c, ok := driverConn.(sqliteConn)
-		if !ok {
-			return fmt.Errorf("connection does not support LoadExtension")
-		}
-
-		// Load the extension with the sqlite-vec entry point
-		return c.LoadExtension(vecPath, "sqlite3_vec_init")
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to load sqlite-vec extension: %w", err)
+		return nil, fmt.Errorf("failed to create collection %s: %w", name, err)
 	}
 
-	logger.Debugf("Loaded sqlite-vec extension from %s", vecPath)
+	logger.Debugf("Created new collection: %s", name)
+	return collection, nil
+}
+
+// GetCollection gets an existing collection
+func (db *DB) GetCollection(name string, embeddingFunc chromem.EmbeddingFunc) (*chromem.Collection, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	collection := db.db.GetCollection(name, embeddingFunc)
+	if collection == nil {
+		return nil, fmt.Errorf("collection not found: %s", name)
+	}
+	return collection, nil
+}
+
+// DeleteCollection deletes a collection
+func (db *DB) DeleteCollection(name string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	db.db.DeleteCollection(name)
+	logger.Debugf("Deleted collection: %s", name)
 	return nil
 }
 
-// initializeSchema creates the database schema
-// Since this is ephemeral storage, we don't need migrations - just create everything on startup
-func (db *DB) initializeSchema() error {
-	// Execute the schema SQL
-	// All CREATE TABLE statements use IF NOT EXISTS, so this is idempotent
-	_, err := db.Exec(schemaSQL)
-	if err != nil {
-		return fmt.Errorf(
-			"failed to initialize schema: %w\n\n"+
-				"If you see 'no such module: vec0', ensure sqlite-vec extension is loaded.\n"+
-				"See pkg/optimizer/README.md for setup instructions",
-			err,
-		)
-	}
-
-	logger.Info("Database schema initialized with vector search support")
-	return nil
-}
-
-// BeginTx starts a new transaction
-func (db *DB) BeginTx(ctx context.Context) (*sql.Tx, error) {
-	return db.DB.BeginTx(ctx, &sql.TxOptions{
-		Isolation: sql.LevelSerializable,
-	})
-}
-
-// Close closes the database connection
+// Close closes the database (no-op for chromem-go, included for interface compatibility)
 func (db *DB) Close() error {
-	return db.DB.Close()
+	logger.Info("Closing chromem-go database")
+	return nil
+}
+
+// GetDB returns the underlying chromem.DB instance
+func (db *DB) GetDB() *chromem.DB {
+	return db.db
+}
+
+// Reset clears all collections (useful for testing)
+func (db *DB) Reset() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	db.db.DeleteCollection(BackendServerCollection)
+	db.db.DeleteCollection(BackendToolCollection)
+	logger.Debug("Reset all collections")
+	return nil
 }

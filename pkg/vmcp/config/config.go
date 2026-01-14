@@ -527,10 +527,11 @@ type OptimizerConfig struct {
 	// +optional
 	EmbeddingDimension int `json:"embeddingDimension,omitempty" yaml:"embeddingDimension,omitempty"`
 
-	// DBPath is the filesystem path to the SQLite database for storing embeddings.
-	// The database persists tool metadata, embeddings, and semantic search indices.
+	// PersistPath is the optional filesystem path for persisting the chromem-go database.
+	// If empty, the database will be in-memory only (ephemeral).
+	// When set, tool metadata and embeddings are persisted to disk for faster restarts.
 	// +optional
-	DBPath string `json:"dbPath,omitempty" yaml:"dbPath,omitempty"`
+	PersistPath string `json:"persistPath,omitempty" yaml:"persistPath,omitempty"`
 
 	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
 	// This is an alternative to EmbeddingURL for in-cluster deployments.

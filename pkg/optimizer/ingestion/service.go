@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,16 +76,16 @@ func NewService(config *Config) (*Service, error) {
 	tokenCounter := tokens.NewCounter()
 
 	// Create chromem-go embeddingFunc from our embedding manager
-	embeddingFunc := func(ctx context.Context, text string) ([]float32, error) {
+	embeddingFunc := func(_ context.Context, text string) ([]float32, error) {
 		// Our manager takes a slice, so wrap the single text
-		embeddings, err := embeddingManager.GenerateEmbedding([]string{text})
+		embeddingsResult, err := embeddingManager.GenerateEmbedding([]string{text})
 		if err != nil {
 			return nil, err
 		}
-		if len(embeddings) == 0 {
+		if len(embeddingsResult) == 0 {
 			return nil, fmt.Errorf("no embeddings generated")
 		}
-		return embeddings[0], nil
+		return embeddingsResult[0], nil
 	}
 
 	svc := &Service{
@@ -154,42 +153,6 @@ func (s *Service) IngestServer(
 	return nil
 }
 
-// shouldSkipWorkload checks if a backend should be skipped
-func (s *Service) shouldSkipWorkload(backendName string) bool {
-	if backendName == "" {
-		return true
-	}
-
-	for _, skipped := range s.config.SkippedWorkloads {
-		if strings.Contains(backendName, skipped) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// createToolTextToEmbed creates the text representation for a tool embedding
-func (*Service) createToolTextToEmbed(tool mcp.Tool, serverName string) string {
-	parts := []string{fmt.Sprintf("Server: %s", serverName)}
-
-	if tool.Name != "" {
-		parts = append(parts, fmt.Sprintf("Tool: %s", tool.Name))
-	}
-
-	if tool.Description != "" {
-		parts = append(parts, fmt.Sprintf("Description: %s", tool.Description))
-	}
-
-	// If we only have server name, add the full tool JSON
-	if len(parts) == 1 {
-		toolJSON, _ := tool.MarshalJSON()
-		parts = append(parts, string(toolJSON))
-	}
-
-	return strings.Join(parts, " | ")
-}
-
 // syncBackendTools synchronizes tools for a backend server
 func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
 	// Delete existing tools
@@ -205,22 +168,22 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 	for _, tool := range tools {
 		// Extract description for embedding
 		description := tool.Description
-		
+
 		// Convert InputSchema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			return 0, fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
 		}
-		
+
 		backendTool := &models.BackendTool{
-			ID:           uuid.New().String(),
-			MCPServerID:  serverID,
-			ToolName:     tool.Name,
-			Description:  &description,
-			InputSchema:  schemaJSON,
-			TokenCount:   s.tokenCounter.CountToolTokens(tool),
-			CreatedAt:    time.Now(),
-			LastUpdated:  time.Now(),
+			ID:          uuid.New().String(),
+			MCPServerID: serverID,
+			ToolName:    tool.Name,
+			Description: &description,
+			InputSchema: schemaJSON,
+			TokenCount:  s.tokenCounter.CountToolTokens(tool),
+			CreatedAt:   time.Now(),
+			LastUpdated: time.Now(),
 		}
 
 		if err := s.backendToolOps.Create(ctx, backendTool); err != nil {

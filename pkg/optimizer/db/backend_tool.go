@@ -182,7 +182,12 @@ func (ops *BackendToolOps) ListByServer(ctx context.Context, serverID string) ([
 }
 
 // Search performs semantic search for backend tools
-func (ops *BackendToolOps) Search(ctx context.Context, query string, limit int, serverID *string) ([]*models.BackendToolWithMetadata, error) {
+func (ops *BackendToolOps) Search(
+	ctx context.Context,
+	query string,
+	limit int,
+	serverID *string,
+) ([]*models.BackendToolWithMetadata, error) {
 	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return []*models.BackendToolWithMetadata{}, nil
@@ -215,7 +220,7 @@ func (ops *BackendToolOps) Search(ctx context.Context, query string, limit int, 
 			logger.Warnf("Failed to deserialize tool: %v", err)
 			continue
 		}
-		
+
 		// Add similarity score
 		toolWithMeta := &models.BackendToolWithMetadata{
 			BackendTool: *tool,

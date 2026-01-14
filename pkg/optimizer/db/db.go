@@ -56,7 +56,11 @@ func NewDB(config *Config) (*DB, error) {
 }
 
 // GetOrCreateCollection gets an existing collection or creates a new one
-func (db *DB) GetOrCreateCollection(ctx context.Context, name string, embeddingFunc chromem.EmbeddingFunc) (*chromem.Collection, error) {
+func (db *DB) GetOrCreateCollection(
+	_ context.Context,
+	name string,
+	embeddingFunc chromem.EmbeddingFunc,
+) (*chromem.Collection, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -89,17 +93,17 @@ func (db *DB) GetCollection(name string, embeddingFunc chromem.EmbeddingFunc) (*
 }
 
 // DeleteCollection deletes a collection
-func (db *DB) DeleteCollection(name string) error {
+func (db *DB) DeleteCollection(name string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
 	db.db.DeleteCollection(name)
 	logger.Debugf("Deleted collection: %s", name)
-	return nil
 }
 
 // Close closes the database (no-op for chromem-go, included for interface compatibility)
-func (db *DB) Close() error {
+func (db *DB) Close() error { //nolint:revive // db receiver not used but kept for interface consistency
 	logger.Info("Closing chromem-go database")
 	return nil
 }
@@ -110,12 +114,13 @@ func (db *DB) GetDB() *chromem.DB {
 }
 
 // Reset clears all collections (useful for testing)
-func (db *DB) Reset() error {
+func (db *DB) Reset() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
 	db.db.DeleteCollection(BackendServerCollection)
+	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
 	db.db.DeleteCollection(BackendToolCollection)
 	logger.Debug("Reset all collections")
-	return nil
 }

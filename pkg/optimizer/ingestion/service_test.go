@@ -81,7 +81,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	// With placeholder embeddings (hash-based), semantic similarity isn't guaranteed
 	// Just verify we got results back
 	require.Len(t, results, 2, "Should return both tools")
-	
+
 	// Verify both tools are present (order doesn't matter with placeholder embeddings)
 	toolNamesFound := make(map[string]bool)
 	for _, result := range results {
@@ -143,6 +143,6 @@ func TestServiceWithOllama(t *testing.T) {
 	require.NotEmpty(t, results)
 
 	// With real embeddings, weather tool should be most similar
-	require.Equal(t, "get_weather", results[0].ToolName, 
+	require.Equal(t, "get_weather", results[0].ToolName,
 		"Weather tool should be most similar to weather query")
 }

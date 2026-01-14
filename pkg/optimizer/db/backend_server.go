@@ -1,3 +1,4 @@
+// Package db provides chromem-go based database operations for the optimizer.
 package db
 
 import (

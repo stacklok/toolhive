@@ -182,9 +182,7 @@ func TestBackendWithRegistry_EffectiveDescription(t *testing.T) {
 			name: "Uses registry description when available",
 			w: &BackendWithRegistry{
 				Backend: BackendServer{
-					BaseMCPServer: BaseMCPServer{
-						Description: &backendDesc,
-					},
+					Description: &backendDesc,
 				},
 				Registry: &RegistryServer{
 					BaseMCPServer: BaseMCPServer{
@@ -198,9 +196,7 @@ func TestBackendWithRegistry_EffectiveDescription(t *testing.T) {
 			name: "Uses backend description when no registry",
 			w: &BackendWithRegistry{
 				Backend: BackendServer{
-					BaseMCPServer: BaseMCPServer{
-						Description: &backendDesc,
-					},
+					Description: &backendDesc,
 				},
 				Registry: nil,
 			},
@@ -241,9 +237,7 @@ func TestBackendWithRegistry_ServerNameForTools(t *testing.T) {
 			name: "Uses registry name when available",
 			w: &BackendWithRegistry{
 				Backend: BackendServer{
-					BaseMCPServer: BaseMCPServer{
-						Name: "backend-name",
-					},
+					Name: "backend-name",
 				},
 				Registry: &RegistryServer{
 					BaseMCPServer: BaseMCPServer{
@@ -257,9 +251,7 @@ func TestBackendWithRegistry_ServerNameForTools(t *testing.T) {
 			name: "Uses backend name when no registry",
 			w: &BackendWithRegistry{
 				Backend: BackendServer{
-					BaseMCPServer: BaseMCPServer{
-						Name: "backend-name",
-					},
+					Name: "backend-name",
 				},
 				Registry: nil,
 			},

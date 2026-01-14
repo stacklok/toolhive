@@ -109,12 +109,14 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 			},
@@ -239,8 +241,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal("prefix"))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(string(vmcpServer.Spec.Config.Aggregation.ConflictResolution)).To(Equal("prefix"))
 		})
 
 		It("should discover both yardstick backends in the group", func() {

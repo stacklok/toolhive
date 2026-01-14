@@ -125,7 +125,7 @@ _Appears in:_
 
 
 
-AggregationConfig configures capability aggregation.
+AggregationConfig defines tool aggregation and conflict resolution strategies.
 
 
 
@@ -134,10 +134,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution is the strategy: "prefix", "priority", "manual" |  |  |
-| `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig contains strategy-specific configuration. |  |  |
-| `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools contains per-workload tool configuration. |  |  |
-| `excludeAllTools` _boolean_ |  |  |  |
+| `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br /> |
+| `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  |  |
+| `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  |  |
+| `excludeAllTools` _boolean_ | ExcludeAllTools excludes all tools from aggregation when true. |  |  |
 
 
 #### vmcp.config.AuthzConfig
@@ -161,7 +161,7 @@ _Appears in:_
 
 
 
-CircuitBreakerConfig configures circuit breaker.
+CircuitBreakerConfig configures circuit breaker behavior.
 
 
 
@@ -170,9 +170,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled indicates if circuit breaker is enabled. |  |  |
-| `failureThreshold` _integer_ | FailureThreshold is how many failures trigger open circuit. |  |  |
-| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is how long to keep circuit open. |  |  |
+| `enabled` _boolean_ | Enabled controls whether circuit breaker is enabled. | false |  |
+| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit. | 5 |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the duration to wait before attempting to close the circuit. | 60s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 
 
 #### vmcp.config.CompositeToolConfig
@@ -186,15 +186,33 @@ This matches the YAML structure from the proposal (lines 173-255).
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the workflow name (unique identifier). |  |  |
 | `description` _string_ | Description describes what the workflow does. |  |  |
 | `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  |  |
-| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
+
+
+#### vmcp.config.CompositeToolRef
+
+
+
+CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
+The referenced resource must be in the same namespace as the VirtualMCPServer.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace. |  | Required: \{\} <br /> |
 
 
 #### vmcp.config.Config
@@ -217,10 +235,11 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the virtual MCP server name. |  |  |
 | `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
-| `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server. |  |  |
-| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends. |  |  |
-| `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation configures capability aggregation and conflict resolution. |  |  |
+| `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  |  |
+| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  |  |
+| `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies.<br />Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references. |  |  |
 | `compositeTools` _[vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig) array_ | CompositeTools defines inline composite tool workflows.<br />Full workflow definitions are embedded in the configuration.<br />For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs. |  |  |
+| `compositeToolRefs` _[vmcp.config.CompositeToolRef](#vmcpconfigcompositetoolref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows. Only applicable when running in Kubernetes.<br />Referenced resources must be in the same namespace as the VirtualMCPServer. |  |  |
 | `operational` _[vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)_ | Operational configures operational settings. |  |  |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  |  |
@@ -231,7 +250,7 @@ _Appears in:_
 
 
 
-ConflictResolutionConfig contains conflict resolution settings.
+ConflictResolutionConfig provides configuration for conflict resolution strategies.
 
 
 
@@ -240,8 +259,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `prefixFormat` _string_ | PrefixFormat is the prefix format (for prefix strategy).<br />Options: "\{workload\}", "\{workload\}_", "\{workload\}.", custom string |  |  |
-| `priorityOrder` _string array_ | PriorityOrder is the explicit priority ordering (for priority strategy). |  |  |
+| `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" strategy.<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ |  |
+| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy. |  |  |
 
 
 
@@ -252,7 +271,7 @@ _Appears in:_
 
 
 
-ElicitationResponseConfig defines how to handle elicitation responses.
+ElicitationResponseConfig defines how to handle user responses to elicitation requests.
 
 
 
@@ -261,14 +280,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `action` _string_ | Action: "skip_remaining", "abort", "continue" |  |  |
+| `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br /> |
 
 
 #### vmcp.config.FailureHandlingConfig
 
 
 
-FailureHandlingConfig configures failure handling.
+FailureHandlingConfig configures failure handling behavior.
 
 
 
@@ -277,10 +296,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is how often to check backend health. |  |  |
-| `unhealthyThreshold` _integer_ | UnhealthyThreshold is how many failures before marking unhealthy. |  |  |
-| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends fail.<br />Options: "fail" (fail entire request), "best_effort" (return partial results) |  |  |
-| `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker settings. |  |  |
+| `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is the interval between health checks. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy. | 3 |  |
+| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends are unavailable.<br />- fail: Fail entire request if any backend is unavailable<br />- best_effort: Continue with available backends | fail | Enum: [fail best_effort] <br /> |
+| `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior. |  |  |
 
 
 #### vmcp.config.IncomingAuthConfig
@@ -288,6 +307,13 @@ _Appears in:_
 
 
 IncomingAuthConfig configures client authentication to the virtual MCP server.
+
+Note: When using the Kubernetes operator (VirtualMCPServer CRD), the
+VirtualMCPServerSpec.IncomingAuth field is the authoritative source for
+authentication configuration. The operator's converter will resolve the CRD's
+IncomingAuth (which supports Kubernetes-native references like SecretKeyRef,
+ConfigMapRef, etc.) and populate this IncomingAuthConfig with the resolved values.
+Any values set here directly will be superseded by the CRD configuration.
 
 
 
@@ -331,6 +357,7 @@ _Appears in:_
 
 
 OperationalConfig contains operational settings.
+OperationalConfig defines operational settings like timeouts and health checks.
 
 
 
@@ -339,8 +366,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures request timeouts. |  |  |
-| `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
+| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br /> |
+| `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  |  |
+| `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  |  |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -348,6 +376,14 @@ _Appears in:_
 
 
 OutgoingAuthConfig configures backend authentication.
+
+Note: When using the Kubernetes operator (VirtualMCPServer CRD), the
+VirtualMCPServerSpec.OutgoingAuth field is the authoritative source for
+backend authentication configuration. The operator's converter will resolve
+the CRD's OutgoingAuth (which supports Kubernetes-native references like
+SecretKeyRef, ConfigMapRef, etc.) and populate this OutgoingAuthConfig with
+the resolved values. Any values set here directly will be superseded by the
+CRD configuration.
 
 
 
@@ -373,6 +409,7 @@ MCP output schema (type, description) and runtime value construction (value, def
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -396,18 +433,18 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array". |  |  |
-| `description` _string_ | Description is a human-readable description exposed to clients and models. |  |  |
+| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array" |  | Enum: [string integer number boolean object array] <br />Required: \{\} <br /> |
+| `description` _string_ | Description is a human-readable description exposed to clients and models |  |  |
 | `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  |  |
 | `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br /> |
-| `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  |  |
+| `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br /> |
 
 
 #### vmcp.config.StepErrorHandling
 
 
 
-StepErrorHandling defines error handling for a workflow step.
+StepErrorHandling defines error handling behavior for workflow steps.
 
 
 
@@ -416,16 +453,16 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `action` _string_ | Action: "abort", "continue", "retry" |  |  |
-| `retryCount` _integer_ | RetryCount is the number of retry attempts (for retry action). |  |  |
-| `retryDelay` _[vmcp.config.Duration](#vmcpconfigduration)_ | RetryDelay is the initial delay between retries. |  |  |
+| `action` _string_ | Action defines the action to take on error | abort | Enum: [abort continue retry] <br /> |
+| `retryCount` _integer_ | RetryCount is the maximum number of retries<br />Only used when Action is "retry" |  |  |
+| `retryDelay` _[vmcp.config.Duration](#vmcpconfigduration)_ | RetryDelay is the delay between retry attempts<br />Only used when Action is "retry" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 
 
 #### vmcp.config.TimeoutConfig
 
 
 
-TimeoutConfig configures timeouts.
+TimeoutConfig configures timeout settings.
 
 
 
@@ -434,15 +471,32 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. |  |  |
-| `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload contains per-workload timeout overrides. |  |  |
+| `default` _[vmcp.config.Duration](#vmcpconfigduration)_ | Default is the default timeout for backend requests. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `perWorkload` _object (keys:string, values:[vmcp.config.Duration](#vmcpconfigduration))_ | PerWorkload defines per-workload timeout overrides. |  |  |
+
+
+#### vmcp.config.ToolConfigRef
+
+
+
+ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.
+Only used when running in Kubernetes with the operator.
+
+
+
+_Appears in:_
+- [vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPToolConfig resource in the same namespace. |  | Required: \{\} <br /> |
 
 
 #### vmcp.config.ToolOverride
 
 
 
-ToolOverride defines tool name/description overrides.
+ToolOverride defines tool name and description overrides.
 
 
 
@@ -452,7 +506,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the new tool name (for renaming). |  |  |
-| `description` _string_ | Description is the new tool description (for updating). |  |  |
+| `description` _string_ | Description is the new tool description. |  |  |
 
 
 
@@ -468,29 +522,30 @@ This matches the proposal's step configuration (lines 180-255).
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `id` _string_ | ID uniquely identifies this step. |  |  |
-| `type` _string_ | Type is the step type: "tool", "elicitation" |  |  |
-| `tool` _string_ | Tool is the tool name to call (for tool steps). |  |  |
-| `arguments` _[pkg.json.Map](#pkgjsonmap)_ | Arguments are the tool arguments (supports template expansion). |  |  |
-| `condition` _string_ | Condition is an optional execution condition (template syntax). |  |  |
-| `dependsOn` _string array_ | DependsOn lists step IDs that must complete first (for DAG execution). |  |  |
-| `onError` _[vmcp.config.StepErrorHandling](#vmcpconfigsteperrorhandling)_ | OnError defines error handling for this step. |  |  |
-| `message` _string_ | Elicitation config (for elicitation steps). |  |  |
-| `schema` _[pkg.json.Map](#pkgjsonmap)_ |  |  |  |
-| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ |  |  |  |
-| `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | Elicitation response handlers. |  |  |
-| `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ |  |  |  |
-| `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps. |  |  |
+| `id` _string_ | ID is the unique identifier for this step. |  | Required: \{\} <br /> |
+| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br /> |
+| `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  |  |
+| `arguments` _[pkg.json.Map](#pkgjsonmap)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br /> |
+| `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
+| `dependsOn` _string array_ | DependsOn lists step IDs that must complete before this step |  |  |
+| `onError` _[vmcp.config.StepErrorHandling](#vmcpconfigsteperrorhandling)_ | OnError defines error handling behavior |  |  |
+| `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
+| `schema` _[pkg.json.Map](#pkgjsonmap)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum execution time for this step |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  |  |
+| `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  |  |
+| `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 
 #### vmcp.config.WorkloadToolConfig
 
 
 
-WorkloadToolConfig configures tool filtering/overrides for a workload.
+WorkloadToolConfig defines tool filtering and overrides for a specific workload.
 
 
 
@@ -499,10 +554,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `workload` _string_ | Workload is the workload name/ID. |  |  |
-| `filter` _string array_ | Filter is the list of tools to include (nil = include all). |  |  |
-| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides maps tool names to override configurations. |  |  |
-| `excludeAll` _boolean_ |  |  |  |
+| `workload` _string_ | Workload is the name of the backend MCPServer workload. |  | Required: \{\} <br /> |
+| `toolConfigRef` _[vmcp.config.ToolConfigRef](#vmcpconfigtoolconfigref)_ | ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.<br />If specified, Filter and Overrides are ignored.<br />Only used when running in Kubernetes with the operator. |  |  |
+| `filter` _string array_ | Filter is an inline list of tool names to allow (allow list).<br />Only used if ToolConfigRef is not specified. |  |  |
+| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides.<br />Only used if ToolConfigRef is not specified. |  |  |
+| `excludeAll` _boolean_ | ExcludeAll excludes all tools from this workload when true. |  |  |
 
 
 
@@ -525,16 +581,16 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `endpoint` _string_ | Endpoint is the OTLP endpoint URL |  |  |
-| `serviceName` _string_ | ServiceName is the service name for telemetry |  |  |
-| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry |  |  |
-| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled<br />When false, no tracer provider is created even if an endpoint is configured |  |  |
-| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled<br />When false, OTLP metrics are not sent even if an endpoint is configured<br />This is independent of EnablePrometheusMetricsPath |  |  |
-| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. |  |  |
-| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint |  |  |
-| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint |  |  |
-| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint<br />The metrics are served on the main transport port at /metrics<br />This is separate from OTLP metrics which are sent to the Endpoint |  |  |
-| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: []string\{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"\} |  |  |
-| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.<br />We use map[string]string for proper JSON serialization instead of []attribute.KeyValue<br />which doesn't marshal/unmarshal correctly. |  |  |
+| `serviceName` _string_ | ServiceName is the service name for telemetry.<br />When omitted, defaults to the server name (e.g., VirtualMCPServer name). |  |  |
+| `serviceVersion` _string_ | ServiceVersion is the service version for telemetry.<br />When omitted, defaults to the ToolHive version. |  |  |
+| `tracingEnabled` _boolean_ | TracingEnabled controls whether distributed tracing is enabled.<br />When false, no tracer provider is created even if an endpoint is configured. | false |  |
+| `metricsEnabled` _boolean_ | MetricsEnabled controls whether OTLP metrics are enabled.<br />When false, OTLP metrics are not sent even if an endpoint is configured.<br />This is independent of EnablePrometheusMetricsPath. | false |  |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) as a string.<br />Only used when TracingEnabled is true.<br />Example: "0.05" for 5% sampling. | 0.05 |  |
+| `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint. |  |  |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint. | false |  |
+| `enablePrometheusMetricsPath` _boolean_ | EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.<br />The metrics are served on the main transport port at /metrics.<br />This is separate from OTLP metrics which are sent to the Endpoint. | false |  |
+| `environmentVariables` _string array_ | EnvironmentVariables is a list of environment variable names that should be<br />included in telemetry spans as attributes. Only variables in this list will<br />be read from the host machine and included in spans for observability.<br />Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"] |  |  |
+| `customAttributes` _object (keys:string, values:string)_ | CustomAttributes contains custom resource attributes to be added to all telemetry signals.<br />These are parsed from CLI flags (--otel-custom-attributes) or environment variables<br />(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs. |  |  |
 
 
 
@@ -548,22 +604,22 @@ _Appears in:_
 
 ## toolhive.stacklok.dev/v1alpha1
 ### Resource Types
-- [MCPExternalAuthConfig](#mcpexternalauthconfig)
-- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
-- [MCPGroup](#mcpgroup)
-- [MCPGroupList](#mcpgrouplist)
-- [MCPRegistry](#mcpregistry)
-- [MCPRegistryList](#mcpregistrylist)
-- [MCPRemoteProxy](#mcpremoteproxy)
-- [MCPRemoteProxyList](#mcpremoteproxylist)
-- [MCPServer](#mcpserver)
-- [MCPServerList](#mcpserverlist)
-- [MCPToolConfig](#mcptoolconfig)
-- [MCPToolConfigList](#mcptoolconfiglist)
-- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
-- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
-- [VirtualMCPServer](#virtualmcpserver)
-- [VirtualMCPServerList](#virtualmcpserverlist)
+- [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
+- [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
+- [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
+- [api.v1alpha1.MCPGroupList](#apiv1alpha1mcpgrouplist)
+- [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
+- [api.v1alpha1.MCPRegistryList](#apiv1alpha1mcpregistrylist)
+- [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
+- [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
+- [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
+- [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
+- [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionList](#apiv1alpha1virtualmcpcompositetooldefinitionlist)
+- [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
+- [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
 
 
 
@@ -625,26 +681,6 @@ _Appears in:_
 | `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  |  |
 
 
-
-
-#### api.v1alpha1.AggregationConfig
-
-
-
-AggregationConfig defines tool aggregation and conflict resolution strategies
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `conflictResolution` _string_ | ConflictResolution defines the strategy for resolving tool name conflicts<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br /> |
-| `conflictResolutionConfig` _[api.v1alpha1.ConflictResolutionConfig](#apiv1alpha1conflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy |  |  |
-| `tools` _[api.v1alpha1.WorkloadToolConfig](#apiv1alpha1workloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides<br />References existing MCPToolConfig resources |  |  |
-
-
 #### api.v1alpha1.AuditConfig
 
 
@@ -699,62 +735,6 @@ _Appears in:_
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
-#### api.v1alpha1.CircuitBreakerConfig
-
-
-
-CircuitBreakerConfig configures circuit breaker behavior
-
-
-
-_Appears in:_
-- [api.v1alpha1.FailureHandlingConfig](#apiv1alpha1failurehandlingconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether circuit breaker is enabled | false |  |
-| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit | 5 |  |
-| `timeout` _string_ | Timeout is the duration to wait before attempting to close the circuit | 60s |  |
-
-
-#### api.v1alpha1.CompositeToolDefinitionRef
-
-
-
-CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition resource
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace |  | Required: \{\} <br /> |
-
-
-#### api.v1alpha1.CompositeToolSpec
-
-
-
-CompositeToolSpec defines an inline composite tool
-For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the composite tool |  | Required: \{\} <br /> |
-| `description` _string_ | Description describes the composite tool |  | Required: \{\} <br /> |
-| `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
-| `steps` _[api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep) array_ | Steps defines the workflow steps |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `timeout` _string_ | Timeout is the maximum execution time for the composite tool | 30m |  |
-| `output` _[api.v1alpha1.OutputSpec](#apiv1alpha1outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
-
-
 #### api.v1alpha1.ConfigMapAuthzRef
 
 
@@ -789,23 +769,6 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json |  |
 
 
-#### api.v1alpha1.ConflictResolutionConfig
-
-
-
-ConflictResolutionConfig provides configuration for conflict resolution strategies
-
-
-
-_Appears in:_
-- [api.v1alpha1.AggregationConfig](#apiv1alpha1aggregationconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" strategy<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ |  |
-| `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy |  |  |
-
-
 #### api.v1alpha1.DiscoveredBackend
 
 
@@ -827,24 +790,6 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
-#### api.v1alpha1.ElicitationResponseHandler
-
-
-
-ElicitationResponseHandler defines how to handle user responses to elicitation requests
-
-
-
-_Appears in:_
-- [api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br /> |
-
-
-
-
 #### api.v1alpha1.EnvVar
 
 
@@ -861,24 +806,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the environment variable |  | Required: \{\} <br /> |
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
-
-
-#### api.v1alpha1.ErrorHandling
-
-
-
-ErrorHandling defines error handling behavior for workflow steps
-
-
-
-_Appears in:_
-- [api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `action` _string_ | Action defines the action to take on error | abort | Enum: [abort continue retry] <br /> |
-| `maxRetries` _integer_ | MaxRetries is the maximum number of retries<br />Only used when Action is "retry" |  |  |
-| `retryDelay` _string_ | RetryDelay is the delay between retry attempts<br />Only used when Action is "retry" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
 
 
 #### api.v1alpha1.ExternalAuthConfigRef
@@ -916,25 +843,6 @@ _Appears in:_
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
-
-
-#### api.v1alpha1.FailureHandlingConfig
-
-
-
-FailureHandlingConfig configures failure handling behavior
-
-
-
-_Appears in:_
-- [api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `healthCheckInterval` _string_ | HealthCheckInterval is the interval between health checks | 30s |  |
-| `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy | 3 |  |
-| `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends are unavailable<br />- fail: Fail entire request if any backend is unavailable<br />- best_effort: Continue with available backends | fail | Enum: [fail best_effort] <br /> |
-| `circuitBreaker` _[api.v1alpha1.CircuitBreakerConfig](#apiv1alpha1circuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior |  |  |
 
 
 #### api.v1alpha1.GitSource
@@ -1911,24 +1819,6 @@ _Appears in:_
 | `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 |  |
 
 
-#### api.v1alpha1.OperationalConfig
-
-
-
-OperationalConfig defines operational settings
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
-| `timeouts` _[api.v1alpha1.TimeoutConfig](#apiv1alpha1timeoutconfig)_ | Timeouts configures timeout settings |  |  |
-| `failureHandling` _[api.v1alpha1.FailureHandlingConfig](#apiv1alpha1failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
-
-
 #### api.v1alpha1.OutboundNetworkPermissions
 
 
@@ -1963,45 +1853,6 @@ _Appears in:_
 | `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br /> |
 | `default` _[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  |  |
 | `backends` _object (keys:string, values:[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  |  |
-
-
-#### api.v1alpha1.OutputPropertySpec
-
-
-
-OutputPropertySpec defines a single output property
-
-
-
-_Appears in:_
-- [api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec)
-- [api.v1alpha1.OutputSpec](#apiv1alpha1outputspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array" |  | Enum: [string integer number boolean object array] <br />Required: \{\} <br /> |
-| `description` _string_ | Description is a human-readable description exposed to clients and models |  |  |
-| `value` _string_ | Value is a template string for constructing the runtime value<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\}<br />For object types, this can be a JSON string that will be deserialized |  |  |
-| `properties` _object (keys:string, values:[api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec))_ | Properties defines nested properties for object types |  | Schemaless: \{\} <br /> |
-| `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Schemaless: \{\} <br /> |
-
-
-#### api.v1alpha1.OutputSpec
-
-
-
-OutputSpec defines the structured output schema for a composite tool workflow
-
-
-
-_Appears in:_
-- [api.v1alpha1.CompositeToolSpec](#apiv1alpha1compositetoolspec)
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `properties` _object (keys:string, values:[api.v1alpha1.OutputPropertySpec](#apiv1alpha1outputpropertyspec))_ | Properties defines the output properties<br />Map key is the property name, value is the property definition |  |  |
-| `required` _string array_ | Required lists property names that must be present in the output |  |  |
 
 
 #### api.v1alpha1.PVCSource
@@ -2164,26 +2015,6 @@ _Appears in:_
 | `requests` _[api.v1alpha1.ResourceList](#apiv1alpha1resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
 
 
-#### api.v1alpha1.RetryPolicy
-
-
-
-RetryPolicy defines retry behavior for workflow steps
-
-
-
-_Appears in:_
-- [api.v1alpha1.AdvancedWorkflowStep](#apiv1alpha1advancedworkflowstep)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `maxRetries` _integer_ | MaxRetries is the maximum number of retry attempts | 3 | Maximum: 10 <br />Minimum: 1 <br /> |
-| `backoffStrategy` _string_ | BackoffStrategy defines the backoff strategy<br />- fixed: Fixed delay between retries<br />- exponential: Exponential backoff | exponential | Enum: [fixed exponential] <br /> |
-| `initialDelay` _string_ | InitialDelay is the initial delay before first retry | 1s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
-| `maxDelay` _string_ | MaxDelay is the maximum delay between retries | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
-| `retryableErrors` _string array_ | RetryableErrors defines which errors should trigger retry<br />If empty, all errors are retryable<br />Supports regex patterns |  |  |
-
-
 #### api.v1alpha1.SecretKeyRef
 
 
@@ -2333,23 +2164,6 @@ _Appears in:_
 | `prometheus` _[api.v1alpha1.PrometheusConfig](#apiv1alpha1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
 
 
-#### api.v1alpha1.TimeoutConfig
-
-
-
-TimeoutConfig configures timeout settings
-
-
-
-_Appears in:_
-- [api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `default` _string_ | Default is the default timeout for backend requests | 30s |  |
-| `perWorkload` _object (keys:string, values:string)_ | PerWorkload defines per-workload timeout overrides |  |  |
-
-
 #### api.v1alpha1.TokenExchangeConfig
 
 
@@ -2387,7 +2201,6 @@ The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 _Appears in:_
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-- [api.v1alpha1.WorkloadToolConfig](#apiv1alpha1workloadtoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2406,7 +2219,6 @@ they can't be both empty.
 
 _Appears in:_
 - [api.v1alpha1.MCPToolConfigSpec](#apiv1alpha1mcptoolconfigspec)
-- [api.v1alpha1.WorkloadToolConfig](#apiv1alpha1workloadtoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2481,7 +2293,9 @@ VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeTool
 
 
 
-VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition
+VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition.
+This embeds the CompositeToolConfig from pkg/vmcp/config to share the configuration model
+between CLI and operator usage.
 
 
 
@@ -2490,13 +2304,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name is the workflow name exposed as a composite tool |  | MaxLength: 64 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
-| `description` _string_ | Description is a human-readable description of the workflow |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema for the workflow in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
-| `steps` _[api.v1alpha1.WorkflowStep](#apiv1alpha1workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
-| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |
-| `output` _[api.v1alpha1.OutputSpec](#apiv1alpha1outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
+| `name` _string_ | Name is the workflow name (unique identifier). |  |  |
+| `description` _string_ | Description describes what the workflow does. |  |  |
+| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  |  |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
+| `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
+| `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
 #### api.v1alpha1.VirtualMCPCompositeToolDefinitionStatus
@@ -2595,15 +2408,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server<br />Must be explicitly set - use "anonymous" type when no authentication is required |  | Required: \{\} <br /> |
-| `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
-| `aggregation` _[api.v1alpha1.AggregationConfig](#apiv1alpha1aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
-| `compositeTools` _[api.v1alpha1.CompositeToolSpec](#apiv1alpha1compositetoolspec) array_ | CompositeTools defines inline composite tool definitions<br />For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead |  |  |
-| `compositeToolRefs` _[api.v1alpha1.CompositeToolDefinitionRef](#apiv1alpha1compositetooldefinitionref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows |  |  |
-| `operational` _[api.v1alpha1.OperationalConfig](#apiv1alpha1operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
+| `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
+| `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
-| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required.<br />NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE. |  | Type: object <br /> |
+| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br /> |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus
@@ -2645,53 +2454,5 @@ _Appears in:_
 | `hostPath` _string_ | HostPath is the path on the host to mount |  | Required: \{\} <br /> |
 | `mountPath` _string_ | MountPath is the path in the container to mount to |  | Required: \{\} <br /> |
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false |  |
-
-
-#### api.v1alpha1.WorkflowStep
-
-
-
-WorkflowStep defines a step in a composite tool workflow
-
-
-
-_Appears in:_
-- [api.v1alpha1.CompositeToolSpec](#apiv1alpha1compositetoolspec)
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `id` _string_ | ID is the unique identifier for this step |  | Required: \{\} <br /> |
-| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br /> |
-| `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  |  |
-| `arguments` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br /> |
-| `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
-| `schema` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |
-| `onDecline` _[api.v1alpha1.ElicitationResponseHandler](#apiv1alpha1elicitationresponsehandler)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  |  |
-| `onCancel` _[api.v1alpha1.ElicitationResponseHandler](#apiv1alpha1elicitationresponsehandler)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  |  |
-| `dependsOn` _string array_ | DependsOn lists step IDs that must complete before this step |  |  |
-| `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
-| `onError` _[api.v1alpha1.ErrorHandling](#apiv1alpha1errorhandling)_ | OnError defines error handling behavior |  |  |
-| `timeout` _string_ | Timeout is the maximum execution time for this step |  |  |
-| `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
-
-
-#### api.v1alpha1.WorkloadToolConfig
-
-
-
-WorkloadToolConfig defines tool filtering and overrides for a specific workload
-
-
-
-_Appears in:_
-- [api.v1alpha1.AggregationConfig](#apiv1alpha1aggregationconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `workload` _string_ | Workload is the name of the backend MCPServer workload |  | Required: \{\} <br /> |
-| `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming<br />If specified, Filter and Overrides are ignored |  |  |
-| `filter` _string array_ | Filter is an inline list of tool names to allow (allow list)<br />Only used if ToolConfigRef is not specified |  |  |
-| `overrides` _object (keys:string, values:[api.v1alpha1.ToolOverride](#apiv1alpha1tooloverride))_ | Overrides is an inline map of tool overrides<br />Only used if ToolConfigRef is not specified |  |  |
 
 

@@ -280,6 +280,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := proxy.CloseListener(); err != nil {
 		logger.Warnf("Error closing proxy listener: %v", err)
 	}
+	// Use Background context for proxy shutdown. The parent context is already cancelled
+	// at this point, so we need a fresh context with its own timeout to ensure the
+	// shutdown operation completes successfully.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return proxy.Stop(shutdownCtx)

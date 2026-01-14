@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 const (
@@ -73,7 +74,7 @@ func (c *DefaultClient) Get(ctx context.Context, url string) ([]byte, error) {
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
-		return nil, NewHTTPError(resp.StatusCode, url, resp.Status)
+		return nil, networking.NewHTTPError(resp.StatusCode, url, resp.Status)
 	}
 
 	// Check Content-Length header if available

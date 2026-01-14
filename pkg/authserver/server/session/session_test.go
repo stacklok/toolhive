@@ -240,11 +240,10 @@ func TestSession_UpstreamSessionID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		session   *Session
-		setID     string
-		wantGet   string
-		wantPanic bool
+		name    string
+		session *Session
+		setID   string
+		wantGet string
 	}{
 		{
 			name:    "get and set on new session",
@@ -258,10 +257,9 @@ func TestSession_UpstreamSessionID(t *testing.T) {
 			wantGet: "",
 		},
 		{
-			name:      "set on nil session does not panic",
-			session:   nil,
-			setID:     "test-id",
-			wantPanic: false,
+			name:    "set on nil session does not panic",
+			session: nil,
+			setID:   "test-id",
 		},
 	}
 

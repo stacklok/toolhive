@@ -9,7 +9,7 @@ const docTemplate = `{
     "components": {
         "schemas": {
             "audit.Config": {
-                "description": "AuditConfig contains the audit logging configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
                 "properties": {
                     "component": {
                         "description": "Component is the component name to use in audit events.\n+optional",
@@ -55,7 +55,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "auth.TokenValidatorConfig": {
-                "description": "OIDCConfig contains OIDC configuration",
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
                     "allowPrivateIP": {
                         "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
@@ -112,7 +112,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authz.Config": {
-                "description": "AuthzConfig contains the authorization configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
                     "type": {
                         "description": "Type is the type of authorization configuration (e.g., \"cedarv1\").",
@@ -750,14 +750,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/audit.Config"
                     },
                     "audit_config_path": {
-                        "description": "AuditConfigPath is the path to the audit configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
                         "type": "string"
                     },
                     "authz_config": {
                         "$ref": "#/components/schemas/authz.Config"
                     },
                     "authz_config_path": {
-                        "description": "AuthzConfigPath is the path to the authorization configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
                         "type": "string"
                     },
                     "base_name": {
@@ -792,7 +792,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "env_file_dir": {
-                        "description": "EnvFileDir is the directory path to load environment files from",
+                        "description": "DEPRECATED: No longer appears to be used.\nEnvFileDir is the directory path to load environment files from",
                         "type": "string"
                     },
                     "env_vars": {
@@ -822,7 +822,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "jwks_auth_token_file": {
-                        "description": "JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
+                        "description": "DEPRECATED: No longer appears to be used.\nJWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
                         "type": "string"
                     },
                     "k8s_pod_template_patch": {
@@ -889,14 +889,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/telemetry.Config"
                     },
                     "thv_ca_bundle": {
-                        "description": "ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
+                        "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
                         "type": "string"
                     },
                     "token_exchange_config": {
                         "$ref": "#/components/schemas/tokenexchange.Config"
                     },
                     "tools_filter": {
-                        "description": "ToolsFilter is the list of tools to filter",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
                         "items": {
                             "type": "string"
                         },
@@ -907,7 +907,7 @@ const docTemplate = `{
                         "additionalProperties": {
                             "$ref": "#/components/schemas/runner.ToolOverride"
                         },
-                        "description": "ToolsOverride is a map from an actual tool to its overridden name and/or description",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsOverride is a map from an actual tool to its overridden name and/or description",
                         "type": "object"
                     },
                     "transport": {
@@ -980,25 +980,25 @@ const docTemplate = `{
                 "type": "object"
             },
             "telemetry.Config": {
-                "description": "TelemetryConfig contains the OpenTelemetry configuration",
+                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
                     "customAttributes": {
                         "additionalProperties": {
                             "type": "string"
                         },
-                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\nWe use map[string]string for proper JSON serialization instead of []attribute.KeyValue\nwhich doesn't marshal/unmarshal correctly.",
+                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint\nThe metrics are served on the main transport port at /metrics\nThis is separate from OTLP metrics which are sent to the Endpoint",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
-                        "description": "Endpoint is the OTLP endpoint URL",
+                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
                         "type": "string"
                     },
                     "environmentVariables": {
-                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: []string{\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"}",
+                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
                         "items": {
                             "type": "string"
                         },
@@ -1009,31 +1009,31 @@ const docTemplate = `{
                         "additionalProperties": {
                             "type": "string"
                         },
-                        "description": "Headers contains authentication headers for the OTLP endpoint",
+                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
                         "type": "object"
                     },
                     "insecure": {
-                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint",
+                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "metricsEnabled": {
-                        "description": "MetricsEnabled controls whether OTLP metrics are enabled\nWhen false, OTLP metrics are not sent even if an endpoint is configured\nThis is independent of EnablePrometheusMetricsPath",
+                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "samplingRate": {
-                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.",
+                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
                         "type": "string"
                     },
                     "serviceName": {
-                        "description": "ServiceName is the service name for telemetry",
+                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
                         "type": "string"
                     },
                     "serviceVersion": {
-                        "description": "ServiceVersion is the service version for telemetry",
+                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
                         "type": "string"
                     },
                     "tracingEnabled": {
-                        "description": "TracingEnabled controls whether distributed tracing is enabled\nWhen false, no tracer provider is created even if an endpoint is configured",
+                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     }
                 },

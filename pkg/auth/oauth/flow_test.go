@@ -484,7 +484,7 @@ func TestProcessToken(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 	}
 
-	result := flow.processToken(token)
+	result := flow.processToken(context.Background(), token)
 
 	assert.NotNil(t, result)
 	assert.Equal(t, token.AccessToken, result.AccessToken)
@@ -841,7 +841,7 @@ func TestProcessToken_WithJWTClaims(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 	}
 
-	result := flow.processToken(token)
+	result := flow.processToken(context.Background(), token)
 
 	assert.NotNil(t, result)
 	assert.Equal(t, tokenString, result.AccessToken)
@@ -876,7 +876,7 @@ func TestProcessToken_WithOpaqueToken(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 	}
 
-	result := flow.processToken(token)
+	result := flow.processToken(context.Background(), token)
 
 	assert.NotNil(t, result)
 	assert.Equal(t, token.AccessToken, result.AccessToken)

@@ -148,6 +148,19 @@ metadata:
 spec:
   config:
     groupRef: my-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    # Reference the composite tool definition
+    compositeToolRefs:
+      - name: fetch-and-validate
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   incomingAuth:
     type: anonymous
@@ -160,22 +173,6 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Reference the composite tool definition
-  compositeToolRefs:
-    - name: fetch-and-validate
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
 
 ---
 # Example usage from MCP client:

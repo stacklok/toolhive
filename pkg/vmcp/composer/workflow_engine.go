@@ -192,6 +192,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusTimedOut)
 				finalState.StartTime = result.StartTime
+				// Use Background context for final state persistence after workflow timeout.
+				// The execution context is already cancelled/timed out, but we need to persist
+				// the final state for audit and status tracking purposes.
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -214,6 +217,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 		if e.stateStore != nil {
 			finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
 			finalState.StartTime = result.StartTime
+			// Use Background context for final state persistence after workflow failure.
+			// The execution context may already be cancelled, but we need to persist
+			// the final failure state for audit and status tracking purposes.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -249,6 +255,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
 				finalState.StartTime = result.StartTime
+				// Use Background context for final state persistence after workflow failure.
+				// The execution context may already be cancelled, but we need to persist
+				// the final failure state for audit and status tracking purposes.
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -270,6 +279,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 	if e.stateStore != nil {
 		finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusCompleted)
 		finalState.StartTime = result.StartTime
+		// Use Background context for final state persistence after workflow completion.
+		// The execution context may already be cancelled or expired, but we need to persist
+		// the final completed state for audit and status tracking purposes.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState); err != nil {
@@ -414,7 +426,7 @@ func (e *workflowEngine) executeToolStep(
 		return e.handleToolStepFailure(step, workflowCtx, retryCount, err)
 	}
 
-	return e.handleToolStepSuccess(step, workflowCtx, output, retryCount)
+	return e.handleToolStepSuccess(ctx, step, workflowCtx, output, retryCount)
 }
 
 // callToolWithRetry calls a tool with retry logic using exponential backoff.
@@ -511,6 +523,7 @@ func (*workflowEngine) handleToolStepFailure(
 
 // handleToolStepSuccess handles a successful tool step.
 func (e *workflowEngine) handleToolStepSuccess(
+	ctx context.Context,
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 	output map[string]any,
@@ -524,7 +537,7 @@ func (e *workflowEngine) handleToolStepSuccess(
 	}
 
 	// Checkpoint workflow state
-	e.checkpointWorkflowState(workflowCtx)
+	e.checkpointWorkflowState(ctx, workflowCtx)
 
 	logger.Debugf("Step %s completed successfully", step.ID)
 	return nil
@@ -732,7 +745,7 @@ func (*workflowEngine) buildWorkflowStatus(workflowCtx *WorkflowContext, status 
 }
 
 // checkpointWorkflowState saves the current workflow state to the state store.
-func (e *workflowEngine) checkpointWorkflowState(workflowCtx *WorkflowContext) {
+func (e *workflowEngine) checkpointWorkflowState(ctx context.Context, workflowCtx *WorkflowContext) {
 	if e.stateStore == nil {
 		return
 	}
@@ -740,11 +753,11 @@ func (e *workflowEngine) checkpointWorkflowState(workflowCtx *WorkflowContext) {
 	// Build workflow status
 	state := e.buildWorkflowStatus(workflowCtx, WorkflowStatusRunning)
 
-	// Save state (use background context to avoid cancellation issues)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Save state with timeout derived from parent context to respect cancellation
+	saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, state); err != nil {
+	if err := e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, state); err != nil {
 		logger.Warnf("Failed to checkpoint workflow state for %s: %v", workflowCtx.WorkflowID, err)
 	}
 }

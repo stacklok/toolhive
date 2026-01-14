@@ -105,9 +105,11 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Operational: &vmcpconfig.OperationalConfig{
+							LogLevel: "debug",
+						},
 					},
 				},
 			},

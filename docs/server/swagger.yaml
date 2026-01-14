@@ -875,24 +875,28 @@ components:
             CustomAttributes contains custom resource attributes to be added to all telemetry signals.
             These are parsed from CLI flags (--otel-custom-attributes) or environment variables
             (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
-            We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
-            which doesn't marshal/unmarshal correctly.
+            +optional
           type: object
         enablePrometheusMetricsPath:
           description: |-
-            EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
-            The metrics are served on the main transport port at /metrics
-            This is separate from OTLP metrics which are sent to the Endpoint
+            EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+            The metrics are served on the main transport port at /metrics.
+            This is separate from OTLP metrics which are sent to the Endpoint.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         endpoint:
-          description: Endpoint is the OTLP endpoint URL
+          description: |-
+            Endpoint is the OTLP endpoint URL
+            +optional
           type: string
         environmentVariables:
           description: |-
             EnvironmentVariables is a list of environment variable names that should be
             included in telemetry spans as attributes. Only variables in this list will
             be read from the host machine and included in spans for observability.
-            Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+            Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
+            +optional
           items:
             type: string
           type: array
@@ -900,34 +904,50 @@ components:
         headers:
           additionalProperties:
             type: string
-          description: Headers contains authentication headers for the OTLP endpoint
+          description: |-
+            Headers contains authentication headers for the OTLP endpoint.
+            +optional
           type: object
         insecure:
-          description: Insecure indicates whether to use HTTP instead of HTTPS for
-            the OTLP endpoint
+          description: |-
+            Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         metricsEnabled:
           description: |-
-            MetricsEnabled controls whether OTLP metrics are enabled
-            When false, OTLP metrics are not sent even if an endpoint is configured
-            This is independent of EnablePrometheusMetricsPath
+            MetricsEnabled controls whether OTLP metrics are enabled.
+            When false, OTLP metrics are not sent even if an endpoint is configured.
+            This is independent of EnablePrometheusMetricsPath.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         samplingRate:
           description: |-
             SamplingRate is the trace sampling rate (0.0-1.0) as a string.
             Only used when TracingEnabled is true.
             Example: "0.05" for 5% sampling.
+            +kubebuilder:default="0.05"
+            +optional
           type: string
         serviceName:
-          description: ServiceName is the service name for telemetry
+          description: |-
+            ServiceName is the service name for telemetry.
+            When omitted, defaults to the server name (e.g., VirtualMCPServer name).
+            +optional
           type: string
         serviceVersion:
-          description: ServiceVersion is the service version for telemetry
+          description: |-
+            ServiceVersion is the service version for telemetry.
+            When omitted, defaults to the ToolHive version.
+            +optional
           type: string
         tracingEnabled:
           description: |-
-            TracingEnabled controls whether distributed tracing is enabled
-            When false, no tracer provider is created even if an endpoint is configured
+            TracingEnabled controls whether distributed tracing is enabled.
+            When false, no tracer provider is created even if an endpoint is configured.
+            +kubebuilder:default=false
+            +optional
           type: boolean
       type: object
     tokenexchange.Config:

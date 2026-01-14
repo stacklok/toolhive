@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -134,26 +135,28 @@ func TestVirtualMCPServerConditions(t *testing.T) {
 func TestVirtualMCPServerDefaultValues(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &VirtualMCPServer{
+	server := &VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
 		},
 		Spec: VirtualMCPServerSpec{
-			Config: config.Config{Group: "test-group"},
+			Config: config.Config{
+				Group: "test-group",
+				Aggregation: &config.AggregationConfig{
+					ConflictResolution: "", // Should default to "prefix"
+				},
+			},
 			OutgoingAuth: &OutgoingAuthConfig{
 				Source: "", // Should default to "discovered"
-			},
-			Aggregation: &AggregationConfig{
-				ConflictResolution: "", // Should default to "prefix"
 			},
 		},
 	}
 
 	// These defaults are enforced by kubebuilder markers
 	// but we document expected values here
-	assert.NotNil(t, vmcp.Spec.OutgoingAuth)
-	assert.NotNil(t, vmcp.Spec.Aggregation)
+	assert.NotNil(t, server.Spec.OutgoingAuth)
+	assert.NotNil(t, server.Spec.Config.Aggregation)
 }
 
 func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
@@ -195,32 +198,32 @@ func TestConflictResolutionStrategies(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		strategy string
-		config   *ConflictResolutionConfig
-		isValid  bool
+		name        string
+		strategy    vmcp.ConflictResolutionStrategy
+		configValue *config.ConflictResolutionConfig
+		isValid     bool
 	}{
 		{
 			name:     "prefix_strategy_with_format",
-			strategy: ConflictResolutionPrefix,
-			config: &ConflictResolutionConfig{
+			strategy: vmcp.ConflictStrategyPrefix,
+			configValue: &config.ConflictResolutionConfig{
 				PrefixFormat: "{workload}_",
 			},
 			isValid: true,
 		},
 		{
 			name:     "priority_strategy_with_order",
-			strategy: ConflictResolutionPriority,
-			config: &ConflictResolutionConfig{
+			strategy: vmcp.ConflictStrategyPriority,
+			configValue: &config.ConflictResolutionConfig{
 				PriorityOrder: []string{"github", "jira", "slack"},
 			},
 			isValid: true,
 		},
 		{
-			name:     "manual_strategy",
-			strategy: ConflictResolutionManual,
-			config:   &ConflictResolutionConfig{},
-			isValid:  true,
+			name:        "manual_strategy",
+			strategy:    vmcp.ConflictStrategyManual,
+			configValue: &config.ConflictResolutionConfig{},
+			isValid:     true,
 		},
 	}
 
@@ -228,18 +231,20 @@ func TestConflictResolutionStrategies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &VirtualMCPServer{
+			vmcpServer := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					Aggregation: &AggregationConfig{
-						ConflictResolution:       tt.strategy,
-						ConflictResolutionConfig: tt.config,
+					Config: config.Config{
+						Group: "test-group",
+						Aggregation: &config.AggregationConfig{
+							ConflictResolution:       tt.strategy,
+							ConflictResolutionConfig: tt.configValue,
+						},
 					},
 				},
 			}
 
 			// Validate the configuration
-			err := vmcp.Validate()
+			err := vmcpServer.Validate()
 			if tt.isValid {
 				assert.NoError(t, err)
 			} else {
@@ -310,33 +315,33 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		steps   []WorkflowStep
+		steps   []config.WorkflowStepConfig
 		isValid bool
 		errMsg  string
 	}{
 		{
 			name: "valid_sequential_dependencies",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1"},
-				{ID: "step2", Tool: "backend.tool2", DependsOn: []string{"step1"}},
-				{ID: "step3", Tool: "backend.tool3", DependsOn: []string{"step2"}},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2", DependsOn: []string{"step1"}},
+				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step2"}},
 			},
 			isValid: true,
 		},
 		{
 			name: "valid_parallel_steps",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1"},
-				{ID: "step2", Tool: "backend.tool2"},
-				{ID: "step3", Tool: "backend.tool3", DependsOn: []string{"step1", "step2"}},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
+				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step1", "step2"}},
 			},
 			isValid: true,
 		},
 		{
 			name: "valid_forward_reference",
-			steps: []WorkflowStep{
-				{ID: "step1", Tool: "backend.tool1", DependsOn: []string{"step2"}},
-				{ID: "step2", Tool: "backend.tool2"},
+			steps: []config.WorkflowStepConfig{
+				{ID: "step1", Type: "tool", Tool: "backend.tool1", DependsOn: []string{"step2"}},
+				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
 			},
 			isValid: true,
 		},
@@ -346,20 +351,22 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &VirtualMCPServer{
+			server := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
-					CompositeTools: []CompositeToolSpec{
-						{
-							Name:        "test-workflow",
-							Description: "Test workflow",
-							Steps:       tt.steps,
+					Config: config.Config{
+						Group: "test-group",
+						CompositeTools: []config.CompositeToolConfig{
+							{
+								Name:        "test-workflow",
+								Description: "Test workflow",
+								Steps:       tt.steps,
+							},
 						},
 					},
 				},
 			}
 
-			err := vmcp.Validate()
+			err := server.Validate()
 			if tt.isValid {
 				assert.NoError(t, err)
 			} else {

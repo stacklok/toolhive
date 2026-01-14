@@ -23,50 +23,66 @@ import (
 // +gendoc
 type Config struct {
 	// Endpoint is the OTLP endpoint URL
-	Endpoint string `json:"endpoint" yaml:"endpoint"`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 
-	// ServiceName is the service name for telemetry
-	ServiceName string `json:"serviceName" yaml:"serviceName"`
+	// ServiceName is the service name for telemetry.
+	// When omitted, defaults to the server name (e.g., VirtualMCPServer name).
+	// +optional
+	ServiceName string `json:"serviceName,omitempty" yaml:"serviceName,omitempty"`
 
-	// ServiceVersion is the service version for telemetry
-	ServiceVersion string `json:"serviceVersion" yaml:"serviceVersion"`
+	// ServiceVersion is the service version for telemetry.
+	// When omitted, defaults to the ToolHive version.
+	// +optional
+	ServiceVersion string `json:"serviceVersion,omitempty" yaml:"serviceVersion,omitempty"`
 
-	// TracingEnabled controls whether distributed tracing is enabled
-	// When false, no tracer provider is created even if an endpoint is configured
+	// TracingEnabled controls whether distributed tracing is enabled.
+	// When false, no tracer provider is created even if an endpoint is configured.
+	// +kubebuilder:default=false
+	// +optional
 	TracingEnabled bool `json:"tracingEnabled,omitempty" yaml:"tracingEnabled,omitempty"`
 
-	// MetricsEnabled controls whether OTLP metrics are enabled
-	// When false, OTLP metrics are not sent even if an endpoint is configured
-	// This is independent of EnablePrometheusMetricsPath
+	// MetricsEnabled controls whether OTLP metrics are enabled.
+	// When false, OTLP metrics are not sent even if an endpoint is configured.
+	// This is independent of EnablePrometheusMetricsPath.
+	// +kubebuilder:default=false
+	// +optional
 	MetricsEnabled bool `json:"metricsEnabled,omitempty" yaml:"metricsEnabled,omitempty"`
 
 	// SamplingRate is the trace sampling rate (0.0-1.0) as a string.
 	// Only used when TracingEnabled is true.
 	// Example: "0.05" for 5% sampling.
+	// +kubebuilder:default="0.05"
+	// +optional
 	SamplingRate string `json:"samplingRate,omitempty" yaml:"samplingRate,omitempty"`
 
-	// Headers contains authentication headers for the OTLP endpoint
+	// Headers contains authentication headers for the OTLP endpoint.
+	// +optional
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 
-	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
+	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.
+	// +kubebuilder:default=false
+	// +optional
 	Insecure bool `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 
-	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
-	// The metrics are served on the main transport port at /metrics
-	// This is separate from OTLP metrics which are sent to the Endpoint
+	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+	// The metrics are served on the main transport port at /metrics.
+	// This is separate from OTLP metrics which are sent to the Endpoint.
+	// +kubebuilder:default=false
+	// +optional
 	EnablePrometheusMetricsPath bool `json:"enablePrometheusMetricsPath,omitempty" yaml:"enablePrometheusMetricsPath,omitempty"`
 
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
 	// be read from the host machine and included in spans for observability.
-	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+	// Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
+	// +optional
 	EnvironmentVariables []string `json:"environmentVariables,omitempty" yaml:"environmentVariables,omitempty"`
 
 	// CustomAttributes contains custom resource attributes to be added to all telemetry signals.
 	// These are parsed from CLI flags (--otel-custom-attributes) or environment variables
 	// (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
-	// We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
-	// which doesn't marshal/unmarshal correctly.
+	// +optional
 	CustomAttributes map[string]string `json:"customAttributes,omitempty" yaml:"customAttributes,omitempty"`
 }
 

@@ -2,67 +2,15 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition
+// VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition.
+// This embeds the CompositeToolConfig from pkg/vmcp/config to share the configuration model
+// between CLI and operator usage.
 type VirtualMCPCompositeToolDefinitionSpec struct {
-	// Name is the workflow name exposed as a composite tool
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`
-	Name string `json:"name"`
-
-	// Description is a human-readable description of the workflow
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	Description string `json:"description"`
-
-	// Parameters defines the input parameter schema for the workflow in JSON Schema format.
-	// Should be a JSON Schema object with "type": "object" and "properties".
-	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
-	// Example:
-	//   {
-	//     "type": "object",
-	//     "properties": {
-	//       "param1": {"type": "string", "default": "value"},
-	//       "param2": {"type": "integer"}
-	//     },
-	//     "required": ["param2"]
-	//   }
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
-
-	// Steps defines the workflow step definitions
-	// Steps are executed sequentially in Phase 1
-	// Phase 2 will support DAG execution via dependsOn
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	Steps []WorkflowStep `json:"steps"`
-
-	// Timeout is the overall workflow timeout
-	// Defaults to 30m if not specified
-	// +kubebuilder:default="30m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	// +optional
-	Timeout string `json:"timeout,omitempty"`
-
-	// FailureMode defines the failure handling strategy
-	// - abort: Stop execution on first failure (default)
-	// - continue: Continue executing remaining steps
-	// +kubebuilder:validation:Enum=abort;continue
-	// +kubebuilder:default=abort
-	// +optional
-	FailureMode string `json:"failureMode,omitempty"`
-
-	// Output defines the structured output schema for the composite tool.
-	// Specifies how to construct the final output from workflow step results.
-	// If not specified, the workflow returns the last step's output (backward compatible).
-	// +optional
-	Output *OutputSpec `json:"output,omitempty"`
+	config.CompositeToolConfig `json:",inline"` // nolint:revive // inline is valid
 }
 
 // VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition
@@ -141,94 +89,6 @@ const (
 	// ConditionReasonWorkflowNotReady indicates the workflow is not ready
 	ConditionReasonWorkflowNotReady = "WorkflowNotReady"
 )
-
-// CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition resource
-type CompositeToolDefinitionRef struct {
-	// Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-}
-
-// AdvancedWorkflowStep extends WorkflowStep with Phase 2 features
-// This is embedded in WorkflowStep for future expansion
-type AdvancedWorkflowStep struct {
-	// RetryPolicy defines retry behavior for this step (Phase 2)
-	// +optional
-	RetryPolicy *RetryPolicy `json:"retryPolicy,omitempty"`
-
-	// Transform defines output transformation template (Phase 2)
-	// Allows mapping step output to different structure
-	// +optional
-	Transform string `json:"transform,omitempty"`
-
-	// CacheKey defines a cache key template for result caching (Phase 2)
-	// If specified and cache hit occurs, step is skipped
-	// +optional
-	CacheKey string `json:"cacheKey,omitempty"`
-}
-
-// RetryPolicy defines retry behavior for workflow steps
-type RetryPolicy struct {
-	// MaxRetries is the maximum number of retry attempts
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=10
-	// +kubebuilder:default=3
-	// +optional
-	MaxRetries int `json:"maxRetries,omitempty"`
-
-	// BackoffStrategy defines the backoff strategy
-	// - fixed: Fixed delay between retries
-	// - exponential: Exponential backoff
-	// +kubebuilder:validation:Enum=fixed;exponential
-	// +kubebuilder:default=exponential
-	// +optional
-	BackoffStrategy string `json:"backoffStrategy,omitempty"`
-
-	// InitialDelay is the initial delay before first retry
-	// +kubebuilder:default="1s"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
-	// +optional
-	InitialDelay string `json:"initialDelay,omitempty"`
-
-	// MaxDelay is the maximum delay between retries
-	// +kubebuilder:default="30s"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
-	// +optional
-	MaxDelay string `json:"maxDelay,omitempty"`
-
-	// RetryableErrors defines which errors should trigger retry
-	// If empty, all errors are retryable
-	// Supports regex patterns
-	// +optional
-	RetryableErrors []string `json:"retryableErrors,omitempty"`
-}
-
-// ElicitationStep defines user input elicitation (Phase 2)
-type ElicitationStep struct {
-	// Message is the elicitation message to display to the user
-	// Supports template expansion
-	// +kubebuilder:validation:Required
-	Message string `json:"message"`
-
-	// Schema defines the expected response schema
-	// Uses JSON Schema format
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	Schema *runtime.RawExtension `json:"schema,omitempty"`
-
-	// Timeout is the maximum time to wait for user input
-	// +kubebuilder:default="5m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
-	// +optional
-	Timeout string `json:"timeout,omitempty"`
-
-	// DefaultResponse is the default response if user doesn't respond in time
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	DefaultResponse *runtime.RawExtension `json:"defaultResponse,omitempty"`
-}
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status

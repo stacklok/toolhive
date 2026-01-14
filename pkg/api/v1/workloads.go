@@ -549,8 +549,8 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 			http.Error(w, "Invalid lines parameter: must be a positive integer", http.StatusBadRequest)
 			return
 		}
-		if parsed > 10000 {
-			http.Error(w, "Invalid lines parameter: maximum is 10000", http.StatusBadRequest)
+		if parsed > 1000 {
+			http.Error(w, "Invalid lines parameter: maximum is 1000", http.StatusBadRequest)
 			return
 		}
 		maxLines = parsed

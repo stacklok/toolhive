@@ -27,10 +27,6 @@ type Config struct {
 	// MCP timeout in seconds
 	MCPTimeout int
 
-	// Batch sizes for parallel ingestion
-	RegistryBatchSize int
-	WorkloadBatchSize int
-
 	// Workloads to skip during ingestion
 	SkippedWorkloads []string
 
@@ -65,12 +61,6 @@ func NewService(config *Config) (*Service, error) {
 	// Set defaults
 	if config.MCPTimeout == 0 {
 		config.MCPTimeout = 30
-	}
-	if config.RegistryBatchSize == 0 {
-		config.RegistryBatchSize = 5
-	}
-	if config.WorkloadBatchSize == 0 {
-		config.WorkloadBatchSize = 5
 	}
 	if len(config.SkippedWorkloads) == 0 {
 		config.SkippedWorkloads = []string{"inspector", "mcp-optimizer"}

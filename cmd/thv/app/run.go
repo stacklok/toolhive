@@ -149,6 +149,9 @@ func init() {
 }
 
 func cleanupAndWait(workloadManager workloads.Manager, name string) {
+	// Use Background context for cleanup operations. This function is called after the
+	// workload has exited, and we need a fresh context with its own timeout to ensure
+	// cleanup completes successfully regardless of the parent context state.
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 

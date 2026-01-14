@@ -68,6 +68,56 @@ type OIDCEndpoints struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
+// UserInfo contains user information retrieved from the upstream IDP.
+type UserInfo struct {
+	// Subject is the unique identifier for the user (sub claim).
+	Subject string `json:"sub"`
+
+	// Email is the user's email address.
+	Email string `json:"email,omitempty"`
+
+	// Name is the user's full name.
+	Name string `json:"name,omitempty"`
+
+	// Claims contains all claims returned by the userinfo endpoint.
+	Claims map[string]any `json:"-"`
+}
+
+// UserInfoProvider is implemented by providers that support fetching user information.
+// This is optional - not all OAuth 2.0 providers have a UserInfo endpoint.
+type UserInfoProvider interface {
+	// UserInfo fetches user information from the upstream IDP.
+	UserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
+}
+
+// IDTokenValidator is implemented by providers that can validate ID tokens.
+type IDTokenValidator interface {
+	// ValidateIDToken validates an ID token and returns parsed claims.
+	ValidateIDToken(idToken string) (*IDTokenClaims, error)
+}
+
+// IDTokenNonceValidator is implemented by providers that support OIDC nonce validation.
+// This is used to validate the nonce claim in ID tokens to prevent replay attacks.
+type IDTokenNonceValidator interface {
+	// ValidateIDTokenWithNonce validates an ID token with nonce verification.
+	// Returns the parsed claims if validation succeeds, or an error if validation fails.
+	ValidateIDTokenWithNonce(idToken, expectedNonce string) (*IDTokenClaims, error)
+}
+
+// UserInfoSubjectValidator is implemented by providers that support UserInfo subject validation
+// per OIDC Core Section 5.3.4. This validation ensures the UserInfo response's subject matches
+// the ID Token's subject to prevent user impersonation attacks.
+type UserInfoSubjectValidator interface {
+	// UserInfoWithSubjectValidation fetches user info and validates the subject matches expected.
+	// Returns ErrUserInfoSubjectMismatch if the subjects do not match.
+	UserInfoWithSubjectValidation(ctx context.Context, accessToken, expectedSubject string) (*UserInfo, error)
+}
+
+// ErrUserInfoSubjectMismatch is returned when the UserInfo endpoint returns a subject
+// that does not match the expected subject from the ID Token.
+// This validation is required per OIDC Core Section 5.3.4 to prevent user impersonation.
+var ErrUserInfoSubjectMismatch = errors.New("userinfo subject does not match expected subject")
+
 // Compile-time interface compliance checks.
 var (
 	_ OAuth2Provider           = (*OIDCProvider)(nil)
@@ -81,7 +131,7 @@ var (
 // It embeds BaseOAuth2Provider to share common OAuth 2.0 logic while adding
 // OIDC-specific functionality like discovery, ID token validation, and user info.
 type OIDCProvider struct {
-	*BaseOAuth2Provider        // Embed for shared OAuth 2.0 logic
+	*BaseOAuth2Provider             // Embed for shared OAuth 2.0 logic
 	oidcConfig          *OIDCConfig // Store original OIDC config (Issuer + common OAuth fields)
 	endpoints           *OIDCEndpoints
 	forceConsentScreen  bool
@@ -174,7 +224,7 @@ func NewOIDCProvider(
 		TokenEndpoint:         p.endpoints.TokenEndpoint,
 		UserInfoEndpoint:      p.endpoints.UserInfoEndpoint,
 	}
-	p.BaseOAuth2Provider.config = oauth2Config
+	p.config = oauth2Config
 
 	// Initialize ID token validator for validating tokens from the upstream IDP.
 	// Uses the discovered issuer and our client_id as expected audience.
@@ -537,54 +587,34 @@ func (p *OIDCProvider) discoverEndpoints(ctx context.Context) error {
 
 	logger.Debugw("discovering OIDC endpoints", "url", discoveryURL)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create discovery request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("discovery request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		// Log full response for debugging, but return sanitized error to prevent information disclosure
+	// Custom error handler to log debug info while returning sanitized errors
+	errorHandler := func(resp *http.Response, body []byte) error {
 		logger.Debugw("discovery request failed",
 			"status", resp.StatusCode,
 			"body", string(body))
 		return fmt.Errorf("discovery request failed with status %d", resp.StatusCode)
 	}
 
-	// Validate content type
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(strings.ToLower(contentType), "application/json") {
-		return fmt.Errorf("unexpected content type: %s", contentType)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	result, err := networking.FetchJSON[OIDCEndpoints](
+		ctx,
+		p.httpClient,
+		discoveryURL,
+		networking.WithErrorHandler(errorHandler),
+	)
 	if err != nil {
-		return fmt.Errorf("failed to read discovery response: %w", err)
+		return err
 	}
 
-	var endpoints OIDCEndpoints
-	if err := json.Unmarshal(body, &endpoints); err != nil {
-		return fmt.Errorf("failed to parse discovery document: %w", err)
-	}
-
-	if err := validateDiscoveryDocument(&endpoints, p.oidcConfig.Issuer); err != nil {
+	if err := validateDiscoveryDocument(&result.Data, p.oidcConfig.Issuer); err != nil {
 		return fmt.Errorf("invalid discovery document: %w", err)
 	}
 
-	p.endpoints = &endpoints
+	p.endpoints = &result.Data
 	logger.Debugw("discovered OIDC endpoints",
-		"issuer", endpoints.Issuer,
-		"authorization_endpoint", endpoints.AuthorizationEndpoint,
-		"token_endpoint", endpoints.TokenEndpoint,
-		"userinfo_endpoint", endpoints.UserInfoEndpoint,
+		"issuer", result.Data.Issuer,
+		"authorization_endpoint", result.Data.AuthorizationEndpoint,
+		"token_endpoint", result.Data.TokenEndpoint,
+		"userinfo_endpoint", result.Data.UserInfoEndpoint,
 	)
 
 	return nil

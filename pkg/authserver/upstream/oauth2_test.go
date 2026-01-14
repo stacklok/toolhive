@@ -461,7 +461,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 
 		_, err = provider.ExchangeCode(ctx, "test-code", "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token request failed")
+		assert.Contains(t, err.Error(), "request failed")
 	})
 
 	t.Run("empty code returns error", func(t *testing.T) {
@@ -943,7 +943,7 @@ func TestBaseOAuth2Provider_InvalidJSONResponse(t *testing.T) {
 
 	_, err = provider.ExchangeCode(ctx, "test-code", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse token response")
+	assert.Contains(t, err.Error(), "failed to parse JSON response")
 }
 
 func TestBaseOAuth2Provider_ContentTypeHeaders(t *testing.T) {
@@ -1029,4 +1029,200 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 
 	// OAuth2 providers can also return ID tokens if they support hybrid flows
 	assert.Equal(t, "test-id-token.payload.signature", tokens.IDToken)
+}
+
+func Test_validateRedirectURI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		uri         string
+		wantErr     bool
+		errContains string
+	}{
+		// Valid URIs
+		{
+			name:    "valid HTTPS URI with path",
+			uri:     "https://auth.example.com/oauth/callback",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTPS URI with port",
+			uri:     "https://auth.example.com:8443/oauth/callback",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTP URI with loopback IPv4",
+			uri:     "http://127.0.0.1:8080/oauth/callback",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTP URI with loopback IPv6",
+			uri:     "http://[::1]:8080/oauth/callback",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTP URI with localhost",
+			uri:     "http://localhost:8080/oauth/callback",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTPS URI without path",
+			uri:     "https://example.com",
+			wantErr: false,
+		},
+
+		// Invalid URIs
+		{
+			name:        "HTTP to non-loopback address",
+			uri:         "http://example.com/callback",
+			wantErr:     true,
+			errContains: "redirect_uri with http scheme requires loopback address (127.0.0.1, ::1, or localhost)",
+		},
+		{
+			name:        "URI contains fragment",
+			uri:         "https://example.com/callback#section",
+			wantErr:     true,
+			errContains: "redirect_uri must not contain a fragment (#)",
+		},
+		{
+			name:        "URI contains userinfo",
+			uri:         "https://user:pass@example.com/callback",
+			wantErr:     true,
+			errContains: "redirect_uri must not contain user credentials",
+		},
+		{
+			name:        "invalid scheme (ftp)",
+			uri:         "ftp://example.com/callback",
+			wantErr:     true,
+			errContains: "redirect_uri must use http or https scheme",
+		},
+		{
+			name:        "relative URI",
+			uri:         "/oauth/callback",
+			wantErr:     true,
+			errContains: "redirect_uri must be an absolute URL with scheme and host",
+		},
+		{
+			name:        "wildcard hostname",
+			uri:         "https://*/callback",
+			wantErr:     true,
+			errContains: "redirect_uri must not contain wildcard hostname",
+		},
+		{
+			name:        "empty URI",
+			uri:         "",
+			wantErr:     true,
+			errContains: "redirect_uri must be an absolute URL with scheme and host",
+		},
+		{
+			name:        "scheme only",
+			uri:         "https://",
+			wantErr:     true,
+			errContains: "redirect_uri must be an absolute URL with scheme and host",
+		},
+		{
+			name:        "wildcard subdomain",
+			uri:         "https://*.example.com/callback",
+			wantErr:     true,
+			errContains: "redirect_uri must not contain wildcard hostname",
+		},
+		{
+			name:        "malformed URL with invalid percent encoding",
+			uri:         "https://example.com/path%ZZ",
+			wantErr:     true,
+			errContains: "redirect_uri must be an absolute URL with scheme and host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateRedirectURI(tt.uri)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func Test_validateRedirectURI_LoopbackAddresses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		uri     string
+		wantErr bool
+	}{
+		// Loopback addresses with HTTP should be allowed
+		{
+			name:    "HTTP with localhost",
+			uri:     "http://localhost/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with localhost and port",
+			uri:     "http://localhost:8080/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with 127.0.0.1",
+			uri:     "http://127.0.0.1/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with 127.0.0.1 and port",
+			uri:     "http://127.0.0.1:8080/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with IPv6 ::1",
+			uri:     "http://[::1]/callback",
+			wantErr: false,
+		},
+		{
+			name:    "HTTP with IPv6 ::1 and port",
+			uri:     "http://[::1]:8080/callback",
+			wantErr: false,
+		},
+		// Non-loopback addresses with HTTP should be rejected
+		{
+			name:    "HTTP with non-loopback hostname",
+			uri:     "http://example.com/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback hostname and port",
+			uri:     "http://example.com:8080/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback IP",
+			uri:     "http://192.168.1.1/callback",
+			wantErr: true,
+		},
+		{
+			name:    "HTTP with non-loopback IP and port",
+			uri:     "http://192.168.1.1:8080/callback",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateRedirectURI(tt.uri)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "redirect_uri with http scheme requires loopback address")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

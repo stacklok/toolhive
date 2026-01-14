@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +27,63 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
+
+// ProviderType identifies the type of upstream Identity Provider.
+type ProviderType string
+
+const (
+	// ProviderTypeOIDC is for OpenID Connect providers that support discovery.
+	ProviderTypeOIDC ProviderType = "oidc"
+	// ProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
+	ProviderTypeOAuth2 ProviderType = "oauth2"
+)
+
+// AuthorizationOption configures authorization URL generation.
+type AuthorizationOption func(*authorizationOptions)
+
+type authorizationOptions struct {
+	nonce            string
+	additionalParams map[string]string
+}
+
+// WithNonce sets the OIDC nonce parameter for replay protection.
+// Only affects providers that support OIDC.
+func WithNonce(nonce string) AuthorizationOption {
+	return func(o *authorizationOptions) {
+		o.nonce = nonce
+	}
+}
+
+// WithAdditionalParams adds custom parameters to the authorization URL.
+func WithAdditionalParams(params map[string]string) AuthorizationOption {
+	return func(o *authorizationOptions) {
+		if o.additionalParams == nil {
+			o.additionalParams = make(map[string]string)
+		}
+		for k, v := range params {
+			o.additionalParams[k] = v
+		}
+	}
+}
+
+// OAuth2Provider handles communication with an upstream Identity Provider.
+// This is the base interface for all provider types.
+type OAuth2Provider interface {
+	// Type returns the provider type.
+	Type() ProviderType
+
+	// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
+	// state: our internal state to correlate callback
+	// codeChallenge: PKCE challenge to send to upstream (if supported)
+	// opts: optional configuration such as nonce or additional parameters
+	AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error)
+
+	// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
+	ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error)
+
+	// RefreshTokens refreshes the upstream IDP tokens.
+	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
+}
 
 // pkceChallengeMethodS256 is the PKCE challenge method for SHA-256.
 const pkceChallengeMethodS256 = "S256"
@@ -163,28 +219,9 @@ type tokenErrorResponse struct {
 	ErrorURI         string `json:"error_uri,omitempty"`
 }
 
-// parseTokenResponse parses a token endpoint response body.
-// It handles both success responses and error responses per RFC 6749 Section 5.1 and 5.2.
-func parseTokenResponse(body []byte, statusCode int) (*Tokens, error) {
-	// If not 200 OK, try to parse error response
-	if statusCode != http.StatusOK {
-		var tokenError tokenErrorResponse
-		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
-			// OAuth error responses with error/error_description are standardized and safe to return
-			return nil, fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
-		}
-		// Log full response for debugging, but return sanitized error to prevent information disclosure
-		logger.Debugw("token request failed",
-			"status", statusCode,
-			"body", string(body))
-		return nil, fmt.Errorf("token request failed with status %d", statusCode)
-	}
-
-	var tokenResp tokenResponse
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
-	}
-
+// parseSuccessTokenResponse validates and converts a parsed token response to Tokens.
+// This handles success responses per RFC 6749 Section 5.1.
+func parseSuccessTokenResponse(tokenResp *tokenResponse) (*Tokens, error) {
 	if tokenResp.AccessToken == "" {
 		return nil, errors.New("token response missing access_token")
 	}
@@ -450,29 +487,41 @@ func (p *BaseOAuth2Provider) tokenRequest(ctx context.Context, endpoint string, 
 		"grant_type", params.Get("grant_type"),
 	)
 
-	req, err := http.NewRequestWithContext(
+	// Custom error handler to parse OAuth error responses per RFC 6749 Section 5.2
+	errorHandler := func(resp *http.Response, body []byte) error {
+		var tokenError tokenErrorResponse
+		if err := json.Unmarshal(body, &tokenError); err == nil && tokenError.Error != "" {
+			// OAuth error responses with error/error_description are standardized and safe to return
+			return fmt.Errorf("token request failed: %s - %s", tokenError.Error, tokenError.ErrorDescription)
+		}
+		// Log full response for debugging, but return sanitized error to prevent information disclosure
+		logger.Debugw("token request failed",
+			"status", resp.StatusCode,
+			"body", string(body))
+		return fmt.Errorf("token request failed with status %d", resp.StatusCode)
+	}
+
+	result, err := networking.FetchJSONWithForm[tokenResponse](
 		ctx,
-		http.MethodPost,
+		p.httpClient,
 		endpoint,
-		strings.NewReader(params.Encode()),
+		params,
+		networking.WithErrorHandler(errorHandler),
+		networking.WithoutContentTypeValidation(), // Some IDPs may not return proper Content-Type
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
+		return nil, err
 	}
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
+	return parseSuccessTokenResponse(&result.Data)
+}
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response: %w", err)
-	}
-
-	return parseTokenResponse(body, resp.StatusCode)
+// newHTTPClientForHost creates an HTTP client configured for the given host.
+// It enables HTTP and private IPs only for localhost (development/testing).
+func newHTTPClientForHost(host string) (*http.Client, error) {
+	isLocalhost := networking.IsLocalhost(host)
+	return networking.NewHttpClientBuilder().
+		WithInsecureAllowHTTP(isLocalhost).
+		WithPrivateIPs(isLocalhost).
+		Build()
 }

@@ -27,5 +27,13 @@ jobs:
       - name: Setup helm-docs
         run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
 
+      - name: Cache Helm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}
+          restore-keys: |
+            pre-commit-
+
       - name: Run pre-commit
         uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1

@@ -25,6 +25,14 @@ jobs:
         with:
           python-version: 3.13
 
+      - name: Cache Helm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}
+          restore-keys: |
+            pre-commit-
+
       - name: Set up chart-testing
         uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
 

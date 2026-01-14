@@ -54,7 +54,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -74,7 +74,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					Port: 8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -98,7 +98,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -156,7 +156,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.salesforce.com",
-			Port:      8080,
+			ProxyPort: 8080,
 			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 				Type: mcpv1alpha1.OIDCConfigTypeInline,
 				Inline: &mcpv1alpha1.InlineOIDCConfig{

@@ -51,13 +51,6 @@ type Service struct {
 
 // NewService creates a new ingestion service
 func NewService(config *Config) (*Service, error) {
-	// Validate runtime mode
-	runtimeMode := strings.ToLower(config.RuntimeMode)
-	if runtimeMode != "docker" && runtimeMode != "k8s" {
-		return nil, ErrInvalidRuntimeMode
-	}
-	config.RuntimeMode = runtimeMode
-
 	// Set defaults
 	if config.MCPTimeout == 0 {
 		config.MCPTimeout = 30
@@ -91,7 +84,7 @@ func NewService(config *Config) (*Service, error) {
 		backendToolOps:   db.NewBackendToolOps(database),
 	}
 
-	logger.Infof("Ingestion service initialized (runtime: %s)", config.RuntimeMode)
+	logger.Info("Ingestion service initialized for event-driven ingestion")
 	return svc, nil
 }
 

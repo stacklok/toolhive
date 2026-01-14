@@ -1,5 +1,6 @@
 package db
 
-// Pure Go SQLite driver (no CGO required)
-import _ "modernc.org/sqlite"
+// CGO SQLite driver with FTS5 and extension loading support
+// Required for loading sqlite-vec extension and full-text search
+import _ "github.com/mattn/go-sqlite3"
 

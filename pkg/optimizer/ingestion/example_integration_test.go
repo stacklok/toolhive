@@ -14,9 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-	_ "modernc.org/sqlite" // Pure Go SQLite driver
-	_ "github.com/stacklok/toolhive/pkg/optimizer/db" // Ensure driver is loaded
-	"github.com/stacklok/toolhive/pkg/optimizer/models"
+	_ "github.com/stacklok/toolhive/pkg/optimizer/db" // Registers mattn/go-sqlite3 driver with FTS5 support
 )
 
 // TestVMCPIntegrationExample demonstrates how vMCP would use the optimizer
@@ -246,8 +244,6 @@ func TestVMCPIntegrationExample(t *testing.T) {
 			ctx,
 			server.id,
 			server.name,
-			server.url,
-			models.TransportSSE,
 			&desc,
 			server.tools,
 		)
@@ -268,8 +264,6 @@ func TestVMCPIntegrationExample(t *testing.T) {
 			ctx,
 			server.id,
 			server.name,
-			server.url,
-			models.TransportSSE,
 			&desc,
 			server.tools,
 		)
@@ -290,8 +284,6 @@ func TestVMCPIntegrationExample(t *testing.T) {
 			ctx,
 			server.id,
 			server.name,
-			server.url,
-			models.TransportSSE,
 			&desc,
 			server.tools,
 		)
@@ -344,8 +336,6 @@ func TestVMCPIntegrationExample(t *testing.T) {
 		ctx,
 		newServerID,
 		newServerName,
-		newServerURL,
-		models.TransportSSE,
 		&newServerDesc,
 		newServerTools,
 	)

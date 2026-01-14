@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -371,18 +373,27 @@ func New(
 	// Initialize optimizer integration if enabled
 	var optimizerInteg OptimizerIntegration
 	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
-		// Import optimizer package dynamically to avoid circular dependencies
-		// This will be implemented in pkg/vmcp/optimizer/optimizer.go
 		logger.Infow("Initializing optimizer integration",
 			"db_path", cfg.OptimizerConfig.DBPath,
 			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
 
-		// TODO: Initialize optimizer integration
-		// optimizerInteg, err = optimizer.NewIntegration(ctx, cfg.OptimizerConfig, backendClient)
-		// if err != nil {
-		//     return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
-		// }
-		logger.Warn("Optimizer integration not yet fully implemented - optim.* tools will not be available")
+		// Convert server config to optimizer config
+		optimizerCfg := &optimizer.Config{
+			Enabled: cfg.OptimizerConfig.Enabled,
+			DBPath:  cfg.OptimizerConfig.DBPath,
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
+				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
+				Model:       cfg.OptimizerConfig.EmbeddingModel,
+				Dimension:   cfg.OptimizerConfig.EmbeddingDimension,
+			},
+		}
+
+		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
+		}
+		logger.Info("Optimizer integration initialized successfully")
 	}
 
 	// Create Server instance

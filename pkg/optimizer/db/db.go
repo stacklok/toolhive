@@ -37,9 +37,9 @@ func NewDB(config *Config) (*DB, error) {
 	}
 
 	// Open database with extended query parameters for performance and safety
-	// modernc.org/sqlite registers as "sqlite" (not "sqlite3")
+	// mattn/go-sqlite3 registers as "sqlite3"
 	dbURL := fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", config.DBPath)
-	sqlDB, err := sql.Open("sqlite", dbURL)
+	sqlDB, err := sql.Open("sqlite3", dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

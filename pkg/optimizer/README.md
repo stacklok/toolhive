@@ -7,16 +7,16 @@ The optimizer package provides semantic tool discovery and ingestion for MCP ser
 - **Backend Discovery**: Automatically discovers MCP backends from Docker or Kubernetes
 - **Semantic Embeddings**: Pluggable embedding backends (vLLM, Ollama, or placeholder)
 - **vLLM Support**: Production-ready with vLLM for high-throughput GPU-accelerated embeddings
-- **Vector Search**: SQLite-based semantic search with cosine similarity
+- **Vector Search**: SQLite-based semantic search with cosine similarity via sqlite-vec
 - **Token Counting**: Tracks token usage for LLM consumption metrics
-- **Pure Go**: No CGO required, works with `CGO_ENABLED=0`
+- **CGO-based**: Uses `mattn/go-sqlite3` for sqlite-vec extension loading and FTS5 support
 
 ## Architecture
 
 ```
 pkg/optimizer/
 ├── models/           # Domain models (Server, Tool, etc.)
-├── db/               # Database layer with pure Go SQLite
+├── db/               # Database layer with mattn/go-sqlite3 (CGO-based)
 ├── embeddings/       # Embedding backends (vLLM, Ollama, placeholder)
 ├── ingestion/        # Core ingestion service
 └── tokens/           # Token counting for LLM metrics
@@ -265,7 +265,7 @@ This Go implementation follows the same architecture as the Python mcp-optimizer
 
 | Feature | Python | Go |
 |---------|--------|-----|
-| Database | SQLAlchemy + aiosqlite | database/sql + modernc.org/sqlite |
+| Database | SQLAlchemy + aiosqlite | database/sql + mattn/go-sqlite3 (CGO) |
 | Embeddings | FastEmbed | Ollama/vLLM (OpenAI-compatible) |
 | Vector Search | sqlite-vec | sqlite-vec |
 | CLI | Click | Cobra |

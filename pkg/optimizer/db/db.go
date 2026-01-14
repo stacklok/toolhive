@@ -56,7 +56,12 @@ func NewDB(config *Config) (*DB, error) {
 	// Load sqlite-vec extension (REQUIRED for semantic search)
 	if err := db.loadExtensions(); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("failed to load sqlite-vec extension: %w\n\nThe optimizer requires sqlite-vec for semantic tool search.\nSee pkg/optimizer/README.md for setup instructions", err)
+		return nil, fmt.Errorf(
+			"failed to load sqlite-vec extension: %w\n\n"+
+				"The optimizer requires sqlite-vec for semantic tool search.\n"+
+				"See pkg/optimizer/README.md for setup instructions",
+			err,
+		)
 	}
 
 	// Initialize schema (ephemeral database - no migrations needed)
@@ -133,13 +138,17 @@ func (db *DB) initializeSchema() error {
 	// All CREATE TABLE statements use IF NOT EXISTS, so this is idempotent
 	_, err := db.Exec(schemaSQL)
 	if err != nil {
-		return fmt.Errorf("failed to initialize schema: %w\n\nIf you see 'no such module: vec0', ensure sqlite-vec extension is loaded.\nSee pkg/optimizer/README.md for setup instructions", err)
+		return fmt.Errorf(
+			"failed to initialize schema: %w\n\n"+
+				"If you see 'no such module: vec0', ensure sqlite-vec extension is loaded.\n"+
+				"See pkg/optimizer/README.md for setup instructions",
+			err,
+		)
 	}
 
 	logger.Info("Database schema initialized with vector search support")
 	return nil
 }
-
 
 // BeginTx starts a new transaction
 func (db *DB) BeginTx(ctx context.Context) (*sql.Tx, error) {

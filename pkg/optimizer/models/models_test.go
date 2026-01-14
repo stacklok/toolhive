@@ -205,7 +205,7 @@ func TestBackendWithRegistry_EffectiveDescription(t *testing.T) {
 		{
 			name: "Returns nil when no description",
 			w: &BackendWithRegistry{
-				Backend: BackendServer{},
+				Backend:  BackendServer{},
 				Registry: nil,
 			},
 			want: nil,

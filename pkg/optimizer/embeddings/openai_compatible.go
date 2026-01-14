@@ -14,9 +14,9 @@ import (
 //
 // Supported Services:
 //   - vLLM: Recommended for production Kubernetes deployments
-//     * High-throughput GPU-accelerated inference
-//     * PagedAttention for efficient GPU memory utilization  
-//     * Superior scalability for multi-user environments
+//   - High-throughput GPU-accelerated inference
+//   - PagedAttention for efficient GPU memory utilization
+//   - Superior scalability for multi-user environments
 //   - Ollama: Good for local development (via /v1/embeddings endpoint)
 //   - OpenAI: For cloud-based embeddings
 //   - Any OpenAI-compatible embedding service
@@ -49,7 +49,7 @@ type openaiEmbedResponse struct {
 //
 // Examples:
 //   - vLLM: NewOpenAICompatibleBackend("http://vllm-service:8000", "sentence-transformers/all-MiniLM-L6-v2", 384)
-//   - Ollama: NewOpenAICompatibleBackend("http://localhost:11434", "nomic-embed-text", 768) 
+//   - Ollama: NewOpenAICompatibleBackend("http://localhost:11434", "nomic-embed-text", 768)
 //   - OpenAI: NewOpenAICompatibleBackend("https://api.openai.com", "text-embedding-3-small", 1536)
 func NewOpenAICompatibleBackend(baseURL, model string, dimension int) (*OpenAICompatibleBackend, error) {
 	if baseURL == "" {

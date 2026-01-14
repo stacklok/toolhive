@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-	_ "github.com/stacklok/toolhive/pkg/optimizer/db" // Registers mattn/go-sqlite3 driver with FTS5 support
 )
 
 // TestVMCPIntegrationExample demonstrates how vMCP would use the optimizer
@@ -359,4 +358,3 @@ func TestVMCPIntegrationExample(t *testing.T) {
 	fmt.Println("🔍 Optimizer is ready for semantic tool search!")
 	fmt.Println()
 }
-

@@ -93,7 +93,7 @@ func NewService(config *Config) (*Service, error) {
 //
 // Parameters:
 //   - serverID: Unique identifier for the backend server
-//   - serverName: Human-readable server name  
+//   - serverName: Human-readable server name
 //   - description: Optional server description
 //   - tools: List of tools available from this server
 //
@@ -123,11 +123,11 @@ func (s *Service) IngestServer(
 
 	// Generate server embedding if description is provided
 	if description != nil && *description != "" {
-		embeddings, err := s.embeddingManager.GenerateEmbedding([]string{*description})
+		serverEmbeddings, err := s.embeddingManager.GenerateEmbedding([]string{*description})
 		if err != nil {
 			logger.Warnf("Failed to generate server embedding for %s: %v", serverName, err)
-		} else if len(embeddings) > 0 {
-			backendServer.ServerEmbedding = embeddings[0]
+		} else if len(serverEmbeddings) > 0 {
+			backendServer.ServerEmbedding = serverEmbeddings[0]
 		}
 	}
 

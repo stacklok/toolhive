@@ -46,7 +46,7 @@ type OptimizerIntegration struct {
 
 // NewIntegration creates a new optimizer integration.
 func NewIntegration(
-	ctx context.Context,
+	_ context.Context,
 	cfg *Config,
 	mcpServer *server.MCPServer,
 ) (*OptimizerIntegration, error) {
@@ -178,7 +178,7 @@ func (o *OptimizerIntegration) OnRegisterSession(
 
 // RegisterTools adds optimizer tools to the session.
 // This should be called after OnRegisterSession completes.
-func (o *OptimizerIntegration) RegisterTools(ctx context.Context, session server.ClientSession) error {
+func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.ClientSession) error {
 	if o == nil {
 		return nil // Optimizer not enabled
 	}
@@ -250,8 +250,8 @@ func (o *OptimizerIntegration) RegisterTools(ctx context.Context, session server
 }
 
 // createFindToolHandler creates the handler for optim.find_tool
-func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (*OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// TODO: Implement semantic search
 		// 1. Extract tool_description and tool_keywords from request.Params.Arguments
 		// 2. Call optimizer search service (hybrid semantic + BM25)
@@ -264,8 +264,8 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 }
 
 // createCallToolHandler creates the handler for optim.call_tool
-func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (*OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// TODO: Implement dynamic tool invocation
 		// 1. Extract backend_id, tool_name, parameters from request.Params.Arguments
 		// 2. Validate backend and tool exist

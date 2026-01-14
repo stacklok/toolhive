@@ -262,7 +262,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		isRemote, // TODO: reinstate this universally once we figure out how to make the checks less brittle.
+		!isRemote, // TODO: reinstate this universally once we figure out how to make the checks less brittle.
 		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,

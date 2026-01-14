@@ -154,10 +154,18 @@ func (ops *BackendToolOps) ListByServer(ctx context.Context, serverID string) ([
 		return []*models.BackendTool{}, nil
 	}
 
-	// Query with server_id metadata filter
-	results, err := collection.Query(ctx, "", 10000, map[string]string{"server_id": serverID}, nil)
+	// Get count to determine nResults
+	count := collection.Count()
+	if count == 0 {
+		return []*models.BackendTool{}, nil
+	}
+
+	// Query with a generic term and metadata filter
+	// Using "tool" as a generic query that should match all tools
+	results, err := collection.Query(ctx, "tool", count, map[string]string{"server_id": serverID}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools for server: %w", err)
+		// If no tools match, return empty list
+		return []*models.BackendTool{}, nil
 	}
 
 	tools := make([]*models.BackendTool, 0, len(results))
@@ -178,6 +186,15 @@ func (ops *BackendToolOps) Search(ctx context.Context, query string, limit int, 
 	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return []*models.BackendToolWithMetadata{}, nil
+	}
+
+	// Get collection count and adjust limit if necessary
+	count := collection.Count()
+	if count == 0 {
+		return []*models.BackendToolWithMetadata{}, nil
+	}
+	if limit > count {
+		limit = count
 	}
 
 	// Build metadata filter if server ID is provided

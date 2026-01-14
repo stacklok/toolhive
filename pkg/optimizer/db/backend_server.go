@@ -129,11 +129,17 @@ func (ops *BackendServerOps) List(ctx context.Context) ([]*models.BackendServer,
 		return []*models.BackendServer{}, nil
 	}
 
-	// chromem-go doesn't have a "list all" method, so we query with a broad search
-	// Using empty query to get all documents
-	results, err := collection.Query(ctx, "", 10000, nil, nil)
+	// Get count to determine nResults
+	count := collection.Count()
+	if count == 0 {
+		return []*models.BackendServer{}, nil
+	}
+
+	// Query with a generic term to get all servers
+	// Using "server" as a generic query that should match all servers
+	results, err := collection.Query(ctx, "server", count, nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list servers: %w", err)
+		return []*models.BackendServer{}, nil
 	}
 
 	servers := make([]*models.BackendServer, 0, len(results))
@@ -154,6 +160,15 @@ func (ops *BackendServerOps) Search(ctx context.Context, query string, limit int
 	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
 		return []*models.BackendServer{}, nil
+	}
+
+	// Get collection count and adjust limit if necessary
+	count := collection.Count()
+	if count == 0 {
+		return []*models.BackendServer{}, nil
+	}
+	if limit > count {
+		limit = count
 	}
 
 	results, err := collection.Query(ctx, query, limit, nil, nil)

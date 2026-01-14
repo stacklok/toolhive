@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS tools_backend (
 CREATE INDEX IF NOT EXISTS idx_tools_backend_server ON tools_backend(mcpserver_id);
 
 -- Create virtual tables for registry (sqlite-vec and FTS5)
--- Note: vec0 uses cosine distance by default
+-- Note: vec0 uses L2 distance by default, so we explicitly specify distance_metric=cosine
 -- Embedding dimension is 384 to match BAAI/bge-small-en-v1.5 model
 CREATE VIRTUAL TABLE IF NOT EXISTS registry_server_vector
 USING vec0(

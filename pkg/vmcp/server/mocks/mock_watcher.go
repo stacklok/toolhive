@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	server "github.com/mark3labs/mcp-go/server"
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	aggregator "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -92,6 +93,20 @@ func (m *MockOptimizerIntegration) Close() error {
 func (mr *MockOptimizerIntegrationMockRecorder) Close() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockOptimizerIntegration)(nil).Close))
+}
+
+// IngestInitialBackends mocks base method.
+func (m *MockOptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IngestInitialBackends", ctx, backends)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// IngestInitialBackends indicates an expected call of IngestInitialBackends.
+func (mr *MockOptimizerIntegrationMockRecorder) IngestInitialBackends(ctx, backends any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IngestInitialBackends", reflect.TypeOf((*MockOptimizerIntegration)(nil).IngestInitialBackends), ctx, backends)
 }
 
 // OnRegisterSession mocks base method.

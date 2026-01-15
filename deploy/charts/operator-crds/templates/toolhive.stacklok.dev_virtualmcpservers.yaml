@@ -921,6 +921,21 @@ spec:
                           Enabled determines whether the optimizer is active.
                           When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools.
                         type: boolean
+                      ftsDBPath:
+                        description: |-
+                          FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.
+                          If empty, defaults to ":memory:" for in-memory FTS5, or "{PersistPath}/fts.db" if PersistPath is set.
+                          Hybrid search (semantic + BM25) is always enabled.
+                        type: string
+                      hybridSearchRatio:
+                        description: |-
+                          HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
+                          Value range: 0.0 (all BM25) to 1.0 (all semantic).
+                          Default: 0.7 (70% semantic, 30% BM25)
+                          Only used when FTSDBPath is set.
+                        maximum: 1
+                        minimum: 0
+                        type: number
                       persistPath:
                         description: |-
                           PersistPath is the optional filesystem path for persisting the chromem-go database.

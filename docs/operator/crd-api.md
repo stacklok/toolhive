@@ -235,7 +235,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the virtual MCP server name. |  |  |
 | `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
-| `backends` _[vmcp.config.StaticBackendConfig](#vmcpconfigstaticbackendconfig) array_ | Backends defines pre-configured backend servers for static mode.<br />When OutgoingAuth.Source is "inline", this field contains the full list of backend<br />servers with their URLs and transport types, eliminating the need for K8s API access.<br />When OutgoingAuth.Source is "discovered", this field is empty and backends are<br />discovered at runtime via Kubernetes API. |  |  |
 | `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  |  |
 | `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  |  |
 | `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies.<br />Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references. |  |  |
@@ -245,7 +244,7 @@ _Appears in:_
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  |  |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  |  |
-| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  |  |
+| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes optim.find_tool and optim.call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  |  |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -344,7 +343,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `issuer` _string_ | Issuer is the OIDC issuer URL. |  | Pattern: `^https?://` <br /> |
+| `issuer` _string_ | Issuer is the OIDC issuer URL. |  |  |
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
@@ -377,9 +376,9 @@ _Appears in:_
 
 
 
-OptimizerConfig configures the MCP optimizer.
-When enabled, vMCP exposes only find_tool and call_tool operations to clients
-instead of all backend tools directly.
+OptimizerConfig configures the MCP optimizer for semantic tool discovery.
+The optimizer reduces token usage by allowing LLMs to discover relevant tools
+on demand rather than receiving all tool definitions upfront.
 
 
 
@@ -388,7 +387,15 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides the embedding service<br />for semantic tool discovery. The service must implement the optimizer embedding API. |  | Required: \{\} <br /> |
+| `enabled` _boolean_ | Enabled determines whether the optimizer is active.<br />When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools. |  |  |
+| `embeddingBackend` _string_ | EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".<br />- "ollama": Uses local Ollama HTTP API for embeddings<br />- "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)<br />- "placeholder": Uses deterministic hash-based embeddings (for testing/development) |  | Enum: [ollama openai-compatible placeholder] <br /> |
+| `embeddingURL` _string_ | EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "http://localhost:11434"<br />- vLLM: "http://vllm-service:8000/v1"<br />- OpenAI: "https://api.openai.com/v1" |  |  |
+| `embeddingModel` _string_ | EmbeddingModel is the model name to use for embeddings.<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "nomic-embed-text", "all-minilm"<br />- vLLM: "BAAI/bge-small-en-v1.5"<br />- OpenAI: "text-embedding-3-small" |  |  |
+| `embeddingDimension` _integer_ | EmbeddingDimension is the dimension of the embedding vectors.<br />Common values:<br />- 384: all-MiniLM-L6-v2, nomic-embed-text<br />- 768: BAAI/bge-small-en-v1.5<br />- 1536: OpenAI text-embedding-3-small |  | Minimum: 1 <br /> |
+| `persistPath` _string_ | PersistPath is the optional filesystem path for persisting the chromem-go database.<br />If empty, the database will be in-memory only (ephemeral).<br />When set, tool metadata and embeddings are persisted to disk for faster restarts. |  |  |
+| `ftsDBPath` _string_ | FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.<br />If empty, defaults to ":memory:" for in-memory FTS5, or "\{PersistPath\}/fts.db" if PersistPath is set.<br />Hybrid search (semantic + BM25) is always enabled. |  |  |
+| `hybridSearchRatio` _float_ | HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.<br />Value range: 0.0 (all BM25) to 1.0 (all semantic).<br />Default: 0.7 (70% semantic, 30% BM25)<br />Only used when FTSDBPath is set. |  | Maximum: 1 <br />Minimum: 0 <br /> |
+| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).<br />This is an alternative to EmbeddingURL for in-cluster deployments.<br />When set, vMCP will resolve the service DNS name for the embedding API. |  |  |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -458,27 +465,6 @@ _Appears in:_
 | `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  |  |
 | `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br /> |
 | `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br /> |
-
-
-#### vmcp.config.StaticBackendConfig
-
-
-
-StaticBackendConfig defines a pre-configured backend server for static mode.
-This allows vMCP to operate without Kubernetes API access by embedding all backend
-information directly in the configuration.
-
-
-
-_Appears in:_
-- [vmcp.config.Config](#vmcpconfigconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the backend identifier.<br />Must match the backend name from the MCPGroup for auth config resolution. |  | Required: \{\} <br /> |
-| `url` _string_ | URL is the backend's MCP server base URL. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
-| `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
-| `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 
 
 #### vmcp.config.StepErrorHandling

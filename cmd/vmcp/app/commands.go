@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 // Package app provides the entry point for the vmcp command-line application.
 package app
 
@@ -27,7 +24,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -232,28 +228,17 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}
 
-	// Create backend discoverer based on configuration mode
-	var discoverer aggregator.BackendDiscoverer
-	if len(cfg.Backends) > 0 {
-		// Static mode: Use pre-configured backends from config (no K8s API access needed)
-		logger.Infof("Static mode: using %d pre-configured backends", len(cfg.Backends))
-		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
-			cfg.Backends,
-			cfg.OutgoingAuth,
-			cfg.Group,
-		)
-	} else {
-		// Dynamic mode: Discover backends at runtime from K8s API
-		logger.Info("Dynamic mode: initializing group manager for backend discovery")
-		groupsManager, err := groups.NewManager()
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
-		}
+	// Initialize managers for backend discovery
+	logger.Info("Initializing group manager")
+	groupsManager, err := groups.NewManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
+	}
 
-		discoverer, err = aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
-		}
+	// Create backend discoverer based on runtime environment
+	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
 	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)
@@ -431,9 +416,40 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:             backendWatcher,
 	}
 
-	if cfg.Optimizer != nil {
-		// TODO: update this with the real optimizer.
-		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizer
+	// Configure optimizer if enabled in YAML config
+	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
+		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
+		hybridRatio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			hybridRatio = *cfg.Optimizer.HybridSearchRatio
+		}
+		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
+			Enabled:            cfg.Optimizer.Enabled,
+			PersistPath:        cfg.Optimizer.PersistPath,
+			FTSDBPath:          cfg.Optimizer.FTSDBPath,
+			HybridSearchRatio:  hybridRatio,
+			EmbeddingBackend:   cfg.Optimizer.EmbeddingBackend,
+			EmbeddingURL:       cfg.Optimizer.EmbeddingURL,
+			EmbeddingModel:     cfg.Optimizer.EmbeddingModel,
+			EmbeddingDimension: cfg.Optimizer.EmbeddingDimension,
+		}
+		persistInfo := "in-memory"
+		if cfg.Optimizer.PersistPath != "" {
+			persistInfo = cfg.Optimizer.PersistPath
+		}
+		// FTS5 is always enabled with configurable semantic/BM25 ratio
+		ratio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			ratio = *cfg.Optimizer.HybridSearchRatio
+		}
+		searchMode := fmt.Sprintf("hybrid (%.0f%% semantic, %.0f%% BM25)",
+			ratio*100,
+			(1-ratio)*100)
+		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s, search=%s",
+			cfg.Optimizer.EmbeddingBackend,
+			cfg.Optimizer.EmbeddingDimension,
+			persistInfo,
+			searchMode)
 	}
 
 	// Convert composite tool configurations to workflow definitions

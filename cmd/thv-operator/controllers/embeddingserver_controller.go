@@ -204,7 +204,8 @@ func (r *EmbeddingServerReconciler) ensureDeployment(
 			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			return ctrl.Result{}, true, err
 		}
-		return ctrl.Result{Requeue: true}, true, nil
+		// Continue to create service instead of returning early
+		return ctrl.Result{}, false, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, true, err
@@ -214,8 +215,7 @@ func (r *EmbeddingServerReconciler) ensureDeployment(
 	desiredReplicas := embedding.GetReplicas()
 	if *deployment.Spec.Replicas != desiredReplicas {
 		deployment.Spec.Replicas = &desiredReplicas
-		err = r.Update(ctx, deployment)
-		if err != nil {
+		if err := r.updateDeploymentWithRetry(ctx, deployment); err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment replicas",
 				"Deployment.Namespace", deployment.Namespace,
 				"Deployment.Name", deployment.Name)
@@ -228,8 +228,7 @@ func (r *EmbeddingServerReconciler) ensureDeployment(
 	if r.deploymentNeedsUpdate(ctx, deployment, embedding) {
 		newDeployment := r.deploymentForEmbedding(ctx, embedding)
 		deployment.Spec = newDeployment.Spec
-		err = r.Update(ctx, deployment)
-		if err != nil {
+		if err := r.updateDeploymentWithRetry(ctx, deployment); err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment",
 				"Deployment.Namespace", deployment.Namespace,
 				"Deployment.Name", deployment.Name)
@@ -239,6 +238,44 @@ func (r *EmbeddingServerReconciler) ensureDeployment(
 	}
 
 	return ctrl.Result{}, false, nil
+}
+
+// updateDeploymentWithRetry updates the deployment with retry logic for conflict errors
+func (r *EmbeddingServerReconciler) updateDeploymentWithRetry(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Try to update the deployment
+	err := r.Update(ctx, deployment)
+	if err == nil {
+		return nil
+	}
+
+	// If it's a conflict error, fetch the latest version and try again
+	if errors.IsConflict(err) {
+		ctxLogger.Info("Conflict detected, retrying with latest version",
+			"Deployment.Namespace", deployment.Namespace,
+			"Deployment.Name", deployment.Name)
+
+		// Get the latest version of the deployment
+		latestDeployment := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      deployment.Name,
+			Namespace: deployment.Namespace,
+		}, latestDeployment); err != nil {
+			return err
+		}
+
+		// Apply the spec changes to the latest version
+		latestDeployment.Spec = deployment.Spec
+
+		// Try updating again with the latest version
+		return r.Update(ctx, latestDeployment)
+	}
+
+	return err
 }
 
 // ensureService ensures the service exists

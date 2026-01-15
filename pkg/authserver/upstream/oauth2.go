@@ -81,6 +81,8 @@ type CommonOAuthConfig struct {
 	ClientID string
 
 	// ClientSecret is the OAuth client secret registered with the upstream IDP.
+	// Optional for public clients (RFC 6749 Section 2.1) which authenticate using
+	// PKCE instead of a client secret. Required for confidential clients.
 	ClientSecret string
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.

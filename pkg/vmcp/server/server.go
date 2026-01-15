@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -119,6 +121,38 @@ type Config struct {
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
+
+	// OptimizerConfig is the optional optimizer configuration.
+	// If nil or Enabled=false, optimizer tools (optim.find_tool, optim.call_tool) are not available.
+	OptimizerConfig *OptimizerConfig
+}
+
+// OptimizerConfig holds optimizer-specific configuration for vMCP integration.
+type OptimizerConfig struct {
+	// Enabled controls whether optimizer tools are available
+	Enabled bool
+
+	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
+	PersistPath string
+
+	// FTSDBPath is the path to SQLite FTS5 database for BM25 search
+	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
+	FTSDBPath string
+
+	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
+	HybridSearchRatio float64
+
+	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
+	EmbeddingBackend string
+
+	// EmbeddingURL is the URL for the embedding service (vLLM or Ollama)
+	EmbeddingURL string
+
+	// EmbeddingModel is the model name for embeddings
+	EmbeddingModel string
+
+	// EmbeddingDimension is the embedding vector dimension
+	EmbeddingDimension int
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -187,6 +221,26 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// optimizerIntegration provides semantic tool discovery via optim.find_tool and optim.call_tool.
+	// Nil if optimizer is disabled.
+	optimizerIntegration OptimizerIntegration
+}
+
+// OptimizerIntegration is the interface for optimizer functionality in vMCP.
+// This is defined as an interface to avoid circular dependencies and allow testing.
+type OptimizerIntegration interface {
+	// IngestInitialBackends ingests all discovered backends at startup
+	IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error
+
+	// OnRegisterSession generates embeddings for session tools
+	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
+
+	// RegisterTools adds optim.find_tool and optim.call_tool to the session
+	RegisterTools(ctx context.Context, session server.ClientSession) error
+
+	// Close cleans up optimizer resources
+	Close() error
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -326,21 +380,61 @@ func New(
 		logger.Info("Health monitoring disabled")
 	}
 
+	// Initialize optimizer integration if enabled
+	var optimizerInteg OptimizerIntegration
+	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
+		logger.Infow("Initializing optimizer integration (chromem-go)",
+			"persist_path", cfg.OptimizerConfig.PersistPath,
+			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
+
+		// Convert server config to optimizer config
+		hybridRatio := 0.7 // Default
+		if cfg.OptimizerConfig.HybridSearchRatio != 0 {
+			hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
+		}
+		optimizerCfg := &optimizer.Config{
+			Enabled:           cfg.OptimizerConfig.Enabled,
+			PersistPath:       cfg.OptimizerConfig.PersistPath,
+			FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
+			HybridSearchRatio: hybridRatio,
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
+				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
+				Model:       cfg.OptimizerConfig.EmbeddingModel,
+				Dimension:   cfg.OptimizerConfig.EmbeddingDimension,
+			},
+		}
+
+		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
+		}
+		logger.Info("Optimizer integration initialized successfully")
+
+		// Ingest discovered backends at startup (populate optimizer database)
+		initialBackends := backendRegistry.List(ctx)
+		if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
+			logger.Warnf("Failed to ingest initial backends: %v", err)
+			// Don't fail server startup - optimizer can still work with incremental ingestion
+		}
+	}
+
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		workflowDefs:      workflowDefs,
-		workflowExecutors: workflowExecutors,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
+		config:               cfg,
+		mcpServer:            mcpServer,
+		router:               rt,
+		backendClient:        backendClient,
+		handlerFactory:       handlerFactory,
+		discoveryMgr:         discoveryMgr,
+		backendRegistry:      backendRegistry,
+		sessionManager:       sessionManager,
+		capabilityAdapter:    capabilityAdapter,
+		workflowDefs:         workflowDefs,
+		workflowExecutors:    workflowExecutors,
+		ready:                make(chan struct{}),
+		healthMonitor:        healthMon,
+		optimizerIntegration: optimizerInteg,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -427,6 +521,30 @@ func New(
 			"session_id", sessionID,
 			"tool_count", len(caps.Tools),
 			"resource_count", len(caps.Resources))
+
+		// Generate embeddings and register optimizer tools if enabled
+		if srv.optimizerIntegration != nil {
+			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
+
+			// Generate embeddings for all tools in this session
+			if err := srv.optimizerIntegration.OnRegisterSession(ctx, session, caps); err != nil {
+				logger.Errorw("failed to generate embeddings for optimizer",
+					"error", err,
+					"session_id", sessionID)
+				// Don't fail session initialization - continue without optimizer
+			} else {
+				// Register optimizer tools (optim.find_tool, optim.call_tool)
+				if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
+					logger.Errorw("failed to register optimizer tools",
+						"error", err,
+						"session_id", sessionID)
+					// Don't fail session initialization - continue without optimizer tools
+				} else {
+					logger.Infow("optimizer tools registered",
+						"session_id", sessionID)
+				}
+			}
+		}
 	})
 
 	return srv, nil

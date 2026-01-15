@@ -416,6 +416,42 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Watcher:             backendWatcher,
 	}
 
+	// Configure optimizer if enabled in YAML config
+	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
+		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
+		hybridRatio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			hybridRatio = *cfg.Optimizer.HybridSearchRatio
+		}
+		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
+			Enabled:            cfg.Optimizer.Enabled,
+			PersistPath:        cfg.Optimizer.PersistPath,
+			FTSDBPath:          cfg.Optimizer.FTSDBPath,
+			HybridSearchRatio:  hybridRatio,
+			EmbeddingBackend:   cfg.Optimizer.EmbeddingBackend,
+			EmbeddingURL:       cfg.Optimizer.EmbeddingURL,
+			EmbeddingModel:     cfg.Optimizer.EmbeddingModel,
+			EmbeddingDimension: cfg.Optimizer.EmbeddingDimension,
+		}
+		persistInfo := "in-memory"
+		if cfg.Optimizer.PersistPath != "" {
+			persistInfo = cfg.Optimizer.PersistPath
+		}
+		// FTS5 is always enabled with configurable semantic/BM25 ratio
+		ratio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			ratio = *cfg.Optimizer.HybridSearchRatio
+		}
+		searchMode := fmt.Sprintf("hybrid (%.0f%% semantic, %.0f%% BM25)",
+			ratio*100,
+			(1-ratio)*100)
+		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s, search=%s",
+			cfg.Optimizer.EmbeddingBackend,
+			cfg.Optimizer.EmbeddingDimension,
+			persistInfo,
+			searchMode)
+	}
+
 	// Convert composite tool configurations to workflow definitions
 	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
 	if err != nil {

@@ -225,6 +225,7 @@ _Appears in:_
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  |  |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  |  |
+| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes optim.find_tool and optim.call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  |  |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -341,6 +342,32 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures request timeouts. |  |  |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling. |  |  |
+
+
+#### vmcp.config.OptimizerConfig
+
+
+
+OptimizerConfig configures the MCP optimizer for semantic tool discovery.
+The optimizer reduces token usage by allowing LLMs to discover relevant tools
+on demand rather than receiving all tool definitions upfront.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled determines whether the optimizer is active.<br />When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools. |  |  |
+| `embeddingBackend` _string_ | EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".<br />- "ollama": Uses local Ollama HTTP API for embeddings<br />- "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)<br />- "placeholder": Uses deterministic hash-based embeddings (for testing/development) |  | Enum: [ollama openai-compatible placeholder] <br /> |
+| `embeddingURL` _string_ | EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "http://localhost:11434"<br />- vLLM: "http://vllm-service:8000/v1"<br />- OpenAI: "https://api.openai.com/v1" |  |  |
+| `embeddingModel` _string_ | EmbeddingModel is the model name to use for embeddings.<br />Required when EmbeddingBackend is "ollama" or "openai-compatible".<br />Examples:<br />- Ollama: "nomic-embed-text", "all-minilm"<br />- vLLM: "BAAI/bge-small-en-v1.5"<br />- OpenAI: "text-embedding-3-small" |  |  |
+| `embeddingDimension` _integer_ | EmbeddingDimension is the dimension of the embedding vectors.<br />Common values:<br />- 384: all-MiniLM-L6-v2, nomic-embed-text<br />- 768: BAAI/bge-small-en-v1.5<br />- 1536: OpenAI text-embedding-3-small |  | Minimum: 1 <br /> |
+| `persistPath` _string_ | PersistPath is the optional filesystem path for persisting the chromem-go database.<br />If empty, the database will be in-memory only (ephemeral).<br />When set, tool metadata and embeddings are persisted to disk for faster restarts. |  |  |
+| `ftsDBPath` _string_ | FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.<br />If empty, defaults to ":memory:" for in-memory FTS5, or "\{PersistPath\}/fts.db" if PersistPath is set.<br />Hybrid search (semantic + BM25) is always enabled. |  |  |
+| `hybridSearchRatio` _float_ | HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.<br />Value range: 0.0 (all BM25) to 1.0 (all semantic).<br />Default: 0.7 (70% semantic, 30% BM25)<br />Only used when FTSDBPath is set. |  | Maximum: 1 <br />Minimum: 0 <br /> |
+| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).<br />This is an alternative to EmbeddingURL for in-cluster deployments.<br />When set, vMCP will resolve the service DNS name for the embedding API. |  |  |
 
 
 #### vmcp.config.OutgoingAuthConfig

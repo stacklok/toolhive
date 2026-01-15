@@ -13,6 +13,9 @@ import (
 	context "context"
 	reflect "reflect"
 
+	server "github.com/mark3labs/mcp-go/server"
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
+	aggregator "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -52,4 +55,84 @@ func (m *MockWatcher) WaitForCacheSync(ctx context.Context) bool {
 func (mr *MockWatcherMockRecorder) WaitForCacheSync(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitForCacheSync", reflect.TypeOf((*MockWatcher)(nil).WaitForCacheSync), ctx)
+}
+
+// MockOptimizerIntegration is a mock of OptimizerIntegration interface.
+type MockOptimizerIntegration struct {
+	ctrl     *gomock.Controller
+	recorder *MockOptimizerIntegrationMockRecorder
+	isgomock struct{}
+}
+
+// MockOptimizerIntegrationMockRecorder is the mock recorder for MockOptimizerIntegration.
+type MockOptimizerIntegrationMockRecorder struct {
+	mock *MockOptimizerIntegration
+}
+
+// NewMockOptimizerIntegration creates a new mock instance.
+func NewMockOptimizerIntegration(ctrl *gomock.Controller) *MockOptimizerIntegration {
+	mock := &MockOptimizerIntegration{ctrl: ctrl}
+	mock.recorder = &MockOptimizerIntegrationMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockOptimizerIntegration) EXPECT() *MockOptimizerIntegrationMockRecorder {
+	return m.recorder
+}
+
+// Close mocks base method.
+func (m *MockOptimizerIntegration) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockOptimizerIntegrationMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockOptimizerIntegration)(nil).Close))
+}
+
+// IngestInitialBackends mocks base method.
+func (m *MockOptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IngestInitialBackends", ctx, backends)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// IngestInitialBackends indicates an expected call of IngestInitialBackends.
+func (mr *MockOptimizerIntegrationMockRecorder) IngestInitialBackends(ctx, backends any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IngestInitialBackends", reflect.TypeOf((*MockOptimizerIntegration)(nil).IngestInitialBackends), ctx, backends)
+}
+
+// OnRegisterSession mocks base method.
+func (m *MockOptimizerIntegration) OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OnRegisterSession", ctx, session, capabilities)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// OnRegisterSession indicates an expected call of OnRegisterSession.
+func (mr *MockOptimizerIntegrationMockRecorder) OnRegisterSession(ctx, session, capabilities any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnRegisterSession", reflect.TypeOf((*MockOptimizerIntegration)(nil).OnRegisterSession), ctx, session, capabilities)
+}
+
+// RegisterTools mocks base method.
+func (m *MockOptimizerIntegration) RegisterTools(ctx context.Context, session server.ClientSession) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterTools", ctx, session)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RegisterTools indicates an expected call of RegisterTools.
+func (mr *MockOptimizerIntegrationMockRecorder) RegisterTools(ctx, session any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterTools", reflect.TypeOf((*MockOptimizerIntegration)(nil).RegisterTools), ctx, session)
 }

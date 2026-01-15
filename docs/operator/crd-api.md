@@ -1010,7 +1010,6 @@ _Appears in:_
 | `modelCache` _[api.v1alpha1.ModelCacheConfig](#apiv1alpha1modelcacheconfig)_ | ModelCache configures persistent storage for downloaded models<br />When enabled, models are cached in a PVC and reused across pod restarts |  |  |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec allows customizing the pod (node selection, tolerations, etc.)<br />This field accepts a PodTemplateSpec object as JSON/YAML.<br />Note that to modify the specific container the embedding server runs in, you must specify<br />the 'embedding' container name in the PodTemplateSpec. |  | Type: object <br /> |
 | `resourceOverrides` _[api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
-| `groupRef` _string_ | GroupRef is the name of the MCPGroup this embedding server belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 | `replicas` _integer_ | Replicas is the number of embedding server replicas to run | 1 | Minimum: 1 <br /> |
 
 

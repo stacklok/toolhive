@@ -219,22 +219,6 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
 	}
 
-	// Set up field indexing for EmbeddingServer.Spec.GroupRef
-	if err := mgr.GetFieldIndexer().IndexField(
-		context.Background(),
-		&mcpv1alpha1.EmbeddingServer{},
-		"spec.groupRef",
-		func(obj client.Object) []string {
-			embeddingServer := obj.(*mcpv1alpha1.EmbeddingServer)
-			if embeddingServer.Spec.GroupRef == "" {
-				return nil
-			}
-			return []string{embeddingServer.Spec.GroupRef}
-		},
-	); err != nil {
-		return fmt.Errorf("unable to create field index for EmbeddingServer spec.groupRef: %w", err)
-	}
-
 	// Set image validation mode based on whether registry is enabled
 	// If ENABLE_REGISTRY is enabled, enforce registry-based image validation
 	// Otherwise, allow all images

@@ -153,6 +153,11 @@ tasks:
       - task: test-e2e-windows
         platforms: [windows]
 
+  test-optimizer:
+    desc: Run optimizer integration tests with sqlite-vec
+    cmds:
+      - ./scripts/test-optimizer-with-sqlite-vec.sh
+
   test-all:
     desc: Run all tests (unit and e2e)
     deps: [test, test-e2e]
@@ -200,12 +205,12 @@ tasks:
     cmds:
       - cmd: mkdir -p bin
         platforms: [linux, darwin]
-      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp ./cmd/vmcp
+      - cmd: go build -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp ./cmd/vmcp
         platforms: [linux, darwin]
       - cmd: cmd.exe /c mkdir bin
         platforms: [windows]
         ignore_error: true
-      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp.exe ./cmd/vmcp
+      - cmd: go build -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp.exe ./cmd/vmcp
         platforms: [windows]
 
   install-vmcp:
@@ -217,7 +222,7 @@ tasks:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
-      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
+      - go install -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
 
   all:
     desc: Run linting, tests, and build

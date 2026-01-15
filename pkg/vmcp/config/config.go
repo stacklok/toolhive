@@ -125,6 +125,13 @@ type Config struct {
 	// See audit.Config for available configuration options.
 	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
+
+	// Optimizer configures the MCP optimizer for context optimization on large toolsets.
+	// When enabled, vMCP exposes optim.find_tool and optim.call_tool operations to clients
+	// instead of all backend tools directly. This reduces token usage by allowing
+	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// +optional
+	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -632,6 +639,80 @@ type OutputProperty struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
+}
+
+// OptimizerConfig configures the MCP optimizer for semantic tool discovery.
+// The optimizer reduces token usage by allowing LLMs to discover relevant tools
+// on demand rather than receiving all tool definitions upfront.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OptimizerConfig struct {
+	// Enabled determines whether the optimizer is active.
+	// When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools.
+	// +optional
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".
+	// - "ollama": Uses local Ollama HTTP API for embeddings
+	// - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
+	// - "placeholder": Uses deterministic hash-based embeddings (for testing/development)
+	// +kubebuilder:validation:Enum=ollama;openai-compatible;placeholder
+	// +optional
+	EmbeddingBackend string `json:"embeddingBackend,omitempty" yaml:"embeddingBackend,omitempty"`
+
+	// EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).
+	// Required when EmbeddingBackend is "ollama" or "openai-compatible".
+	// Examples:
+	// - Ollama: "http://localhost:11434"
+	// - vLLM: "http://vllm-service:8000/v1"
+	// - OpenAI: "https://api.openai.com/v1"
+	// +optional
+	EmbeddingURL string `json:"embeddingURL,omitempty" yaml:"embeddingURL,omitempty"`
+
+	// EmbeddingModel is the model name to use for embeddings.
+	// Required when EmbeddingBackend is "ollama" or "openai-compatible".
+	// Examples:
+	// - Ollama: "nomic-embed-text", "all-minilm"
+	// - vLLM: "BAAI/bge-small-en-v1.5"
+	// - OpenAI: "text-embedding-3-small"
+	// +optional
+	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
+
+	// EmbeddingDimension is the dimension of the embedding vectors.
+	// Common values:
+	// - 384: all-MiniLM-L6-v2, nomic-embed-text
+	// - 768: BAAI/bge-small-en-v1.5
+	// - 1536: OpenAI text-embedding-3-small
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	EmbeddingDimension int `json:"embeddingDimension,omitempty" yaml:"embeddingDimension,omitempty"`
+
+	// PersistPath is the optional filesystem path for persisting the chromem-go database.
+	// If empty, the database will be in-memory only (ephemeral).
+	// When set, tool metadata and embeddings are persisted to disk for faster restarts.
+	// +optional
+	PersistPath string `json:"persistPath,omitempty" yaml:"persistPath,omitempty"`
+
+	// FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.
+	// If empty, defaults to ":memory:" for in-memory FTS5, or "{PersistPath}/fts.db" if PersistPath is set.
+	// Hybrid search (semantic + BM25) is always enabled.
+	// +optional
+	FTSDBPath string `json:"ftsDBPath,omitempty" yaml:"ftsDBPath,omitempty"`
+
+	// HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
+	// Value range: 0.0 (all BM25) to 1.0 (all semantic).
+	// Default: 0.7 (70% semantic, 30% BM25)
+	// Only used when FTSDBPath is set.
+	// +optional
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	HybridSearchRatio *float64 `json:"hybridSearchRatio,omitempty" yaml:"hybridSearchRatio,omitempty"`
+
+	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
+	// This is an alternative to EmbeddingURL for in-cluster deployments.
+	// When set, vMCP will resolve the service DNS name for the embedding API.
+	// +optional
+	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
 }
 
 // Validator validates configuration.

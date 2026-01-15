@@ -101,6 +101,22 @@ func validateIssuerURL(issuer string) error {
 	return nil
 }
 
+// validateHMACSecrets validates that all HMAC secrets meet the minimum length requirement.
+func validateHMACSecrets(secrets *servercrypto.HMACSecrets) error {
+	if secrets == nil {
+		return fmt.Errorf("HMAC secrets are required")
+	}
+	if len(secrets.Current) < servercrypto.MinSecretLength {
+		return fmt.Errorf("current HMAC secret must be at least %d bytes", servercrypto.MinSecretLength)
+	}
+	for i, rotated := range secrets.Rotated {
+		if len(rotated) < servercrypto.MinSecretLength {
+			return fmt.Errorf("rotated HMAC secret [%d] must be at least %d bytes", i, servercrypto.MinSecretLength)
+		}
+	}
+	return nil
+}
+
 // NewAuthorizationServerConfig creates an AuthorizationServerConfig from the provided configuration.
 func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*AuthorizationServerConfig, error) {
 	if cfg == nil {
@@ -118,11 +134,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	if cfg.SigningKey == nil {
 		return nil, fmt.Errorf("signing key is required")
 	}
-	if cfg.HMACSecrets == nil {
-		return nil, fmt.Errorf("HMAC secrets are required")
-	}
-	if len(cfg.HMACSecrets.Current) < servercrypto.MinSecretLength {
-		return nil, fmt.Errorf("current HMAC secret must be at least %d bytes", servercrypto.MinSecretLength)
+	if err := validateHMACSecrets(cfg.HMACSecrets); err != nil {
+		return nil, err
 	}
 
 	// Validate algorithm matches key type
@@ -211,8 +224,11 @@ func (c *AuthorizationServerConfig) GetSigningKey(_ context.Context) *jose.JSONW
 	return c.SigningKey
 }
 
-// GetSigningJWKS returns the config's signing JWKS. This includes private keys.
-func (c *AuthorizationServerConfig) GetSigningJWKS(_ context.Context) *jose.JSONWebKeySet {
+// GetPrivateSigningJWKS returns the config's signing JWKS containing private keys.
+//
+// WARNING: This JWKS contains PRIVATE key material and MUST NOT be exposed publicly.
+// Use PublicJWKS() for the /.well-known/jwks.json endpoint.
+func (c *AuthorizationServerConfig) GetPrivateSigningJWKS(_ context.Context) *jose.JSONWebKeySet {
 	return c.SigningJWKS
 }
 

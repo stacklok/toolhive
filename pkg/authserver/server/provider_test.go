@@ -291,6 +291,26 @@ func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {
 			},
 			wantErr: "authorization code lifespan must be between",
 		},
+		{
+			name: "weak rotated HMAC secret",
+			params: &AuthorizationServerParams{
+				Issuer:               "https://auth.example.com",
+				AccessTokenLifespan:  time.Hour,
+				RefreshTokenLifespan: time.Hour * 24,
+				AuthCodeLifespan:     time.Minute * 10,
+				HMACSecrets: &servercrypto.HMACSecrets{
+					Current: []byte("current-secret-with-32-bytes-ok!"),
+					Rotated: [][]byte{
+						[]byte("rotated-secret-with-32-bytes-ok!"),
+						[]byte("too-short"), // Weak rotated secret
+					},
+				},
+				SigningKeyID:        "key-1",
+				SigningKeyAlgorithm: "RS256",
+				SigningKey:          rsaKey,
+			},
+			wantErr: "rotated HMAC secret [1] must be at least 32 bytes",
+		},
 	}
 
 	for _, tt := range tests {
@@ -311,8 +331,8 @@ func TestNewAuthorizationServerConfig_WithRotatedSecrets(t *testing.T) {
 	require.NoError(t, err)
 
 	currentSecret := []byte("current-secret-with-32-bytes-ok!")
-	rotatedSecret1 := []byte("rotated-secret1-with-32-bytes!!")
-	rotatedSecret2 := []byte("rotated-secret2-with-32-bytes!!")
+	rotatedSecret1 := []byte("rotated-secret1-with-32-bytes!!!")
+	rotatedSecret2 := []byte("rotated-secret2-with-32-bytes!!!")
 
 	params := &AuthorizationServerParams{
 		Issuer:               "https://auth.example.com",

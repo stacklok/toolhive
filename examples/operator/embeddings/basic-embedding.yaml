@@ -10,7 +10,7 @@ spec:
   model: "sentence-transformers/all-MiniLM-L6-v2"
 
   # Optional: Container image (defaults to ghcr.io/huggingface/text-embeddings-inference:latest)
-  image: "text-embedding-inference:latest"
+  image: "text-embeddings-inference:latest"
   imagePullPolicy: Never
 
   # Optional: Port to expose (defaults to 8080)

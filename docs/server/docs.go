@@ -231,10 +231,6 @@ const docTemplate = `{
                         "description": "Package specifies the Workload Package used to create this Workload.",
                         "type": "string"
                     },
-                    "pid": {
-                        "description": "ProcessID is the ID of the main process inside the workload container.",
-                        "type": "integer"
-                    },
                     "port": {
                         "description": "Port is the port on which the workload is exposed.\nThis is embedded in the URL.",
                         "type": "integer"

@@ -45,8 +45,6 @@ type Workload struct {
 	Remote bool `json:"remote,omitempty"`
 	// StartedAt is when the container was last started (changes on restart)
 	StartedAt time.Time `json:"started_at"`
-	// ProcessID is the ID of the main process inside the workload container.
-	ProcessID int `json:"pid,omitempty"`
 }
 
 // SortWorkloadsByName sorts a slice of Workload by the Name field in ascending alphabetical order.

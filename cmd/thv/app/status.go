@@ -73,7 +73,6 @@ func printStatusJSONOutput(workload core.Workload) error {
 		ProxyMode string `json:"proxy_mode,omitempty"`
 		Group     string `json:"group,omitempty"`
 		Uptime    string `json:"uptime,omitempty"`
-		PID       int    `json:"pid,omitempty"`
 	}{
 		Name:      workload.Name,
 		Status:    string(workload.Status),
@@ -85,7 +84,6 @@ func printStatusJSONOutput(workload core.Workload) error {
 		ProxyMode: workload.ProxyMode,
 		Group:     workload.Group,
 		Uptime:    uptime,
-		PID:       workload.ProcessID,
 	}
 
 	jsonData, err := json.MarshalIndent(output, "", "  ")
@@ -126,10 +124,6 @@ func printStatusTextOutput(workload core.Workload) {
 	}
 	if !workload.StartedAt.IsZero() {
 		_, _ = fmt.Fprintf(w, "Uptime:\t%s\n", formatUptime(time.Since(workload.StartedAt)))
-	}
-
-	if workload.ProcessID != 0 {
-		_, _ = fmt.Fprintf(w, "PID:\t%d\n", workload.ProcessID)
 	}
 
 	// Flush the tabwriter

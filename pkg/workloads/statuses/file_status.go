@@ -187,6 +187,7 @@ type workloadStatusFile struct {
 
 // GetWorkload retrieves the status of a workload by its name.
 func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
+	var pid int
 	result := core.Workload{Name: workloadName}
 	fileFound := false
 
@@ -226,7 +227,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 			}
 		}
 
-		result.ProcessID = statusFile.ProcessID
+		pid = statusFile.ProcessID
 
 		return nil
 	})
@@ -254,7 +255,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 
 		// If workload is running, validate against runtime
 		if result.Status == rt.WorkloadStatusRunning {
-			return f.validateRunningWorkload(ctx, workloadName, result, result.ProcessID)
+			return f.validateRunningWorkload(ctx, workloadName, result, pid)
 		}
 
 		// Return file data
@@ -890,7 +891,6 @@ func (*fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInf
 	runtimeResult.Status = result.Status               // Keep the file status (running)
 	runtimeResult.StatusContext = result.StatusContext // Keep the file status context
 	runtimeResult.CreatedAt = result.CreatedAt         // Keep the file created time
-	runtimeResult.ProcessID = result.ProcessID         // Keep the file PID
 	return runtimeResult, nil
 }
 

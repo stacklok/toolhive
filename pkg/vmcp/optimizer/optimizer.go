@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
 
@@ -32,6 +33,13 @@ type Config struct {
 
 	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
 	PersistPath string
+
+	// FTSDBPath is the path to SQLite FTS5 database for BM25 search
+	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
+	FTSDBPath string
+
+	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
+	HybridSearchRatio float64
 
 	// EmbeddingConfig configures the embedding backend (vLLM, Ollama, placeholder)
 	EmbeddingConfig *embeddings.Config
@@ -44,6 +52,7 @@ type OptimizerIntegration struct {
 	config           *Config
 	ingestionService *ingestion.Service
 	mcpServer        *server.MCPServer // For registering tools
+	backendClient    vmcp.BackendClient // For querying backends at startup
 }
 
 // NewIntegration creates a new optimizer integration.
@@ -51,6 +60,7 @@ func NewIntegration(
 	_ context.Context,
 	cfg *Config,
 	mcpServer *server.MCPServer,
+	backendClient vmcp.BackendClient,
 ) (*OptimizerIntegration, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil // Optimizer disabled
@@ -58,7 +68,10 @@ func NewIntegration(
 
 	// Initialize ingestion service with embedding backend
 	ingestionCfg := &ingestion.Config{
-		DBConfig:        &db.Config{PersistPath: cfg.PersistPath},
+		DBConfig: &db.Config{
+			PersistPath: cfg.PersistPath,
+			FTSDBPath:   cfg.FTSDBPath,
+		},
 		EmbeddingConfig: cfg.EmbeddingConfig,
 	}
 
@@ -71,6 +84,7 @@ func NewIntegration(
 		config:           cfg,
 		ingestionService: svc,
 		mcpServer:        mcpServer,
+		backendClient:    backendClient,
 	}, nil
 }
 
@@ -281,6 +295,67 @@ func (*OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.C
 }
 
 // Close cleans up optimizer resources
+// IngestInitialBackends ingests all discovered backends and their tools at startup.
+// This should be called after backends are discovered during server initialization.
+func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
+	if o == nil || o.ingestionService == nil {
+		return nil // Optimizer disabled
+	}
+
+	logger.Infof("Ingesting %d discovered backends into optimizer", len(backends))
+
+	for _, backend := range backends {
+		// Convert Backend to BackendTarget for client API
+		target := vmcp.BackendToTarget(&backend)
+		if target == nil {
+			logger.Warnf("Failed to convert backend %s to target", backend.Name)
+			continue
+		}
+
+		// Query backend capabilities to get its tools
+		capabilities, err := o.backendClient.ListCapabilities(ctx, target)
+		if err != nil {
+			logger.Warnf("Failed to query capabilities for backend %s: %v", backend.Name, err)
+			continue // Skip this backend but continue with others
+		}
+
+		// Extract tools from capabilities
+		// Note: For ingestion, we only need name and description (for generating embeddings)
+		// InputSchema is not used by the ingestion service
+		var tools []mcp.Tool
+		for _, tool := range capabilities.Tools {
+			tools = append(tools, mcp.Tool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				// InputSchema not needed for embedding generation
+			})
+		}
+
+		// Get description from metadata (may be empty)
+		var description *string
+		if backend.Metadata != nil {
+			if desc := backend.Metadata["description"]; desc != "" {
+				description = &desc
+			}
+		}
+
+		// Ingest this backend's tools
+		if err := o.ingestionService.IngestServer(
+			ctx,
+			backend.ID,
+			backend.Name,
+			description,
+			tools,
+		); err != nil {
+			logger.Warnf("Failed to ingest backend %s: %v", backend.Name, err)
+			continue // Log but don't fail startup
+		}
+	}
+
+	logger.Info("Initial backend ingestion completed")
+	return nil
+}
+
 func (o *OptimizerIntegration) Close() error {
 	if o == nil || o.ingestionService == nil {
 		return nil

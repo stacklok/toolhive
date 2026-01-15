@@ -135,6 +135,13 @@ type OptimizerConfig struct {
 	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
 	PersistPath string
 
+	// FTSDBPath is the path to SQLite FTS5 database for BM25 search
+	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
+	FTSDBPath string
+
+	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
+	HybridSearchRatio float64
+
 	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
 	EmbeddingBackend string
 
@@ -223,6 +230,9 @@ type Server struct {
 // OptimizerIntegration is the interface for optimizer functionality in vMCP.
 // This is defined as an interface to avoid circular dependencies and allow testing.
 type OptimizerIntegration interface {
+	// IngestInitialBackends ingests all discovered backends at startup
+	IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error
+
 	// OnRegisterSession generates embeddings for session tools
 	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
 
@@ -379,8 +389,10 @@ func New(
 
 		// Convert server config to optimizer config
 		optimizerCfg := &optimizer.Config{
-			Enabled:     cfg.OptimizerConfig.Enabled,
-			PersistPath: cfg.OptimizerConfig.PersistPath,
+			Enabled:           cfg.OptimizerConfig.Enabled,
+			PersistPath:       cfg.OptimizerConfig.PersistPath,
+			FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
+			HybridSearchRatio: cfg.OptimizerConfig.HybridSearchRatio,
 			EmbeddingConfig: &embeddings.Config{
 				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
 				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
@@ -389,11 +401,18 @@ func New(
 			},
 		}
 
-		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer)
+		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
 		}
 		logger.Info("Optimizer integration initialized successfully")
+
+		// Ingest discovered backends at startup (populate optimizer database)
+		initialBackends := backendRegistry.List(ctx)
+		if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
+			logger.Warnf("Failed to ingest initial backends: %v", err)
+			// Don't fail server startup - optimizer can still work with incremental ingestion
+		}
 	}
 
 	// Create Server instance

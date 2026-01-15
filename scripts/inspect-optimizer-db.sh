@@ -1,69 +1,63 @@
-#!/usr/bin/env bash
-# Quick inspection script for optimizer test database
+#!/bin/bash
+# Inspect the optimizer SQLite FTS5 database
 
-DB="/tmp/optimizer-test.db"
+set -e
 
-echo "🔍 ToolHive Optimizer Database Inspection"
-echo "=========================================="
-echo ""
+DB_PATH="${1:-/tmp/vmcp-optimizer-fts.db}"
 
-if [ ! -f "$DB" ]; then
-    echo "❌ Database not found at $DB"
-    echo "   Run: task test-optimizer"
+if [ ! -f "$DB_PATH" ]; then
+    echo "Error: Database not found at $DB_PATH"
+    echo "Usage: $0 [path-to-db]"
     exit 1
 fi
 
-echo "📊 Database Info:"
-ls -lh "$DB"
-echo ""
-
-echo "📋 Tables:"
-sqlite3 "$DB" ".tables"
-echo ""
-
-echo "🖥️  Workload Servers:"
-sqlite3 "$DB" -header -column "SELECT name, status, url FROM mcpservers_workload;"
-echo ""
-
-echo "🔧 Tools:"
-sqlite3 "$DB" -header -column "SELECT 
-    json_extract(details, '$.name') as tool_name,
-    json_extract(details, '$.description') as description,
-    token_count
-FROM tools_workload;"
+echo "📊 Optimizer FTS5 Database: $DB_PATH"
 echo ""
 
 echo "📈 Statistics:"
-sqlite3 "$DB" -header -column "SELECT 
-    COUNT(*) as total_tools,
-    SUM(token_count) as total_tokens,
-    AVG(token_count) as avg_tokens
-FROM tools_workload;"
-echo ""
+sqlite3 "$DB_PATH" <<EOF
+.mode column
+.headers on
+SELECT 'Servers' as Type, COUNT(*) as Count FROM backend_servers_fts
+UNION ALL
+SELECT 'Tools', COUNT(*) FROM backend_tools_fts;
+EOF
 
-echo "🔢 Vector Embeddings:"
-echo "   (Note: Vector tables require sqlite-vec extension to query)"
-echo "   Table: workload_tool_vectors (contains 384-dim embeddings)"
-echo "   Table: workload_server_vector (server-level embeddings)"
 echo ""
+echo "🖥️  Servers:"
+sqlite3 "$DB_PATH" <<EOF
+.mode column
+.headers on
+SELECT id, name, server_group FROM backend_servers_fts;
+EOF
 
-echo "🔍 Full-Text Search Test (search for 'weather'):"
-sqlite3 "$DB" -header -column "SELECT 
-    tool_name,
-    tool_description
-FROM workload_tool_fts 
-WHERE workload_tool_fts MATCH 'weather';"
 echo ""
+echo "🔧 Tools (first 10):"
+sqlite3 "$DB_PATH" <<EOF
+.mode column
+.headers on
+SELECT 
+    SUBSTR(tool_name, 1, 30) as tool_name,
+    SUBSTR(tool_description, 1, 50) as description,
+    token_count
+FROM backend_tools_fts 
+LIMIT 10;
+EOF
 
-echo "💡 Interactive Commands:"
-echo "   sqlite3 $DB"
 echo ""
-echo "   -- View tool details:"
-echo "   SELECT * FROM tools_workload;"
-echo ""
-echo "   -- Search by text:"
-echo "   SELECT * FROM workload_tool_fts WHERE workload_tool_fts MATCH 'your query';"
-echo ""
-echo "   -- See vector data:"
-echo "   SELECT * FROM workload_tool_vectors;"
+echo "💡 Tools per server:"
+sqlite3 "$DB_PATH" <<EOF
+.mode column
+.headers on
+SELECT 
+    s.name as server,
+    COUNT(t.id) as tool_count
+FROM backend_servers_fts s
+LEFT JOIN backend_tools_fts t ON s.id = t.mcpserver_id
+GROUP BY s.name
+ORDER BY tool_count DESC;
+EOF
 
+echo ""
+echo "📝 Example FTS5 search query:"
+echo "  sqlite3 $DB_PATH \"SELECT tool_name, rank FROM backend_tool_fts_index WHERE backend_tool_fts_index MATCH 'repository search' ORDER BY rank LIMIT 5;\""

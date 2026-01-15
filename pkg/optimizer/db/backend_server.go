@@ -57,13 +57,21 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 		doc.Embedding = server.ServerEmbedding
 	}
 
-	// Add document to collection
+	// Add document to chromem-go collection
 	err = collection.AddDocument(ctx, doc)
 	if err != nil {
-		return fmt.Errorf("failed to add server document: %w", err)
+		return fmt.Errorf("failed to add server document to chromem-go: %w", err)
 	}
 
-	logger.Debugf("Created backend server: %s", server.ID)
+	// Also add to FTS5 database if available (for keyword filtering)
+	if ftsDB := ops.db.GetFTSDB(); ftsDB != nil {
+		if err := ftsDB.UpsertServer(ctx, server); err != nil {
+			// Log but don't fail - FTS5 is supplementary
+			logger.Warnf("Failed to upsert server to FTS5: %v", err)
+		}
+	}
+
+	logger.Debugf("Created backend server: %s (chromem-go + FTS5)", server.ID)
 	return nil
 }
 
@@ -115,10 +123,18 @@ func (ops *BackendServerOps) Delete(ctx context.Context, serverID string) error 
 
 	err = collection.Delete(ctx, nil, nil, serverID)
 	if err != nil {
-		return fmt.Errorf("failed to delete server: %w", err)
+		return fmt.Errorf("failed to delete server from chromem-go: %w", err)
 	}
 
-	logger.Debugf("Deleted backend server: %s", serverID)
+	// Also delete from FTS5 database if available
+	if ftsDB := ops.db.GetFTSDB(); ftsDB != nil {
+		if err := ftsDB.DeleteServer(ctx, serverID); err != nil {
+			// Log but don't fail
+			logger.Warnf("Failed to delete server from FTS5: %v", err)
+		}
+	}
+
+	logger.Debugf("Deleted backend server: %s (chromem-go + FTS5)", serverID)
 	return nil
 }
 

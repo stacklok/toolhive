@@ -12,16 +12,22 @@ import (
 
 // Config holds database configuration
 type Config struct {
-	// PersistPath is the optional path for persistence.
-	// If empty, the database will be in-memory only.
+	// PersistPath is the optional path for chromem-go persistence.
+	// If empty, chromem-go will be in-memory only.
 	PersistPath string
+
+	// FTSDBPath is the path for SQLite FTS5 database for BM25 search.
+	// If empty, defaults to ":memory:" for in-memory FTS5, or "{PersistPath}/fts.db" if PersistPath is set.
+	// FTS5 is always enabled for hybrid search.
+	FTSDBPath string
 }
 
-// DB represents the chromem-go database with collections for optimizer data
+// DB represents the hybrid database (chromem-go + SQLite FTS5) for optimizer data
 type DB struct {
-	config *Config
-	db     *chromem.DB
-	mu     sync.RWMutex
+	config  *Config
+	chromem *chromem.DB    // Vector/semantic search
+	fts     *FTSDatabase   // BM25 full-text search (optional)
+	mu      sync.RWMutex
 }
 
 // Collection names
@@ -30,7 +36,7 @@ const (
 	BackendToolCollection   = "backend_tools"
 )
 
-// NewDB creates a new chromem-go database
+// NewDB creates a new chromem-go database with FTS5 for hybrid search
 func NewDB(config *Config) (*DB, error) {
 	var chromemDB *chromem.DB
 	var err error
@@ -47,11 +53,32 @@ func NewDB(config *Config) (*DB, error) {
 	}
 
 	db := &DB{
-		config: config,
-		db:     chromemDB,
+		config:  config,
+		chromem: chromemDB,
 	}
 
-	logger.Info("chromem-go database initialized successfully")
+	// Set default FTS5 path if not provided
+	ftsPath := config.FTSDBPath
+	if ftsPath == "" {
+		if config.PersistPath != "" {
+			// Persistent mode: store FTS5 alongside chromem-go
+			ftsPath = config.PersistPath + "/fts.db"
+		} else {
+			// In-memory mode: use SQLite in-memory database
+			ftsPath = ":memory:"
+		}
+	}
+
+	// Initialize FTS5 database for BM25 text search (always enabled)
+	logger.Infof("Initializing FTS5 database for hybrid search at: %s", ftsPath)
+	ftsDB, err := NewFTSDatabase(&FTSConfig{DBPath: ftsPath})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create FTS5 database: %w", err)
+	}
+	db.fts = ftsDB
+	logger.Info("Hybrid search enabled (chromem-go + FTS5)")
+
+	logger.Info("Optimizer database initialized successfully")
 	return db, nil
 }
 
@@ -65,13 +92,13 @@ func (db *DB) GetOrCreateCollection(
 	defer db.mu.Unlock()
 
 	// Try to get existing collection first
-	collection := db.db.GetCollection(name, embeddingFunc)
+	collection := db.chromem.GetCollection(name, embeddingFunc)
 	if collection != nil {
 		return collection, nil
 	}
 
 	// Create new collection if it doesn't exist
-	collection, err := db.db.CreateCollection(name, nil, embeddingFunc)
+	collection, err := db.chromem.CreateCollection(name, nil, embeddingFunc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create collection %s: %w", name, err)
 	}
@@ -85,7 +112,7 @@ func (db *DB) GetCollection(name string, embeddingFunc chromem.EmbeddingFunc) (*
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	collection := db.db.GetCollection(name, embeddingFunc)
+	collection := db.chromem.GetCollection(name, embeddingFunc)
 	if collection == nil {
 		return nil, fmt.Errorf("collection not found: %s", name)
 	}
@@ -98,29 +125,49 @@ func (db *DB) DeleteCollection(name string) {
 	defer db.mu.Unlock()
 
 	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
-	db.db.DeleteCollection(name)
+	db.chromem.DeleteCollection(name)
 	logger.Debugf("Deleted collection: %s", name)
 }
 
-// Close closes the database (no-op for chromem-go, included for interface compatibility)
-func (db *DB) Close() error { //nolint:revive // db receiver not used but kept for interface consistency
-	logger.Info("Closing chromem-go database")
+// Close closes both databases
+func (db *DB) Close() error {
+	logger.Info("Closing optimizer databases")
+	// chromem-go doesn't need explicit close, but FTS5 does
+	if db.fts != nil {
+		if err := db.fts.Close(); err != nil {
+			return fmt.Errorf("failed to close FTS database: %w", err)
+		}
+	}
 	return nil
 }
 
-// GetDB returns the underlying chromem.DB instance
-func (db *DB) GetDB() *chromem.DB {
-	return db.db
+// GetChromemDB returns the underlying chromem.DB instance
+func (db *DB) GetChromemDB() *chromem.DB {
+	return db.chromem
 }
 
-// Reset clears all collections (useful for testing)
+// GetFTSDB returns the FTS database (may be nil if FTS is disabled)
+func (db *DB) GetFTSDB() *FTSDatabase {
+	return db.fts
+}
+
+// Reset clears all collections and FTS tables (useful for testing)
 func (db *DB) Reset() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
-	db.db.DeleteCollection(BackendServerCollection)
+	db.chromem.DeleteCollection(BackendServerCollection)
 	//nolint:errcheck,gosec // DeleteCollection in chromem-go doesn't return an error
-	db.db.DeleteCollection(BackendToolCollection)
-	logger.Debug("Reset all collections")
+	db.chromem.DeleteCollection(BackendToolCollection)
+
+	// Clear FTS5 tables if available
+	if db.fts != nil {
+		//nolint:errcheck // Best effort cleanup
+		_, _ = db.fts.db.Exec("DELETE FROM backend_tools_fts")
+		//nolint:errcheck // Best effort cleanup
+		_, _ = db.fts.db.Exec("DELETE FROM backend_servers_fts")
+	}
+
+	logger.Debug("Reset all collections and FTS tables")
 }

@@ -26,7 +26,7 @@ func NewBackendToolOps(db *DB, embeddingFunc chromem.EmbeddingFunc) *BackendTool
 }
 
 // Create adds a new backend tool to the collection
-func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool) error {
+func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool, serverName string) error {
 	collection, err := ops.db.GetOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("failed to get backend tool collection: %w", err)
@@ -56,13 +56,21 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool)
 		doc.Embedding = tool.ToolEmbedding
 	}
 
-	// Add document to collection
+	// Add document to chromem-go collection
 	err = collection.AddDocument(ctx, doc)
 	if err != nil {
-		return fmt.Errorf("failed to add tool document: %w", err)
+		return fmt.Errorf("failed to add tool document to chromem-go: %w", err)
 	}
 
-	logger.Debugf("Created backend tool: %s", tool.ID)
+	// Also add to FTS5 database if available (for BM25 search)
+	if ops.db.fts != nil {
+		if err := ops.db.fts.UpsertToolMeta(ctx, tool, serverName); err != nil {
+			// Log but don't fail - FTS5 is supplementary
+			logger.Warnf("Failed to upsert tool to FTS5: %v", err)
+		}
+	}
+
+	logger.Debugf("Created backend tool: %s (chromem-go + FTS5)", tool.ID)
 	return nil
 }
 
@@ -92,16 +100,47 @@ func (ops *BackendToolOps) Get(ctx context.Context, toolID string) (*models.Back
 	return tool, nil
 }
 
-// Update updates an existing backend tool
+// Update updates an existing backend tool in chromem-go
+// Note: This only updates chromem-go, not FTS5. Use Create to update both.
 func (ops *BackendToolOps) Update(ctx context.Context, tool *models.BackendTool) error {
-	// chromem-go doesn't have an update operation, so we delete and re-create
-	err := ops.Delete(ctx, tool.ID)
+	collection, err := ops.db.GetOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
-		// If tool doesn't exist, that's fine
-		logger.Debugf("Tool %s not found for update, will create new", tool.ID)
+		return fmt.Errorf("failed to get backend tool collection: %w", err)
 	}
 
-	return ops.Create(ctx, tool)
+	// Prepare content for embedding
+	content := tool.ToolName
+	if tool.Description != nil && *tool.Description != "" {
+		content += ". " + *tool.Description
+	}
+
+	// Serialize metadata
+	metadata, err := serializeToolMetadata(tool)
+	if err != nil {
+		return fmt.Errorf("failed to serialize tool metadata: %w", err)
+	}
+
+	// Delete existing document
+	_ = collection.Delete(ctx, nil, nil, tool.ID) // Ignore error if doesn't exist
+
+	// Create updated document
+	doc := chromem.Document{
+		ID:       tool.ID,
+		Content:  content,
+		Metadata: metadata,
+	}
+
+	if len(tool.ToolEmbedding) > 0 {
+		doc.Embedding = tool.ToolEmbedding
+	}
+
+	err = collection.AddDocument(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to update tool document: %w", err)
+	}
+
+	logger.Debugf("Updated backend tool: %s", tool.ID)
+	return nil
 }
 
 // Delete removes a backend tool
@@ -121,28 +160,38 @@ func (ops *BackendToolOps) Delete(ctx context.Context, toolID string) error {
 	return nil
 }
 
-// DeleteByServer removes all tools for a given server
+// DeleteByServer removes all tools for a given server from both chromem-go and FTS5
 func (ops *BackendToolOps) DeleteByServer(ctx context.Context, serverID string) error {
 	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
-		// Collection doesn't exist, nothing to delete
-		return nil
+		// Collection doesn't exist, nothing to delete in chromem-go
+		logger.Debug("Backend tool collection not found, skipping chromem-go deletion")
+	} else {
+		// Query all tools for this server
+		tools, err := ops.ListByServer(ctx, serverID)
+		if err != nil {
+			return fmt.Errorf("failed to list tools for server: %w", err)
+		}
+
+		// Delete each tool from chromem-go
+		for _, tool := range tools {
+			if err := collection.Delete(ctx, nil, nil, tool.ID); err != nil {
+				logger.Warnf("Failed to delete tool %s from chromem-go: %v", tool.ID, err)
+			}
+		}
+
+		logger.Debugf("Deleted %d tools from chromem-go for server: %s", len(tools), serverID)
 	}
 
-	// Query all tools for this server
-	tools, err := ops.ListByServer(ctx, serverID)
-	if err != nil {
-		return fmt.Errorf("failed to list tools for server: %w", err)
-	}
-
-	// Delete each tool
-	for _, tool := range tools {
-		if err := collection.Delete(ctx, nil, nil, tool.ID); err != nil {
-			logger.Warnf("Failed to delete tool %s: %v", tool.ID, err)
+	// Also delete from FTS5 database if available
+	if ops.db.fts != nil {
+		if err := ops.db.fts.DeleteToolsByServer(ctx, serverID); err != nil {
+			logger.Warnf("Failed to delete tools from FTS5 for server %s: %v", serverID, err)
+		} else {
+			logger.Debugf("Deleted tools from FTS5 for server: %s", serverID)
 		}
 	}
 
-	logger.Debugf("Deleted %d tools for server: %s", len(tools), serverID)
 	return nil
 }
 

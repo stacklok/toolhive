@@ -186,7 +186,7 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 			LastUpdated: time.Now(),
 		}
 
-		if err := s.backendToolOps.Create(ctx, backendTool); err != nil {
+		if err := s.backendToolOps.Create(ctx, backendTool, serverName); err != nil {
 			return 0, fmt.Errorf("failed to create tool %s: %w", tool.Name, err)
 		}
 	}

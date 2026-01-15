@@ -533,6 +533,21 @@ type OptimizerConfig struct {
 	// +optional
 	PersistPath string `json:"persistPath,omitempty" yaml:"persistPath,omitempty"`
 
+	// FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.
+	// If empty, defaults to ":memory:" for in-memory FTS5, or "{PersistPath}/fts.db" if PersistPath is set.
+	// Hybrid search (semantic + BM25) is always enabled.
+	// +optional
+	FTSDBPath string `json:"ftsDBPath,omitempty" yaml:"ftsDBPath,omitempty"`
+
+	// HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
+	// Value range: 0.0 (all BM25) to 1.0 (all semantic).
+	// Default: 0.7 (70% semantic, 30% BM25)
+	// Only used when FTSDBPath is set.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	HybridSearchRatio float64 `json:"hybridSearchRatio,omitempty" yaml:"hybridSearchRatio,omitempty"`
+
 	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
 	// This is an alternative to EmbeddingURL for in-cluster deployments.
 	// When set, vMCP will resolve the service DNS name for the embedding API.

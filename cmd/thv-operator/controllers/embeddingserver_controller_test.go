@@ -225,49 +225,22 @@ func TestEmbeddingServerPodTemplateSpecValidation(t *testing.T) {
 func TestEmbeddingServer_Labels(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		groupRef string
-	}{
-		{
-			name:     "no group reference",
-			groupRef: "",
-		},
-		{
-			name:     "with group reference",
-			groupRef: "ml-services",
+	embedding := &mcpv1alpha1.EmbeddingServer{
+		Spec: mcpv1alpha1.EmbeddingServerSpec{
+			Model: "test-model",
 		},
 	}
+	embedding.Name = "test-embedding"
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	reconciler := &EmbeddingServerReconciler{}
+	labels := reconciler.labelsForEmbedding(embedding)
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
-					GroupRef: tt.groupRef,
-				},
-			}
-			embedding.Name = "test-embedding"
+	// Check required labels
+	assert.Equal(t, "embeddingserver", labels["app.kubernetes.io/name"])
+	assert.Equal(t, "test-embedding", labels["app.kubernetes.io/instance"])
+	assert.Equal(t, "embedding-server", labels["app.kubernetes.io/component"])
+	assert.Equal(t, "toolhive-operator", labels["app.kubernetes.io/managed-by"])
 
-			reconciler := &EmbeddingServerReconciler{}
-			labels := reconciler.labelsForEmbedding(embedding)
-
-			// Check required labels
-			assert.Equal(t, "embeddingserver", labels["app.kubernetes.io/name"])
-			assert.Equal(t, "test-embedding", labels["app.kubernetes.io/instance"])
-			assert.Equal(t, "embedding-server", labels["app.kubernetes.io/component"])
-			assert.Equal(t, "toolhive-operator", labels["app.kubernetes.io/managed-by"])
-
-			// Check group label
-			if tt.groupRef != "" {
-				assert.Equal(t, tt.groupRef, labels["toolhive.stacklok.dev/group"])
-			} else {
-				_, exists := labels["toolhive.stacklok.dev/group"]
-				assert.False(t, exists)
-			}
-		})
-	}
 }
 
 func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {

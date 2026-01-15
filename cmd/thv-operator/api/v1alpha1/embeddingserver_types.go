@@ -6,7 +6,7 @@ import (
 )
 
 // Condition types for EmbeddingServer (reuses common conditions from MCPServer)
-// ConditionImageValidated, ConditionGroupRefValidated, and ConditionPodTemplateValid are shared with MCPServer
+// ConditionImageValidated and ConditionPodTemplateValid are shared with MCPServer
 
 const (
 	// ConditionModelReady indicates whether the embedding model is downloaded and ready
@@ -17,7 +17,7 @@ const (
 )
 
 // Condition reasons for EmbeddingServer
-// Image validation, GroupRef, and PodTemplate reasons are shared with MCPServer
+// Image validation and PodTemplate reasons are shared with MCPServer
 
 const (
 	// ConditionReasonModelDownloading indicates the model is being downloaded
@@ -87,11 +87,6 @@ type EmbeddingServerSpec struct {
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional
 	ResourceOverrides *EmbeddingResourceOverrides `json:"resourceOverrides,omitempty"`
-
-	// GroupRef is the name of the MCPGroup this embedding server belongs to
-	// Must reference an existing MCPGroup in the same namespace
-	// +optional
-	GroupRef string `json:"groupRef,omitempty"`
 
 	// Replicas is the number of embedding server replicas to run
 	// +kubebuilder:validation:Minimum=1

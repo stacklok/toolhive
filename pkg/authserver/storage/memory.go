@@ -155,69 +155,121 @@ func (s *MemoryStorage) cleanupLoop() {
 }
 
 // cleanupExpired removes all expired entries from storage.
+// Uses collect-then-delete pattern: collects expired keys under read lock,
+// then deletes under write lock. This minimizes write lock hold time.
 //
 //nolint:gocyclo // Function is straightforward, just repetitive cleanup loops for each storage type
 func (s *MemoryStorage) cleanupExpired() {
+	now := time.Now()
+
+	// Phase 1: Collect expired keys under read lock
+	s.mu.RLock()
+
+	var expiredAuthCodes []string
+	for k, v := range s.authCodes {
+		if now.After(v.expiresAt) {
+			expiredAuthCodes = append(expiredAuthCodes, k)
+		}
+	}
+
+	var expiredInvalidatedCodes []string
+	for k, v := range s.invalidatedCodes {
+		if now.After(v.expiresAt) {
+			expiredInvalidatedCodes = append(expiredInvalidatedCodes, k)
+		}
+	}
+
+	var expiredAccessTokens []string
+	for k, v := range s.accessTokens {
+		if now.After(v.expiresAt) {
+			expiredAccessTokens = append(expiredAccessTokens, k)
+		}
+	}
+
+	var expiredRefreshTokens []string
+	for k, v := range s.refreshTokens {
+		if now.After(v.expiresAt) {
+			expiredRefreshTokens = append(expiredRefreshTokens, k)
+		}
+	}
+
+	var expiredPKCERequests []string
+	for k, v := range s.pkceRequests {
+		if now.After(v.expiresAt) {
+			expiredPKCERequests = append(expiredPKCERequests, k)
+		}
+	}
+
+	var expiredUpstreamTokens []string
+	for k, v := range s.upstreamTokens {
+		if now.After(v.expiresAt) {
+			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
+		}
+	}
+
+	var expiredPendingAuthorizations []string
+	for k, v := range s.pendingAuthorizations {
+		if now.After(v.expiresAt) {
+			expiredPendingAuthorizations = append(expiredPendingAuthorizations, k)
+		}
+	}
+
+	var expiredJWTs []string
+	for k, v := range s.clientAssertionJWTs {
+		if now.After(v) {
+			expiredJWTs = append(expiredJWTs, k)
+		}
+	}
+
+	s.mu.RUnlock()
+
+	// Phase 2: Early return if nothing to delete (no write lock needed)
+	if len(expiredAuthCodes) == 0 &&
+		len(expiredInvalidatedCodes) == 0 &&
+		len(expiredAccessTokens) == 0 &&
+		len(expiredRefreshTokens) == 0 &&
+		len(expiredPKCERequests) == 0 &&
+		len(expiredUpstreamTokens) == 0 &&
+		len(expiredPendingAuthorizations) == 0 &&
+		len(expiredJWTs) == 0 {
+		return
+	}
+
+	// Phase 3: Delete collected keys under write lock
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
-
-	// Clean up auth codes
-	for k, v := range s.authCodes {
-		if now.After(v.expiresAt) {
-			delete(s.authCodes, k)
-			delete(s.invalidatedCodes, k)
-		}
+	for _, k := range expiredAuthCodes {
+		delete(s.authCodes, k)
+		delete(s.invalidatedCodes, k) // Also clean up associated invalidated code
 	}
 
-	// Clean up invalidated codes that are no longer needed
-	for k, v := range s.invalidatedCodes {
-		if now.After(v.expiresAt) {
-			delete(s.invalidatedCodes, k)
-		}
+	for _, k := range expiredInvalidatedCodes {
+		delete(s.invalidatedCodes, k)
 	}
 
-	// Clean up access tokens
-	for k, v := range s.accessTokens {
-		if now.After(v.expiresAt) {
-			delete(s.accessTokens, k)
-		}
+	for _, k := range expiredAccessTokens {
+		delete(s.accessTokens, k)
 	}
 
-	// Clean up refresh tokens
-	for k, v := range s.refreshTokens {
-		if now.After(v.expiresAt) {
-			delete(s.refreshTokens, k)
-		}
+	for _, k := range expiredRefreshTokens {
+		delete(s.refreshTokens, k)
 	}
 
-	// Clean up PKCE requests
-	for k, v := range s.pkceRequests {
-		if now.After(v.expiresAt) {
-			delete(s.pkceRequests, k)
-		}
+	for _, k := range expiredPKCERequests {
+		delete(s.pkceRequests, k)
 	}
 
-	// Clean up upstream tokens
-	for k, v := range s.upstreamTokens {
-		if now.After(v.expiresAt) {
-			delete(s.upstreamTokens, k)
-		}
+	for _, k := range expiredUpstreamTokens {
+		delete(s.upstreamTokens, k)
 	}
 
-	// Clean up pending authorizations
-	for k, v := range s.pendingAuthorizations {
-		if now.After(v.expiresAt) {
-			delete(s.pendingAuthorizations, k)
-		}
+	for _, k := range expiredPendingAuthorizations {
+		delete(s.pendingAuthorizations, k)
 	}
 
-	// Clean up expired JTIs
-	for k, v := range s.clientAssertionJWTs {
-		if now.After(v) {
-			delete(s.clientAssertionJWTs, k)
-		}
+	for _, k := range expiredJWTs {
+		delete(s.clientAssertionJWTs, k)
 	}
 }
 
@@ -360,7 +412,7 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 	defer s.mu.Unlock()
 
 	if _, ok := s.authCodes[code]; !ok {
-		logger.Debugw("authorization code not found for invalidation", "code", code)
+		logger.Debugw("authorization code not found for invalidation")
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
 	}
 
@@ -751,13 +803,13 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 
 	entry, ok := s.pendingAuthorizations[state]
 	if !ok {
-		logger.Debugw("pending authorization not found", "state", state)
+		logger.Debugw("pending authorization not found")
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Pending authorization not found"))
 	}
 
 	// Check if expired
 	if time.Now().After(entry.expiresAt) {
-		logger.Debugw("pending authorization expired", "state", state)
+		logger.Debugw("pending authorization expired")
 		return nil, ErrExpired
 	}
 

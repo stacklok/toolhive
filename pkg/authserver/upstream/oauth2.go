@@ -287,7 +287,6 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	logger.Infow("creating OAuth2 provider",
 		"authorization_endpoint", config.AuthorizationEndpoint,
 		"token_endpoint", config.TokenEndpoint,
-		"client_id", config.ClientID,
 	)
 
 	tokenURL, err := url.Parse(config.TokenEndpoint)

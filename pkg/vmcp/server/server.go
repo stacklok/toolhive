@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 // Package server implements the Virtual MCP Server that aggregates
 // multiple backend MCP servers into a unified interface.
 //
@@ -23,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -35,7 +33,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -125,15 +122,37 @@ type Config struct {
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
 
-	// OptimizerFactory builds an optimizer from a list of tools.
-	// If not set, the optimizer is disabled.
-	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
+	// OptimizerConfig is the optional optimizer configuration.
+	// If nil or Enabled=false, optimizer tools (optim.find_tool, optim.call_tool) are not available.
+	OptimizerConfig *OptimizerConfig
+}
 
-	// StatusReporter enables vMCP runtime to report operational status.
-	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
-	// In CLI mode: NoOpReporter (no persistent status)
-	// If nil, status reporting is disabled.
-	StatusReporter vmcpstatus.Reporter
+// OptimizerConfig holds optimizer-specific configuration for vMCP integration.
+type OptimizerConfig struct {
+	// Enabled controls whether optimizer tools are available
+	Enabled bool
+
+	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
+	PersistPath string
+
+	// FTSDBPath is the path to SQLite FTS5 database for BM25 search
+	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
+	FTSDBPath string
+
+	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
+	HybridSearchRatio float64
+
+	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
+	EmbeddingBackend string
+
+	// EmbeddingURL is the URL for the embedding service (vLLM or Ollama)
+	EmbeddingURL string
+
+	// EmbeddingModel is the model name for embeddings
+	EmbeddingModel string
+
+	// EmbeddingDimension is the embedding vector dimension
+	EmbeddingDimension int
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -203,9 +222,9 @@ type Server struct {
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
 
-	// statusReporter enables vMCP to report operational status to control plane.
-	// Nil if status reporting is disabled.
-	statusReporter vmcpstatus.Reporter
+	// optimizerIntegration provides semantic tool discovery via optim.find_tool and optim.call_tool.
+	// Nil if optimizer is disabled.
+	optimizerIntegration OptimizerIntegration
 
 	// statusReportingCtx controls the lifecycle of the periodic status reporting goroutine.
 	// Created in Start(), cancelled in Stop() or on Start() error paths.
@@ -216,6 +235,22 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+}
+
+// OptimizerIntegration is the interface for optimizer functionality in vMCP.
+// This is defined as an interface to avoid circular dependencies and allow testing.
+type OptimizerIntegration interface {
+	// IngestInitialBackends ingests all discovered backends at startup
+	IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error
+
+	// OnRegisterSession generates embeddings for session tools
+	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
+
+	// RegisterTools adds optim.find_tool and optim.call_tool to the session
+	RegisterTools(ctx context.Context, session server.ClientSession) error
+
+	// Close cleans up optimizer resources
+	Close() error
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -360,28 +395,171 @@ func New(
 		logger.Info("Health monitoring disabled")
 	}
 
+	// Initialize optimizer integration if enabled
+	var optimizerInteg OptimizerIntegration
+	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
+		logger.Infow("Initializing optimizer integration (chromem-go)",
+			"persist_path", cfg.OptimizerConfig.PersistPath,
+			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
+
+		// Convert server config to optimizer config
+		hybridRatio := 0.7 // Default
+		if cfg.OptimizerConfig.HybridSearchRatio != 0 {
+			hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
+		}
+		optimizerCfg := &optimizer.Config{
+			Enabled:           cfg.OptimizerConfig.Enabled,
+			PersistPath:       cfg.OptimizerConfig.PersistPath,
+			FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
+			HybridSearchRatio: hybridRatio,
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
+				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
+				Model:       cfg.OptimizerConfig.EmbeddingModel,
+				Dimension:   cfg.OptimizerConfig.EmbeddingDimension,
+			},
+		}
+
+		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
+		}
+		logger.Info("Optimizer integration initialized successfully")
+
+		// Ingest discovered backends at startup (populate optimizer database)
+		initialBackends := backendRegistry.List(ctx)
+		if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
+			logger.Warnf("Failed to ingest initial backends: %v", err)
+			// Don't fail server startup - optimizer can still work with incremental ingestion
+		}
+	}
+
 	// Create Server instance
 	srv := &Server{
-		config:            cfg,
-		mcpServer:         mcpServer,
-		router:            rt,
-		backendClient:     backendClient,
-		handlerFactory:    handlerFactory,
-		discoveryMgr:      discoveryMgr,
-		backendRegistry:   backendRegistry,
-		sessionManager:    sessionManager,
-		capabilityAdapter: capabilityAdapter,
-		workflowDefs:      workflowDefs,
-		workflowExecutors: workflowExecutors,
-		ready:             make(chan struct{}),
-		healthMonitor:     healthMon,
-		statusReporter:    cfg.StatusReporter,
+		config:               cfg,
+		mcpServer:            mcpServer,
+		router:               rt,
+		backendClient:        backendClient,
+		handlerFactory:       handlerFactory,
+		discoveryMgr:         discoveryMgr,
+		backendRegistry:      backendRegistry,
+		sessionManager:       sessionManager,
+		capabilityAdapter:    capabilityAdapter,
+		workflowDefs:         workflowDefs,
+		workflowExecutors:    workflowExecutors,
+		ready:                make(chan struct{}),
+		healthMonitor:        healthMon,
+		optimizerIntegration: optimizerInteg,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
-	// See handleSessionRegistration for implementation details.
+	// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
+	// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
+	//
+	// The discovery middleware populates capabilities in the context, which is available here.
+	// We inject them into the SDK session and store the routing table for subsequent requests.
+	//
+	// IMPORTANT: Session capabilities are immutable after injection.
+	// - Capabilities discovered during initialize are fixed for the session lifetime
+	// - Backend changes (new tools, removed resources) won't be reflected in existing sessions
+	// - Clients must create new sessions to see updated capabilities
+	// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
-		srv.handleSessionRegistration(ctx, session, sessionManager)
+		sessionID := session.SessionID()
+		logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
+
+		// Get capabilities from context (discovered by middleware)
+		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+		if !ok || caps == nil {
+			logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
+				"session_id", sessionID)
+			return
+		}
+
+		// Validate that routing table exists
+		if caps.RoutingTable == nil {
+			logger.Warnw("routing table is nil in discovered capabilities",
+				"session_id", sessionID)
+			return
+		}
+
+		// Add composite tools to capabilities
+		// Composite tools are static (from configuration) and not discovered from backends
+		// They are added here to be exposed alongside backend tools in the session
+		if len(srv.workflowDefs) > 0 {
+			compositeTools := convertWorkflowDefsToTools(srv.workflowDefs)
+
+			// Validate no conflicts between composite tool names and backend tool names
+			if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
+				logger.Errorw("composite tool name conflict detected",
+					"session_id", sessionID,
+					"error", err)
+				// Don't add composite tools if there are conflicts
+				// This prevents ambiguity in routing/execution
+				return
+			}
+
+			caps.CompositeTools = compositeTools
+			logger.Debugw("added composite tools to session capabilities",
+				"session_id", sessionID,
+				"composite_tool_count", len(compositeTools))
+		}
+
+		// Store routing table in VMCPSession for subsequent requests
+		// This enables the middleware to reconstruct capabilities from session
+		// without re-running discovery for every request
+		vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
+		if err != nil {
+			logger.Errorw("failed to get VMCPSession for routing table storage",
+				"error", err,
+				"session_id", sessionID)
+			return
+		}
+
+		vmcpSess.SetRoutingTable(caps.RoutingTable)
+		vmcpSess.SetTools(caps.Tools)
+		logger.Debugw("routing table and tools stored in VMCPSession",
+			"session_id", sessionID,
+			"tool_count", len(caps.RoutingTable.Tools),
+			"resource_count", len(caps.RoutingTable.Resources),
+			"prompt_count", len(caps.RoutingTable.Prompts))
+
+		// Inject capabilities into SDK session
+		if err := srv.injectCapabilities(sessionID, caps); err != nil {
+			logger.Errorw("failed to inject session capabilities",
+				"error", err,
+				"session_id", sessionID)
+			return
+		}
+
+		logger.Infow("session capabilities injected",
+			"session_id", sessionID,
+			"tool_count", len(caps.Tools),
+			"resource_count", len(caps.Resources))
+
+		// Generate embeddings and register optimizer tools if enabled
+		if srv.optimizerIntegration != nil {
+			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
+
+			// Generate embeddings for all tools in this session
+			if err := srv.optimizerIntegration.OnRegisterSession(ctx, session, caps); err != nil {
+				logger.Errorw("failed to generate embeddings for optimizer",
+					"error", err,
+					"session_id", sessionID)
+				// Don't fail session initialization - continue without optimizer
+			} else {
+				// Register optimizer tools (optim.find_tool, optim.call_tool)
+				if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
+					logger.Errorw("failed to register optimizer tools",
+						"error", err,
+						"session_id", sessionID)
+					// Don't fail session initialization - continue without optimizer tools
+				} else {
+					logger.Infow("optimizer tools registered",
+						"session_id", sessionID)
+				}
+			}
+		}
 	})
 
 	return srv, nil
@@ -773,7 +951,6 @@ func (s *Server) Ready() <-chan struct{} {
 //   - No previous capabilities exist, so no deletion needed
 //   - Capabilities are IMMUTABLE for the session lifetime (see limitation below)
 //   - Discovery middleware does not re-run for subsequent requests
-//   - If injectOptimizerCapabilities is called, this should not be called again.
 //
 // LIMITATION: Session capabilities are fixed at creation time.
 // If backends change (new tools added, resources removed), existing sessions won't see updates.
@@ -845,167 +1022,6 @@ func (s *Server) injectCapabilities(
 		"resources", len(caps.Resources))
 
 	return nil
-}
-
-// injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
-// It should not be called if not in optimizer mode and replaces injectCapabilities.
-//
-// When optimizer mode is enabled, instead of exposing all backend tools directly,
-// vMCP exposes only two meta-tools:
-//   - find_tool: Search for tools by description
-//   - call_tool: Invoke a tool by name with parameters
-//
-// This method:
-// 1. Converts all tools (backend + composite) to SDK format with handlers
-// 2. Injects the optimizer capabilities into the session
-func (s *Server) injectOptimizerCapabilities(
-	sessionID string,
-	caps *aggregator.AggregatedCapabilities,
-) error {
-
-	tools := append([]vmcp.Tool{}, caps.Tools...)
-	tools = append(tools, caps.CompositeTools...)
-
-	sdkTools, err := s.capabilityAdapter.ToSDKTools(tools)
-	if err != nil {
-		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
-	}
-
-	// Create optimizer tools (find_tool, call_tool)
-	optimizerTools := adapter.CreateOptimizerTools(s.config.OptimizerFactory(sdkTools))
-
-	logger.Debugw("created optimizer tools for session",
-		"session_id", sessionID,
-		"backend_tool_count", len(caps.Tools),
-		"composite_tool_count", len(caps.CompositeTools),
-		"total_tools_indexed", len(sdkTools))
-
-	// Clear tools from caps - they're now wrapped by optimizer
-	// Resources and prompts are preserved and handled normally
-	capsCopy := *caps
-	capsCopy.Tools = nil
-	capsCopy.CompositeTools = nil
-
-	// Manually add the optimizer tools, since we don't want to bother converting
-	// optimizer tools into `vmcp.Tool`s as well.
-	if err := s.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
-		return fmt.Errorf("failed to add session tools: %w", err)
-	}
-
-	return s.injectCapabilities(sessionID, &capsCopy)
-}
-
-// handleSessionRegistration processes a new MCP session registration.
-//
-// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
-// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
-//
-// The discovery middleware populates capabilities in the context, which is available here.
-// We inject them into the SDK session and store the routing table for subsequent requests.
-//
-// This method performs the following steps:
-//  1. Retrieves discovered capabilities from context
-//  2. Adds composite tools from configuration
-//  3. Stores routing table in VMCPSession for request routing
-//  4. Injects capabilities into the SDK session
-//
-// IMPORTANT: Session capabilities are immutable after injection.
-//   - Capabilities discovered during initialize are fixed for the session lifetime
-//   - Backend changes (new tools, removed resources) won't be reflected in existing sessions
-//   - Clients must create new sessions to see updated capabilities
-//
-// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
-//
-// The sessionManager parameter is passed explicitly because this method is called
-// from a closure registered before the Server is fully constructed.
-func (s *Server) handleSessionRegistration(
-	ctx context.Context,
-	session server.ClientSession,
-	sessionManager *transportsession.Manager,
-) {
-	sessionID := session.SessionID()
-	logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
-
-	// Get capabilities from context (discovered by middleware)
-	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-	if !ok || caps == nil {
-		logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
-			"session_id", sessionID)
-		return
-	}
-
-	// Validate that routing table exists
-	if caps.RoutingTable == nil {
-		logger.Warnw("routing table is nil in discovered capabilities",
-			"session_id", sessionID)
-		return
-	}
-
-	// Add composite tools to capabilities
-	// Composite tools are static (from configuration) and not discovered from backends
-	// They are added here to be exposed alongside backend tools in the session
-	if len(s.workflowDefs) > 0 {
-		compositeTools := convertWorkflowDefsToTools(s.workflowDefs)
-
-		// Validate no conflicts between composite tool names and backend tool names
-		if err := validateNoToolConflicts(caps.Tools, compositeTools); err != nil {
-			logger.Errorw("composite tool name conflict detected",
-				"session_id", sessionID,
-				"error", err)
-			// Don't add composite tools if there are conflicts
-			// This prevents ambiguity in routing/execution
-			return
-		}
-
-		caps.CompositeTools = compositeTools
-		logger.Debugw("added composite tools to session capabilities",
-			"session_id", sessionID,
-			"composite_tool_count", len(compositeTools))
-	}
-
-	// Store routing table in VMCPSession for subsequent requests
-	// This enables the middleware to reconstruct capabilities from session
-	// without re-running discovery for every request
-	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
-	if err != nil {
-		logger.Errorw("failed to get VMCPSession for routing table storage",
-			"error", err,
-			"session_id", sessionID)
-		return
-	}
-
-	vmcpSess.SetRoutingTable(caps.RoutingTable)
-	vmcpSess.SetTools(caps.Tools)
-	logger.Debugw("routing table and tools stored in VMCPSession",
-		"session_id", sessionID,
-		"tool_count", len(caps.RoutingTable.Tools),
-		"resource_count", len(caps.RoutingTable.Resources),
-		"prompt_count", len(caps.RoutingTable.Prompts))
-
-	if s.config.OptimizerFactory != nil {
-		err = s.injectOptimizerCapabilities(sessionID, caps)
-		if err != nil {
-			logger.Errorw("failed to create optimizer tools",
-				"error", err,
-				"session_id", sessionID)
-		} else {
-			logger.Infow("optimizer capabilities injected")
-		}
-		return
-	}
-
-	// Inject capabilities into SDK session
-	if err := s.injectCapabilities(sessionID, caps); err != nil {
-		logger.Errorw("failed to inject session capabilities",
-			"error", err,
-			"session_id", sessionID)
-		return
-	}
-
-	logger.Infow("session capabilities injected",
-		"session_id", sessionID,
-		"tool_count", len(caps.Tools),
-		"resource_count", len(caps.Resources))
 }
 
 // validateAndCreateExecutors validates workflow definitions and creates executors.

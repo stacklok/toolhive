@@ -25,8 +25,8 @@ type Config struct {
 // DB represents the hybrid database (chromem-go + SQLite FTS5) for optimizer data
 type DB struct {
 	config  *Config
-	chromem *chromem.DB    // Vector/semantic search
-	fts     *FTSDatabase   // BM25 full-text search (optional)
+	chromem *chromem.DB  // Vector/semantic search
+	fts     *FTSDatabase // BM25 full-text search (optional)
 	mu      sync.RWMutex
 }
 

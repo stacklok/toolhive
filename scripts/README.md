@@ -22,7 +22,7 @@ chromem-go stores data in binary `.gob` format. Use these Go scripts:
 
 #### Quick Summary
 ```bash
-go run scripts/inspect-chromem-raw.go /tmp/vmcp-optimizer-debug.db
+go run scripts/inspect-chromem-raw/inspect-chromem-raw.go /tmp/vmcp-optimizer-debug.db
 ```
 Shows collection sizes and first few documents from each collection.
 
@@ -39,13 +39,13 @@ Shows collection sizes and first few documents from each collection.
 #### Detailed View
 ```bash
 # View specific tool
-go run scripts/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db get_file_contents
+go run scripts/view-chromem-tool/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db get_file_contents
 
 # View all documents
-go run scripts/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db
+go run scripts/view-chromem-tool/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db
 
 # Search by name/content
-go run scripts/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db "search"
+go run scripts/view-chromem-tool/view-chromem-tool.go /tmp/vmcp-optimizer-debug.db "search"
 ```
 
 **Example output:**

@@ -388,11 +388,15 @@ func New(
 			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
 
 		// Convert server config to optimizer config
+		hybridRatio := 0.7 // Default
+		if cfg.OptimizerConfig.HybridSearchRatio != 0 {
+			hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
+		}
 		optimizerCfg := &optimizer.Config{
 			Enabled:           cfg.OptimizerConfig.Enabled,
 			PersistPath:       cfg.OptimizerConfig.PersistPath,
 			FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
-			HybridSearchRatio: cfg.OptimizerConfig.HybridSearchRatio,
+			HybridSearchRatio: hybridRatio,
 			EmbeddingConfig: &embeddings.Config{
 				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
 				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,

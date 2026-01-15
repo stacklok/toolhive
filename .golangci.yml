@@ -1,6 +1,8 @@
 version: "2"
 run:
   issues-exit-code: 1
+  skip-dirs:
+    - scripts
 output:
   formats:
     text:
@@ -139,6 +141,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - scripts$
 formatters:
   enable:
     - gci
@@ -155,3 +158,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - scripts$

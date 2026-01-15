@@ -11,281 +11,46 @@ The optimizer package ingests MCP server and tool metadata into a searchable dat
 ❌ **NOT** a separate polling service discovering backends
 ✅ **IS** called directly by vMCP during server initialization
 
-## How to Integrate
+## How It Is Integrated
 
-### 1. Initialize the Optimizer Service (Once at vMCP Startup)
+The optimizer is already integrated into vMCP and works automatically when enabled via configuration. Here's how the integration works:
 
-```go
-import (
-    "github.com/stacklok/toolhive/pkg/optimizer/db"
-    "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
-    "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-)
+### Initialization
 
-// During vMCP initialization
-func initializeOptimizer() (*ingestion.Service, error) {
-    // Initialize optimizer service
-    optimizerSvc, err := ingestion.NewService(&ingestion.Config{
-        DBConfig: &db.Config{
-            Path: "/data/optimizer.db",
-        },
-        EmbeddingConfig: &embeddings.Config{
-            BackendType:  "vllm",  // or "ollama" for local dev
-            BaseURL:      os.Getenv("VLLM_URL"),
-            Model:        "sentence-transformers/all-MiniLM-L6-v2",
-            Dimension:    384,
-            EnableCache:  true,
-            MaxCacheSize: 1000,
-        },
-    })
-    if err != nil {
-        return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
-    }
-    
-    return optimizerSvc, nil
-}
-```
+When vMCP starts with optimizer enabled in the configuration, it:
 
-### 2. Ingest Each Server (When Server Starts/Registers)
+1. Initializes the optimizer database (chromem-go + SQLite FTS5)
+2. Configures the embedding backend (placeholder, Ollama, or vLLM)
+3. Sets up the ingestion service
 
-Call `IngestServer()` whenever a server is added to vMCP:
+### Automatic Ingestion
 
-```go
-import (
-    "github.com/stacklok/toolhive/pkg/optimizer/models"
-)
+The optimizer integrates with vMCP's `OnRegisterSession` hook, which is called whenever:
 
-// When a server is registered/started in vMCP
-func onServerStart(serverConfig ServerConfig, optimizerSvc *ingestion.Service) error {
-    ctx := context.Background()
-    
-    // Get tools from the MCP server
-    tools, err := mcpClient.ListTools(ctx)
-    if err != nil {
-        return fmt.Errorf("failed to list tools: %w", err)
-    }
-    
-    // Ingest into optimizer
-    err = optimizerSvc.IngestServer(
-        ctx,
-        serverConfig.ID,          // Unique server ID
-        serverConfig.Name,        // Server name (e.g., "weather-service")
-        serverConfig.URL,         // Server URL
-        models.TransportSSE,      // Transport type
-        &serverConfig.Description, // Optional description
-        tools,                    // Tools from server
-    )
-    if err != nil {
-        log.Printf("Failed to ingest server %s into optimizer: %v", 
-            serverConfig.Name, err)
-        // Non-fatal - don't block server startup
-    }
-    
-    return nil
-}
-```
+- vMCP starts and loads configured MCP servers
+- A new MCP server is dynamically added
+- A session reconnects or refreshes
 
-### 3. Integration Points in vMCP
+When this hook is triggered, the optimizer:
 
-Add optimizer ingestion calls at these points:
+1. Retrieves the server's metadata and tools via MCP protocol
+2. Generates embeddings for searchable content
+3. Stores the data in both the vector database (chromem-go) and FTS5 database
+4. Makes the tools immediately available for semantic search
 
-#### A. Group Initialization (Startup)
+### Exposed Tools
 
-When vMCP loads startup groups:
+When the optimizer is enabled, vMCP automatically exposes these tools to LLM clients:
 
-```go
-func (m *Manager) InitializeGroups(ctx context.Context, groups []Group) error {
-    for _, group := range groups {
-        for _, server := range group.Servers {
-            // Start the server
-            if err := m.StartServer(ctx, server); err != nil {
-                return err
-            }
-            
-            // Ingest into optimizer
-            if m.optimizerSvc != nil {
-                tools, _ := server.mcpClient.ListTools(ctx)
-                _ = m.optimizerSvc.IngestServer(
-                    ctx,
-                    server.ID,
-                    server.Name,
-                    server.URL,
-                    models.TransportSSE,
-                    &server.Description,
-                    tools,
-                )
-            }
-        }
-    }
-    return nil
-}
-```
+- `optim.find_tool`: Semantic search for tools across all registered servers
+- `optim.call_tool`: Dynamic tool invocation after discovery
 
-#### B. Dynamic Server Addition
+### Implementation Location
 
-When a server is added via API or CLI:
-
-```go
-func (api *API) AddServer(ctx context.Context, req AddServerRequest) error {
-    // Add server to vMCP
-    server, err := api.manager.AddServer(ctx, req)
-    if err != nil {
-        return err
-    }
-    
-    // Ingest into optimizer
-    if api.optimizerSvc != nil {
-        tools, _ := server.mcpClient.ListTools(ctx)
-        _ = api.optimizerSvc.IngestServer(
-            ctx,
-            server.ID,
-            server.Name,
-            server.URL,
-            models.TransportSSE,
-            &server.Description,
-            tools,
-        )
-    }
-    
-    return nil
-}
-```
-
-#### C. Tool Updates
-
-When tools change (optional - can be done periodically or on-demand):
-
-```go
-func (m *Manager) RefreshServerTools(ctx context.Context, serverID string) error {
-    server := m.GetServer(serverID)
-    
-    // Get updated tools
-    tools, err := server.mcpClient.ListTools(ctx)
-    if err != nil {
-        return err
-    }
-    
-    // Re-ingest to update optimizer database
-    if m.optimizerSvc != nil {
-        _ = m.optimizerSvc.IngestServer(
-            ctx,
-            server.ID,
-            server.Name,
-            server.URL,
-            models.TransportSSE,
-            &server.Description,
-            tools,
-        )
-    }
-    
-    return nil
-}
-```
-
-## Example: Complete Integration in vMCP Server
-
-```go
-package vmcp
-
-import (
-    "context"
-    "os"
-    
-    "github.com/stacklok/toolhive/pkg/optimizer/db"
-    "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
-    "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-    "github.com/stacklok/toolhive/pkg/optimizer/models"
-)
-
-type Server struct {
-    manager      *Manager
-    optimizerSvc *ingestion.Service
-}
-
-func NewServer(config *Config) (*Server, error) {
-    // Initialize vMCP manager
-    manager := NewManager(config)
-    
-    // Initialize optimizer (if enabled)
-    var optimizerSvc *ingestion.Service
-    if config.OptimizerEnabled {
-        var err error
-        optimizerSvc, err = ingestion.NewService(&ingestion.Config{
-            DBConfig: &db.Config{
-                Path: config.OptimizerDBPath,
-            },
-            EmbeddingConfig: &embeddings.Config{
-                BackendType:  os.Getenv("EMBEDDING_BACKEND"),  // "vllm" or "ollama"
-                BaseURL:      os.Getenv("EMBEDDING_URL"),
-                Model:        os.Getenv("EMBEDDING_MODEL"),
-                Dimension:    384,
-                EnableCache:  true,
-                MaxCacheSize: 1000,
-            },
-        })
-        if err != nil {
-            log.Printf("Warning: Failed to initialize optimizer: %v", err)
-            // Non-fatal - vMCP can run without optimizer
-        }
-    }
-    
-    return &Server{
-        manager:      manager,
-        optimizerSvc: optimizerSvc,
-    }, nil
-}
-
-func (s *Server) Start(ctx context.Context) error {
-    // Load and start all configured groups
-    groups := s.manager.LoadGroups()
-    
-    for _, group := range groups {
-        for _, serverConfig := range group.Servers {
-            // Start the MCP server
-            server, err := s.manager.StartServer(ctx, serverConfig)
-            if err != nil {
-                log.Printf("Failed to start server %s: %v", serverConfig.Name, err)
-                continue
-            }
-            
-            // Ingest into optimizer (non-blocking, best-effort)
-            if s.optimizerSvc != nil {
-                go s.ingestServer(ctx, server)
-            }
-        }
-    }
-    
-    // Start vMCP API server
-    return s.manager.Serve(ctx)
-}
-
-func (s *Server) ingestServer(ctx context.Context, server *MCPServer) {
-    // Get tools from server
-    tools, err := server.Client.ListTools(ctx)
-    if err != nil {
-        log.Printf("Warning: Failed to list tools from %s: %v", server.Name, err)
-        return
-    }
-    
-    // Ingest into optimizer
-    err = s.optimizerSvc.IngestServer(
-        ctx,
-        server.ID,
-        server.Name,
-        server.URL,
-        models.TransportSSE,
-        &server.Description,
-        tools,
-    )
-    if err != nil {
-        log.Printf("Warning: Failed to ingest server %s into optimizer: %v", 
-            server.Name, err)
-    } else {
-        log.Printf("Successfully ingested %s into optimizer (%d tools)", 
-            server.Name, len(tools))
-    }
-}
-```
+The integration code is located in:
+- `cmd/vmcp/optimizer.go`: Optimizer initialization and configuration
+- `pkg/vmcp/optimizer/optimizer.go`: Session registration hook implementation
+- `pkg/optimizer/ingestion/service.go`: Core ingestion service
 
 ## Configuration
 
@@ -363,5 +128,4 @@ func TestOptimizerIntegration(t *testing.T) {
 ## See Also
 
 - [Optimizer Package README](./README.md) - Package overview and API
-- [Embeddings README](./embeddings/README.md) - Embedding backend configuration
 

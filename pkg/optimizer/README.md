@@ -326,51 +326,11 @@ Document {
 - `backend_servers`: Server metadata (3 documents in typical setup)
 - `backend_tools`: Tool metadata and embeddings (40+ documents)
 
-## Development
-
-### Adding New Features
-
-1. **Models**: Add new domain models in `pkg/optimizer/models/`
-2. **Database**: Add new operations in `pkg/optimizer/db/`
-3. **Tests**: Add unit tests following existing patterns
-
-### chromem-go Integration
-
-The optimizer uses chromem-go collections:
-- **backend_servers**: Server metadata and embeddings
-- **backend_tools**: Tool metadata and embeddings
-
-Each collection stores:
-- **ID**: Unique identifier
-- **Content**: Text for embedding (name + description)
-- **Metadata**: JSON-serialized data (server/tool details)
-- **Embedding**: Generated automatically by chromem-go
-
-## Comparison with sqlite-vec Version
-
-| Feature | sqlite-vec (CGO) | chromem-go (Pure Go) |
-|---------|------------------|----------------------|
-| Database | mattn/go-sqlite3 | chromem-go |
-| Dependencies | CGO required | Zero CGO |
-| Vector Search | sqlite-vec extension | Built-in cosine similarity |
-| Performance | Good | Excellent for <100K docs |
-| Cross-compilation | Complex | Simple |
-| Container Size | Larger | Smaller |
-| Setup | Extension loading | Zero setup |
-
 ## Known Limitations
 
 1. **Scale**: Optimized for <100,000 tools (more than sufficient for typical vMCP deployments)
 2. **Approximate Search**: chromem-go uses exhaustive search (not HNSW), but this is fine for our scale
 3. **Persistence Format**: Binary gob format (not human-readable)
-
-## Future Enhancements
-
-- [ ] Implement `optim.find_tool` semantic search handler
-- [ ] Implement `optim.call_tool` dynamic invocation handler
-- [ ] Add batch embedding optimization
-- [ ] Add prometheus metrics for query performance
-- [ ] Add query result caching
 
 ## License
 

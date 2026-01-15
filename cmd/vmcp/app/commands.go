@@ -419,11 +419,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Configure optimizer if enabled in YAML config
 	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
 		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
+		hybridRatio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			hybridRatio = *cfg.Optimizer.HybridSearchRatio
+		}
 		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
 			Enabled:            cfg.Optimizer.Enabled,
 			PersistPath:        cfg.Optimizer.PersistPath,
 			FTSDBPath:          cfg.Optimizer.FTSDBPath,
-			HybridSearchRatio:  cfg.Optimizer.HybridSearchRatio,
+			HybridSearchRatio:  hybridRatio,
 			EmbeddingBackend:   cfg.Optimizer.EmbeddingBackend,
 			EmbeddingURL:       cfg.Optimizer.EmbeddingURL,
 			EmbeddingModel:     cfg.Optimizer.EmbeddingModel,
@@ -434,12 +438,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			persistInfo = cfg.Optimizer.PersistPath
 		}
 		// FTS5 is always enabled with configurable semantic/BM25 ratio
-		ratio := cfg.Optimizer.HybridSearchRatio
-		if ratio == 0 {
-			ratio = 0.7 // Default
+		ratio := 0.7 // Default
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			ratio = *cfg.Optimizer.HybridSearchRatio
 		}
-		searchMode := fmt.Sprintf("hybrid (%.0f%% semantic, %.0f%% BM25)", 
-			ratio*100, 
+		searchMode := fmt.Sprintf("hybrid (%.0f%% semantic, %.0f%% BM25)",
+			ratio*100,
 			(1-ratio)*100)
 		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s, search=%s",
 			cfg.Optimizer.EmbeddingBackend,

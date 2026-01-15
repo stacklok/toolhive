@@ -189,7 +189,7 @@ tasks:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
 
   build-vmcp:
-    desc: Build the vmcp binary (with optimizer support requiring CGO and FTS5)
+    desc: Build the vmcp binary
     deps: [gen]
     vars:
       VERSION:
@@ -197,8 +197,6 @@ tasks:
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
-    env:
-      CGO_ENABLED: 1
     cmds:
       - cmd: mkdir -p bin
         platforms: [linux, darwin]
@@ -211,15 +209,13 @@ tasks:
         platforms: [windows]
 
   install-vmcp:
-    desc: Install the vmcp binary to GOPATH/bin (with optimizer support requiring CGO and FTS5)
+    desc: Install the vmcp binary to GOPATH/bin
     vars:
       VERSION:
         sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
-    env:
-      CGO_ENABLED: 1
     cmds:
       - go install -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
 

@@ -127,7 +127,7 @@ func (fts *FTSDatabase) UpsertServer(
 func (fts *FTSDatabase) UpsertToolMeta(
 	ctx context.Context,
 	tool *models.BackendTool,
-	serverName string,
+	_ string, // serverName - unused, keeping for interface compatibility
 ) error {
 	fts.mu.Lock()
 	defer fts.mu.Unlock()
@@ -322,9 +322,9 @@ func (fts *FTSDatabase) Close() error {
 func sanitizeFTS5Query(query string) string {
 	// Remove or escape special FTS5 characters
 	replacer := strings.NewReplacer(
-		`"`, `""`,  // Escape quotes
-		`*`, ` `,   // Remove wildcards
-		`(`, ` `,   // Remove parentheses
+		`"`, `""`, // Escape quotes
+		`*`, ` `, // Remove wildcards
+		`(`, ` `, // Remove parentheses
 		`)`, ` `,
 	)
 

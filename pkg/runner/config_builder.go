@@ -792,18 +792,27 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		return err
 	}
 
-	// Use registry target port if not overridden and if the mcpTransport is HTTP-based.
+	// Use registry ports if not overridden and if the mcpTransport is HTTP-based.
+	proxyPort := b.port
 	targetPort := b.targetPort
 	if imageMetadata != nil {
 		isHTTPServer := mcpTransport == types.TransportTypeSSE.String() ||
 			mcpTransport == types.TransportTypeStreamableHTTP.String()
-		if targetPort == 0 && isHTTPServer && imageMetadata.TargetPort > 0 {
-			logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
-			targetPort = imageMetadata.TargetPort
+		if isHTTPServer {
+			// Use registry proxy port if not set by CLI
+			if proxyPort == 0 && imageMetadata.ProxyPort > 0 {
+				logger.Debugf("Using registry proxy port: %d", imageMetadata.ProxyPort)
+				proxyPort = imageMetadata.ProxyPort
+			}
+			// Use registry target port if not set by CLI
+			if targetPort == 0 && imageMetadata.TargetPort > 0 {
+				logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
+				targetPort = imageMetadata.TargetPort
+			}
 		}
 	}
 	// Configure ports and target host
-	if _, err = c.WithPorts(b.port, targetPort); err != nil {
+	if _, err = c.WithPorts(proxyPort, targetPort); err != nil {
 		return err
 	}
 

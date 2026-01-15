@@ -1,5 +1,5 @@
-// Package api provides end-to-end testing utilities for ToolHive HTTP API.
-package api
+// Package e2e provides end-to-end testing utilities for ToolHive HTTP API.
+package e2e
 
 import (
 	"context"

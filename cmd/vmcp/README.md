@@ -6,7 +6,7 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 
 ## Features
 
-### Implemented (Phase 1)
+### Implemented
 - ✅ **Group-Based Backend Management**: Automatic workload discovery from ToolHive groups
 - ✅ **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, manual)
 - ✅ **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
@@ -15,12 +15,14 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 - ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
 - ✅ **Configuration Validation**: `vmcp validate` command for config verification
 - ✅ **Observability**: OpenTelemetry metrics and traces for backend operations and workflow executions
+- ✅ **Composite Tools**: Multi-step workflows with elicitation support
 
 ### In Progress
 - 🚧 **Incoming Authentication** (Issue #165): OIDC, local, anonymous authentication
 - 🚧 **Outgoing Authentication** (Issue #160): RFC 8693 token exchange for backend API access
 - 🚧 **Token Caching**: Memory and Redis cache providers
 - 🚧 **Health Monitoring** (Issue #166): Circuit breakers, backend health checks
+- 🚧 **Optimizer** Support the MCP optimizer in vMCP for context optimization on large toolsets.
 
 ### Future (Phase 2+)
 - 📋 **Authorization**: Cedar policy-based access control

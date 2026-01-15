@@ -11,7 +11,7 @@ spec:
 
   # Optional: Container image (defaults to ghcr.io/huggingface/text-embeddings-inference:latest)
   image: "text-embeddings-inference:latest"
-  imagePullPolicy: Never
+  imagePullPolicy: IfNotPresent
 
   # Optional: Port to expose (defaults to 8080)
   port: 8080

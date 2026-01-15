@@ -164,11 +164,11 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) err
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/stop [post]
 func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
+	// Use background context since this is async operation
+	_, err := s.workloadManager.StopWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -210,11 +210,11 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
+	// Use background context since this is an async operation
+	_, err := s.workloadManager.DeleteWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -364,7 +364,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.StopWorkloads(ctx, workloadNames)
+	_, err = s.workloadManager.StopWorkloads(context.Background(), workloadNames)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -445,7 +445,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.DeleteWorkloads(ctx, workloadNames)
+	_, err = s.workloadManager.DeleteWorkloads(context.Background(), workloadNames)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}

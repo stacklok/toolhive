@@ -1,4 +1,4 @@
-package api_test
+package e2e_test
 
 import (
 	"io"
@@ -7,18 +7,18 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/test/e2e/api"
+	"github.com/stacklok/toolhive/test/e2e"
 )
 
 var _ = Describe("Healthcheck API", Label("api", "healthcheck"), func() {
 	var (
-		config    *api.ServerConfig
-		apiServer *api.Server
+		config    *e2e.ServerConfig
+		apiServer *e2e.Server
 	)
 
 	BeforeEach(func() {
-		config = api.NewServerConfig()
-		apiServer = api.StartServer(config)
+		config = e2e.NewServerConfig()
+		apiServer = e2e.StartServer(config)
 	})
 
 	Describe("GET /health", func() {

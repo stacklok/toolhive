@@ -22,7 +22,7 @@ spec:
 
   # Model configuration
   model: "sentence-transformers/all-MiniLM-L6-v2"
-  image: "ghcr.io/huggingface/text-embeddings-inference:latest"
+  image: "text-embeddings-inference:latest"
   port: 8080
 
   # Enable model caching

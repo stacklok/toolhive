@@ -1043,10 +1043,10 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	mockValidator := &mockEnvVarValidator{}
 
 	tests := []struct {
-		name               string
-		imageMetadata      *regtypes.ImageMetadata
-		cliProxyPort       int
-		expectedProxyPort  int
+		name              string
+		imageMetadata     *regtypes.ImageMetadata
+		cliProxyPort      int
+		expectedProxyPort int
 	}{
 		{
 			name: "uses registry proxy_port when CLI not specified",

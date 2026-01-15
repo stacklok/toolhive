@@ -122,8 +122,14 @@ func (c *OAuth2Config) Validate() error {
 	if c.AuthorizationEndpoint == "" {
 		return errors.New("authorization_endpoint is required for OAuth2 providers")
 	}
+	if err := networking.ValidateEndpointURL(c.AuthorizationEndpoint); err != nil {
+		return fmt.Errorf("invalid authorization_endpoint: %w", err)
+	}
 	if c.TokenEndpoint == "" {
 		return errors.New("token_endpoint is required for OAuth2 providers")
+	}
+	if err := networking.ValidateEndpointURL(c.TokenEndpoint); err != nil {
+		return fmt.Errorf("invalid token_endpoint: %w", err)
 	}
 	return c.CommonOAuthConfig.Validate()
 }

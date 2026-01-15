@@ -291,7 +291,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Failure		404			{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/edit [post]
 func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
+	ctx := context.Background()
 	name := chi.URLParam(r, "name")
 
 	// Parse request body

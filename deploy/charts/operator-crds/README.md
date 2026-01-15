@@ -51,7 +51,7 @@ However, placing CRDs in `templates/` means they would be deleted when the Helm 
 ## Values
 
 | Key | Type | Default | Description |
-|-----|------|---------|-------------|
+|-----|-------------|------|---------|
 | crds | object | `{"install":{"registry":true,"server":true,"virtualMcp":true},"keep":true}` | CRD installation configuration |
 | crds.install | object | `{"registry":true,"server":true,"virtualMcp":true}` | Feature flags for CRD groups |
 | crds.install.registry | bool | `true` | Install Registry CRDs (mcpregistries) |

@@ -16,12 +16,11 @@
 //	│   └── transport.go         // Transport and status enums
 //	├── db/                       // Database layer
 //	│   ├── db.go                // Database connection and config
-//	│   ├── migrations/          // SQL migration files
-//	│   │   └── 001_initial.sql
-//	│   ├── backend_server.go   // Backend server operations
-//	│   ├── backend_tool.go     // Backend tool operations
-//	│   ├── registry_server.go   // Registry server operations
-//	│   └── registry_tool.go     // Registry tool operations
+//	│   ├── fts.go               // FTS5 database for BM25 search
+//	│   ├── schema_fts.sql       // Embedded FTS5 schema (executed directly)
+//	│   ├── hybrid.go            // Hybrid search (semantic + BM25)
+//	│   ├── backend_server.go    // Backend server operations
+//	│   └── backend_tool.go      // Backend tool operations
 //	├── embeddings/              // Embedding generation
 //	│   ├── manager.go           // Embedding manager with ONNX Runtime
 //	│   └── cache.go             // Optional embedding cache
@@ -41,8 +40,12 @@
 // **Embeddings**: Uses ONNX Runtime to generate semantic embeddings for tools and servers.
 // Embeddings enable semantic search to find relevant tools based on natural language queries.
 //
-// **Database**: SQLite with sqlite-vec extension for vector similarity search. Separates
-// registry servers (from catalog) and backend servers (running instances).
+// **Database**: Hybrid approach using chromem-go for vector search and SQLite FTS5 for
+// keyword search. The database is ephemeral (in-memory by default, optional persistence)
+// and schema is initialized directly on startup without migrations.
+//
+// **Terminology**: Uses "BackendServer" and "BackendTool" to explicitly refer to MCP server
+// metadata, distinguishing from vMCP's broader "Backend" concept which represents workloads.
 //
 // **Token Counting**: Tracks token counts for tools to measure LLM consumption and
 // calculate token savings from semantic filtering.

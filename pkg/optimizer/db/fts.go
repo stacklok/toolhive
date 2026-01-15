@@ -73,6 +73,10 @@ func NewFTSDatabase(config *FTSConfig) (*FTSDatabase, error) {
 }
 
 // initializeSchema creates the FTS5 tables and triggers
+//
+// Note: We execute the schema directly rather than using a migration framework
+// because the FTS database is ephemeral (destroyed on shutdown, recreated on startup).
+// Migrations are only needed when you need to preserve data across schema changes.
 func (fts *FTSDatabase) initializeSchema() error {
 	fts.mu.Lock()
 	defer fts.mu.Unlock()

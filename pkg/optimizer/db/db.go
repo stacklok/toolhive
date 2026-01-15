@@ -11,9 +11,13 @@ import (
 )
 
 // Config holds database configuration
+//
+// The optimizer database is designed to be ephemeral - it's rebuilt from scratch
+// on each startup by ingesting MCP backends. Persistence is optional and primarily
+// useful for development/debugging to avoid re-generating embeddings.
 type Config struct {
 	// PersistPath is the optional path for chromem-go persistence.
-	// If empty, chromem-go will be in-memory only.
+	// If empty, chromem-go will be in-memory only (recommended for production).
 	PersistPath string
 
 	// FTSDBPath is the path for SQLite FTS5 database for BM25 search.
@@ -31,6 +35,11 @@ type DB struct {
 }
 
 // Collection names
+//
+// Terminology: We use "backend_servers" and "backend_tools" to be explicit about
+// tracking MCP server metadata. While vMCP uses "Backend" for the workload concept,
+// the optimizer focuses on the MCP server component for semantic search and tool discovery.
+// This naming convention provides clarity across the database layer.
 const (
 	BackendServerCollection = "backend_servers"
 	BackendToolCollection   = "backend_tools"

@@ -71,5 +71,10 @@ func (c *UserInfoConfig) Validate() error {
 		return errors.New("endpoint_url must use http or https scheme")
 	}
 
+	// HTTP scheme is only allowed for loopback addresses (consistent with validateRedirectURI)
+	if parsed.Scheme == networking.HttpScheme && !networking.IsLocalhost(parsed.Host) {
+		return errors.New("endpoint_url with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
+	}
+
 	return nil
 }

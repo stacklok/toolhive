@@ -93,6 +93,20 @@ func TestUserInfoConfig_Validate(t *testing.T) {
 			},
 			wantErr: "endpoint_url must use http or https scheme",
 		},
+		{
+			name: "invalid endpoint_url - http to non-localhost",
+			config: &UserInfoConfig{
+				EndpointURL: "http://example.com/userinfo",
+			},
+			wantErr: "endpoint_url with http scheme requires loopback address",
+		},
+		{
+			name: "valid config with http 127.0.0.1",
+			config: &UserInfoConfig{
+				EndpointURL: "http://127.0.0.1:8080/userinfo",
+			},
+			wantErr: "",
+		},
 	}
 
 	for _, tt := range tests {

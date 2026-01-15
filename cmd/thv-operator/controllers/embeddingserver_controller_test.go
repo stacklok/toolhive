@@ -12,7 +12,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
-func TestMCPEmbedding_GetPort(t *testing.T) {
+func TestEmbeddingServer_GetPort(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -36,8 +36,8 @@ func TestMCPEmbedding_GetPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					Port: tt.port,
 				},
 			}
@@ -47,7 +47,7 @@ func TestMCPEmbedding_GetPort(t *testing.T) {
 	}
 }
 
-func TestMCPEmbedding_GetReplicas(t *testing.T) {
+func TestEmbeddingServer_GetReplicas(t *testing.T) {
 	t.Parallel()
 
 	replicas2 := int32(2)
@@ -72,8 +72,8 @@ func TestMCPEmbedding_GetReplicas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					Replicas: tt.replicas,
 				},
 			}
@@ -83,7 +83,7 @@ func TestMCPEmbedding_GetReplicas(t *testing.T) {
 	}
 }
 
-func TestMCPEmbedding_IsModelCacheEnabled(t *testing.T) {
+func TestEmbeddingServer_IsModelCacheEnabled(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -116,8 +116,8 @@ func TestMCPEmbedding_IsModelCacheEnabled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					ModelCache: tt.modelCache,
 				},
 			}
@@ -127,7 +127,7 @@ func TestMCPEmbedding_IsModelCacheEnabled(t *testing.T) {
 	}
 }
 
-func TestMCPEmbedding_GetImagePullPolicy(t *testing.T) {
+func TestEmbeddingServer_GetImagePullPolicy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -161,8 +161,8 @@ func TestMCPEmbedding_GetImagePullPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					ImagePullPolicy: tt.imagePullPolicy,
 				},
 			}
@@ -172,7 +172,7 @@ func TestMCPEmbedding_GetImagePullPolicy(t *testing.T) {
 	}
 }
 
-func TestMCPEmbeddingPodTemplateSpecValidation(t *testing.T) {
+func TestEmbeddingServerPodTemplateSpecValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -222,7 +222,7 @@ func TestMCPEmbeddingPodTemplateSpecValidation(t *testing.T) {
 	}
 }
 
-func TestMCPEmbedding_Labels(t *testing.T) {
+func TestEmbeddingServer_Labels(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -243,18 +243,18 @@ func TestMCPEmbedding_Labels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					GroupRef: tt.groupRef,
 				},
 			}
 			embedding.Name = "test-embedding"
 
-			reconciler := &MCPEmbeddingReconciler{}
+			reconciler := &EmbeddingServerReconciler{}
 			labels := reconciler.labelsForEmbedding(embedding)
 
 			// Check required labels
-			assert.Equal(t, "mcpembedding", labels["app.kubernetes.io/name"])
+			assert.Equal(t, "embeddingserver", labels["app.kubernetes.io/name"])
 			assert.Equal(t, "test-embedding", labels["app.kubernetes.io/instance"])
 			assert.Equal(t, "embedding-server", labels["app.kubernetes.io/component"])
 			assert.Equal(t, "toolhive-operator", labels["app.kubernetes.io/managed-by"])
@@ -270,7 +270,7 @@ func TestMCPEmbedding_Labels(t *testing.T) {
 	}
 }
 
-func TestMCPEmbedding_ModelCacheConfig(t *testing.T) {
+func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 	t.Parallel()
 
 	storageClassName := "fast-ssd"
@@ -305,8 +305,8 @@ func TestMCPEmbedding_ModelCacheConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.MCPEmbedding{
-				Spec: mcpv1alpha1.MCPEmbeddingSpec{
+			embedding := &mcpv1alpha1.EmbeddingServer{
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					Model:      "test-model",
 					ModelCache: tt.modelCache,
 				},

@@ -1,4 +1,4 @@
-# MCPEmbedding with MCPGroup association
+# EmbeddingServer with MCPGroup association
 # This example shows how to organize embeddings within a group
 
 # First, create the MCPGroup
@@ -12,7 +12,7 @@ spec:
 ---
 # Create an embedding server that belongs to the group
 apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPEmbedding
+kind: EmbeddingServer
 metadata:
   name: ml-embedding
   namespace: toolhive-system

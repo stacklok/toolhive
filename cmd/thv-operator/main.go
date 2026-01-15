@@ -219,20 +219,20 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
 	}
 
-	// Set up field indexing for MCPEmbedding.Spec.GroupRef
+	// Set up field indexing for EmbeddingServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPEmbedding{},
+		&mcpv1alpha1.EmbeddingServer{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
-			mcpEmbedding := obj.(*mcpv1alpha1.MCPEmbedding)
-			if mcpEmbedding.Spec.GroupRef == "" {
+			embeddingServer := obj.(*mcpv1alpha1.EmbeddingServer)
+			if embeddingServer.Spec.GroupRef == "" {
 				return nil
 			}
-			return []string{mcpEmbedding.Spec.GroupRef}
+			return []string{embeddingServer.Spec.GroupRef}
 		},
 	); err != nil {
-		return fmt.Errorf("unable to create field index for MCPEmbedding spec.groupRef: %w", err)
+		return fmt.Errorf("unable to create field index for EmbeddingServer spec.groupRef: %w", err)
 	}
 
 	// Set image validation mode based on whether registry is enabled
@@ -280,15 +280,15 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
 
-	// Set up MCPEmbedding controller
-	if err := (&controllers.MCPEmbeddingReconciler{
+	// Set up EmbeddingServer controller
+	if err := (&controllers.EmbeddingServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("mcpembedding-controller"),
+		Recorder:         mgr.GetEventRecorderFor("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create controller MCPEmbedding: %w", err)
+		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
 	}
 
 	return nil

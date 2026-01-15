@@ -122,7 +122,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
-  - mcpembeddings
+  - embeddingservers
   - mcpexternalauthconfigs
   - mcpgroups
   - mcpregistries
@@ -141,7 +141,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
-  - mcpembeddings/finalizers
+  - embeddingservers/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers
   - mcpregistries/finalizers
@@ -152,7 +152,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
-  - mcpembeddings/status
+  - embeddingservers/status
   - mcpexternalauthconfigs/status
   - mcpgroups/status
   - mcpregistries/status

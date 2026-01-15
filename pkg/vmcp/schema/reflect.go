@@ -30,14 +30,14 @@ import (
 //	    ToolKeywords    []string `json:"tool_keywords,omitempty" description:"Optional keywords"`
 //	}
 //	schema := GenerateSchema[FindToolInput]()
-func GenerateSchema[T any]() map[string]any {
+func GenerateSchema[T any]() (map[string]any, error) {
 	var zero T
 	t := reflect.TypeOf(zero)
 	return generateSchemaForType(t)
 }
 
 // generateSchemaForType generates schema for a reflect.Type.
-func generateSchemaForType(t reflect.Type) map[string]any {
+func generateSchemaForType(t reflect.Type) (map[string]any, error) {
 	// Handle pointer types
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -47,32 +47,40 @@ func generateSchemaForType(t reflect.Type) map[string]any {
 	case reflect.Struct:
 		return generateObjectSchema(t)
 	case reflect.String:
-		return map[string]any{"type": "string"}
+		return map[string]any{"type": "string"}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return map[string]any{"type": "integer"}
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr:
+		return map[string]any{"type": "integer"}, nil
 	case reflect.Float32, reflect.Float64:
-		return map[string]any{"type": "number"}
+		return map[string]any{"type": "number"}, nil
 	case reflect.Bool:
-		return map[string]any{"type": "boolean"}
-	case reflect.Slice:
+		return map[string]any{"type": "boolean"}, nil
+	case reflect.Slice, reflect.Array:
+		items, err := generateSchemaForType(t.Elem())
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"type":  "array",
-			"items": generateSchemaForType(t.Elem()),
-		}
+			"items": items,
+		}, nil
 	case reflect.Map:
 		// For map[string]any, just return object type
-		return map[string]any{"type": "object"}
-	case reflect.Interface:
-		// For any/interface{}, return empty object
-		return map[string]any{"type": "object"}
+		return map[string]any{"type": "object"}, nil
+	case reflect.Pointer, reflect.Interface,
+		reflect.UnsafePointer, reflect.Chan, reflect.Func,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Invalid:
+		return nil, fmt.Errorf("unsupported type: %s", t.Kind())
 	default:
-		return map[string]any{"type": "object"}
+		// Should never happen, but appease the linter.
+		return nil, fmt.Errorf("unsupported type: %s", t.Kind())
 	}
 }
 
 // generateObjectSchema generates schema for a struct type.
-func generateObjectSchema(t reflect.Type) map[string]any {
+func generateObjectSchema(t reflect.Type) (map[string]any, error) {
 	properties := make(map[string]any)
 	var required []string
 
@@ -97,7 +105,10 @@ func generateObjectSchema(t reflect.Type) map[string]any {
 		}
 
 		// Generate schema for field type
-		fieldSchema := generateSchemaForType(field.Type)
+		fieldSchema, err := generateSchemaForType(field.Type)
+		if err != nil {
+			return nil, err
+		}
 
 		// Add description if present
 		if desc := field.Tag.Get("description"); desc != "" {
@@ -121,7 +132,7 @@ func generateObjectSchema(t reflect.Type) map[string]any {
 		schema["required"] = required
 	}
 
-	return schema
+	return schema, nil
 }
 
 // parseJSONTag parses a json struct tag and returns the field name and whether it's optional.

@@ -21,8 +21,8 @@ const (
 // Pre-generated schemas for optimizer tools.
 // Generated at package init time so any schema errors panic at startup.
 var (
-	findToolInputSchema = mustMarshalSchema(schema.GenerateSchema[optimizer.FindToolInput]())
-	callToolInputSchema = mustMarshalSchema(schema.GenerateSchema[optimizer.CallToolInput]())
+	findToolInputSchema = mustGenerateSchema[optimizer.FindToolInput]()
+	callToolInputSchema = mustGenerateSchema[optimizer.CallToolInput]()
 )
 
 // CreateOptimizerTools creates the SDK tools for optimizer mode.
@@ -85,10 +85,16 @@ func createCallToolHandler(opt optimizer.Optimizer) func(context.Context, mcp.Ca
 
 // mustMarshalSchema marshals a schema to JSON, panicking on error.
 // This is safe because schemas are generated from known types at startup.
-func mustMarshalSchema(s map[string]any) json.RawMessage {
+func mustGenerateSchema[T any]() json.RawMessage {
+	s, err := schema.GenerateSchema[T]()
+	if err != nil {
+		panic(fmt.Sprintf("failed to generate schema: %v", err))
+	}
+
 	data, err := json.Marshal(s)
 	if err != nil {
 		panic(fmt.Sprintf("failed to marshal schema: %v", err))
 	}
+
 	return data
 }

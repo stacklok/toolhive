@@ -1,8 +1,6 @@
 version: "2"
 run:
   issues-exit-code: 1
-  skip-dirs:
-    - scripts
 output:
   formats:
     text:

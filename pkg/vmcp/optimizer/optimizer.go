@@ -51,7 +51,7 @@ type Config struct {
 type OptimizerIntegration struct {
 	config           *Config
 	ingestionService *ingestion.Service
-	mcpServer        *server.MCPServer // For registering tools
+	mcpServer        *server.MCPServer  // For registering tools
 	backendClient    vmcp.BackendClient // For querying backends at startup
 }
 
@@ -294,7 +294,6 @@ func (*OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.C
 	}
 }
 
-// Close cleans up optimizer resources
 // IngestInitialBackends ingests all discovered backends and their tools at startup.
 // This should be called after backends are discovered during server initialization.
 func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
@@ -356,6 +355,7 @@ func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backen
 	return nil
 }
 
+// Close cleans up optimizer resources.
 func (o *OptimizerIntegration) Close() error {
 	if o == nil || o.ingestionService == nil {
 		return nil

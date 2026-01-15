@@ -74,7 +74,6 @@ spec:
                   GroupRef references an existing MCPGroup that defines backend workloads.
                   The referenced MCPGroup must exist in the same namespace.
                   The telemetry and audit config from here are also supported, but not required.
-                  NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
                 properties:
                   aggregation:
                     description: |-

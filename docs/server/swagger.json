@@ -505,6 +505,10 @@
                     "provenance": {
                         "$ref": "#/components/schemas/registry.Provenance"
                     },
+                    "proxy_port": {
+                        "description": "ProxyPort is the port for the HTTP proxy to listen on (host port)\nIf not specified, a random available port will be assigned",
+                        "type": "integer"
+                    },
                     "target_port": {
                         "description": "TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)",
                         "type": "integer"

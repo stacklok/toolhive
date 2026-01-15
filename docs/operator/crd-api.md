@@ -604,22 +604,22 @@ _Appears in:_
 
 ## toolhive.stacklok.dev/v1alpha1
 ### Resource Types
-- [MCPExternalAuthConfig](#mcpexternalauthconfig)
-- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
-- [MCPGroup](#mcpgroup)
-- [MCPGroupList](#mcpgrouplist)
-- [MCPRegistry](#mcpregistry)
-- [MCPRegistryList](#mcpregistrylist)
-- [MCPRemoteProxy](#mcpremoteproxy)
-- [MCPRemoteProxyList](#mcpremoteproxylist)
-- [MCPServer](#mcpserver)
-- [MCPServerList](#mcpserverlist)
-- [MCPToolConfig](#mcptoolconfig)
-- [MCPToolConfigList](#mcptoolconfiglist)
-- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
-- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
-- [VirtualMCPServer](#virtualmcpserver)
-- [VirtualMCPServerList](#virtualmcpserverlist)
+- [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
+- [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
+- [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
+- [api.v1alpha1.MCPGroupList](#apiv1alpha1mcpgrouplist)
+- [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
+- [api.v1alpha1.MCPRegistryList](#apiv1alpha1mcpregistrylist)
+- [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
+- [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
+- [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
+- [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
+- [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
+- [api.v1alpha1.VirtualMCPCompositeToolDefinitionList](#apiv1alpha1virtualmcpcompositetooldefinitionlist)
+- [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
+- [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
 
 
 
@@ -2412,7 +2412,7 @@ _Appears in:_
 | `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
-| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required.<br />NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE. |  | Type: object <br /> |
+| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br /> |
 
 
 #### api.v1alpha1.VirtualMCPServerStatus

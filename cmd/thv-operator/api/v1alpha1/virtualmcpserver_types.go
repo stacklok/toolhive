@@ -25,7 +25,6 @@ type VirtualMCPServerSpec struct {
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
-	// TODO(jerm-dro): migrate to the Config field.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default=ClusterIP
 	// +optional
@@ -36,7 +35,6 @@ type VirtualMCPServerSpec struct {
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify
 	// the 'vmcp' container name in the PodTemplateSpec.
 	// This field accepts a PodTemplateSpec object as JSON/YAML.
-	// TODO(jerm-dro): migrate to the Config field.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
@@ -47,8 +45,6 @@ type VirtualMCPServerSpec struct {
 	// GroupRef references an existing MCPGroup that defines backend workloads.
 	// The referenced MCPGroup must exist in the same namespace.
 	// The telemetry and audit config from here are also supported, but not required.
-	// NOTE: THIS IS NOT ENTIRELY USED AND IS PARTIALLY DUPLICATED BY THE SPEC FIELDS ABOVE.
-	// TODO(jerm-dro): migrate all the above spec fields to the Config and remove the spec fields.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
 }

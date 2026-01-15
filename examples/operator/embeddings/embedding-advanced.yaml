@@ -1,6 +1,6 @@
-# Advanced MCPEmbedding configuration with all features
+# Advanced EmbeddingServer configuration with all features
 apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPEmbedding
+kind: EmbeddingServer
 metadata:
   name: advanced-embedding
   namespace: toolhive-system

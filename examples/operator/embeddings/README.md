@@ -1,10 +1,10 @@
-# MCPEmbedding Examples
+# EmbeddingServer Examples
 
-This directory contains example configurations for deploying HuggingFace embedding inference servers using the MCPEmbedding custom resource.
+This directory contains example configurations for deploying HuggingFace embedding inference servers using the EmbeddingServer custom resource.
 
 ## Overview
 
-The MCPEmbedding CRD allows you to deploy and manage HuggingFace Text Embeddings Inference (TEI) servers in Kubernetes. These servers provide high-performance embedding generation for various NLP tasks.
+The EmbeddingServer CRD allows you to deploy and manage HuggingFace Text Embeddings Inference (TEI) servers in Kubernetes. These servers provide high-performance embedding generation for various NLP tasks.
 
 ## Examples
 
@@ -70,7 +70,7 @@ kubectl apply -f embedding-advanced.yaml
 
 ## Supported Models
 
-MCPEmbedding supports any HuggingFace model compatible with Text Embeddings Inference. Popular choices include:
+EmbeddingServer supports any HuggingFace model compatible with Text Embeddings Inference. Popular choices include:
 
 - `sentence-transformers/all-MiniLM-L6-v2` - Fast, lightweight (384 dimensions)
 - `sentence-transformers/all-mpnet-base-v2` - Good balance (768 dimensions)
@@ -213,7 +213,7 @@ If pods are pending due to insufficient resources:
    kubectl top nodes
    ```
 
-2. Adjust resource requests in the MCPEmbedding spec
+2. Adjust resource requests in the EmbeddingServer spec
 
 3. Consider node scaling or resource optimization
 

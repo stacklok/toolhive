@@ -39,7 +39,7 @@ var crdFeatureFlags = map[string][]string{
 	"mcpremoteproxies":                   {"server"},
 	"mcptoolconfigs":                     {"server"},
 	"mcpgroups":                          {"server"},
-	"mcpembeddings":                      {"server"},
+	"embeddingservers":                   {"server"},
 	"mcpregistries":                      {"registry"},
 	"virtualmcpservers":                  {"virtualMcp"},
 	"virtualmcpcompositetooldefinitions": {"virtualMcp"},

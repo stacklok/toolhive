@@ -105,6 +105,7 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 						},
 					},
 					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
 						Tools: []*vmcpconfig.WorkloadToolConfig{
 							{
 								Workload: backendName,

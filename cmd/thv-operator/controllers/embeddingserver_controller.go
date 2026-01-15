@@ -128,9 +128,6 @@ func (r *EmbeddingServerReconciler) performValidations(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) (ctrl.Result, error) {
-	// Check if the GroupRef is valid if specified
-	r.validateGroupRef(ctx, embedding)
-
 	// Validate PodTemplateSpec early
 	if !r.validateAndUpdatePodTemplateStatus(ctx, embedding) {
 		return ctrl.Result{}, nil
@@ -296,47 +293,6 @@ func (r *EmbeddingServerReconciler) updateServiceURL(
 	}
 
 	return ctrl.Result{}, false, nil
-}
-
-// validateGroupRef validates the GroupRef if specified
-func (r *EmbeddingServerReconciler) validateGroupRef(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) {
-	if embedding.Spec.GroupRef == "" {
-		return
-	}
-
-	ctxLogger := log.FromContext(ctx)
-
-	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: embedding.Namespace, Name: embedding.Spec.GroupRef}, group); err != nil {
-		ctxLogger.Error(err, "Failed to validate GroupRef")
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
-			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", embedding.Spec.GroupRef, embedding.Namespace),
-			ObservedGeneration: embedding.Generation,
-		})
-	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", embedding.Spec.GroupRef, group.Status.Phase),
-			ObservedGeneration: embedding.Generation,
-		})
-	} else {
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
-			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
-			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", embedding.Spec.GroupRef),
-			ObservedGeneration: embedding.Generation,
-		})
-	}
-
-	if err := r.Status().Update(ctx, embedding); err != nil {
-		ctxLogger.Error(err, "Failed to update EmbeddingServer status after GroupRef validation")
-	}
 }
 
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the EmbeddingServer status
@@ -887,18 +843,12 @@ func (r *EmbeddingServerReconciler) serviceForEmbedding(_ context.Context, embed
 
 // labelsForEmbedding returns the labels for the embedding resources
 func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.EmbeddingServer) map[string]string {
-	labels := map[string]string{
+	return map[string]string{
 		"app.kubernetes.io/name":       "embeddingserver",
 		"app.kubernetes.io/instance":   embedding.Name,
 		"app.kubernetes.io/component":  "embedding-server",
 		"app.kubernetes.io/managed-by": "toolhive-operator",
 	}
-
-	if embedding.Spec.GroupRef != "" {
-		labels["toolhive.stacklok.dev/group"] = embedding.Spec.GroupRef
-	}
-
-	return labels
 }
 
 // deploymentNeedsUpdate checks if the deployment needs to be updated

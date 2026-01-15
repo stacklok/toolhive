@@ -6,8 +6,8 @@ metadata:
   namespace: toolhive-system
 spec:
   # Model configuration
-  model: "BAAI/bge-large-en-v1.5"
-  image: "ghcr.io/huggingface/text-embeddings-inference:latest"
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  image: "text-embeddings-inference:latest"
   port: 8080
   replicas: 2
 

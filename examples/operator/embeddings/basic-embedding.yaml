@@ -1,7 +1,7 @@
-# Basic MCPEmbedding example with minimal configuration
+# Basic EmbeddingServer example with minimal configuration
 # This creates an embedding server using the default text-embeddings-inference image
 apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPEmbedding
+kind: EmbeddingServer
 metadata:
   name: basic-embedding
   namespace: toolhive-system

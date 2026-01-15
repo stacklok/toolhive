@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// Condition types for MCPEmbedding (reuses common conditions from MCPServer)
+// Condition types for EmbeddingServer (reuses common conditions from MCPServer)
 // ConditionImageValidated, ConditionGroupRefValidated, and ConditionPodTemplateValid are shared with MCPServer
 
 const (
@@ -16,7 +16,7 @@ const (
 	ConditionVolumeReady = "VolumeReady"
 )
 
-// Condition reasons for MCPEmbedding
+// Condition reasons for EmbeddingServer
 // Image validation, GroupRef, and PodTemplate reasons are shared with MCPServer
 
 const (
@@ -35,8 +35,8 @@ const (
 	ConditionReasonVolumeFailed = "VolumeFailed"
 )
 
-// MCPEmbeddingSpec defines the desired state of MCPEmbedding
-type MCPEmbeddingSpec struct {
+// EmbeddingServerSpec defines the desired state of EmbeddingServer
+type EmbeddingServerSpec struct {
 	// Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2")
 	// +kubebuilder:validation:Required
 	Model string `json:"model"`
@@ -153,15 +153,15 @@ type EmbeddingDeploymentOverrides struct {
 	Env []EnvVar `json:"env,omitempty"`
 }
 
-// MCPEmbeddingStatus defines the observed state of MCPEmbedding
-type MCPEmbeddingStatus struct {
-	// Conditions represent the latest available observations of the MCPEmbedding's state
+// EmbeddingServerStatus defines the observed state of EmbeddingServer
+type EmbeddingServerStatus struct {
+	// Conditions represent the latest available observations of the EmbeddingServer's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Phase is the current phase of the MCPEmbedding
+	// Phase is the current phase of the EmbeddingServer
 	// +optional
-	Phase MCPEmbeddingPhase `json:"phase,omitempty"`
+	Phase EmbeddingServerPhase `json:"phase,omitempty"`
 
 	// Message provides additional information about the current phase
 	// +optional
@@ -180,25 +180,25 @@ type MCPEmbeddingStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
-// MCPEmbeddingPhase is the phase of the MCPEmbedding
+// EmbeddingServerPhase is the phase of the EmbeddingServer
 // +kubebuilder:validation:Enum=Pending;Downloading;Running;Failed;Terminating
-type MCPEmbeddingPhase string
+type EmbeddingServerPhase string
 
 const (
-	// MCPEmbeddingPhasePending means the MCPEmbedding is being created
-	MCPEmbeddingPhasePending MCPEmbeddingPhase = "Pending"
+	// EmbeddingServerPhasePending means the EmbeddingServer is being created
+	EmbeddingServerPhasePending EmbeddingServerPhase = "Pending"
 
-	// MCPEmbeddingPhaseDownloading means the model is being downloaded
-	MCPEmbeddingPhaseDownloading MCPEmbeddingPhase = "Downloading"
+	// EmbeddingServerPhaseDownloading means the model is being downloaded
+	EmbeddingServerPhaseDownloading EmbeddingServerPhase = "Downloading"
 
-	// MCPEmbeddingPhaseRunning means the MCPEmbedding is running and ready
-	MCPEmbeddingPhaseRunning MCPEmbeddingPhase = "Running"
+	// EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready
+	EmbeddingServerPhaseRunning EmbeddingServerPhase = "Running"
 
-	// MCPEmbeddingPhaseFailed means the MCPEmbedding failed to start
-	MCPEmbeddingPhaseFailed MCPEmbeddingPhase = "Failed"
+	// EmbeddingServerPhaseFailed means the EmbeddingServer failed to start
+	EmbeddingServerPhaseFailed EmbeddingServerPhase = "Failed"
 
-	// MCPEmbeddingPhaseTerminating means the MCPEmbedding is being deleted
-	MCPEmbeddingPhaseTerminating MCPEmbeddingPhase = "Terminating"
+	// EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted
+	EmbeddingServerPhaseTerminating EmbeddingServerPhase = "Terminating"
 )
 
 //+kubebuilder:object:root=true
@@ -209,66 +209,66 @@ const (
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// MCPEmbedding is the Schema for the mcpembeddings API
-type MCPEmbedding struct {
+// EmbeddingServer is the Schema for the embeddingservers API
+type EmbeddingServer struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   MCPEmbeddingSpec   `json:"spec,omitempty"`
-	Status MCPEmbeddingStatus `json:"status,omitempty"`
+	Spec   EmbeddingServerSpec   `json:"spec,omitempty"`
+	Status EmbeddingServerStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 
-// MCPEmbeddingList contains a list of MCPEmbedding
-type MCPEmbeddingList struct {
+// EmbeddingServerList contains a list of EmbeddingServer
+type EmbeddingServerList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []MCPEmbedding `json:"items"`
+	Items           []EmbeddingServer `json:"items"`
 }
 
-// GetName returns the name of the MCPEmbedding
-func (m *MCPEmbedding) GetName() string {
-	return m.Name
+// GetName returns the name of the EmbeddingServer
+func (e *EmbeddingServer) GetName() string {
+	return e.Name
 }
 
-// GetNamespace returns the namespace of the MCPEmbedding
-func (m *MCPEmbedding) GetNamespace() string {
-	return m.Namespace
+// GetNamespace returns the namespace of the EmbeddingServer
+func (e *EmbeddingServer) GetNamespace() string {
+	return e.Namespace
 }
 
-// GetPort returns the port of the MCPEmbedding
-func (m *MCPEmbedding) GetPort() int32 {
-	if m.Spec.Port > 0 {
-		return m.Spec.Port
+// GetPort returns the port of the EmbeddingServer
+func (e *EmbeddingServer) GetPort() int32 {
+	if e.Spec.Port > 0 {
+		return e.Spec.Port
 	}
 	return 8080
 }
 
-// GetReplicas returns the number of replicas for the MCPEmbedding
-func (m *MCPEmbedding) GetReplicas() int32 {
-	if m.Spec.Replicas != nil {
-		return *m.Spec.Replicas
+// GetReplicas returns the number of replicas for the EmbeddingServer
+func (e *EmbeddingServer) GetReplicas() int32 {
+	if e.Spec.Replicas != nil {
+		return *e.Spec.Replicas
 	}
 	return 1
 }
 
 // IsModelCacheEnabled returns whether model caching is enabled
-func (m *MCPEmbedding) IsModelCacheEnabled() bool {
-	if m.Spec.ModelCache == nil {
+func (e *EmbeddingServer) IsModelCacheEnabled() bool {
+	if e.Spec.ModelCache == nil {
 		return false
 	}
-	return m.Spec.ModelCache.Enabled
+	return e.Spec.ModelCache.Enabled
 }
 
-// GetImagePullPolicy returns the image pull policy for the MCPEmbedding
-func (m *MCPEmbedding) GetImagePullPolicy() string {
-	if m.Spec.ImagePullPolicy != "" {
-		return m.Spec.ImagePullPolicy
+// GetImagePullPolicy returns the image pull policy for the EmbeddingServer
+func (e *EmbeddingServer) GetImagePullPolicy() string {
+	if e.Spec.ImagePullPolicy != "" {
+		return e.Spec.ImagePullPolicy
 	}
 	return "IfNotPresent"
 }
 
 func init() {
-	SchemeBuilder.Register(&MCPEmbedding{}, &MCPEmbeddingList{})
+	SchemeBuilder.Register(&EmbeddingServer{}, &EmbeddingServerList{})
 }

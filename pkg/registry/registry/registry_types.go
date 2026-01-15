@@ -76,6 +76,9 @@ type ImageMetadata struct {
 	Image string `json:"image" yaml:"image"`
 	// TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)
 	TargetPort int `json:"target_port,omitempty" yaml:"target_port,omitempty"`
+	// ProxyPort is the port for the HTTP proxy to listen on (host port)
+	// If not specified, a random available port will be assigned
+	ProxyPort int `json:"proxy_port,omitempty" yaml:"proxy_port,omitempty"`
 	// Permissions defines the security profile and access permissions for the server
 	Permissions *permissions.Profile `json:"permissions,omitempty" yaml:"permissions,omitempty"`
 	// EnvVars defines environment variables that can be passed to the server

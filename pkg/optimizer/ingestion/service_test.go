@@ -96,7 +96,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	require.NotEmpty(t, results, "Should find at least one similar tool")
 
 	require.NotEmpty(t, results, "Should return at least one result")
-	
+
 	// Weather tool should be most similar to weather query
 	require.Equal(t, "get_weather", results[0].ToolName,
 		"Weather tool should be most similar to weather query")

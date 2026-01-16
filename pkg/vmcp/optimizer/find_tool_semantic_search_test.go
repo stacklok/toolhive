@@ -20,6 +20,11 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
+const (
+	testBackendOllama = "ollama"
+	testBackendOpenAI = "openai"
+)
+
 // TestFindTool_SemanticSearch tests semantic search capabilities
 // These tests verify that find_tool can find tools based on semantic meaning,
 // not just exact keyword matches
@@ -29,11 +34,11 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Try to use Ollama if available, otherwise skip test
-	embeddingBackend := "ollama"
+	embeddingBackend := testBackendOllama
 	embeddingConfig := &embeddings.Config{
 		BackendType: embeddingBackend,
 		BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
+		Model:       embeddings.DefaultModelAllMiniLM,
 		Dimension:   384, // all-MiniLM-L6-v2 dimension
 	}
 
@@ -41,18 +46,18 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
 		// Try OpenAI-compatible (might be vLLM or Ollama v1 API)
-		embeddingConfig.BackendType = "openai"
+		embeddingConfig.BackendType = testBackendOpenAI
 		embeddingConfig.BaseURL = "http://localhost:11434"
-		embeddingConfig.Model = "all-minilm"
+		embeddingConfig.Model = embeddings.DefaultModelAllMiniLM
 		embeddingConfig.Dimension = 768
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
 			t.Skipf("Skipping semantic search test: No embedding backend available (Ollama or OpenAI-compatible). Error: %v", err)
 			return
 		}
-		embeddingBackend = "openai"
+		embeddingBackend = testBackendOpenAI
 	}
-	_ = embeddingManager.Close()
+	t.Cleanup(func() { _ = embeddingManager.Close() })
 
 	// Setup optimizer integration with high semantic ratio to favor semantic search
 	mcpServer := server.NewMCPServer("test-server", "1.0")
@@ -74,7 +79,7 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.NotNil(t, integration)
-	defer func() { _ = integration.Close() }()
+	t.Cleanup(func() { _ = integration.Close() })
 
 	// Create tools with diverse descriptions to test semantic understanding
 	tools := []vmcp.Tool{

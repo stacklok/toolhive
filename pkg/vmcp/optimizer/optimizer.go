@@ -104,9 +104,9 @@ func NewIntegration(
 // 2. Generates embeddings for all tools (parallel per-backend)
 // 3. Registers optim.find_tool and optim.call_tool as session tools
 func (o *OptimizerIntegration) OnRegisterSession(
-	ctx context.Context,
+	_ context.Context,
 	session server.ClientSession,
-	capabilities *aggregator.AggregatedCapabilities,
+	_ *aggregator.AggregatedCapabilities,
 ) error {
 	if o == nil {
 		return nil // Optimizer not enabled

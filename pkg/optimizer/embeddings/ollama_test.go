@@ -19,9 +19,9 @@ func TestManagerWithOllama(t *testing.T) {
 	t.Parallel()
 	// Test that Manager works with Ollama when available
 	config := &Config{
-		BackendType:  "ollama",
-		BaseURL:      "http://localhost:11434",
-		Model:        "all-minilm",
+		BackendType: BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       DefaultModelAllMiniLM,
 		Dimension:   768,
 		EnableCache:  true,
 		MaxCacheSize: 100,

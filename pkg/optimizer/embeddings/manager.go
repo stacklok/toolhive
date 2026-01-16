@@ -7,6 +7,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+const (
+	// DefaultModelAllMiniLM is the default Ollama model name
+	DefaultModelAllMiniLM = "all-minilm"
+	// BackendTypeOllama is the Ollama backend type
+	BackendTypeOllama = "ollama"
+)
 
 // Config holds configuration for the embedding manager
 type Config struct {
@@ -66,7 +72,7 @@ func NewManager(config *Config) (*Manager, error) {
 
 	// Default to Ollama
 	if config.BackendType == "" {
-		config.BackendType = "ollama"
+		config.BackendType = BackendTypeOllama
 	}
 
 	// Initialize backend based on configuration
@@ -74,7 +80,7 @@ func NewManager(config *Config) (*Manager, error) {
 	var err error
 
 	switch config.BackendType {
-	case "ollama":
+	case BackendTypeOllama:
 		// Use Ollama native API (requires ollama serve)
 		baseURL := config.BaseURL
 		if baseURL == "" {
@@ -82,15 +88,17 @@ func NewManager(config *Config) (*Manager, error) {
 		}
 		model := config.Model
 		if model == "" {
-			model = "all-minilm" // Default: all-MiniLM-L6-v2
+			model = DefaultModelAllMiniLM // Default: all-MiniLM-L6-v2
 		}
 		// Update dimension if not set and using default model
-		if config.Dimension == 0 && model == "all-minilm" {
+		if config.Dimension == 0 && model == DefaultModelAllMiniLM {
 			config.Dimension = 384
 		}
 		backend, err = NewOllamaBackend(baseURL, model)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize Ollama backend: %w (ensure 'ollama serve' is running and 'ollama pull all-minilm' has been executed)", err)
+			return nil, fmt.Errorf(
+				"failed to initialize Ollama backend: %w (ensure 'ollama serve' is running and 'ollama pull %s' has been executed)",
+				err, DefaultModelAllMiniLM)
 		}
 
 	case "vllm", "unified", "openai":

@@ -45,7 +45,12 @@ type healthChecker struct {
 //   - selfURL: Optional server's own URL. If provided, health checks targeting this URL are short-circuited.
 //
 // Returns a new HealthChecker implementation.
-func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration, degradedThreshold time.Duration, selfURL string) vmcp.HealthChecker {
+func NewHealthChecker(
+	client vmcp.BackendClient,
+	timeout time.Duration,
+	degradedThreshold time.Duration,
+	selfURL string,
+) vmcp.HealthChecker {
 	return &healthChecker{
 		client:            client,
 		timeout:           timeout,

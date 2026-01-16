@@ -95,24 +95,24 @@ func TestFindTool_StringMatching(t *testing.T) {
 
 	// Try to use Ollama if available, otherwise skip test
 	embeddingConfig := &embeddings.Config{
-		BackendType: "ollama",
+		BackendType: embeddings.BackendTypeOllama,
 		BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
+		Model:       embeddings.DefaultModelAllMiniLM,
 		Dimension:   384,
 	}
 
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
-		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
 		return
 	}
-	_ = embeddingManager.Close()
+	t.Cleanup(func() { _ = embeddingManager.Close() })
 
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
+			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
 			Model:       "nomic-embed-text",
 			Dimension:   768,
@@ -124,7 +124,7 @@ func TestFindTool_StringMatching(t *testing.T) {
 	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.NotNil(t, integration)
-	defer func() { _ = integration.Close() }()
+	t.Cleanup(func() { _ = integration.Close() })
 
 	// Get real tool data
 	tools := getRealToolData()
@@ -360,7 +360,7 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
+			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
 			Model:       "nomic-embed-text",
 			Dimension:   384,
@@ -372,7 +372,7 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.NotNil(t, integration)
-	defer func() { _ = integration.Close() }()
+	t.Cleanup(func() { _ = integration.Close() })
 
 	// Create tools with specific strings to match
 	tools := []vmcp.Tool{
@@ -510,24 +510,24 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 
 	// Try to use Ollama if available, otherwise skip test
 	embeddingConfig := &embeddings.Config{
-		BackendType: "ollama",
+		BackendType: embeddings.BackendTypeOllama,
 		BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
+		Model:       embeddings.DefaultModelAllMiniLM,
 		Dimension:   384,
 	}
 
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
-		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
 		return
 	}
-	_ = embeddingManager.Close()
+	t.Cleanup(func() { _ = embeddingManager.Close() })
 
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
+			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
 			Model:       "nomic-embed-text",
 			Dimension:   768,
@@ -539,7 +539,7 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.NotNil(t, integration)
-	defer func() { _ = integration.Close() }()
+	t.Cleanup(func() { _ = integration.Close() })
 
 	tools := []vmcp.Tool{
 		{

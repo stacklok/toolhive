@@ -77,7 +77,9 @@ func NewDB(config *Config) (*DB, error) {
 				chromemDB, err = chromem.NewPersistentDB(config.PersistPath, false)
 				if err != nil {
 					// If still failing, return the error but suggest manual cleanup
-					return nil, fmt.Errorf("failed to create persistent database after cleanup attempt. Please manually remove %s and try again: %w", config.PersistPath, err)
+					return nil, fmt.Errorf(
+						"failed to create persistent database after cleanup attempt. Please manually remove %s and try again: %w",
+						config.PersistPath, err)
 				}
 				logger.Info("Successfully recreated database after cleanup")
 			} else {

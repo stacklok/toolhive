@@ -148,16 +148,16 @@ All messages MUST follow JSON-RPC 2.0 specification.
 Tasks enable durable state machines for tracking long-running operations. Both clients and servers can create tasks.
 
 **Terminology**:
-- **Requestor**: Sender of a task-augmented request (can be client or server)
+- **Requester**: Sender of a task-augmented request (can be client or server)
 - **Receiver**: Receiver/executor of the task (can be client or server)
 
 **Methods**:
 - `tasks/list`: List all tasks (paginated)
-- `tasks/get`: Get task status (requestor SHOULD poll respecting `pollInterval`)
+- `tasks/get`: Get task status (requester SHOULD poll respecting `pollInterval`)
 - `tasks/cancel`: Cancel a non-terminal task
 - `tasks/result`: Retrieve result (blocks until terminal status)
 
-**Notification**: `notifications/tasks/status` (optional, requestors MUST NOT rely on it)
+**Notification**: `notifications/tasks/status` (optional, requesters MUST NOT rely on it)
 
 **Status Lifecycle**:
 ```

@@ -11,6 +11,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
+// stringPtr returns a pointer to the given string
+func stringPtr(s string) *string {
+	return &s
+}
+
 // TestFTSDatabase_GetTotalToolTokens tests token counting
 func TestFTSDatabase_GetTotalToolTokens(t *testing.T) {
 	t.Parallel()

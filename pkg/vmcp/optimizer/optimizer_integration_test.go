@@ -110,14 +110,29 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 		},
 	})
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: embeddings.BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
+		return
+	}
+	t.Cleanup(func() { _ = embeddingManager.Close() })
+
 	// Configure optimizer
 	optimizerConfig := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
+			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
+			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
 	}

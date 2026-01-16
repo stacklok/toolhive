@@ -194,6 +194,10 @@ func NormalizeURLForComparison(rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Validate that we have a scheme and host (basic URL validation)
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid URL: missing scheme or host")
+	}
 
 	// Normalize host: convert localhost to 127.0.0.1 for consistency
 	host := strings.ToLower(u.Hostname())

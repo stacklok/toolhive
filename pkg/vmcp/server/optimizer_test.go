@@ -101,6 +101,7 @@ func TestNew_OptimizerDisabled(t *testing.T) {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	cfg := &Config{
 		Name:       "test-server",
@@ -132,6 +133,7 @@ func TestNew_OptimizerConfigNil(t *testing.T) {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	cfg := &Config{
 		Name:            "test-server",

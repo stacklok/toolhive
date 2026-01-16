@@ -240,6 +240,9 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		}
 
 		// Perform hybrid search using database operations
+		if o.ingestionService == nil {
+			return mcp.NewToolResultError("backend tool operations not initialized"), nil
+		}
 		backendToolOps := o.ingestionService.GetBackendToolOps()
 		if backendToolOps == nil {
 			return mcp.NewToolResultError("backend tool operations not initialized"), nil

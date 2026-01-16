@@ -147,18 +147,18 @@ func TestGeneratePKCEParams(t *testing.T) {
 	t.Parallel()
 	flow := &Flow{}
 
-	err := flow.generatePKCEParams()
-	require.NoError(t, err)
+	flow.generatePKCEParams()
 
 	// Verify code verifier is generated and valid
 	assert.NotEmpty(t, flow.codeVerifier)
-	decoded, err := base64.RawURLEncoding.DecodeString(flow.codeVerifier)
-	require.NoError(t, err, "code verifier should be valid base64")
-	assert.Len(t, decoded, 32, "code verifier should be 32 bytes when decoded")
+	// Note: oauth2.GenerateVerifier() returns a 43-character string (not necessarily 32 bytes when decoded)
+	// RFC 7636: code_verifier must be 43-128 characters
+	assert.GreaterOrEqual(t, len(flow.codeVerifier), 43, "code verifier should be at least 43 characters")
+	assert.LessOrEqual(t, len(flow.codeVerifier), 128, "code verifier should be at most 128 characters")
 
 	// Verify code challenge is generated and valid
 	assert.NotEmpty(t, flow.codeChallenge)
-	_, err = base64.RawURLEncoding.DecodeString(flow.codeChallenge)
+	_, err := base64.RawURLEncoding.DecodeString(flow.codeChallenge)
 	require.NoError(t, err, "code challenge should be valid base64")
 
 	// Verify code challenge is correctly computed (S256 method)
@@ -170,8 +170,7 @@ func TestGeneratePKCEParams(t *testing.T) {
 	originalVerifier := flow.codeVerifier
 	originalChallenge := flow.codeChallenge
 
-	err = flow.generatePKCEParams()
-	require.NoError(t, err)
+	flow.generatePKCEParams()
 
 	assert.NotEqual(t, originalVerifier, flow.codeVerifier, "code verifier should be different on each call")
 	assert.NotEqual(t, originalChallenge, flow.codeChallenge, "code challenge should be different on each call")
@@ -568,8 +567,7 @@ func TestPKCESecurityProperties(t *testing.T) {
 	challenges := make(map[string]bool)
 
 	for i := 0; i < 100; i++ {
-		err := flow.generatePKCEParams()
-		require.NoError(t, err)
+		flow.generatePKCEParams()
 
 		// Ensure no duplicates (extremely unlikely with proper randomness)
 		assert.False(t, verifiers[flow.codeVerifier], "code verifier should be unique")

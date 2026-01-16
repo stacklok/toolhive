@@ -117,8 +117,8 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: "ollama",
 			BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
-		Dimension:   384,
+			Model:       "all-minilm",
+			Dimension:   384,
 		},
 	}
 

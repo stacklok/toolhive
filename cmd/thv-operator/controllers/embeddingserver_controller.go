@@ -755,7 +755,10 @@ func (r *EmbeddingServerReconciler) buildPodTemplate(
 }
 
 // mergePodTemplateSpec merges user-provided PodTemplateSpec customizations
-func (r *EmbeddingServerReconciler) mergePodTemplateSpec(embedding *mcpv1alpha1.EmbeddingServer, podTemplate *corev1.PodTemplateSpec) {
+func (r *EmbeddingServerReconciler) mergePodTemplateSpec(
+	embedding *mcpv1alpha1.EmbeddingServer,
+	podTemplate *corev1.PodTemplateSpec,
+) {
 	if embedding.Spec.PodTemplateSpec == nil {
 		return
 	}
@@ -841,7 +844,10 @@ func (*EmbeddingServerReconciler) applyDeploymentOverrides(
 }
 
 // serviceForEmbedding creates a Service for the embedding server
-func (r *EmbeddingServerReconciler) serviceForEmbedding(_ context.Context, embedding *mcpv1alpha1.EmbeddingServer) *corev1.Service {
+func (r *EmbeddingServerReconciler) serviceForEmbedding(
+	_ context.Context,
+	embedding *mcpv1alpha1.EmbeddingServer,
+) *corev1.Service {
 	labels := r.labelsForEmbedding(embedding)
 	annotations := make(map[string]string)
 
@@ -909,7 +915,10 @@ func (r *EmbeddingServerReconciler) deploymentNeedsUpdate(
 }
 
 // updateEmbeddingServerStatus updates the status based on deployment state
-func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) error {
+func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
+	ctx context.Context,
+	embedding *mcpv1alpha1.EmbeddingServer,
+) error {
 	ctxLogger := log.FromContext(ctx)
 
 	deployment := &appsv1.Deployment{}

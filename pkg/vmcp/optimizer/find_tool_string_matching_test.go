@@ -356,13 +356,28 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: embeddings.BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
+		return
+	}
+	t.Cleanup(func() { _ = embeddingManager.Close() })
+
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
+			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
 		HybridSearchRatio: 0.3, // 30% semantic, 70% BM25 for better exact string matching
@@ -411,6 +426,17 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 
 	session := &mockSession{sessionID: "test-session"}
 	err = integration.OnRegisterSession(ctx, session, capabilities)
+	require.NoError(t, err)
+
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integration.IngestToolsForTesting(ctx, "test", "test", nil, mcpTools)
 	require.NoError(t, err)
 
 	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, capabilities)

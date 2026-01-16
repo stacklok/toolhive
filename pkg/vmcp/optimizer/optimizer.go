@@ -501,3 +501,18 @@ func (o *OptimizerIntegration) Close() error {
 	}
 	return o.ingestionService.Close()
 }
+
+// IngestToolsForTesting manually ingests tools for testing purposes.
+// This is a test helper that bypasses the normal ingestion flow.
+func (o *OptimizerIntegration) IngestToolsForTesting(
+	ctx context.Context,
+	serverID string,
+	serverName string,
+	description *string,
+	tools []mcp.Tool,
+) error {
+	if o == nil || o.ingestionService == nil {
+		return fmt.Errorf("optimizer integration not initialized")
+	}
+	return o.ingestionService.IngestServer(ctx, serverID, serverName, description, tools)
+}

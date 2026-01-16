@@ -270,15 +270,15 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 			// Extract tool names from results
 			foundTools := make([]string, 0, len(toolsArray))
 			for _, toolInterface := range toolsArray {
-				toolMap, ok := toolInterface.(map[string]interface{})
-				require.True(t, ok, "Tool should be a map")
-				toolName, ok := toolMap["name"].(string)
-				require.True(t, ok, "Tool should have name")
+				toolMap, okMap := toolInterface.(map[string]interface{})
+				require.True(t, okMap, "Tool should be a map")
+				toolName, okName := toolMap["name"].(string)
+				require.True(t, okName, "Tool should have name")
 				foundTools = append(foundTools, toolName)
 
 				// Verify similarity score exists and is reasonable
-				similarity, ok := toolMap["similarity_score"].(float64)
-				require.True(t, ok, "Tool should have similarity_score")
+				similarity, okScore := toolMap["similarity_score"].(float64)
+				require.True(t, okScore, "Tool should have similarity_score")
 				assert.Greater(t, similarity, 0.0, "Similarity score should be positive")
 			}
 

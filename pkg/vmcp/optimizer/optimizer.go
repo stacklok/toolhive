@@ -277,11 +277,11 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 			// Unmarshal InputSchema
 			var inputSchema map[string]any
 			if len(result.InputSchema) > 0 {
-				if err := json.Unmarshal(result.InputSchema, &inputSchema); err != nil {
+				if err2 := json.Unmarshal(result.InputSchema, &inputSchema); err2 != nil {
 					logger.Warnw("Failed to unmarshal input schema",
 						"tool_id", result.ID,
 						"tool_name", result.ToolName,
-						"error", err)
+						"error", err2)
 					inputSchema = map[string]any{} // Use empty schema on error
 				}
 			}

@@ -70,8 +70,8 @@
 //	// Create embedding manager
 //	embMgr, err := embeddings.NewManager(embeddings.Config{
 //	    BackendType: "ollama", // or "openai-compatible" or "vllm"
-	    BaseURL:     "http://localhost:11434",
-	    Model:       "all-minilm",
+//	    BaseURL:     "http://localhost:11434",
+//	    Model:       "all-minilm",
 //	    Dimension:   384,
 //	})
 //

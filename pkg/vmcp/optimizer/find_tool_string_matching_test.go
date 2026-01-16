@@ -297,10 +297,10 @@ func TestFindTool_StringMatching(t *testing.T) {
 			// Extract tool names from results
 			foundTools := make([]string, 0, len(toolsArray))
 			for _, toolInterface := range toolsArray {
-				toolMap, ok := toolInterface.(map[string]interface{})
-				require.True(t, ok, "Tool should be a map")
-				toolName, ok := toolMap["name"].(string)
-				require.True(t, ok, "Tool should have name")
+				toolMap, okMap := toolInterface.(map[string]interface{})
+				require.True(t, okMap, "Tool should be a map")
+				toolName, okName := toolMap["name"].(string)
+				require.True(t, okName, "Tool should have name")
 				foundTools = append(foundTools, toolName)
 			}
 
@@ -363,7 +363,6 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 			BackendType: "ollama",
 			BaseURL:     "http://localhost:11434",
 			Model:       "nomic-embed-text",
-			Dimension:   768,
 			Dimension:   384,
 		},
 		HybridSearchRatio: 0.3, // 30% semantic, 70% BM25 for better exact string matching

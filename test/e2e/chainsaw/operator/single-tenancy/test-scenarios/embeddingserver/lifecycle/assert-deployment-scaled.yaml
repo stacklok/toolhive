@@ -1,0 +1,8 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: st-embedding-lifecycle
+  namespace: toolhive-system
+status:
+  availableReplicas: 2
+  readyReplicas: 2

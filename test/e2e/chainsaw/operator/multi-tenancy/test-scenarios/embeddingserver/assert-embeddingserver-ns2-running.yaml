@@ -1,0 +1,8 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: mt-embedding
+  namespace: toolhive-test-ns-2
+status:
+  phase: "Running"
+  readyReplicas: 1

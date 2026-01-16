@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/models"
 )
 
-// createTestDB creates a test database with placeholder embeddings
+// createTestDB creates a test database
 func createTestDB(t *testing.T) *DB {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -459,7 +459,6 @@ func TestBackendToolOps_Search(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, results, "Should find tools")
 
-	// With real embeddings, semantic search should work properly
 	// Weather tool should be most similar to weather query
 	assert.NotEmpty(t, results, "Should find at least one tool")
 	if len(results) > 0 {

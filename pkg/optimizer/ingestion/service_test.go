@@ -95,7 +95,6 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "Should find at least one similar tool")
 
-	// With real embeddings, semantic similarity should work
 	require.NotEmpty(t, results, "Should return at least one result")
 	
 	// Weather tool should be most similar to weather query
@@ -160,7 +159,6 @@ func TestServiceWithOllama(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
-	// With real embeddings, weather tool should be most similar
 	require.Equal(t, "get_weather", results[0].ToolName,
 		"Weather tool should be most similar to weather query")
 }

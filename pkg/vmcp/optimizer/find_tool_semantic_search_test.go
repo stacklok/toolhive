@@ -23,17 +23,12 @@ import (
 // TestFindTool_SemanticSearch tests semantic search capabilities
 // These tests verify that find_tool can find tools based on semantic meaning,
 // not just exact keyword matches
-//
-// NOTE: These tests require a real embedding backend (Ollama or OpenAI-compatible).
-// Placeholder embeddings are hash-based and don't capture semantic meaning.
-// If no real embedding backend is available, these tests will be skipped.
 func TestFindTool_SemanticSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	// Try to use Ollama if available, otherwise skip test
-	// Placeholder embeddings don't support semantic search
 	embeddingBackend := "ollama"
 	embeddingConfig := &embeddings.Config{
 		BackendType: embeddingBackend,
@@ -52,7 +47,7 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 		embeddingConfig.Dimension = 768
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
-			t.Skipf("Skipping semantic search test: No real embedding backend available (Ollama or OpenAI-compatible). Placeholder embeddings don't support semantic search. Error: %v", err)
+			t.Skipf("Skipping semantic search test: No embedding backend available (Ollama or OpenAI-compatible). Error: %v", err)
 			return
 		}
 		embeddingBackend = "openai"
@@ -318,7 +313,6 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 }
 
 // TestFindTool_SemanticVsKeyword tests that semantic search finds different results than keyword search
-// NOTE: Requires a real embedding backend. Placeholder embeddings don't support semantic search.
 func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -339,7 +333,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 		embeddingConfig.BackendType = "openai"
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
-			t.Skipf("Skipping test: No real embedding backend available. Error: %v", err)
+			t.Skipf("Skipping test: No embedding backend available. Error: %v", err)
 			return
 		}
 		embeddingBackend = "openai"
@@ -367,7 +361,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integrationSemantic.Close() }()
 
-	// Test with low semantic ratio (high BM25) - still use real embeddings for fair comparison
+	// Test with low semantic ratio (high BM25)
 	configKeyword := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db-keyword"),
@@ -498,7 +492,6 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 }
 
 // TestFindTool_SemanticSimilarityScores tests that similarity scores are meaningful
-// NOTE: Requires a real embedding backend. Placeholder embeddings don't support semantic search.
 func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -519,7 +512,7 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 		embeddingConfig.BackendType = "openai"
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
-			t.Skipf("Skipping test: No real embedding backend available. Error: %v", err)
+			t.Skipf("Skipping test: No embedding backend available. Error: %v", err)
 			return
 		}
 		embeddingBackend = "openai"

@@ -367,7 +367,15 @@ func New(
 	if cfg.HealthMonitorConfig != nil {
 		// Get initial backends list from registry for health monitoring setup
 		initialBackends := backendRegistry.List(ctx)
-		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
+
+		// Construct server's own URL for self-check detection
+		// Use http:// as default scheme (most common for local development)
+		var selfURL string
+		if cfg.Host != "" && cfg.Port > 0 {
+			selfURL = fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port)
+		}
+
+		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig, selfURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
@@ -382,40 +390,44 @@ func New(
 
 	// Initialize optimizer integration if enabled
 	var optimizerInteg OptimizerIntegration
-	if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
-		logger.Infow("Initializing optimizer integration (chromem-go)",
-			"persist_path", cfg.OptimizerConfig.PersistPath,
-			"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
+	if cfg.OptimizerConfig != nil {
+		if cfg.OptimizerConfig.Enabled {
+			logger.Infow("Initializing optimizer integration (chromem-go)",
+				"persist_path", cfg.OptimizerConfig.PersistPath,
+				"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
 
-		// Convert server config to optimizer config
-		hybridRatio := 0.7 // Default
-		if cfg.OptimizerConfig.HybridSearchRatio != 0 {
-			hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
-		}
-		optimizerCfg := &optimizer.Config{
-			Enabled:           cfg.OptimizerConfig.Enabled,
-			PersistPath:       cfg.OptimizerConfig.PersistPath,
-			FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
-			HybridSearchRatio: hybridRatio,
-			EmbeddingConfig: &embeddings.Config{
-				BackendType: cfg.OptimizerConfig.EmbeddingBackend,
-				BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
-				Model:       cfg.OptimizerConfig.EmbeddingModel,
-				Dimension:   cfg.OptimizerConfig.EmbeddingDimension,
-			},
-		}
+			// Convert server config to optimizer config
+			hybridRatio := 0.7 // Default
+			if cfg.OptimizerConfig.HybridSearchRatio != 0 {
+				hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
+			}
+			optimizerCfg := &optimizer.Config{
+				Enabled:           cfg.OptimizerConfig.Enabled,
+				PersistPath:       cfg.OptimizerConfig.PersistPath,
+				FTSDBPath:         cfg.OptimizerConfig.FTSDBPath,
+				HybridSearchRatio: hybridRatio,
+				EmbeddingConfig: &embeddings.Config{
+					BackendType: cfg.OptimizerConfig.EmbeddingBackend,
+					BaseURL:     cfg.OptimizerConfig.EmbeddingURL,
+					Model:       cfg.OptimizerConfig.EmbeddingModel,
+					Dimension:   cfg.OptimizerConfig.EmbeddingDimension,
+				},
+			}
 
-		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient, sessionManager)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
-		}
-		logger.Info("Optimizer integration initialized successfully")
+			optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient, sessionManager)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
+			}
+			logger.Info("Optimizer integration initialized successfully")
 
-		// Ingest discovered backends at startup (populate optimizer database)
-		initialBackends := backendRegistry.List(ctx)
-		if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
-			logger.Warnf("Failed to ingest initial backends: %v", err)
-			// Don't fail server startup - optimizer can still work with incremental ingestion
+			// Ingest discovered backends at startup (populate optimizer database)
+			initialBackends := backendRegistry.List(ctx)
+			if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
+				logger.Warnf("Failed to ingest initial backends: %v", err)
+				// Don't fail server startup - optimizer can still work with incremental ingestion
+			}
+		} else {
+			logger.Info("Optimizer configuration present but disabled (enabled=false), skipping initialization")
 		}
 	}
 
@@ -561,14 +573,15 @@ func New(
 		// Generate embeddings for optimizer if enabled
 		// This happens after tools are registered so tools are available immediately
 		if srv.optimizerIntegration != nil {
-			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
-
+			logger.Debugw("Calling OnRegisterSession for optimizer", "session_id", sessionID)
 			// Generate embeddings for all tools in this session
 			if err := srv.optimizerIntegration.OnRegisterSession(ctx, session, caps); err != nil {
 				logger.Errorw("failed to generate embeddings for optimizer",
 					"error", err,
 					"session_id", sessionID)
 				// Don't fail session initialization - continue without optimizer
+			} else {
+				logger.Debugw("OnRegisterSession completed successfully", "session_id", sessionID)
 			}
 		}
 	})

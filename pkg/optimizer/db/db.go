@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/philippgille/chromem-go"
@@ -54,7 +56,33 @@ func NewDB(config *Config) (*DB, error) {
 		logger.Infof("Creating chromem-go database with persistence at: %s", config.PersistPath)
 		chromemDB, err = chromem.NewPersistentDB(config.PersistPath, false)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create persistent database: %w", err)
+			// Check if error is due to corrupted database (missing collection metadata)
+			if strings.Contains(err.Error(), "collection metadata file not found") {
+				logger.Warnf("Database appears corrupted, attempting to remove and recreate: %v", err)
+				// Try to remove corrupted database directory
+				// Use RemoveAll which should handle directories recursively
+				// If it fails, we'll try to create with a new path or fall back to in-memory
+				if removeErr := os.RemoveAll(config.PersistPath); removeErr != nil {
+					logger.Warnf("Failed to remove corrupted database directory (may be in use): %v. Will try to recreate anyway.", removeErr)
+					// Try to rename the corrupted directory and create a new one
+					backupPath := config.PersistPath + ".corrupted"
+					if renameErr := os.Rename(config.PersistPath, backupPath); renameErr != nil {
+						logger.Warnf("Failed to rename corrupted database: %v. Attempting to create database anyway.", renameErr)
+						// Continue and let chromem-go handle it - it might work if the corruption is partial
+					} else {
+						logger.Infof("Renamed corrupted database to: %s", backupPath)
+					}
+				}
+				// Retry creating the database
+				chromemDB, err = chromem.NewPersistentDB(config.PersistPath, false)
+				if err != nil {
+					// If still failing, return the error but suggest manual cleanup
+					return nil, fmt.Errorf("failed to create persistent database after cleanup attempt. Please manually remove %s and try again: %w", config.PersistPath, err)
+				}
+				logger.Info("Successfully recreated database after cleanup")
+			} else {
+				return nil, fmt.Errorf("failed to create persistent database: %w", err)
+			}
 		}
 	} else {
 		logger.Info("Creating in-memory chromem-go database")

@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -57,6 +58,7 @@ type OptimizerIntegration struct {
 	mcpServer        *server.MCPServer  // For registering tools
 	backendClient    vmcp.BackendClient // For querying backends at startup
 	sessionManager   *transportsession.Manager
+	processedSessions sync.Map // Track sessions that have already been processed
 }
 
 // NewIntegration creates a new optimizer integration.
@@ -111,89 +113,21 @@ func (o *OptimizerIntegration) OnRegisterSession(
 	}
 
 	sessionID := session.SessionID()
-	logger.Infow("Generating embeddings for session", "session_id", sessionID)
 
-	// Group tools by backend for parallel processing
-	type backendTools struct {
-		backendID   string
-		backendName string
-		backendURL  string
-		transport   string
-		tools       []mcp.Tool
+	logger.Debugw("OnRegisterSession called", "session_id", sessionID)
+
+	// Check if this session has already been processed
+	if _, alreadyProcessed := o.processedSessions.LoadOrStore(sessionID, true); alreadyProcessed {
+		logger.Debugw("Session already processed, skipping duplicate ingestion",
+			"session_id", sessionID)
+		return nil
 	}
 
-	backendMap := make(map[string]*backendTools)
-
-	// Extract tools from routing table
-	if capabilities.RoutingTable != nil {
-		for toolName, target := range capabilities.RoutingTable.Tools {
-			// Find the tool definition from capabilities.Tools
-			var toolDef mcp.Tool
-			found := false
-			for i := range capabilities.Tools {
-				if capabilities.Tools[i].Name == toolName {
-					// Convert vmcp.Tool to mcp.Tool
-					// Note: vmcp.Tool.InputSchema is map[string]any, mcp.Tool.InputSchema is ToolInputSchema struct
-					// For ingestion, we just need the tool name and description
-					toolDef = mcp.Tool{
-						Name:        capabilities.Tools[i].Name,
-						Description: capabilities.Tools[i].Description,
-						// InputSchema will be empty - we only need name/description for embedding generation
-					}
-					found = true
-					break
-				}
-			}
-			if !found {
-				logger.Warnw("Tool in routing table but not in capabilities",
-					"tool_name", toolName,
-					"backend_id", target.WorkloadID)
-				continue
-			}
-
-			// Group by backend
-			if _, exists := backendMap[target.WorkloadID]; !exists {
-				backendMap[target.WorkloadID] = &backendTools{
-					backendID:   target.WorkloadID,
-					backendName: target.WorkloadName,
-					backendURL:  target.BaseURL,
-					transport:   target.TransportType,
-					tools:       []mcp.Tool{},
-				}
-			}
-			backendMap[target.WorkloadID].tools = append(backendMap[target.WorkloadID].tools, toolDef)
-		}
-	}
-
-	// Ingest each backend's tools (in parallel - TODO: add goroutines)
-	for _, bt := range backendMap {
-		logger.Debugw("Ingesting backend for session",
-			"session_id", sessionID,
-			"backend_id", bt.backendID,
-			"backend_name", bt.backendName,
-			"tool_count", len(bt.tools))
-
-		// Ingest server with simplified metadata
-		// Note: URL and transport are not stored - vMCP manages backend lifecycle
-		err := o.ingestionService.IngestServer(
-			ctx,
-			bt.backendID,
-			bt.backendName,
-			nil, // description
-			bt.tools,
-		)
-		if err != nil {
-			logger.Errorw("Failed to ingest backend",
-				"session_id", sessionID,
-				"backend_id", bt.backendID,
-				"error", err)
-			// Continue with other backends
-		}
-	}
-
-	logger.Infow("Embeddings generated for session",
-		"session_id", sessionID,
-		"backend_count", len(backendMap))
+	// Skip ingestion in OnRegisterSession - IngestInitialBackends already handles ingestion at startup
+	// This prevents duplicate ingestion when sessions are registered
+	// The optimizer database is populated once at startup, not per-session
+	logger.Infow("Skipping ingestion in OnRegisterSession (handled by IngestInitialBackends at startup)",
+		"session_id", sessionID)
 
 	return nil
 }
@@ -352,9 +286,15 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 				}
 			}
 
+			// Handle nil description
+			description := ""
+			if result.Description != nil {
+				description = *result.Description
+			}
+
 			tool := map[string]any{
 				"name":             result.ToolName,
-				"description":      result.Description,
+				"description":      description,
 				"input_schema":     inputSchema,
 				"backend_id":       result.MCPServerID,
 				"similarity_score": result.Similarity,

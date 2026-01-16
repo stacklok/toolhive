@@ -129,7 +129,7 @@ func (s *Service) IngestServer(
 	description *string,
 	tools []mcp.Tool,
 ) error {
-	logger.Infof("Ingesting server: %s (%d tools)", serverName, len(tools))
+	logger.Infof("Ingesting server: %s (%d tools) [serverID=%s]", serverName, len(tools), serverID)
 
 	// Create backend server record (simplified - vMCP manages lifecycle)
 	// chromem-go will generate embeddings automatically from the content
@@ -160,6 +160,7 @@ func (s *Service) IngestServer(
 
 // syncBackendTools synchronizes tools for a backend server
 func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
+	logger.Debugf("syncBackendTools: server=%s, serverID=%s, tool_count=%d", serverName, serverID, len(tools))
 	// Delete existing tools
 	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)

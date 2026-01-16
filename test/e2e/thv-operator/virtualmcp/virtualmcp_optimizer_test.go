@@ -109,7 +109,6 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 						Tools: []*vmcpconfig.WorkloadToolConfig{
 							{
 								Workload: backendName,
-								// Filter:   []string{backendFetchToolName},
 								Overrides: map[string]*vmcpconfig.ToolOverride{
 									backendFetchToolName: {
 										Name:        vmcpFetchToolName,

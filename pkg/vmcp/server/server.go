@@ -785,7 +785,7 @@ func (s *Server) injectCapabilities(
 }
 
 // injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
-// It should not be called if optimizer mode and replaces injectCapabilities.
+// It should not be called if not in optimizer mode and replaces injectCapabilities.
 //
 // When optimizer mode is enabled, instead of exposing all backend tools directly,
 // vMCP exposes only two meta-tools:
@@ -817,19 +817,11 @@ func (s *Server) injectOptimizerCapabilities(
 		"composite_tool_count", len(caps.CompositeTools),
 		"total_tools_indexed", len(sdkTools))
 
-	// Save tools before clearing - caps is shared across sessions
-	savedTools := caps.Tools
-	savedCompositeTools := caps.CompositeTools
-
 	// Clear tools from caps - they're now wrapped by optimizer
 	// Resources and prompts are preserved and handled normally
-	caps.Tools = nil
-	caps.CompositeTools = nil
-	defer func() {
-		// Restore tools before returning error
-		caps.Tools = savedTools
-		caps.CompositeTools = savedCompositeTools
-	}()
+	capsCopy := *caps
+	capsCopy.Tools = nil
+	capsCopy.CompositeTools = nil
 
 	// Manually add the optimizer tools, since we don't want to bother converting
 	// optimizer tools into `vmcp.Tool`s as well.
@@ -837,7 +829,7 @@ func (s *Server) injectOptimizerCapabilities(
 		return fmt.Errorf("failed to add session tools: %w", err)
 	}
 
-	return s.injectCapabilities(sessionID, caps)
+	return s.injectCapabilities(sessionID, &capsCopy)
 }
 
 // handleSessionRegistration processes a new MCP session registration.

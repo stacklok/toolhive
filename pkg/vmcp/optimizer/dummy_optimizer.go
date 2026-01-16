@@ -29,10 +29,6 @@ func NewDummyOptimizer(tools []server.ServerTool) Optimizer {
 	for _, tool := range tools {
 		toolMap[tool.Tool.Name] = tool
 	}
-	fmt.Printf("[DummyOptimizer.NewDummyOptimizer] Created with %d tools:\n", len(toolMap))
-	for name, tool := range toolMap {
-		fmt.Printf("  - %q: %q\n", name, tool.Tool.Description)
-	}
 
 	return DummyOptimizer{
 		tools: toolMap,

@@ -107,18 +107,18 @@ thv proxy [flags] SERVER_NAME
       --oidc-jwks-url string                       URL to fetch the JWKS from
       --oidc-scopes strings                        OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --port int                                   Port for the HTTP proxy to listen on (host port)
-      --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
+      --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string            Bearer token for remote server authentication (alternative to OAuth)
       --remote-auth-bearer-token-file string       Path to file containing bearer token (alternative to --remote-auth-bearer-token)
       --remote-auth-callback-port int              Port for OAuth callback server during remote authentication (default 8666)
-      --remote-auth-client-id string               OAuth client ID for remote server authentication
-      --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)
-      --remote-auth-client-secret-file string      Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
+      --remote-auth-client-id string               OAuth client ID for remote server authentication (optional if the authorization server supports dynamic client registration (RFC 7591))
+      --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional if the authorization server supports dynamic client registration (RFC 7591) or if using PKCE)
+      --remote-auth-client-secret-file string      Path to file containing OAuth client secret (alternative to --remote-auth-client-secret) (optional if the authorization server supports dynamic client registration (RFC 7591) or if using PKCE)
       --remote-auth-issuer string                  OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
       --remote-auth-resource string                OAuth 2.0 resource indicator (RFC 8707)
       --remote-auth-scopes strings                 OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
-      --remote-auth-skip-browser                   Skip opening browser for remote server OAuth flow
+      --remote-auth-skip-browser                   Skip opening browser for remote server OAuth flow (default false)
       --remote-auth-timeout duration               Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
       --remote-auth-token-url string               OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --resource-url string                        Explicit resource URL for OAuth discovery endpoint (RFC 9728)

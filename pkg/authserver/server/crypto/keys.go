@@ -184,6 +184,15 @@ type HMACSecrets struct {
 	Rotated [][]byte
 }
 
+// NewHMACSecrets creates an HMACSecrets with just a current secret (no rotation).
+// This is a convenience function for cases where secret rotation is not needed.
+func NewHMACSecrets(current []byte) *HMACSecrets {
+	return &HMACSecrets{
+		Current: current,
+		Rotated: nil,
+	}
+}
+
 // DeriveSigningKeyParams derives or validates signing key parameters.
 // If keyID or algorithm are empty, they are derived from the key.
 // If they are provided, they are validated against the key type.

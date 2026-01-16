@@ -468,12 +468,27 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 }
 
 // GetWorkloadLogs gets workload logs
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error) {
+	// follow=true means infinite streaming, lines>0 means finite limit - these are contradictory
+	if follow && lines > 0 {
+		return "", NewContainerError(
+			fmt.Errorf("cannot use both follow and line limit"),
+			workloadName,
+			"follow mode streams logs indefinitely, which conflicts with line limiting",
+		)
+	}
+
+	// Configure tail option based on lines parameter
+	tail := "all"
+	if lines > 0 {
+		tail = fmt.Sprintf("%d", lines)
+	}
+
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     follow,
-		Tail:       "100",
+		Tail:       tail,
 	}
 
 	workloadContainer, err := c.inspectContainerByName(ctx, workloadName)

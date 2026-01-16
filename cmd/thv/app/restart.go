@@ -31,7 +31,8 @@ Supports both container-based and remote MCP servers.`,
 
 func init() {
 	AddAllFlag(restartCmd, &restartAll, true, "Restart all MCP servers")
-	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the restarted workload in foreground mode")
+	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the restarted workload in foreground mode"+
+		" (default false)")
 	AddGroupFlag(restartCmd, &restartGroup, true)
 
 	// Mark the flags as mutually exclusive

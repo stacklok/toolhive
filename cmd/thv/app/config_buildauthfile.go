@@ -96,14 +96,14 @@ func init() {
 		&showAuthFileContent,
 		"show-content",
 		false,
-		"Show the actual file content (contains credentials)",
+		"Show the actual file content (contains credentials) (default false)",
 	)
 
 	setBuildAuthFileCmd.Flags().BoolVar(
 		&authFileFromStdin,
 		"stdin",
 		false,
-		"Read file content from stdin instead of command line argument",
+		"Read file content from stdin instead of command line argument (default false)",
 	)
 }
 

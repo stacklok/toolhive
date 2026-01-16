@@ -70,9 +70,13 @@ type Manager interface {
 	// The operation runs asynchronously unless the CompletionFunc is called.
 	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (CompletionFunc, error)
 	// GetLogs retrieves the logs of a container.
-	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
+	GetLogs(ctx context.Context, containerName string, follow bool, lines int) (string, error)
 	// GetProxyLogs retrieves the proxy logs from the filesystem.
-	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
+	GetProxyLogs(ctx context.Context, workloadName string, lines int) (string, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
@@ -617,9 +621,11 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 }
 
 // GetLogs retrieves the logs of a container.
-func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
-	// Get the logs from the runtime
-	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow)
+// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+// If lines is 0, all logs are returned.
+func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error) {
+	// Get the logs from the runtime with line limiting
+	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow, lines)
 	if err != nil {
 		// Propagate the error if the container is not found
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
@@ -631,8 +637,10 @@ func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follo
 	return logs, nil
 }
 
-// GetProxyLogs retrieves proxy logs from the filesystem
-func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (string, error) {
+// GetProxyLogs retrieves proxy logs from the filesystem.
+// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+// If lines is 0, all logs are returned.
+func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string, lines int) (string, error) {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -647,13 +655,31 @@ func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (str
 		return "", fmt.Errorf("proxy logs not found for workload %s", workloadName)
 	}
 
-	// Read and return the entire log file
-	content, err := os.ReadFile(cleanLogFilePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+	// If lines is 0, read the entire file
+	if lines == 0 {
+		content, err := os.ReadFile(cleanLogFilePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+		}
+		return string(content), nil
 	}
 
-	return string(content), nil
+	// Read only the last N lines using tail command to avoid loading entire file
+	return readLastNLines(cleanLogFilePath, lines)
+}
+
+// readLastNLines reads the last N lines from a file efficiently using the tail command.
+// This avoids loading the entire file into memory.
+// The filePath is already validated and cleaned by the caller using filepath.Clean.
+func readLastNLines(filePath string, lines int) (string, error) {
+	// Use tail command which efficiently reads from the end of the file
+	// #nosec G204 - filePath is validated by caller, lines is an integer parameter
+	cmd := exec.Command("tail", "-n", fmt.Sprintf("%d", lines), filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read last %d lines: %w", lines, err)
+	}
+	return string(output), nil
 }
 
 // deleteWorkload handles deletion of a single workload

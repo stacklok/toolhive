@@ -18,6 +18,11 @@ import (
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
+const (
+	// maxAPILogLines is the maximum number of log lines returned by API endpoints
+	maxAPILogLines = 1000
+)
+
 // WorkloadRoutes defines the routes for workload management.
 type WorkloadRoutes struct {
 	workloadManager  workloads.Manager
@@ -456,7 +461,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // getLogsForWorkload
 //
 // @Summary      Get logs for a specific workload
-// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Description  Retrieve at most 1000 lines of logs for a specific workload by name.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -473,10 +478,11 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetLogs(ctx, name, false)
+	logs, err := s.workloadManager.GetLogs(ctx, name, false, maxAPILogLines)
 	if err != nil {
 		return err // ErrWorkloadNotFound (404) already has status code
 	}
+
 	w.Header().Set("Content-Type", "text/plain")
 	if _, err = w.Write([]byte(logs)); err != nil {
 		return fmt.Errorf("failed to write logs response: %w", err)
@@ -487,7 +493,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 // getProxyLogsForWorkload
 //
 // @Summary      Get proxy logs for a specific workload
-// @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Description  Retrieve at most 1000 lines of proxy logs for a specific workload by name from the file system.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -504,7 +510,7 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
+	logs, err := s.workloadManager.GetProxyLogs(ctx, name, maxAPILogLines)
 	if err != nil {
 		return thverrors.WithCode(
 			fmt.Errorf("proxy logs not found for workload: %w", err),

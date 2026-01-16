@@ -55,8 +55,8 @@ Examples:
 		ValidArgsFunction: completeLogsArgs,
 	}
 
-	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs)")
-	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs")
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs) (default false)")
+	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs (default false)")
 
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
@@ -101,7 +101,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 			return getProxyLogs(workloadName)
 		}
 		// Use the shared manager method for non-follow proxy logs
-		logs, err := manager.GetProxyLogs(ctx, workloadName)
+		// CLI gets all logs (0 = unlimited)
+		logs, err := manager.GetProxyLogs(ctx, workloadName, 0)
 		if err != nil {
 			logger.Infof("Proxy logs not found for workload %s", workloadName)
 			return nil
@@ -110,7 +111,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	logs, err := manager.GetLogs(ctx, workloadName, follow)
+	// CLI gets all logs (0 = unlimited)
+	logs, err := manager.GetLogs(ctx, workloadName, follow, 0)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			logger.Infof("Workload %s not found", workloadName)

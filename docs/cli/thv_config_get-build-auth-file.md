@@ -35,7 +35,7 @@ thv config get-build-auth-file [name] [flags]
 
 ```
   -h, --help           help for get-build-auth-file
-      --show-content   Show the actual file content (contains credentials)
+      --show-content   Show the actual file content (contains credentials) (default false)
 ```
 
 ### Options inherited from parent commands

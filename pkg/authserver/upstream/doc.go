@@ -79,4 +79,27 @@
 //
 // To add a new IDP type (e.g., SAML), implement the Provider interface.
 // The optional capability interfaces can be implemented as needed.
+//
+// # UserInfo Extensibility
+//
+// The package supports flexible UserInfo fetching through the UserInfoFetcher
+// interface and UserInfoConfig. This enables:
+//
+//   - Custom field mapping for non-standard provider responses
+//   - Additional headers for provider-specific requirements
+//
+// To check if a provider supports UserInfo fetching:
+//
+//	if fetcher, ok := provider.(upstream.UserInfoFetcher); ok {
+//	    userInfo, err := fetcher.FetchUserInfo(ctx, accessToken)
+//	}
+//
+// For custom provider configuration, use UserInfoConfig:
+//
+//	config := &upstream.UserInfoConfig{
+//	    EndpointURL: "https://api.example.com/user",
+//	    FieldMapping: &upstream.UserInfoFieldMapping{
+//	        SubjectField: "user_id",
+//	    },
+//	}
 package upstream

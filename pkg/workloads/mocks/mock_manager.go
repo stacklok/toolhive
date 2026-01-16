@@ -74,33 +74,33 @@ func (mr *MockManagerMockRecorder) DoesWorkloadExist(ctx, workloadName any) *gom
 }
 
 // GetLogs mocks base method.
-func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
+func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool, lines int) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetLogs", ctx, containerName, follow)
+	ret := m.ctrl.Call(m, "GetLogs", ctx, containerName, follow, lines)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetLogs indicates an expected call of GetLogs.
-func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow any) *gomock.Call {
+func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow, lines any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow, lines)
 }
 
 // GetProxyLogs mocks base method.
-func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
+func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string, lines int) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName)
+	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName, lines)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetProxyLogs indicates an expected call of GetProxyLogs.
-func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName any) *gomock.Call {
+func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName, lines any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName, lines)
 }
 
 // GetWorkload mocks base method.

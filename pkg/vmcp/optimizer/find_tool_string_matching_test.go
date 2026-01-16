@@ -468,24 +468,24 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 			require.NotNil(t, result)
 			require.False(t, result.IsError)
 
-			textContent, ok := mcp.AsTextContent(result.Content[0])
-			require.True(t, ok)
+			textContent, okText := mcp.AsTextContent(result.Content[0])
+			require.True(t, okText)
 
 			var response map[string]any
 			err = json.Unmarshal([]byte(textContent.Text), &response)
 			require.NoError(t, err)
 
-			toolsArray, ok := response["tools"].([]interface{})
-			require.True(t, ok)
+			toolsArray, okArray := response["tools"].([]interface{})
+			require.True(t, okArray)
 			require.NotEmpty(t, toolsArray, "Should find at least one tool for query: %s", tc.query)
 
 			// Check that the expected tool is in the results
 			found := false
 			for _, toolInterface := range toolsArray {
-				toolMap, ok := toolInterface.(map[string]interface{})
-				require.True(t, ok)
-				toolName, ok := toolMap["name"].(string)
-				require.True(t, ok)
+				toolMap, okMap := toolInterface.(map[string]interface{})
+				require.True(t, okMap)
+				toolName, okName := toolMap["name"].(string)
+				require.True(t, okName)
 				if toolName == tc.expectedTool {
 					found = true
 					break
@@ -599,23 +599,23 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 			require.NotNil(t, result)
 			require.False(t, result.IsError)
 
-			textContent, ok := mcp.AsTextContent(result.Content[0])
-			require.True(t, ok)
+			textContent, okText := mcp.AsTextContent(result.Content[0])
+			require.True(t, okText)
 
 			var response map[string]any
 			err = json.Unmarshal([]byte(textContent.Text), &response)
 			require.NoError(t, err)
 
-			toolsArray, ok := response["tools"].([]interface{})
-			require.True(t, ok)
+			toolsArray, okArray := response["tools"].([]interface{})
+			require.True(t, okArray)
 
 			// Should find the pull request tool regardless of case
 			found := false
 			for _, toolInterface := range toolsArray {
-				toolMap, ok := toolInterface.(map[string]interface{})
-				require.True(t, ok)
-				toolName, ok := toolMap["name"].(string)
-				require.True(t, ok)
+				toolMap, okMap := toolInterface.(map[string]interface{})
+				require.True(t, okMap)
+				toolName, okName := toolMap["name"].(string)
+				require.True(t, okName)
 				if toolName == "github_pull_request_read" {
 					found = true
 					break

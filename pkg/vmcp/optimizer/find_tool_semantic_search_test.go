@@ -256,15 +256,15 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 
 			// Parse the result
 			require.NotEmpty(t, result.Content, "Result should have content")
-			textContent, ok := mcp.AsTextContent(result.Content[0])
-			require.True(t, ok, "Result should be text content")
+			textContent, okText := mcp.AsTextContent(result.Content[0])
+			require.True(t, okText, "Result should be text content")
 
 			var response map[string]any
 			err = json.Unmarshal([]byte(textContent.Text), &response)
 			require.NoError(t, err, "Result should be valid JSON")
 
-			toolsArray, ok := response["tools"].([]interface{})
-			require.True(t, ok, "Response should have tools array")
+			toolsArray, okArray := response["tools"].([]interface{})
+			require.True(t, okArray, "Response should have tools array")
 			require.NotEmpty(t, toolsArray, "Should return at least one result for semantic query: %s", tc.query)
 
 			// Extract tool names from results
@@ -304,8 +304,8 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 			}
 
 			// Verify token metrics exist
-			tokenMetrics, ok := response["token_metrics"].(map[string]interface{})
-			require.True(t, ok, "Response should have token_metrics")
+			tokenMetrics, okMetrics := response["token_metrics"].(map[string]interface{})
+			require.True(t, okMetrics, "Response should have token_metrics")
 			assert.Contains(t, tokenMetrics, "baseline_tokens")
 			assert.Contains(t, tokenMetrics, "returned_tokens")
 		})

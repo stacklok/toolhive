@@ -37,6 +37,7 @@ func TestNew_OptimizerEnabled(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		Return(&aggregator.AggregatedCapabilities{}, nil).
 		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	tmpDir := t.TempDir()
 
@@ -169,6 +170,7 @@ func TestNew_OptimizerIngestionError(t *testing.T) {
 		AnyTimes()
 
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	tmpDir := t.TempDir()
 
@@ -238,6 +240,7 @@ func TestNew_OptimizerHybridRatio(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		Return(&aggregator.AggregatedCapabilities{}, nil).
 		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	tmpDir := t.TempDir()
 
@@ -300,6 +303,7 @@ func TestServer_Stop_OptimizerCleanup(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		Return(&aggregator.AggregatedCapabilities{}, nil).
 		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	tmpDir := t.TempDir()
 

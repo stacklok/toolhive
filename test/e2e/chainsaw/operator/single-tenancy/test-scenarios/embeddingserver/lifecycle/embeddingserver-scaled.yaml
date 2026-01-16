@@ -1,0 +1,21 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: ($testPrefix)
+  namespace: toolhive-system
+spec:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"
+  imagePullPolicy: IfNotPresent
+  port: 8080
+  replicas: 2
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+  env:
+  - name: RUST_LOG
+    value: "info"

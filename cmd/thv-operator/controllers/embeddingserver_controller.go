@@ -279,6 +279,8 @@ func (r *EmbeddingServerReconciler) updateDeploymentWithRetry(
 }
 
 // ensureService ensures the service exists
+//
+//nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureService(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
@@ -299,7 +301,8 @@ func (r *EmbeddingServerReconciler) ensureService(
 			ctxLogger.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
 			return ctrl.Result{}, true, err
 		}
-		return ctrl.Result{Requeue: true}, true, nil
+		// Continue to update status instead of returning early
+		return ctrl.Result{}, false, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
 		return ctrl.Result{}, true, err
@@ -895,19 +898,62 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 }
 
 // deploymentNeedsUpdate checks if the deployment needs to be updated
-func (r *EmbeddingServerReconciler) deploymentNeedsUpdate(
-	ctx context.Context,
+func (*EmbeddingServerReconciler) deploymentNeedsUpdate(
+	_ context.Context,
 	deployment *appsv1.Deployment,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {
-	newDeployment := r.deploymentForEmbedding(ctx, embedding)
-
-	// Compare important fields
-	if !reflect.DeepEqual(deployment.Spec.Template.Spec.Containers, newDeployment.Spec.Template.Spec.Containers) {
+	// Check if the number of replicas changed
+	desiredReplicas := embedding.GetReplicas()
+	if *deployment.Spec.Replicas != desiredReplicas {
 		return true
 	}
 
-	if !reflect.DeepEqual(deployment.Spec.Template.Spec.Volumes, newDeployment.Spec.Template.Spec.Volumes) {
+	// Compare containers by checking specific important fields
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		return true
+	}
+
+	existingContainer := deployment.Spec.Template.Spec.Containers[0]
+
+	// Check image
+	if existingContainer.Image != embedding.Spec.Image {
+		return true
+	}
+
+	// Check args
+	expectedArgs := []string{
+		"--model-id", embedding.Spec.Model,
+		"--port", fmt.Sprintf("%d", embedding.GetPort()),
+	}
+	expectedArgs = append(expectedArgs, embedding.Spec.Args...)
+	if !reflect.DeepEqual(existingContainer.Args, expectedArgs) {
+		return true
+	}
+
+	// Check environment variables (basic comparison of names and values)
+	expectedEnvMap := make(map[string]string)
+	expectedEnvMap["MODEL_ID"] = embedding.Spec.Model
+	for _, env := range embedding.Spec.Env {
+		expectedEnvMap[env.Name] = env.Value
+	}
+	if embedding.IsModelCacheEnabled() {
+		expectedEnvMap["HF_HOME"] = modelCacheMountPath
+	}
+
+	existingEnvMap := make(map[string]string)
+	for _, env := range existingContainer.Env {
+		if env.Value != "" {
+			existingEnvMap[env.Name] = env.Value
+		}
+	}
+
+	if !reflect.DeepEqual(expectedEnvMap, existingEnvMap) {
+		return true
+	}
+
+	// Check ports
+	if len(existingContainer.Ports) != 1 || existingContainer.Ports[0].ContainerPort != embedding.GetPort() {
 		return true
 	}
 

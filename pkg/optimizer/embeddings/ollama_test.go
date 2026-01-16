@@ -19,10 +19,10 @@ func TestManagerWithOllama(t *testing.T) {
 	t.Parallel()
 	// Test that Manager works with Ollama when available
 	config := &Config{
-		BackendType: BackendTypeOllama,
-		BaseURL:     "http://localhost:11434",
-		Model:       DefaultModelAllMiniLM,
-		Dimension:   768,
+		BackendType:  BackendTypeOllama,
+		BaseURL:      "http://localhost:11434",
+		Model:        DefaultModelAllMiniLM,
+		Dimension:    768,
 		EnableCache:  true,
 		MaxCacheSize: 100,
 	}
@@ -46,10 +46,10 @@ func TestManagerWithOllama(t *testing.T) {
 		t.Errorf("Expected 1 embedding, got %d", len(embeddings))
 	}
 
-		// Ollama all-minilm uses 384 dimensions
-		if len(embeddings[0]) != 384 {
-			t.Errorf("Expected dimension 384, got %d", len(embeddings[0]))
-		}
+	// Ollama all-minilm uses 384 dimensions
+	if len(embeddings[0]) != 384 {
+		t.Errorf("Expected dimension 384, got %d", len(embeddings[0]))
+	}
 
 	// Test batch embeddings
 	texts := []string{"text 1", "text 2", "text 3"}

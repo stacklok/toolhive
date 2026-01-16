@@ -157,12 +157,12 @@ func TestFindTool_StringMatching(t *testing.T) {
 
 	// Test cases: query -> expected tool names that should be found
 	testCases := []struct {
-		name           string
-		query          string
-		keywords       string
-		expectedTools  []string // Tools that should definitely be in results
-		minResults     int      // Minimum number of results expected
-		description    string
+		name          string
+		query         string
+		keywords      string
+		expectedTools []string // Tools that should definitely be in results
+		minResults    int      // Minimum number of results expected
+		description   string
 	}{
 		{
 			name:          "exact_pull_request_match",
@@ -443,11 +443,11 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 
 	// Test exact string matching
 	testCases := []struct {
-		name          string
-		query         string
-		keywords      string
-		expectedTool  string
-		description   string
+		name         string
+		query        string
+		keywords     string
+		expectedTool string
+		description  string
 	}{
 		{
 			name:         "exact_pull_request_string",

@@ -53,11 +53,11 @@ type Config struct {
 //
 //nolint:revive // Name is intentional for clarity in external packages
 type OptimizerIntegration struct {
-	config           *Config
-	ingestionService *ingestion.Service
-	mcpServer        *server.MCPServer  // For registering tools
-	backendClient    vmcp.BackendClient // For querying backends at startup
-	sessionManager   *transportsession.Manager
+	config            *Config
+	ingestionService  *ingestion.Service
+	mcpServer         *server.MCPServer  // For registering tools
+	backendClient     vmcp.BackendClient // For querying backends at startup
+	sessionManager    *transportsession.Manager
 	processedSessions sync.Map // Track sessions that have already been processed
 }
 
@@ -314,10 +314,10 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		}
 
 		tokenMetrics := map[string]any{
-			"baseline_tokens":     baselineTokens,
-			"returned_tokens":     totalReturnedTokens,
-			"tokens_saved":        tokensSaved,
-			"savings_percentage":  savingsPercentage,
+			"baseline_tokens":    baselineTokens,
+			"returned_tokens":    totalReturnedTokens,
+			"tokens_saved":       tokensSaved,
+			"savings_percentage": savingsPercentage,
 		}
 
 		// Build response

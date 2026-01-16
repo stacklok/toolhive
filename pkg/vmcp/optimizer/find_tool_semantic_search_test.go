@@ -335,13 +335,13 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
 		// Try OpenAI-compatible
-		embeddingConfig.BackendType = "openai"
+		embeddingConfig.BackendType = testBackendOpenAI
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
 			t.Skipf("Skipping test: No embedding backend available. Error: %v", err)
 			return
 		}
-		embeddingBackend = "openai"
+		embeddingBackend = testBackendOpenAI
 	}
 	_ = embeddingManager.Close()
 
@@ -514,13 +514,13 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
 		// Try OpenAI-compatible
-		embeddingConfig.BackendType = "openai"
+		embeddingConfig.BackendType = testBackendOpenAI
 		embeddingManager, err = embeddings.NewManager(embeddingConfig)
 		if err != nil {
 			t.Skipf("Skipping test: No embedding backend available. Error: %v", err)
 			return
 		}
-		embeddingBackend = "openai"
+		embeddingBackend = testBackendOpenAI
 	}
 	_ = embeddingManager.Close()
 

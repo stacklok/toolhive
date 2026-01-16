@@ -1035,3 +1035,81 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	tests := []struct {
+		name              string
+		imageMetadata     *regtypes.ImageMetadata
+		cliProxyPort      int
+		expectedProxyPort int
+	}{
+		{
+			name: "uses registry proxy_port when CLI not specified",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image:      "test-image:latest",
+				ProxyPort:  8976,
+				TargetPort: 8976,
+			},
+			cliProxyPort:      0,
+			expectedProxyPort: 8976,
+		},
+		{
+			name: "CLI proxy_port overrides registry",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image:      "test-image:latest",
+				ProxyPort:  8976,
+				TargetPort: 8976,
+			},
+			cliProxyPort:      9000,
+			expectedProxyPort: 9000,
+		},
+		{
+			name: "random port when neither CLI nor registry specified",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image: "test-image:latest",
+			},
+			cliProxyPort:      0,
+			expectedProxyPort: 0, // Will be assigned randomly
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			envVars := make(map[string]string)
+
+			opts := []RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+				WithTransportAndPorts("streamable-http", tt.cliProxyPort, 0),
+			}
+
+			config, err := NewRunConfigBuilder(ctx, tt.imageMetadata, envVars, mockValidator, opts...)
+			require.NoError(t, err, "Creating RunConfig should not fail")
+			require.NotNil(t, config, "RunConfig should not be nil")
+
+			if tt.expectedProxyPort > 0 {
+				assert.Equal(t, tt.expectedProxyPort, config.Port, "ProxyPort should match expected value")
+			}
+		})
+	}
+}

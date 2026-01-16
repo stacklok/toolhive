@@ -44,7 +44,7 @@ type mockBackendClientWithCallTool struct {
 	callToolError  error
 }
 
-func (_ *mockBackendClientWithCallTool) ListCapabilities(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+func (*mockBackendClientWithCallTool) ListCapabilities(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
 	return &vmcp.CapabilityList{}, nil
 }
 

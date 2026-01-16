@@ -104,7 +104,7 @@ func TestDB_GetCollection(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	embeddingFunc := func(_ context.Context, text string) ([]float32, error) {
+	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 

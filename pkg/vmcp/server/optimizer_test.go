@@ -56,19 +56,19 @@ func TestNew_OptimizerEnabled(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	cfg := &Config{
-		Name:        "test-server",
-		Version:     "1.0.0",
-		Host:        "127.0.0.1",
-		Port:        0,
-		SessionTTL:  5 * time.Minute,
+		Name:       "test-server",
+		Version:    "1.0.0",
+		Host:       "127.0.0.1",
+		Port:       0,
+		SessionTTL: 5 * time.Minute,
 		OptimizerConfig: &OptimizerConfig{
-			Enabled:           true,
-			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:  "ollama",
-			EmbeddingURL:      "http://localhost:11434",
-			EmbeddingModel:    "all-minilm",
+			Enabled:            true,
+			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingBackend:   "ollama",
+			EmbeddingURL:       "http://localhost:11434",
+			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
-			HybridSearchRatio: 0.7,
+			HybridSearchRatio:  0.7,
 		},
 	}
 
@@ -103,11 +103,11 @@ func TestNew_OptimizerDisabled(t *testing.T) {
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	cfg := &Config{
-		Name:        "test-server",
-		Version:     "1.0.0",
-		Host:        "127.0.0.1",
-		Port:        0,
-		SessionTTL:  5 * time.Minute,
+		Name:       "test-server",
+		Version:    "1.0.0",
+		Host:       "127.0.0.1",
+		Port:       0,
+		SessionTTL: 5 * time.Minute,
 		OptimizerConfig: &OptimizerConfig{
 			Enabled: false, // Disabled
 		},
@@ -185,17 +185,17 @@ func TestNew_OptimizerIngestionError(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	cfg := &Config{
-		Name:        "test-server",
-		Version:     "1.0.0",
-		Host:        "127.0.0.1",
-		Port:        0,
-		SessionTTL:  5 * time.Minute,
+		Name:       "test-server",
+		Version:    "1.0.0",
+		Host:       "127.0.0.1",
+		Port:       0,
+		SessionTTL: 5 * time.Minute,
 		OptimizerConfig: &OptimizerConfig{
-			Enabled:           true,
-			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:  "ollama",
-			EmbeddingURL:      "http://localhost:11434",
-			EmbeddingModel:    "all-minilm",
+			Enabled:            true,
+			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingBackend:   "ollama",
+			EmbeddingURL:       "http://localhost:11434",
+			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
 		},
 	}
@@ -254,19 +254,19 @@ func TestNew_OptimizerHybridRatio(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	cfg := &Config{
-		Name:        "test-server",
-		Version:     "1.0.0",
-		Host:        "127.0.0.1",
-		Port:        0,
-		SessionTTL:  5 * time.Minute,
+		Name:       "test-server",
+		Version:    "1.0.0",
+		Host:       "127.0.0.1",
+		Port:       0,
+		SessionTTL: 5 * time.Minute,
 		OptimizerConfig: &OptimizerConfig{
-			Enabled:           true,
-			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:  "ollama",
-			EmbeddingURL:      "http://localhost:11434",
-			EmbeddingModel:    "all-minilm",
+			Enabled:            true,
+			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingBackend:   "ollama",
+			EmbeddingURL:       "http://localhost:11434",
+			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
-			HybridSearchRatio: 0.5, // Custom ratio
+			HybridSearchRatio:  0.5, // Custom ratio
 		},
 	}
 
@@ -316,17 +316,17 @@ func TestServer_Stop_OptimizerCleanup(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	cfg := &Config{
-		Name:        "test-server",
-		Version:     "1.0.0",
-		Host:        "127.0.0.1",
-		Port:        0,
-		SessionTTL:  5 * time.Minute,
+		Name:       "test-server",
+		Version:    "1.0.0",
+		Host:       "127.0.0.1",
+		Port:       0,
+		SessionTTL: 5 * time.Minute,
 		OptimizerConfig: &OptimizerConfig{
-			Enabled:           true,
-			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:  "ollama",
-			EmbeddingURL:      "http://localhost:11434",
-			EmbeddingModel:    "all-minilm",
+			Enabled:            true,
+			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingBackend:   "ollama",
+			EmbeddingURL:       "http://localhost:11434",
+			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
 		},
 	}

@@ -55,8 +55,8 @@ Examples:
 		ValidArgsFunction: completeLogsArgs,
 	}
 
-	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs)")
-	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs")
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs) (default false)")
+	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs (default false)")
 
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {

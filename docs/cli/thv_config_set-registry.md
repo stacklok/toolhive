@@ -34,7 +34,7 @@ thv config set-registry <url-or-path> [flags]
 ### Options
 
 ```
-  -p, --allow-private-ip   Allow setting the registry URL or API endpoint, even if it references a private IP address
+  -p, --allow-private-ip   Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)
   -h, --help               help for set-registry
 ```
 

@@ -192,7 +192,7 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 					Required: []string{"backend_id", "tool_name", "parameters"},
 				},
 			},
-			Handler: o.createCallToolHandler(),
+			Handler: o.CreateCallToolHandler(),
 		},
 	}
 
@@ -341,6 +341,12 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 
 		return mcp.NewToolResultText(string(responseJSON)), nil
 	}
+}
+
+// CreateCallToolHandler creates the handler for optim.call_tool
+// Exported for testing purposes
+func (o *OptimizerIntegration) CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return o.createCallToolHandler()
 }
 
 // createCallToolHandler creates the handler for optim.call_tool

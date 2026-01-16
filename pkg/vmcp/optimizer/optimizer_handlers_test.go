@@ -328,7 +328,7 @@ func TestCreateFindToolHandler_BackendToolOpsNil(t *testing.T) {
 		ingestionService: nil, // This will cause GetBackendToolOps to return nil
 	}
 
-	handler := integration.createFindToolHandler()
+	handler := integration.CreateFindToolHandler()
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
@@ -384,7 +384,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	// Test with invalid arguments type
 	request := mcp.CallToolRequest{
@@ -516,7 +516,7 @@ func TestCreateCallToolHandler_NoRoutingTable(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	// Test without routing table in context
 	request := mcp.CallToolRequest{
@@ -575,7 +575,7 @@ func TestCreateCallToolHandler_ToolNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	// Create context with routing table but tool not found
 	capabilities := &aggregator.AggregatedCapabilities{
@@ -644,7 +644,7 @@ func TestCreateCallToolHandler_BackendMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	// Create context with routing table where tool belongs to different backend
 	capabilities := &aggregator.AggregatedCapabilities{
@@ -722,7 +722,7 @@ func TestCreateCallToolHandler_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	// Create context with routing table
 	target := &vmcp.BackendTarget{
@@ -812,7 +812,7 @@ func TestCreateCallToolHandler_CallToolError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
-	handler := integration.createCallToolHandler()
+	handler := integration.CreateCallToolHandler()
 
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",

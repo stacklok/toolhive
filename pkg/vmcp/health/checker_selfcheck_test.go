@@ -392,7 +392,7 @@ func TestNormalizeURLForComparison(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := normalizeURLForComparison(tt.input)
+			result, err := NormalizeURLForComparison(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {

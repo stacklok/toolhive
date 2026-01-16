@@ -170,12 +170,12 @@ func (h *healthChecker) isSelfCheck(backendURL string) bool {
 	}
 
 	// Normalize both URLs for comparison
-	backendNormalized, err := normalizeURLForComparison(backendURL)
+	backendNormalized, err := NormalizeURLForComparison(backendURL)
 	if err != nil {
 		return false
 	}
 
-	selfNormalized, err := normalizeURLForComparison(h.selfURL)
+	selfNormalized, err := NormalizeURLForComparison(h.selfURL)
 	if err != nil {
 		return false
 	}
@@ -183,12 +183,13 @@ func (h *healthChecker) isSelfCheck(backendURL string) bool {
 	return backendNormalized == selfNormalized
 }
 
-// normalizeURLForComparison normalizes a URL for comparison by:
+// NormalizeURLForComparison normalizes a URL for comparison by:
 // - Parsing and reconstructing the URL
 // - Converting localhost/127.0.0.1 to a canonical form
 // - Comparing only scheme://host:port (ignoring path, query, fragment)
 // - Lowercasing scheme and host
-func normalizeURLForComparison(rawURL string) (string, error) {
+// Exported for testing purposes
+func NormalizeURLForComparison(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err

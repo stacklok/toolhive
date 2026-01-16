@@ -31,21 +31,27 @@ type ollamaEmbedResponse struct {
 
 // NewOllamaBackend creates a new Ollama backend
 // Requires Ollama to be running locally: ollama serve
-// Default model: nomic-embed-text (768 dimensions)
+// Default model: all-minilm (all-MiniLM-L6-v2, 384 dimensions)
 func NewOllamaBackend(baseURL, model string) (*OllamaBackend, error) {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
 	if model == "" {
-		model = "nomic-embed-text" // Default embedding model
+		model = "all-minilm" // Default embedding model (all-MiniLM-L6-v2)
 	}
 
 	logger.Infof("Initializing Ollama backend (model: %s, url: %s)", model, baseURL)
 
+	// Determine dimension based on model
+	dimension := 384 // Default for all-minilm
+	if model == "nomic-embed-text" {
+		dimension = 768
+	}
+
 	backend := &OllamaBackend{
 		baseURL:   baseURL,
 		model:     model,
-		dimension: 768, // nomic-embed-text dimension
+		dimension: dimension,
 		client:    &http.Client{},
 	}
 

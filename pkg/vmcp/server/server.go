@@ -405,7 +405,7 @@ func New(
 			},
 		}
 
-		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient)
+		optimizerInteg, err = optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient, sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
 		}
@@ -509,20 +509,57 @@ func New(
 			"resource_count", len(caps.RoutingTable.Resources),
 			"prompt_count", len(caps.RoutingTable.Prompts))
 
-		// Inject capabilities into SDK session
-		if err := srv.injectCapabilities(sessionID, caps); err != nil {
-			logger.Errorw("failed to inject session capabilities",
-				"error", err,
-				"session_id", sessionID)
-			return
+		// When optimizer is enabled, we should NOT inject backend tools directly.
+		// Instead, only optimizer tools (optim.find_tool, optim.call_tool) will be exposed.
+		// Backend tools are still discovered and stored for optimizer ingestion,
+		// but not exposed directly to clients.
+		if srv.optimizerIntegration == nil {
+			// Inject capabilities into SDK session (only when optimizer is disabled)
+			if err := srv.injectCapabilities(sessionID, caps); err != nil {
+				logger.Errorw("failed to inject session capabilities",
+					"error", err,
+					"session_id", sessionID)
+				return
+			}
+
+			logger.Infow("session capabilities injected",
+				"session_id", sessionID,
+				"tool_count", len(caps.Tools),
+				"resource_count", len(caps.Resources))
+		} else {
+			// Optimizer is enabled - register optimizer tools FIRST so they're available immediately
+			// Backend tools will be accessible via optim.find_tool and optim.call_tool
+			if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
+				logger.Errorw("failed to register optimizer tools",
+					"error", err,
+					"session_id", sessionID)
+				// Don't fail session initialization - continue without optimizer tools
+			} else {
+				logger.Infow("optimizer tools registered",
+					"session_id", sessionID)
+			}
+
+			// Inject resources (but not backend tools)
+			if len(caps.Resources) > 0 {
+				sdkResources := srv.capabilityAdapter.ToSDKResources(caps.Resources)
+				if err := srv.mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {
+					logger.Errorw("failed to add session resources",
+						"error", err,
+						"session_id", sessionID)
+					return
+				}
+				logger.Debugw("added session resources (optimizer mode)",
+					"session_id", sessionID,
+					"count", len(sdkResources))
+			}
+			logger.Infow("optimizer mode: backend tools not exposed directly",
+				"session_id", sessionID,
+				"backend_tool_count", len(caps.Tools),
+				"resource_count", len(caps.Resources))
 		}
 
-		logger.Infow("session capabilities injected",
-			"session_id", sessionID,
-			"tool_count", len(caps.Tools),
-			"resource_count", len(caps.Resources))
-
-		// Generate embeddings and register optimizer tools if enabled
+		// Generate embeddings for optimizer if enabled
+		// This happens after tools are registered so tools are available immediately
 		if srv.optimizerIntegration != nil {
 			logger.Debugw("Generating embeddings for optimizer", "session_id", sessionID)
 
@@ -532,17 +569,6 @@ func New(
 					"error", err,
 					"session_id", sessionID)
 				// Don't fail session initialization - continue without optimizer
-			} else {
-				// Register optimizer tools (optim.find_tool, optim.call_tool)
-				if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
-					logger.Errorw("failed to register optimizer tools",
-						"error", err,
-						"session_id", sessionID)
-					// Don't fail session initialization - continue without optimizer tools
-				} else {
-					logger.Infow("optimizer tools registered",
-						"session_id", sessionID)
-				}
 			}
 		}
 	})

@@ -160,7 +160,7 @@ func (db *DB) GetFTSDB() *FTSDatabase {
 	return db.fts
 }
 
-// Reset clears all collections and FTS tables (useful for testing)
+// Reset clears all collections and FTS tables (useful for testing and startup)
 func (db *DB) Reset() {
 	db.mu.Lock()
 	defer db.mu.Unlock()

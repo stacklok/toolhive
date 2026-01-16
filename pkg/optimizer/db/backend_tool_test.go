@@ -27,18 +27,23 @@ func createTestDB(t *testing.T) *DB {
 	return db
 }
 
-// createTestEmbeddingFunc creates a test embedding function using placeholder embeddings
+// createTestEmbeddingFunc creates a test embedding function using Ollama embeddings
 func createTestEmbeddingFunc(t *testing.T) func(ctx context.Context, text string) ([]float32, error) {
 	t.Helper()
 
-	// Create placeholder embedding manager
+	// Try to use Ollama if available, otherwise skip test
 	config := &embeddings.Config{
-		BackendType: "placeholder",
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
 		Dimension:   384,
 	}
 
 	manager, err := embeddings.NewManager(config)
-	require.NoError(t, err)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return nil
+	}
 	t.Cleanup(func() { _ = manager.Close() })
 
 	return func(_ context.Context, text string) ([]float32, error) {
@@ -454,9 +459,13 @@ func TestBackendToolOps_Search(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, results, "Should find tools")
 
-	// With placeholder embeddings, we just verify we get results
-	// Semantic similarity isn't guaranteed with hash-based embeddings
-	assert.Len(t, results, 2, "Should return both tools")
+	// With real embeddings, semantic search should work properly
+	// Weather tool should be most similar to weather query
+	assert.NotEmpty(t, results, "Should find at least one tool")
+	if len(results) > 0 {
+		assert.Equal(t, "get_weather", results[0].ToolName,
+			"Weather tool should be most similar to weather query")
+	}
 }
 
 // TestBackendToolOps_Search_WithServerFilter tests search with server ID filter

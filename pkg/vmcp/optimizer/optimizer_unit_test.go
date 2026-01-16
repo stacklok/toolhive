@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -11,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // mockBackendClient implements vmcp.BackendClient for testing
@@ -85,13 +88,13 @@ func TestNewIntegration_Disabled(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with nil config
-	integration, err := NewIntegration(ctx, nil, nil, nil)
+	integration, err := NewIntegration(ctx, nil, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, integration, "Should return nil when config is nil")
 
 	// Test with disabled config
 	config := &Config{Enabled: false}
-	integration, err = NewIntegration(ctx, config, nil, nil)
+	integration, err = NewIntegration(ctx, config, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, integration, "Should return nil when optimizer is disabled")
 }
@@ -102,6 +105,21 @@ func TestNewIntegration_Enabled(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
@@ -109,12 +127,15 @@ func TestNewIntegration_Enabled(t *testing.T) {
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "nomic-embed-text",
+			Dimension:   768,
 		},
 	}
 
-	integration, err := NewIntegration(ctx, config, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.NotNil(t, integration)
 	defer func() { _ = integration.Close() }()
@@ -129,16 +150,34 @@ func TestOnRegisterSession(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "nomic-embed-text",
+			Dimension:   768,
 		},
 	}
 
-	integration, err := NewIntegration(ctx, config, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
@@ -189,16 +228,34 @@ func TestRegisterTools(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "nomic-embed-text",
+			Dimension:   768,
 		},
 	}
 
-	integration, err := NewIntegration(ctx, config, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 
@@ -230,16 +287,34 @@ func TestClose(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "nomic-embed-text",
+			Dimension:   768,
 		},
 	}
 
-	integration, err := NewIntegration(ctx, config, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, config, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 
 	err = integration.Close()

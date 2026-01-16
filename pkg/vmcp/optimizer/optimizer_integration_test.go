@@ -4,14 +4,17 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // mockBackendClient implements vmcp.BackendClient for integration testing
@@ -112,13 +115,16 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
 		},
 	}
 
 	// Create optimizer integration
-	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 

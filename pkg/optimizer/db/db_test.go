@@ -75,7 +75,7 @@ func TestDB_GetOrCreateCollection(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Create a simple embedding function
-	embeddingFunc := func(_ context.Context, text string) ([]float32, error) {
+	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
@@ -243,9 +243,9 @@ func TestNewDB_FTSDBPath(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	tests := []struct {
-		name     string
-		config   *Config
-		wantErr  bool
+		name    string
+		config  *Config
+		wantErr bool
 	}{
 		{
 			name: "in-memory FTS with persistent chromem",

@@ -408,81 +408,81 @@ func TestIsSelfCheck_EdgeCases(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	t.Cleanup(func() { ctrl.Finish() })
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 
 	tests := []struct {
-		name     string
-		selfURL  string
+		name       string
+		selfURL    string
 		backendURL string
-		expected bool
+		expected   bool
 	}{
 		{
-			name:      "both empty",
-			selfURL:   "",
+			name:       "both empty",
+			selfURL:    "",
 			backendURL: "",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "selfURL empty",
-			selfURL:   "",
+			name:       "selfURL empty",
+			selfURL:    "",
 			backendURL: "http://127.0.0.1:8080",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "backendURL empty",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "backendURL empty",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "localhost matches 127.0.0.1",
-			selfURL:   "http://localhost:8080",
+			name:       "localhost matches 127.0.0.1",
+			selfURL:    "http://localhost:8080",
 			backendURL: "http://127.0.0.1:8080",
-			expected:  true,
+			expected:   true,
 		},
 		{
-			name:      "127.0.0.1 matches localhost",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "127.0.0.1 matches localhost",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "http://localhost:8080",
-			expected:  true,
+			expected:   true,
 		},
 		{
-			name:      "different ports",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "different ports",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "http://127.0.0.1:8081",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "different hosts",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "different hosts",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "http://192.168.1.1:8080",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "path ignored",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "path ignored",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "http://127.0.0.1:8080/mcp",
-			expected:  true,
+			expected:   true,
 		},
 		{
-			name:      "query ignored",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "query ignored",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "http://127.0.0.1:8080?param=value",
-			expected:  true,
+			expected:   true,
 		},
 		{
-			name:      "invalid selfURL",
-			selfURL:   "not-a-url",
+			name:       "invalid selfURL",
+			selfURL:    "not-a-url",
 			backendURL: "http://127.0.0.1:8080",
-			expected:  false,
+			expected:   false,
 		},
 		{
-			name:      "invalid backendURL",
-			selfURL:   "http://127.0.0.1:8080",
+			name:       "invalid backendURL",
+			selfURL:    "http://127.0.0.1:8080",
 			backendURL: "not-a-url",
-			expected:  false,
+			expected:   false,
 		},
 	}
 

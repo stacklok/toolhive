@@ -44,7 +44,7 @@ type mockBackendClientWithCallTool struct {
 	callToolError  error
 }
 
-func (m *mockBackendClientWithCallTool) ListCapabilities(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+func (_ *mockBackendClientWithCallTool) ListCapabilities(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
 	return &vmcp.CapabilityList{}, nil
 }
 
@@ -1023,9 +1023,4 @@ func TestIngestInitialBackends_NilIntegration(t *testing.T) {
 
 	err := integration.IngestInitialBackends(ctx, backends)
 	require.NoError(t, err, "Should handle nil integration gracefully")
-}
-
-// Helper function
-func stringPtr(s string) *string {
-	return &s
 }

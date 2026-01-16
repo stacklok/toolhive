@@ -12,11 +12,11 @@ func TestManager_GetCacheStats(t *testing.T) {
 	t.Parallel()
 
 	config := &Config{
-		BackendType: "ollama",
-		BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
-		Dimension:   384,
-		EnableCache: true,
+		BackendType:  "ollama",
+		BaseURL:      "http://localhost:11434",
+		Model:        "all-minilm",
+		Dimension:    384,
+		EnableCache:  true,
 		MaxCacheSize: 100,
 	}
 
@@ -65,11 +65,11 @@ func TestManager_ClearCache(t *testing.T) {
 	t.Parallel()
 
 	config := &Config{
-		BackendType: "ollama",
-		BaseURL:     "http://localhost:11434",
-		Model:       "all-minilm",
-		Dimension:   384,
-		EnableCache: true,
+		BackendType:  "ollama",
+		BaseURL:      "http://localhost:11434",
+		Model:        "all-minilm",
+		Dimension:    384,
+		EnableCache:  true,
 		MaxCacheSize: 100,
 	}
 

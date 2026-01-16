@@ -101,7 +101,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 			return getProxyLogs(workloadName)
 		}
 		// Use the shared manager method for non-follow proxy logs
-		logs, err := manager.GetProxyLogs(ctx, workloadName)
+		// CLI gets all logs (0 = unlimited)
+		logs, err := manager.GetProxyLogs(ctx, workloadName, 0)
 		if err != nil {
 			logger.Infof("Proxy logs not found for workload %s", workloadName)
 			return nil
@@ -110,7 +111,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	logs, err := manager.GetLogs(ctx, workloadName, follow)
+	// CLI gets all logs (0 = unlimited)
+	logs, err := manager.GetLogs(ctx, workloadName, follow, 0)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			logger.Infof("Workload %s not found", workloadName)

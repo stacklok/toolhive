@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+	"github.com/stacklok/toolhive/pkg/optimizer/models"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -211,6 +212,67 @@ func (o *OptimizerIntegration) CreateFindToolHandler() func(context.Context, mcp
 	return o.createFindToolHandler()
 }
 
+// extractFindToolParams extracts and validates parameters from the find_tool request
+func (o *OptimizerIntegration) extractFindToolParams(args map[string]any) (toolDescription, toolKeywords string, limit int, err *mcp.CallToolResult) {
+	// Extract tool_description (required)
+	toolDescription, ok := args["tool_description"].(string)
+	if !ok || toolDescription == "" {
+		return "", "", 0, mcp.NewToolResultError("tool_description is required and must be a non-empty string")
+	}
+
+	// Extract tool_keywords (optional)
+	toolKeywords, _ = args["tool_keywords"].(string)
+
+	// Extract limit (optional, default: 10)
+	limit = 10
+	if limitVal, ok := args["limit"]; ok {
+		if limitFloat, ok := limitVal.(float64); ok {
+			limit = int(limitFloat)
+		}
+	}
+
+	return toolDescription, toolKeywords, limit, nil
+}
+
+// convertSearchResultsToResponse converts database search results to the response format
+func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata) ([]map[string]any, int) {
+	responseTools := make([]map[string]any, 0, len(results))
+	totalReturnedTokens := 0
+
+	for _, result := range results {
+		// Unmarshal InputSchema
+		var inputSchema map[string]any
+		if len(result.InputSchema) > 0 {
+			if err := json.Unmarshal(result.InputSchema, &inputSchema); err != nil {
+				logger.Warnw("Failed to unmarshal input schema",
+					"tool_id", result.ID,
+					"tool_name", result.ToolName,
+					"error", err)
+				inputSchema = map[string]any{} // Use empty schema on error
+			}
+		}
+
+		// Handle nil description
+		description := ""
+		if result.Description != nil {
+			description = *result.Description
+		}
+
+		tool := map[string]any{
+			"name":             result.ToolName,
+			"description":      description,
+			"input_schema":     inputSchema,
+			"backend_id":       result.MCPServerID,
+			"similarity_score": result.Similarity,
+			"token_count":      result.TokenCount,
+		}
+		responseTools = append(responseTools, tool)
+		totalReturnedTokens += result.TokenCount
+	}
+
+	return responseTools, totalReturnedTokens
+}
+
 // createFindToolHandler creates the handler for optim.find_tool
 func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -222,21 +284,10 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError("invalid arguments: expected object"), nil
 		}
 
-		// Extract tool_description (required)
-		toolDescription, ok := args["tool_description"].(string)
-		if !ok || toolDescription == "" {
-			return mcp.NewToolResultError("tool_description is required and must be a non-empty string"), nil
-		}
-
-		// Extract tool_keywords (optional)
-		toolKeywords, _ := args["tool_keywords"].(string)
-
-		// Extract limit (optional, default: 10)
-		limit := 10
-		if limitVal, ok := args["limit"]; ok {
-			if limitFloat, ok := limitVal.(float64); ok {
-				limit = int(limitFloat)
-			}
+		// Extract and validate parameters
+		toolDescription, toolKeywords, limit, err := o.extractFindToolParams(args)
+		if err != nil {
+			return err, nil
 		}
 
 		// Perform hybrid search using database operations
@@ -256,59 +307,24 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		}
 
 		// Execute hybrid search
-		// Use toolDescription for semantic search (chromem-go will generate embedding internally)
-		// If toolKeywords is provided, combine with toolDescription for better BM25 matching
 		queryText := toolDescription
 		if toolKeywords != "" {
 			queryText = toolDescription + " " + toolKeywords
 		}
-		results, err := backendToolOps.SearchHybrid(ctx, queryText, hybridConfig)
-		if err != nil {
+		results, err2 := backendToolOps.SearchHybrid(ctx, queryText, hybridConfig)
+		if err2 != nil {
 			logger.Errorw("Hybrid search failed",
-				"error", err,
+				"error", err2,
 				"tool_description", toolDescription,
 				"tool_keywords", toolKeywords,
 				"query_text", queryText)
-			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err2)), nil
 		}
 
 		// Convert results to response format
-		responseTools := make([]map[string]any, 0, len(results))
-		totalReturnedTokens := 0
-
-		for _, result := range results {
-			// Unmarshal InputSchema
-			var inputSchema map[string]any
-			if len(result.InputSchema) > 0 {
-				if err2 := json.Unmarshal(result.InputSchema, &inputSchema); err2 != nil {
-					logger.Warnw("Failed to unmarshal input schema",
-						"tool_id", result.ID,
-						"tool_name", result.ToolName,
-						"error", err2)
-					inputSchema = map[string]any{} // Use empty schema on error
-				}
-			}
-
-			// Handle nil description
-			description := ""
-			if result.Description != nil {
-				description = *result.Description
-			}
-
-			tool := map[string]any{
-				"name":             result.ToolName,
-				"description":      description,
-				"input_schema":     inputSchema,
-				"backend_id":       result.MCPServerID,
-				"similarity_score": result.Similarity,
-				"token_count":      result.TokenCount,
-			}
-			responseTools = append(responseTools, tool)
-			totalReturnedTokens += result.TokenCount
-		}
+		responseTools, totalReturnedTokens := convertSearchResultsToResponse(results)
 
 		// Calculate token metrics
-		// Get baseline tokens from all tools in the database
 		baselineTokens := o.ingestionService.GetTotalToolTokens(ctx)
 		tokensSaved := baselineTokens - totalReturnedTokens
 		savingsPercentage := 0.0
@@ -330,10 +346,10 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		}
 
 		// Marshal to JSON for the result
-		responseJSON, err := json.Marshal(response)
-		if err != nil {
-			logger.Errorw("Failed to marshal response", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
+		responseJSON, err3 := json.Marshal(response)
+		if err3 != nil {
+			logger.Errorw("Failed to marshal response", "error", err3)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err3)), nil
 		}
 
 		logger.Infow("optim.find_tool completed",

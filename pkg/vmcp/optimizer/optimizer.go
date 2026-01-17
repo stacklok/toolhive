@@ -213,7 +213,7 @@ func (o *OptimizerIntegration) CreateFindToolHandler() func(context.Context, mcp
 }
 
 // extractFindToolParams extracts and validates parameters from the find_tool request
-func (o *OptimizerIntegration) extractFindToolParams(args map[string]any) (toolDescription, toolKeywords string, limit int, err *mcp.CallToolResult) {
+func extractFindToolParams(args map[string]any) (toolDescription, toolKeywords string, limit int, err *mcp.CallToolResult) {
 	// Extract tool_description (required)
 	toolDescription, ok := args["tool_description"].(string)
 	if !ok || toolDescription == "" {
@@ -285,7 +285,7 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		}
 
 		// Extract and validate parameters
-		toolDescription, toolKeywords, limit, err := o.extractFindToolParams(args)
+		toolDescription, toolKeywords, limit, err := extractFindToolParams(args)
 		if err != nil {
 			return err, nil
 		}

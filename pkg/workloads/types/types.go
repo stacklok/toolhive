@@ -17,8 +17,9 @@ import (
 
 // minimalRunConfig represents just the fields we need from a run configuration
 type minimalRunConfig struct {
-	Group     string `json:"group,omitempty" yaml:"group,omitempty"`
-	ProxyMode string `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
+	Group     string              `json:"group,omitempty" yaml:"group,omitempty"`
+	ProxyMode string              `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
+	Transport types.TransportType `json:"transport" yaml:"transport"`
 }
 
 // loadRunConfigFields attempts to load specific fields from the runconfig
@@ -79,11 +80,16 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		return core.Workload{}, err
 	}
 
+	if runConfig.Transport != "" {
+		tType = runConfig.Transport
+	}
+
 	// Generate URL for the MCP server
 	url := ""
 	if port > 0 {
-		url = transport.GenerateMCPServerURL(transportType, runConfig.ProxyMode, transport.LocalhostIPv4, port, name, "")
+		url = transport.GenerateMCPServerURL(tType.String(), runConfig.ProxyMode, transport.LocalhostIPv4, port, name, "")
 	}
+
 	// Filter out standard ToolHive labels to show only user-defined labels
 	userLabels := make(map[string]string)
 	for key, value := range container.Labels {

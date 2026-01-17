@@ -29,7 +29,7 @@ jobs:
       # Cache Go build cache for faster compilation
       # Note: ~/go/pkg/mod is already cached by actions/setup-go with cache: true
       - name: Cache Go build cache
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
@@ -39,7 +39,7 @@ jobs:
       # Cache Go tools (gotestfmt only for tests)
       - name: Cache Go tools
         id: cache-go-tools
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5
         with:
           path: ~/go/bin
           key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2

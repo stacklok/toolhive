@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-16T00:19:21Z",
+  "last_updated": "2026-01-17T00:18:14Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.4.0",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.4.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2065,9 +2065,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 24832,
+        "stars": 25949,
         "pulls": 5000,
-        "last_updated": "2025-12-01T02:46:56Z"
+        "last_updated": "2026-01-16T02:40:00Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -3037,8 +3037,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 555,
-        "last_updated": "2025-12-02T02:34:23Z"
+        "pulls": 615,
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -4437,9 +4437,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 25,
+        "stars": 24,
         "pulls": 10318,
-        "last_updated": "2025-12-02T02:34:23Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4876,9 +4876,9 @@
         "get_targets"
       ],
       "metadata": {
-        "stars": 297,
+        "stars": 339,
         "pulls": 0,
-        "last_updated": "2025-12-01T17:31:24Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/pab1it0/prometheus-mcp-server",
       "tags": [
@@ -5921,9 +5921,9 @@
         "get_regional_availability"
       ],
       "metadata": {
-        "stars": 7516,
+        "stars": 7879,
         "pulls": 0,
-        "last_updated": "2025-12-02T02:34:22Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [

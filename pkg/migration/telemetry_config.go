@@ -18,6 +18,7 @@ var telemetryMigrationOnce sync.Once
 
 // CheckAndPerformTelemetryConfigMigration checks if telemetry config migration is needed and performs it.
 // This migration converts telemetry_config.samplingRate from float64 to string in run configs.
+// It handles both deprecated top-level telemetry_config and middleware-based telemetry configs.
 func CheckAndPerformTelemetryConfigMigration() {
 	telemetryMigrationOnce.Do(func() {
 		if err := performTelemetryConfigMigration(); err != nil {
@@ -27,7 +28,8 @@ func CheckAndPerformTelemetryConfigMigration() {
 	})
 }
 
-// performTelemetryConfigMigration migrates all run configs with float64 samplingRate to string
+// performTelemetryConfigMigration migrates all run configs with float64 samplingRate to string.
+// It handles both deprecated top-level telemetry_config and middleware-based telemetry configs.
 func performTelemetryConfigMigration() error {
 	// Check if migration was already performed
 	appConfig := config.NewDefaultProvider().GetConfig()
@@ -76,7 +78,47 @@ func performTelemetryConfigMigration() error {
 	return nil
 }
 
+// migrateSamplingRate converts a samplingRate value from numeric types to string.
+// Returns true if conversion was performed, false if already string or missing.
+func migrateSamplingRate(telemetryConfig map[string]interface{}) (bool, error) {
+	// Check if samplingRate exists
+	samplingRate, exists := telemetryConfig["samplingRate"]
+	if !exists {
+		// No samplingRate field, nothing to migrate
+		return false, nil
+	}
+
+	// Check if it's already a string
+	if _, isString := samplingRate.(string); isString {
+		// Already a string, nothing to migrate
+		return false, nil
+	}
+
+	// Convert numeric types to string
+	var samplingRateStr string
+	switch v := samplingRate.(type) {
+	case float64:
+		samplingRateStr = strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		samplingRateStr = strconv.Itoa(v)
+	case int64:
+		samplingRateStr = strconv.FormatInt(v, 10)
+	case json.Number:
+		samplingRateStr = v.String()
+	default:
+		return false, fmt.Errorf("unsupported samplingRate type: %T", samplingRate)
+	}
+
+	// Update the samplingRate to string
+	telemetryConfig["samplingRate"] = samplingRateStr
+	return true, nil
+}
+
 // migrateTelemetryConfigJSON migrates a run config's telemetry_config.samplingRate from float64 to string.
+// This function handles both:
+//   - Deprecated top-level telemetry_config field
+//   - Middleware-based telemetry configs in middleware_configs array
+//
 // This is a pure function that takes input JSON and returns migrated JSON without side effects.
 //
 // Returns:
@@ -96,49 +138,82 @@ func migrateTelemetryConfigJSON(inputJSON []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
-	// Check if telemetry_config exists
+	migrated := false
+
+	// Migrate deprecated top-level telemetry_config
 	telemetryConfigRaw, exists := rawConfig["telemetry_config"]
-	if !exists {
-		// No telemetry config, nothing to migrate
+	if exists {
+		telemetryConfig, ok := telemetryConfigRaw.(map[string]interface{})
+		if ok {
+			didMigrate, err := migrateSamplingRate(telemetryConfig)
+			if err != nil {
+				return nil, fmt.Errorf("failed to migrate top-level telemetry_config: %w", err)
+			}
+			if didMigrate {
+				migrated = true
+			}
+		}
+	}
+
+	// Migrate middleware-based telemetry configs
+	middlewareConfigsRaw, exists := rawConfig["middleware_configs"]
+	if exists {
+		middlewareConfigs, ok := middlewareConfigsRaw.([]interface{})
+		if ok {
+			for i, middlewareRaw := range middlewareConfigs {
+				middleware, ok := middlewareRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				// Check if this is a telemetry middleware
+				middlewareType, exists := middleware["type"]
+				if !exists {
+					continue
+				}
+
+				typeStr, ok := middlewareType.(string)
+				if !ok || typeStr != "telemetry" {
+					continue
+				}
+
+				// Get parameters.config
+				parametersRaw, exists := middleware["parameters"]
+				if !exists {
+					continue
+				}
+
+				parameters, ok := parametersRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				configRaw, exists := parameters["config"]
+				if !exists {
+					continue
+				}
+
+				config, ok := configRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				// Migrate the samplingRate in this middleware config
+				didMigrate, err := migrateSamplingRate(config)
+				if err != nil {
+					return nil, fmt.Errorf("failed to migrate telemetry middleware config at index %d: %w", i, err)
+				}
+				if didMigrate {
+					migrated = true
+				}
+			}
+		}
+	}
+
+	// If nothing was migrated, return nil
+	if !migrated {
 		return nil, nil
 	}
-
-	telemetryConfig, ok := telemetryConfigRaw.(map[string]interface{})
-	if !ok {
-		// telemetry_config exists but is not an object - unexpected, don't modify
-		return nil, nil
-	}
-
-	// Check if samplingRate exists
-	samplingRate, exists := telemetryConfig["samplingRate"]
-	if !exists {
-		// No samplingRate field, nothing to migrate
-		return nil, nil
-	}
-
-	// Check if it's already a string
-	if _, isString := samplingRate.(string); isString {
-		// Already a string, nothing to migrate
-		return nil, nil
-	}
-
-	// Convert numeric types to string
-	var samplingRateStr string
-	switch v := samplingRate.(type) {
-	case float64:
-		samplingRateStr = strconv.FormatFloat(v, 'f', -1, 64)
-	case int:
-		samplingRateStr = strconv.Itoa(v)
-	case int64:
-		samplingRateStr = strconv.FormatInt(v, 10)
-	case json.Number:
-		samplingRateStr = v.String()
-	default:
-		return nil, fmt.Errorf("unsupported samplingRate type: %T", samplingRate)
-	}
-
-	// Update the samplingRate to string
-	telemetryConfig["samplingRate"] = samplingRateStr
 
 	// Marshal back to JSON, preserving formatting
 	migratedData, err := json.MarshalIndent(rawConfig, "", "  ")

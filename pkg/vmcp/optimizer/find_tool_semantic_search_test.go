@@ -360,7 +360,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 		}
 		embeddingBackend = testBackendOpenAI
 	}
-	
+
 	// Verify embedding backend is actually working, not just reachable
 	verifyEmbeddingBackendWorking(t, embeddingManager, embeddingBackend)
 	_ = embeddingManager.Close()
@@ -542,7 +542,7 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 		}
 		embeddingBackend = testBackendOpenAI
 	}
-	
+
 	// Verify embedding backend is actually working, not just reachable
 	verifyEmbeddingBackendWorking(t, embeddingManager, embeddingBackend)
 	_ = embeddingManager.Close()

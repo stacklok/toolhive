@@ -8,4 +8,6 @@ package authz
 import (
 	// Import Cedar authorizer to register it
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	// Import HTTP PDP authorizer to register it
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 )

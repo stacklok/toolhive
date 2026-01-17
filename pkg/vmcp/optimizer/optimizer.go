@@ -13,7 +13,9 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,8 +24,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+	"github.com/stacklok/toolhive/pkg/optimizer/models"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
 // Config holds optimizer configuration for vMCP integration.
@@ -49,10 +54,12 @@ type Config struct {
 //
 //nolint:revive // Name is intentional for clarity in external packages
 type OptimizerIntegration struct {
-	config           *Config
-	ingestionService *ingestion.Service
-	mcpServer        *server.MCPServer  // For registering tools
-	backendClient    vmcp.BackendClient // For querying backends at startup
+	config            *Config
+	ingestionService  *ingestion.Service
+	mcpServer         *server.MCPServer  // For registering tools
+	backendClient     vmcp.BackendClient // For querying backends at startup
+	sessionManager    *transportsession.Manager
+	processedSessions sync.Map // Track sessions that have already been processed
 }
 
 // NewIntegration creates a new optimizer integration.
@@ -61,6 +68,7 @@ func NewIntegration(
 	cfg *Config,
 	mcpServer *server.MCPServer,
 	backendClient vmcp.BackendClient,
+	sessionManager *transportsession.Manager,
 ) (*OptimizerIntegration, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil // Optimizer disabled
@@ -85,6 +93,7 @@ func NewIntegration(
 		ingestionService: svc,
 		mcpServer:        mcpServer,
 		backendClient:    backendClient,
+		sessionManager:   sessionManager,
 	}, nil
 }
 
@@ -96,98 +105,30 @@ func NewIntegration(
 // 2. Generates embeddings for all tools (parallel per-backend)
 // 3. Registers optim.find_tool and optim.call_tool as session tools
 func (o *OptimizerIntegration) OnRegisterSession(
-	ctx context.Context,
+	_ context.Context,
 	session server.ClientSession,
-	capabilities *aggregator.AggregatedCapabilities,
+	_ *aggregator.AggregatedCapabilities,
 ) error {
 	if o == nil {
 		return nil // Optimizer not enabled
 	}
 
 	sessionID := session.SessionID()
-	logger.Infow("Generating embeddings for session", "session_id", sessionID)
 
-	// Group tools by backend for parallel processing
-	type backendTools struct {
-		backendID   string
-		backendName string
-		backendURL  string
-		transport   string
-		tools       []mcp.Tool
+	logger.Debugw("OnRegisterSession called", "session_id", sessionID)
+
+	// Check if this session has already been processed
+	if _, alreadyProcessed := o.processedSessions.LoadOrStore(sessionID, true); alreadyProcessed {
+		logger.Debugw("Session already processed, skipping duplicate ingestion",
+			"session_id", sessionID)
+		return nil
 	}
 
-	backendMap := make(map[string]*backendTools)
-
-	// Extract tools from routing table
-	if capabilities.RoutingTable != nil {
-		for toolName, target := range capabilities.RoutingTable.Tools {
-			// Find the tool definition from capabilities.Tools
-			var toolDef mcp.Tool
-			found := false
-			for i := range capabilities.Tools {
-				if capabilities.Tools[i].Name == toolName {
-					// Convert vmcp.Tool to mcp.Tool
-					// Note: vmcp.Tool.InputSchema is map[string]any, mcp.Tool.InputSchema is ToolInputSchema struct
-					// For ingestion, we just need the tool name and description
-					toolDef = mcp.Tool{
-						Name:        capabilities.Tools[i].Name,
-						Description: capabilities.Tools[i].Description,
-						// InputSchema will be empty - we only need name/description for embedding generation
-					}
-					found = true
-					break
-				}
-			}
-			if !found {
-				logger.Warnw("Tool in routing table but not in capabilities",
-					"tool_name", toolName,
-					"backend_id", target.WorkloadID)
-				continue
-			}
-
-			// Group by backend
-			if _, exists := backendMap[target.WorkloadID]; !exists {
-				backendMap[target.WorkloadID] = &backendTools{
-					backendID:   target.WorkloadID,
-					backendName: target.WorkloadName,
-					backendURL:  target.BaseURL,
-					transport:   target.TransportType,
-					tools:       []mcp.Tool{},
-				}
-			}
-			backendMap[target.WorkloadID].tools = append(backendMap[target.WorkloadID].tools, toolDef)
-		}
-	}
-
-	// Ingest each backend's tools (in parallel - TODO: add goroutines)
-	for _, bt := range backendMap {
-		logger.Debugw("Ingesting backend for session",
-			"session_id", sessionID,
-			"backend_id", bt.backendID,
-			"backend_name", bt.backendName,
-			"tool_count", len(bt.tools))
-
-		// Ingest server with simplified metadata
-		// Note: URL and transport are not stored - vMCP manages backend lifecycle
-		err := o.ingestionService.IngestServer(
-			ctx,
-			bt.backendID,
-			bt.backendName,
-			nil, // description
-			bt.tools,
-		)
-		if err != nil {
-			logger.Errorw("Failed to ingest backend",
-				"session_id", sessionID,
-				"backend_id", bt.backendID,
-				"error", err)
-			// Continue with other backends
-		}
-	}
-
-	logger.Infow("Embeddings generated for session",
-		"session_id", sessionID,
-		"backend_count", len(backendMap))
+	// Skip ingestion in OnRegisterSession - IngestInitialBackends already handles ingestion at startup
+	// This prevents duplicate ingestion when sessions are registered
+	// The optimizer database is populated once at startup, not per-session
+	logger.Infow("Skipping ingestion in OnRegisterSession (handled by IngestInitialBackends at startup)",
+		"session_id", sessionID)
 
 	return nil
 }
@@ -252,7 +193,7 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 					Required: []string{"backend_id", "tool_name", "parameters"},
 				},
 			},
-			Handler: o.createCallToolHandler(),
+			Handler: o.CreateCallToolHandler(),
 		},
 	}
 
@@ -265,32 +206,255 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 	return nil
 }
 
-// createFindToolHandler creates the handler for optim.find_tool
-func (*OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// TODO: Implement semantic search
-		// 1. Extract tool_description and tool_keywords from request.Params.Arguments
-		// 2. Call optimizer search service (hybrid semantic + BM25)
-		// 3. Return ranked list of tools with scores and token metrics
+// CreateFindToolHandler creates the handler for optim.find_tool
+// Exported for testing purposes
+func (o *OptimizerIntegration) CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return o.createFindToolHandler()
+}
 
+// extractFindToolParams extracts and validates parameters from the find_tool request
+func extractFindToolParams(args map[string]any) (toolDescription, toolKeywords string, limit int, err *mcp.CallToolResult) {
+	// Extract tool_description (required)
+	toolDescription, ok := args["tool_description"].(string)
+	if !ok || toolDescription == "" {
+		return "", "", 0, mcp.NewToolResultError("tool_description is required and must be a non-empty string")
+	}
+
+	// Extract tool_keywords (optional)
+	toolKeywords, _ = args["tool_keywords"].(string)
+
+	// Extract limit (optional, default: 10)
+	limit = 10
+	if limitVal, ok := args["limit"]; ok {
+		if limitFloat, ok := limitVal.(float64); ok {
+			limit = int(limitFloat)
+		}
+	}
+
+	return toolDescription, toolKeywords, limit, nil
+}
+
+// convertSearchResultsToResponse converts database search results to the response format
+func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata) ([]map[string]any, int) {
+	responseTools := make([]map[string]any, 0, len(results))
+	totalReturnedTokens := 0
+
+	for _, result := range results {
+		// Unmarshal InputSchema
+		var inputSchema map[string]any
+		if len(result.InputSchema) > 0 {
+			if err := json.Unmarshal(result.InputSchema, &inputSchema); err != nil {
+				logger.Warnw("Failed to unmarshal input schema",
+					"tool_id", result.ID,
+					"tool_name", result.ToolName,
+					"error", err)
+				inputSchema = map[string]any{} // Use empty schema on error
+			}
+		}
+
+		// Handle nil description
+		description := ""
+		if result.Description != nil {
+			description = *result.Description
+		}
+
+		tool := map[string]any{
+			"name":             result.ToolName,
+			"description":      description,
+			"input_schema":     inputSchema,
+			"backend_id":       result.MCPServerID,
+			"similarity_score": result.Similarity,
+			"token_count":      result.TokenCount,
+		}
+		responseTools = append(responseTools, tool)
+		totalReturnedTokens += result.TokenCount
+	}
+
+	return responseTools, totalReturnedTokens
+}
+
+// createFindToolHandler creates the handler for optim.find_tool
+func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logger.Debugw("optim.find_tool called", "request", request)
 
-		return mcp.NewToolResultError("optim.find_tool not yet implemented"), nil
+		// Extract parameters from request arguments
+		args, ok := request.Params.Arguments.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError("invalid arguments: expected object"), nil
+		}
+
+		// Extract and validate parameters
+		toolDescription, toolKeywords, limit, err := extractFindToolParams(args)
+		if err != nil {
+			return err, nil
+		}
+
+		// Perform hybrid search using database operations
+		if o.ingestionService == nil {
+			return mcp.NewToolResultError("backend tool operations not initialized"), nil
+		}
+		backendToolOps := o.ingestionService.GetBackendToolOps()
+		if backendToolOps == nil {
+			return mcp.NewToolResultError("backend tool operations not initialized"), nil
+		}
+
+		// Configure hybrid search
+		hybridConfig := &db.HybridSearchConfig{
+			SemanticRatio: o.config.HybridSearchRatio,
+			Limit:         limit,
+			ServerID:      nil, // Search across all servers
+		}
+
+		// Execute hybrid search
+		queryText := toolDescription
+		if toolKeywords != "" {
+			queryText = toolDescription + " " + toolKeywords
+		}
+		results, err2 := backendToolOps.SearchHybrid(ctx, queryText, hybridConfig)
+		if err2 != nil {
+			logger.Errorw("Hybrid search failed",
+				"error", err2,
+				"tool_description", toolDescription,
+				"tool_keywords", toolKeywords,
+				"query_text", queryText)
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err2)), nil
+		}
+
+		// Convert results to response format
+		responseTools, totalReturnedTokens := convertSearchResultsToResponse(results)
+
+		// Calculate token metrics
+		baselineTokens := o.ingestionService.GetTotalToolTokens(ctx)
+		tokensSaved := baselineTokens - totalReturnedTokens
+		savingsPercentage := 0.0
+		if baselineTokens > 0 {
+			savingsPercentage = (float64(tokensSaved) / float64(baselineTokens)) * 100.0
+		}
+
+		tokenMetrics := map[string]any{
+			"baseline_tokens":    baselineTokens,
+			"returned_tokens":    totalReturnedTokens,
+			"tokens_saved":       tokensSaved,
+			"savings_percentage": savingsPercentage,
+		}
+
+		// Build response
+		response := map[string]any{
+			"tools":         responseTools,
+			"token_metrics": tokenMetrics,
+		}
+
+		// Marshal to JSON for the result
+		responseJSON, err3 := json.Marshal(response)
+		if err3 != nil {
+			logger.Errorw("Failed to marshal response", "error", err3)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err3)), nil
+		}
+
+		logger.Infow("optim.find_tool completed",
+			"query", toolDescription,
+			"results_count", len(responseTools),
+			"tokens_saved", tokensSaved,
+			"savings_percentage", fmt.Sprintf("%.2f%%", savingsPercentage))
+
+		return mcp.NewToolResultText(string(responseJSON)), nil
 	}
 }
 
-// createCallToolHandler creates the handler for optim.call_tool
-func (*OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// TODO: Implement dynamic tool invocation
-		// 1. Extract backend_id, tool_name, parameters from request.Params.Arguments
-		// 2. Validate backend and tool exist
-		// 3. Route to backend via existing router
-		// 4. Return result
+// CreateCallToolHandler creates the handler for optim.call_tool
+// Exported for testing purposes
+func (o *OptimizerIntegration) CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return o.createCallToolHandler()
+}
 
+// createCallToolHandler creates the handler for optim.call_tool
+func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logger.Debugw("optim.call_tool called", "request", request)
 
-		return mcp.NewToolResultError("optim.call_tool not yet implemented"), nil
+		// Extract parameters from request arguments
+		args, ok := request.Params.Arguments.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError("invalid arguments: expected object"), nil
+		}
+
+		// Extract backend_id (required)
+		backendID, ok := args["backend_id"].(string)
+		if !ok || backendID == "" {
+			return mcp.NewToolResultError("backend_id is required and must be a non-empty string"), nil
+		}
+
+		// Extract tool_name (required)
+		toolName, ok := args["tool_name"].(string)
+		if !ok || toolName == "" {
+			return mcp.NewToolResultError("tool_name is required and must be a non-empty string"), nil
+		}
+
+		// Extract parameters (required)
+		parameters, ok := args["parameters"].(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError("parameters is required and must be an object"), nil
+		}
+
+		// Get routing table from context via discovered capabilities
+		capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+		if !ok || capabilities == nil {
+			return mcp.NewToolResultError("routing information not available in context"), nil
+		}
+
+		if capabilities.RoutingTable == nil || capabilities.RoutingTable.Tools == nil {
+			return mcp.NewToolResultError("routing table not initialized"), nil
+		}
+
+		// Find the tool in the routing table
+		target, exists := capabilities.RoutingTable.Tools[toolName]
+		if !exists {
+			return mcp.NewToolResultError(fmt.Sprintf("tool not found in routing table: %s", toolName)), nil
+		}
+
+		// Verify the tool belongs to the specified backend
+		if target.WorkloadID != backendID {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"tool %s belongs to backend %s, not %s",
+				toolName,
+				target.WorkloadID,
+				backendID,
+			)), nil
+		}
+
+		// Get the backend capability name (handles renamed tools)
+		backendToolName := target.GetBackendCapabilityName(toolName)
+
+		logger.Infow("Calling tool via optimizer",
+			"backend_id", backendID,
+			"tool_name", toolName,
+			"backend_tool_name", backendToolName,
+			"workload_name", target.WorkloadName)
+
+		// Call the tool on the backend using the backend client
+		result, err := o.backendClient.CallTool(ctx, target, backendToolName, parameters)
+		if err != nil {
+			logger.Errorw("Tool call failed",
+				"error", err,
+				"backend_id", backendID,
+				"tool_name", toolName,
+				"backend_tool_name", backendToolName)
+			return mcp.NewToolResultError(fmt.Sprintf("tool call failed: %v", err)), nil
+		}
+
+		// Convert result to JSON
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			logger.Errorw("Failed to marshal tool result", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal result: %v", err)), nil
+		}
+
+		logger.Infow("optim.call_tool completed successfully",
+			"backend_id", backendID,
+			"tool_name", toolName)
+
+		return mcp.NewToolResultText(string(resultJSON)), nil
 	}
 }
 
@@ -361,4 +525,19 @@ func (o *OptimizerIntegration) Close() error {
 		return nil
 	}
 	return o.ingestionService.Close()
+}
+
+// IngestToolsForTesting manually ingests tools for testing purposes.
+// This is a test helper that bypasses the normal ingestion flow.
+func (o *OptimizerIntegration) IngestToolsForTesting(
+	ctx context.Context,
+	serverID string,
+	serverName string,
+	description *string,
+	tools []mcp.Tool,
+) error {
+	if o == nil || o.ingestionService == nil {
+		return fmt.Errorf("optimizer integration not initialized")
+	}
+	return o.ingestionService.IngestServer(ctx, serverID, serverName, description, tools)
 }

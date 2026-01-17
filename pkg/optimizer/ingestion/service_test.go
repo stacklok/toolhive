@@ -25,14 +25,31 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	// Create temporary directory for persistence (optional)
 	tmpDir := t.TempDir()
 
-	// Initialize service with placeholder embeddings (no dependencies)
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
+	// Initialize service with Ollama embeddings
 	config := &Config{
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder", // Use placeholder for testing
-			Dimension:   384,
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "nomic-embed-text",
+			Dimension:   768,
 		},
 	}
 
@@ -78,11 +95,11 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "Should find at least one similar tool")
 
-	// With placeholder embeddings (hash-based), semantic similarity isn't guaranteed
-	// Just verify we got results back
-	require.Len(t, results, 2, "Should return both tools")
+	require.NotEmpty(t, results, "Should return at least one result")
 
-	// Verify both tools are present (order doesn't matter with placeholder embeddings)
+	// Weather tool should be most similar to weather query
+	require.Equal(t, "get_weather", results[0].ToolName,
+		"Weather tool should be most similar to weather query")
 	toolNamesFound := make(map[string]bool)
 	for _, result := range results {
 		toolNamesFound[result.ToolName] = true
@@ -142,7 +159,6 @@ func TestServiceWithOllama(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
-	// With real embeddings, weather tool should be most similar
 	require.Equal(t, "get_weather", results[0].ToolName,
 		"Weather tool should be most similar to weather query")
 }

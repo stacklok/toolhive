@@ -132,9 +132,11 @@ func main() {
         panic(err)
     }
 
-    // Initialize embedding manager with placeholder (no external dependencies)
+    // Initialize embedding manager with Ollama (default)
     embeddingMgr, err := embeddings.NewManager(&embeddings.Config{
-        BackendType: "placeholder",
+        BackendType: "ollama",
+        BaseURL:     "http://localhost:11434",
+        Model:       "all-minilm",
         Dimension:   384,
     })
     if err != nil {
@@ -201,7 +203,7 @@ spec:
 ollama serve
 
 # Pull an embedding model
-ollama pull nomic-embed-text
+ollama pull all-minilm
 ```
 
 Configure vMCP:
@@ -211,7 +213,7 @@ optimizer:
   enabled: true
   embeddingBackend: ollama
   embeddingURL: http://localhost:11434
-  embeddingModel: nomic-embed-text
+  embeddingModel: all-minilm
   embeddingDimension: 384
 ```
 

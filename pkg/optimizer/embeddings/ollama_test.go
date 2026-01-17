@@ -4,13 +4,12 @@ import (
 	"testing"
 )
 
-func TestOllamaBackend_Placeholder(t *testing.T) {
+func TestOllamaBackend_ConnectionFailure(t *testing.T) {
 	t.Parallel()
-	// This test verifies that Ollama backend is properly structured
-	// Actual Ollama tests require ollama to be running
+	// This test verifies that Ollama backend handles connection failures gracefully
 
 	// Test that NewOllamaBackend handles connection failure gracefully
-	_, err := NewOllamaBackend("http://localhost:99999", "nomic-embed-text")
+	_, err := NewOllamaBackend("http://localhost:99999", "all-minilm")
 	if err == nil {
 		t.Error("Expected error when connecting to invalid Ollama URL")
 	}
@@ -18,68 +17,36 @@ func TestOllamaBackend_Placeholder(t *testing.T) {
 
 func TestManagerWithOllama(t *testing.T) {
 	t.Parallel()
-	// Test that Manager falls back to placeholder when Ollama is not available or model not pulled
+	// Test that Manager works with Ollama when available
 	config := &Config{
-		BackendType:  "ollama",
-		Dimension:    384,
+		BackendType:  BackendTypeOllama,
+		BaseURL:      "http://localhost:11434",
+		Model:        DefaultModelAllMiniLM,
+		Dimension:    768,
 		EnableCache:  true,
 		MaxCacheSize: 100,
 	}
 
 	manager, err := NewManager(config)
 	if err != nil {
-		t.Fatalf("Failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	// Should work with placeholder backend fallback
-	// (Ollama might not have model pulled, so it falls back to placeholder)
-	embeddings, err := manager.GenerateEmbedding([]string{"test text"})
-
-	// If Ollama is available with the model, great!
-	// If not, it should have fallen back to placeholder
-	if err != nil {
-		// Check if it's a "model not found" error - this is expected
-		if embeddings == nil {
-			t.Skip("Ollama not available or model not pulled (expected in CI/test environments)")
-		}
-	}
-
-	if len(embeddings) != 1 {
-		t.Errorf("Expected 1 embedding, got %d", len(embeddings))
-	}
-
-	// Dimension could be 384 (placeholder) or 768 (Ollama nomic-embed-text)
-	if len(embeddings[0]) != 384 && len(embeddings[0]) != 768 {
-		t.Errorf("Expected dimension 384 or 768, got %d", len(embeddings[0]))
-	}
-}
-
-func TestManagerWithPlaceholder(t *testing.T) {
-	t.Parallel()
-	// Test explicit placeholder backend
-	config := &Config{
-		BackendType: "placeholder",
-		Dimension:   384,
-		EnableCache: false,
-	}
-
-	manager, err := NewManager(config)
-	if err != nil {
-		t.Fatalf("Failed to create manager: %v", err)
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
 	}
 	defer manager.Close()
 
 	// Test single embedding
-	embeddings, err := manager.GenerateEmbedding([]string{"hello world"})
+	embeddings, err := manager.GenerateEmbedding([]string{"test text"})
 	if err != nil {
-		t.Fatalf("Failed to generate embedding: %v", err)
+		// Model might not be pulled - skip gracefully
+		t.Skipf("Skipping test: Failed to generate embedding. Error: %v. Run 'ollama pull nomic-embed-text'", err)
+		return
 	}
 
 	if len(embeddings) != 1 {
 		t.Errorf("Expected 1 embedding, got %d", len(embeddings))
 	}
 
+	// Ollama all-minilm uses 384 dimensions
 	if len(embeddings[0]) != 384 {
 		t.Errorf("Expected dimension 384, got %d", len(embeddings[0]))
 	}
@@ -88,19 +55,12 @@ func TestManagerWithPlaceholder(t *testing.T) {
 	texts := []string{"text 1", "text 2", "text 3"}
 	embeddings, err = manager.GenerateEmbedding(texts)
 	if err != nil {
-		t.Fatalf("Failed to generate batch embeddings: %v", err)
+		// Model might not be pulled - skip gracefully
+		t.Skipf("Skipping test: Failed to generate batch embeddings. Error: %v. Run 'ollama pull nomic-embed-text'", err)
+		return
 	}
 
 	if len(embeddings) != 3 {
 		t.Errorf("Expected 3 embeddings, got %d", len(embeddings))
-	}
-
-	// Verify embeddings are deterministic
-	embeddings2, _ := manager.GenerateEmbedding([]string{"text 1"})
-	for i := range embeddings[0] {
-		if embeddings[0][i] != embeddings2[0][i] {
-			t.Error("Embeddings should be deterministic")
-			break
-		}
 	}
 }

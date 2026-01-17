@@ -123,8 +123,6 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 
-	logger.Debugf("Applied authentication strategy %q to backend %s", a.authStrategy.Name(), a.target.WorkloadID)
-
 	return a.base.RoundTrip(reqClone)
 }
 

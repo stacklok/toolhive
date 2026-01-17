@@ -81,7 +81,40 @@ Then open any `.db` file in VSCode to browse tables visually.
 
 ## Testing Scripts
 
-### Optimizer Tests
+### Optimizer Tool Finding Tests
+
+These scripts test the `optim.find_tool` functionality in different scenarios:
+
+#### Test via vMCP Server Connection
+```bash
+# Test optim.find_tool through a running vMCP server
+go run scripts/test-vmcp-find-tool/main.go "read pull requests from GitHub" [server_url]
+
+# Default server URL: http://localhost:4483/mcp
+# Example:
+go run scripts/test-vmcp-find-tool/main.go "search the web" http://localhost:4483/mcp
+```
+Connects to a running vMCP server and calls `optim.find_tool` via the MCP protocol. Useful for integration testing with a live server.
+
+#### Call Optimizer Tool Directly
+```bash
+# Call optim.find_tool via MCP client
+go run scripts/call-optim-find-tool/main.go <tool_description> [tool_keywords] [limit] [server_url]
+
+# Examples:
+go run scripts/call-optim-find-tool/main.go "search the web" "web search" 20
+go run scripts/call-optim-find-tool/main.go "read files" "" 10 http://localhost:4483/mcp
+```
+A more flexible client for calling `optim.find_tool` with various parameters. Useful for manual testing and debugging.
+
+#### Test Optimizer Handler Directly
+```bash
+# Test the optimizer handler directly (unit test style)
+go run scripts/test-optim-find-tool/main.go "read pull requests from GitHub"
+```
+Tests the optimizer's `find_tool` handler directly without requiring a full vMCP server. Creates a mock environment with test tools and embeddings. Useful for development and debugging the optimizer logic.
+
+### Other Optimizer Tests
 ```bash
 # Test with sqlite-vec extension
 ./scripts/test-optimizer-with-sqlite-vec.sh

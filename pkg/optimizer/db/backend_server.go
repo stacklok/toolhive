@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/philippgille/chromem-go"
 
@@ -64,8 +65,13 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 	}
 
 	// Also add to FTS5 database if available (for keyword filtering)
+	// Use background context to avoid cancellation issues - FTS5 is supplementary
 	if ftsDB := ops.db.GetFTSDB(); ftsDB != nil {
-		if err := ftsDB.UpsertServer(ctx, server); err != nil {
+		// Use background context with timeout for FTS operations
+		// This ensures FTS operations complete even if the original context is canceled
+		ftsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := ftsDB.UpsertServer(ftsCtx, server); err != nil {
 			// Log but don't fail - FTS5 is supplementary
 			logger.Warnf("Failed to upsert server to FTS5: %v", err)
 		}

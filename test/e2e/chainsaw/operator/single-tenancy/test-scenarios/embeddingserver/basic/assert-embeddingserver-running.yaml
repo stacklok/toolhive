@@ -1,0 +1,8 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: st-embedding-basic
+  namespace: toolhive-system
+status:
+  phase: "Running"
+  readyReplicas: 1

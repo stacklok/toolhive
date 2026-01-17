@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - persistentvolumeclaims
   - secrets
   - serviceaccounts
   verbs:
@@ -121,6 +122,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - embeddingservers
   - mcpexternalauthconfigs
   - mcpgroups
   - mcpregistries
@@ -139,6 +141,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - embeddingservers/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers
   - mcpregistries/finalizers
@@ -149,6 +152,7 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - embeddingservers/status
   - mcpexternalauthconfigs/status
   - mcpgroups/status
   - mcpregistries/status

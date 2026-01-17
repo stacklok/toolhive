@@ -1,0 +1,42 @@
+# EmbeddingServer with persistent model caching
+# This configuration caches downloaded models in a PVC for faster restarts
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: embedding-with-cache
+  namespace: toolhive-system
+spec:
+  # Model to use
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+
+  # Container image
+  image: "text-embeddings-inference:latest"
+
+  # Port configuration
+  port: 8080
+
+  # Enable model caching with PVC
+  modelCache:
+    enabled: true
+    # Size of the PVC for model storage
+    size: "10Gi"
+    # Access mode for the PVC
+    accessMode: "ReadWriteOnce"
+    # Optional: Specify storage class name
+    # storageClassName: "fast-ssd"
+
+  # Resource requirements
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+
+  # Environment variables
+  env:
+    - name: RUST_LOG
+      value: "info"
+    - name: MAX_BATCH_TOKENS
+      value: "16384"

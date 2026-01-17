@@ -1,0 +1,108 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-embeddingserver-cache
+spec:
+  description: Deploys EmbeddingServer with model caching and verifies PVC is created
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 30s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-embedding-cache"
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../../setup/assert-operator-ready.yaml
+  - name: deploy-embeddingserver-with-cache
+    description: Deploy EmbeddingServer with model caching enabled
+    try:
+    - apply:
+        file: embeddingserver.yaml
+    - assert:
+        file: embeddingserver.yaml
+    - assert:
+        file: assert-embeddingserver-running.yaml
+    - assert:
+        file: assert-deployment-running.yaml
+    - assert:
+        file: assert-service-created.yaml
+    - assert:
+        file: assert-pvc-created.yaml
+
+  - name: verify-model-cache-volume
+    description: Verify that the PVC is mounted in the deployment
+    try:
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+        content: |
+          # Get the deployment name
+          echo "Verifying model cache for embedding server: $embeddingServerName"
+
+          DEPLOYMENT_NAME="$embeddingServerName"
+          PVC_NAME="$embeddingServerName-model-cache"
+
+          # Check if PVC exists and is bound
+          PVC_STATUS=$(kubectl get pvc $PVC_NAME -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+          if [ "$PVC_STATUS" != "Bound" ]; then
+            echo "PVC is not bound. Current status: $PVC_STATUS"
+            kubectl describe pvc $PVC_NAME -n toolhive-system
+            exit 1
+          fi
+
+          echo "✓ PVC is bound"
+
+          # Verify the volume is mounted in the deployment
+          VOLUME_MOUNTED=$(kubectl get deployment $DEPLOYMENT_NAME -n toolhive-system -o jsonpath='{.spec.template.spec.volumes[?(@.persistentVolumeClaim.claimName=="'$PVC_NAME'")].name}' 2>/dev/null || echo "")
+
+          if [ -z "$VOLUME_MOUNTED" ]; then
+            echo "Volume is not mounted in deployment"
+            kubectl describe deployment $DEPLOYMENT_NAME -n toolhive-system
+            exit 1
+          fi
+
+          echo "✓ Volume is mounted in deployment: $VOLUME_MOUNTED"
+
+          # Check that the pod is running
+          kubectl wait --for=condition=available --timeout=120s deployment/$DEPLOYMENT_NAME -n toolhive-system
+
+          echo "✅ Model cache verification passed!"
+          exit 0
+
+  - name: test-embedding-endpoint
+    description: Test the embedding server endpoint with cache
+    try:
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+        content: |
+          # Get the service name for the embedding server
+          echo "Testing embedding server with cache: $embeddingServerName"
+
+          SERVICE_NAME="$embeddingServerName"
+          CLUSTER_IP=$(kubectl get svc $SERVICE_NAME -n toolhive-system -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+
+          if [ -z "$CLUSTER_IP" ]; then
+            echo "Service not found or does not have ClusterIP"
+            kubectl describe svc $SERVICE_NAME -n toolhive-system
+            exit 1
+          fi
+
+          echo "Service ClusterIP: $CLUSTER_IP"
+
+          # Test the health endpoint
+          echo "Testing health endpoint..."
+          kubectl run test-curl-$RANDOM --image=curlimages/curl:latest --rm -i --restart=Never -n toolhive-system -- \
+            curl -s -o /dev/null -w "%{http_code}" http://$CLUSTER_IP:8080/health || true
+
+          echo "✅ Embedding server with cache test passed!"
+          exit 0

@@ -127,6 +127,7 @@ func migrateSamplingRate(telemetryConfig map[string]interface{}) (bool, error) {
 //   - (nil, error) if the input is invalid or migration would cause data loss
 //
 // The function preserves all existing fields and only modifies samplingRate if it's a numeric type.
+// nolint:gocyclo // this function is complex because we have multiple locations to migrate.
 func migrateTelemetryConfigJSON(inputJSON []byte) ([]byte, error) {
 	if len(inputJSON) == 0 {
 		return nil, fmt.Errorf("empty input JSON")
@@ -193,13 +194,13 @@ func migrateTelemetryConfigJSON(inputJSON []byte) ([]byte, error) {
 					continue
 				}
 
-				config, ok := configRaw.(map[string]interface{})
+				cfg, ok := configRaw.(map[string]interface{})
 				if !ok {
 					continue
 				}
 
 				// Migrate the samplingRate in this middleware config
-				didMigrate, err := migrateSamplingRate(config)
+				didMigrate, err := migrateSamplingRate(cfg)
 				if err != nil {
 					return nil, fmt.Errorf("failed to migrate telemetry middleware config at index %d: %w", i, err)
 				}

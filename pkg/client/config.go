@@ -395,8 +395,9 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// YAML configuration
 		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
-			"enabled": true,
-			"timeout": 60,
+			"enabled":     true,
+			"timeout":     60,
+			"description": "",
 		},
 	},
 	{

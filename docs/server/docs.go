@@ -243,6 +243,10 @@ const docTemplate = `{
                         "description": "Remote indicates whether this is a remote workload (true) or a container workload (false).",
                         "type": "boolean"
                     },
+                    "started_at": {
+                        "description": "StartedAt is when the container was last started (changes on restart)",
+                        "type": "string"
+                    },
                     "status": {
                         "$ref": "#/components/schemas/runtime.WorkloadStatus"
                     },

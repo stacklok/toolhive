@@ -43,7 +43,7 @@ func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 	}
 
 	// Ensure the base directory exists (equivalent to mkdir -p)
-	if err := os.MkdirAll(baseDir, 0750); err != nil {
+	if err := os.MkdirAll(baseDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create status directory %s: %w", baseDir, err)
 	}
 
@@ -375,7 +375,6 @@ func (f *fileStatusManager) setWorkloadStatusInternal(
 		}
 		return nil
 	})
-
 	if err != nil {
 		if pidPtr != nil {
 			logger.Errorf("error updating workload %s status and PID: %v", workloadName, err)
@@ -440,7 +439,6 @@ func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName str
 		logger.Debugf("workload %s PID set to %d", workloadName, pid)
 		return nil
 	})
-
 	if err != nil {
 		logger.Errorf("error updating workload %s PID: %v", workloadName, err)
 	}
@@ -475,7 +473,6 @@ func (f *fileStatusManager) GetWorkloadPID(ctx context.Context, workloadName str
 		pid = statusFile.ProcessID
 		return nil
 	})
-
 	if err != nil {
 		return 0, err
 	}
@@ -532,7 +529,7 @@ func (f *fileStatusManager) getLockFilePath(workloadName string) string {
 
 // ensureBaseDir creates the base directory if it doesn't exist.
 func (f *fileStatusManager) ensureBaseDir() error {
-	return os.MkdirAll(f.baseDir, 0750)
+	return os.MkdirAll(f.baseDir, 0o750)
 }
 
 // TODO: This can probably be de-duped with withFileReadLock
@@ -610,7 +607,6 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 // readStatusFile reads and parses a workload status file from disk.
 func (*fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatusFile, error) {
 	data, err := os.ReadFile(statusFilePath) //nolint:gosec // file path is constructed by our own function
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to read status file: %w", err)
 	}
@@ -650,7 +646,7 @@ func (*fileStatusManager) writeStatusFile(statusFilePath string, statusFile work
 		return fmt.Errorf("failed to marshal status file: %w", err)
 	}
 
-	if err := os.WriteFile(statusFilePath, data, 0600); err != nil {
+	if err := os.WriteFile(statusFilePath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write status file: %w", err)
 	}
 
@@ -757,7 +753,6 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 			}
 			return nil
 		})
-
 		if err != nil {
 			// Log the specific error but continue processing other workloads
 			// This maintains the existing behavior but with better diagnostics

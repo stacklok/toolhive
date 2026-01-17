@@ -25,6 +25,20 @@ const (
 	testBackendOpenAI = "openai"
 )
 
+// verifyEmbeddingBackendWorking verifies that the embedding backend is actually working by attempting to generate an embedding
+// This ensures the service is not just reachable but actually functional
+func verifyEmbeddingBackendWorking(t *testing.T, manager *embeddings.Manager, backendType string) {
+	t.Helper()
+	_, err := manager.GenerateEmbedding([]string{"test"})
+	if err != nil {
+		if backendType == testBackendOllama {
+			t.Skipf("Skipping test: Ollama is reachable but embedding generation failed. Error: %v. Ensure 'ollama pull %s' has been executed", err, embeddings.DefaultModelAllMiniLM)
+		} else {
+			t.Skipf("Skipping test: Embedding backend is reachable but embedding generation failed. Error: %v", err)
+		}
+	}
+}
+
 // TestFindTool_SemanticSearch tests semantic search capabilities
 // These tests verify that find_tool can find tools based on semantic meaning,
 // not just exact keyword matches
@@ -58,6 +72,9 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 		embeddingBackend = testBackendOpenAI
 	}
 	t.Cleanup(func() { _ = embeddingManager.Close() })
+
+	// Verify embedding backend is actually working, not just reachable
+	verifyEmbeddingBackendWorking(t, embeddingManager, embeddingBackend)
 
 	// Setup optimizer integration with high semantic ratio to favor semantic search
 	mcpServer := server.NewMCPServer("test-server", "1.0")
@@ -343,6 +360,9 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 		}
 		embeddingBackend = testBackendOpenAI
 	}
+	
+	// Verify embedding backend is actually working, not just reachable
+	verifyEmbeddingBackendWorking(t, embeddingManager, embeddingBackend)
 	_ = embeddingManager.Close()
 
 	mcpServer := server.NewMCPServer("test-server", "1.0")
@@ -522,6 +542,9 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 		}
 		embeddingBackend = testBackendOpenAI
 	}
+	
+	// Verify embedding backend is actually working, not just reachable
+	verifyEmbeddingBackendWorking(t, embeddingManager, embeddingBackend)
 	_ = embeddingManager.Close()
 
 	mcpServer := server.NewMCPServer("test-server", "1.0")

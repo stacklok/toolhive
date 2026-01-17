@@ -21,6 +21,16 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
+// verifyOllamaWorking verifies that Ollama is actually working by attempting to generate an embedding
+// This ensures the service is not just reachable but actually functional
+func verifyOllamaWorking(t *testing.T, manager *embeddings.Manager) {
+	t.Helper()
+	_, err := manager.GenerateEmbedding([]string{"test"})
+	if err != nil {
+		t.Skipf("Skipping test: Ollama is reachable but embedding generation failed. Error: %v. Ensure 'ollama pull %s' has been executed", err, embeddings.DefaultModelAllMiniLM)
+	}
+}
+
 // getRealToolData returns test data based on actual MCP server tools
 // These are real tool descriptions from GitHub and other MCP servers
 func getRealToolData() []vmcp.Tool {
@@ -107,6 +117,9 @@ func TestFindTool_StringMatching(t *testing.T) {
 		return
 	}
 	t.Cleanup(func() { _ = embeddingManager.Close() })
+
+	// Verify Ollama is actually working, not just reachable
+	verifyOllamaWorking(t, embeddingManager)
 
 	config := &Config{
 		Enabled:     true,
@@ -371,6 +384,9 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = embeddingManager.Close() })
 
+	// Verify Ollama is actually working, not just reachable
+	verifyOllamaWorking(t, embeddingManager)
+
 	config := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
@@ -548,6 +564,9 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 		return
 	}
 	t.Cleanup(func() { _ = embeddingManager.Close() })
+
+	// Verify Ollama is actually working, not just reachable
+	verifyOllamaWorking(t, embeddingManager)
 
 	config := &Config{
 		Enabled:     true,

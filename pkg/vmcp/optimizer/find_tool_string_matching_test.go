@@ -127,8 +127,8 @@ func TestFindTool_StringMatching(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
 		},
 		HybridSearchRatio: 0.5, // 50% semantic, 50% BM25 for better string matching
 	}
@@ -163,6 +163,17 @@ func TestFindTool_StringMatching(t *testing.T) {
 	// Register session and generate embeddings
 	session := &mockSession{sessionID: "test-session"}
 	err = integration.OnRegisterSession(ctx, session, capabilities)
+	require.NoError(t, err)
+
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integration.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
 	require.NoError(t, err)
 
 	// Create context with capabilities
@@ -574,8 +585,8 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddings.BackendTypeOllama,
 			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
 		},
 		HybridSearchRatio: 0.3, // Favor BM25 for string matching
 	}
@@ -610,6 +621,17 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 
 	session := &mockSession{sessionID: "test-session"}
 	err = integration.OnRegisterSession(ctx, session, capabilities)
+	require.NoError(t, err)
+
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integration.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
 	require.NoError(t, err)
 
 	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, capabilities)

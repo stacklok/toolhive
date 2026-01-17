@@ -172,6 +172,17 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 	err = integration.OnRegisterSession(ctx, session, capabilities)
 	require.NoError(t, err)
 
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integration.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
+	require.NoError(t, err)
+
 	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, capabilities)
 
 	// Test cases for semantic search - queries that mean the same thing but use different words
@@ -345,8 +356,8 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	embeddingConfig := &embeddings.Config{
 		BackendType: embeddingBackend,
 		BaseURL:     "http://localhost:11434",
-		Model:       "nomic-embed-text",
-		Dimension:   768,
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
 	}
 
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
@@ -375,8 +386,8 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddingBackend,
 			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddingConfig.Model,
-			Dimension:   embeddingConfig.Dimension,
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
 		},
 		HybridSearchRatio: 0.9, // 90% semantic
 	}
@@ -393,8 +404,8 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddingBackend,
 			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddingConfig.Model,
-			Dimension:   embeddingConfig.Dimension,
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
 		},
 		HybridSearchRatio: 0.1, // 10% semantic, 90% BM25
 	}
@@ -440,6 +451,19 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	require.NoError(t, err)
 
 	err = integrationKeyword.OnRegisterSession(ctx, session, capabilities)
+	require.NoError(t, err)
+
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integrationSemantic.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
+	require.NoError(t, err)
+	err = integrationKeyword.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
 	require.NoError(t, err)
 
 	// Query that has semantic meaning but no exact keyword match
@@ -527,8 +551,8 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 	embeddingConfig := &embeddings.Config{
 		BackendType: embeddingBackend,
 		BaseURL:     "http://localhost:11434",
-		Model:       "nomic-embed-text",
-		Dimension:   768,
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
 	}
 
 	embeddingManager, err := embeddings.NewManager(embeddingConfig)
@@ -556,8 +580,8 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 		EmbeddingConfig: &embeddings.Config{
 			BackendType: embeddingBackend,
 			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddingConfig.Model,
-			Dimension:   embeddingConfig.Dimension,
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
 		},
 		HybridSearchRatio: 0.9, // High semantic ratio
 	}
@@ -603,6 +627,17 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 
 	session := &mockSession{sessionID: "test-session"}
 	err = integration.OnRegisterSession(ctx, session, capabilities)
+	require.NoError(t, err)
+
+	// Manually ingest tools for testing (OnRegisterSession skips ingestion)
+	mcpTools := make([]mcp.Tool, len(tools))
+	for i, tool := range tools {
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	err = integration.IngestToolsForTesting(ctx, "github", "GitHub", nil, mcpTools)
 	require.NoError(t, err)
 
 	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, capabilities)

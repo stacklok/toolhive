@@ -42,11 +42,6 @@ type OIDCDiscoveryDocument struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// httpClient interface for dependency injection (private for testing)
-type httpClient interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
 func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
 	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
@@ -63,7 +58,7 @@ func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*OIDCDiscove
 func discoverOIDCEndpointsWithClient(
 	ctx context.Context,
 	issuer string,
-	client httpClient,
+	client networking.HTTPClient,
 	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP)
@@ -75,7 +70,7 @@ func discoverOIDCEndpointsWithClient(
 func discoverOIDCEndpointsWithClientAndValidation(
 	ctx context.Context,
 	issuer string,
-	client httpClient,
+	client networking.HTTPClient,
 	validateIssuer bool,
 	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
@@ -107,7 +102,11 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		if err != nil {
 			return nil, fmt.Errorf("GET %s: %w", urlStr, err)
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				logger.Debugf("Failed to close response body: %v", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("%s: HTTP %d", urlStr, resp.StatusCode)
@@ -230,7 +229,7 @@ func createOAuthConfigFromOIDCWithClient(
 	usePKCE bool,
 	callbackPort int,
 	resource string,
-	client httpClient,
+	client networking.HTTPClient,
 ) (*Config, error) {
 	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
 	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)

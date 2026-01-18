@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -43,7 +44,7 @@ func runtimeCheckCmdFunc(cmd *cobra.Command, _ []string) error {
 	defer cancelCreate()
 	rt, err := createWithTimeout(createCtx)
 	if err != nil {
-		if createCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(createCtx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("creating container runtime timed out after %d seconds", runtimeCheckTimeout)
 		}
 		return fmt.Errorf("failed to create container runtime: %w", err)
@@ -53,7 +54,7 @@ func runtimeCheckCmdFunc(cmd *cobra.Command, _ []string) error {
 	pingCtx, cancelPing := context.WithTimeout(ctx, time.Duration(runtimeCheckTimeout)*time.Second)
 	defer cancelPing()
 	if err := pingRuntime(pingCtx, rt); err != nil {
-		if pingCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(pingCtx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("runtime ping timed out after %d seconds", runtimeCheckTimeout)
 		}
 		return fmt.Errorf("runtime ping failed: %w", err)

@@ -120,8 +120,18 @@ metadata:
   name: inline-auth-vmcp
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
+    # Aggregation configuration
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: best_effort
 
   # Incoming authentication - inline OIDC configuration
   incomingAuth:
@@ -172,15 +182,3 @@ spec:
   # Outgoing authentication - discovered from backend MCPServers
   outgoingAuth:
     source: discovered
-
-  # Aggregation configuration
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: best_effort

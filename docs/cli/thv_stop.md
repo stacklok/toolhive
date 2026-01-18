@@ -15,7 +15,18 @@ Stop one or more MCP servers
 
 ### Synopsis
 
-Stop one or more running MCP servers managed by ToolHive.
+Stop one or more running MCP servers managed by ToolHive. Examples:
+  # Stop a single MCP server
+  thv stop filesystem
+
+  # Stop multiple MCP servers
+  thv stop filesystem github slack
+
+  # Stop all running MCP servers
+  thv stop --all
+
+  # Stop all servers in a group
+  thv stop --group production
 
 ```
 thv stop [workload-name...] [flags]
@@ -24,8 +35,8 @@ thv stop [workload-name...] [flags]
 ### Options
 
 ```
-      --all            Stop all running MCP servers
-  -g, --group string   Stop all MCP servers in a specific group
+  -a, --all            Stop all running MCP servers
+  -g, --group string   Filter by group
   -h, --help           help for stop
       --timeout int    Timeout in seconds before forcibly stopping the workload (default 30)
 ```

@@ -235,7 +235,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get authentication middleware for incoming requests
 	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %v", err)
+		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 	middlewares = append(middlewares, types.NamedMiddleware{
 		Name:     "auth",
@@ -261,10 +261,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		false,
 		false, // isRemote
 		"",
-		nil, // onHealthCheckFailed - not needed for local proxies
+		nil,   // onHealthCheckFailed - not needed for local proxies
+		nil,   // onUnauthorizedResponse - not needed for local proxies
+		"",    // endpointPrefix - not configured for proxy command
+		false, // trustProxyHeaders - not configured for proxy command
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start proxy: %v", err)
+		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
 	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
@@ -277,6 +280,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := proxy.CloseListener(); err != nil {
 		logger.Warnf("Error closing proxy listener: %v", err)
 	}
+	// Use Background context for proxy shutdown. The parent context is already cancelled
+	// at this point, so we need a fresh context with its own timeout to ensure the
+	// shutdown operation completes successfully.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return proxy.Stop(shutdownCtx)
@@ -397,13 +403,13 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			// Create middleware using TokenSource - middleware handles token selection
 			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, tokenSource)
 			if err != nil {
-				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+				return fmt.Errorf("failed to create token exchange middleware: %w", err)
 			}
 		} else {
 			// Create middleware that extracts token from Authorization header
 			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromHeader(*tokenExchangeConfig)
 			if err != nil {
-				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+				return fmt.Errorf("failed to create token exchange middleware: %w", err)
 			}
 		}
 		*middlewares = append(*middlewares, types.NamedMiddleware{

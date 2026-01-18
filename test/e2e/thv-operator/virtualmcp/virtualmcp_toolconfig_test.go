@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -67,28 +68,28 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backend1Name,
+								// Reference MCPToolConfig instead of inline Filter
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									Name: toolConfigName,
+								},
+							},
+							{
+								Workload: backend2Name,
+								// Use inline filter to exclude all tools from backend2
+								Filter: []string{"nonexistent_tool"},
+							},
+						},
+					},
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backend1Name,
-							// Reference MCPToolConfig instead of inline Filter
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-								Name: toolConfigName,
-							},
-						},
-						{
-							Workload: backend2Name,
-							// Use inline filter to exclude all tools from backend2
-							Filter: []string{"nonexistent_tool"},
-						},
-					},
 				},
 				ServiceType: "NodePort",
 			},
@@ -312,14 +313,14 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(2))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Verify backend1 has ToolConfigRef
-			var backend1Config *mcpv1alpha1.WorkloadToolConfig
-			for i := range vmcpServer.Spec.Aggregation.Tools {
-				if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend1Name {
-					backend1Config = &vmcpServer.Spec.Aggregation.Tools[i]
+			var backend1Config *vmcpconfig.WorkloadToolConfig
+			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
+				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
+					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					break
 				}
 			}
@@ -391,22 +392,22 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backendName,
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-								Name: toolConfigName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backendName,
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									Name: toolConfigName,
+								},
 							},
 						},
 					},
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
 			},

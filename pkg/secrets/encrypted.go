@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sync/syncmap"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
 
@@ -136,7 +137,12 @@ func NewEncryptedManager(filePath string, key []byte) (Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open secrets file: %w", err)
 	}
-	defer secretsFile.Close()
+	defer func() {
+		if err := secretsFile.Close(); err != nil {
+			// Non-fatal: secrets file cleanup failure
+			logger.Warnf("Failed to close secrets file: %v", err)
+		}
+	}()
 
 	stat, err := secretsFile.Stat()
 	if err != nil {

@@ -36,6 +36,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -65,9 +66,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -113,9 +112,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "missing-group",
-					},
+					Config: vmcpconfig.Config{Group: "missing-group"},
 				},
 			},
 			expectError:    true,
@@ -130,9 +127,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "pending-group",
-					},
+					Config: vmcpconfig.Config{Group: "pending-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -225,9 +220,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -305,9 +298,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -390,9 +381,7 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -471,9 +460,7 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config:      vmcpconfig.Config{Group: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
@@ -504,9 +491,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -791,9 +776,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -813,9 +796,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -846,9 +827,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -889,9 +868,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -1026,9 +1003,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1051,9 +1026,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1073,9 +1046,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1159,9 +1130,7 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1203,9 +1172,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1278,9 +1245,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1456,11 +1421,11 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
+					Config: vmcpconfig.Config{
+						Group: testGroupName,
+						Operational: &vmcpconfig.OperationalConfig{
+							LogLevel: "debug",
+						},
 					},
 				},
 			},
@@ -1763,9 +1728,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1937,9 +1900,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2072,9 +2033,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "nonexistent-group",
-			},
+			Config: vmcpconfig.Config{Group: "nonexistent-group"},
 		},
 	}
 
@@ -2130,9 +2089,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2226,9 +2183,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2264,9 +2219,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2323,9 +2276,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2408,9 +2359,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2496,9 +2445,7 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2540,9 +2487,7 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2604,9 +2549,7 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 

@@ -15,8 +15,8 @@ import (
 
 	core "github.com/stacklok/toolhive/pkg/core"
 	runner "github.com/stacklok/toolhive/pkg/runner"
+	workloads "github.com/stacklok/toolhive/pkg/workloads"
 	gomock "go.uber.org/mock/gomock"
-	errgroup "golang.org/x/sync/errgroup"
 )
 
 // MockManager is a mock of Manager interface.
@@ -44,10 +44,10 @@ func (m *MockManager) EXPECT() *MockManagerMockRecorder {
 }
 
 // DeleteWorkloads mocks base method.
-func (m *MockManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (m *MockManager) DeleteWorkloads(ctx context.Context, names []string) (workloads.CompletionFunc, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeleteWorkloads", ctx, names)
-	ret0, _ := ret[0].(*errgroup.Group)
+	ret0, _ := ret[0].(workloads.CompletionFunc)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -74,33 +74,33 @@ func (mr *MockManagerMockRecorder) DoesWorkloadExist(ctx, workloadName any) *gom
 }
 
 // GetLogs mocks base method.
-func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
+func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool, lines int) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetLogs", ctx, containerName, follow)
+	ret := m.ctrl.Call(m, "GetLogs", ctx, containerName, follow, lines)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetLogs indicates an expected call of GetLogs.
-func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow any) *gomock.Call {
+func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow, lines any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow, lines)
 }
 
 // GetProxyLogs mocks base method.
-func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
+func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string, lines int) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName)
+	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName, lines)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetProxyLogs indicates an expected call of GetProxyLogs.
-func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName any) *gomock.Call {
+func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName, lines any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName, lines)
 }
 
 // GetWorkload mocks base method.
@@ -183,10 +183,10 @@ func (mr *MockManagerMockRecorder) MoveToGroup(ctx, workloadNames, groupFrom, gr
 }
 
 // RestartWorkloads mocks base method.
-func (m *MockManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error) {
+func (m *MockManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (workloads.CompletionFunc, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "RestartWorkloads", ctx, names, foreground)
-	ret0, _ := ret[0].(*errgroup.Group)
+	ret0, _ := ret[0].(workloads.CompletionFunc)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -226,10 +226,10 @@ func (mr *MockManagerMockRecorder) RunWorkloadDetached(ctx, runConfig any) *gomo
 }
 
 // StopWorkloads mocks base method.
-func (m *MockManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (m *MockManager) StopWorkloads(ctx context.Context, names []string) (workloads.CompletionFunc, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "StopWorkloads", ctx, names)
-	ret0, _ := ret[0].(*errgroup.Group)
+	ret0, _ := ret[0].(workloads.CompletionFunc)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -241,10 +241,10 @@ func (mr *MockManagerMockRecorder) StopWorkloads(ctx, names any) *gomock.Call {
 }
 
 // UpdateWorkload mocks base method.
-func (m *MockManager) UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error) {
+func (m *MockManager) UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (workloads.CompletionFunc, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateWorkload", ctx, workloadName, newConfig)
-	ret0, _ := ret[0].(*errgroup.Group)
+	ret0, _ := ret[0].(workloads.CompletionFunc)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

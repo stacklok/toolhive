@@ -67,360 +67,824 @@ spec:
           spec:
             description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
             properties:
-              aggregation:
-                description: Aggregation defines tool aggregation and conflict resolution
-                  strategies
+              config:
+                description: |-
+                  Config is the Virtual MCP server configuration
+                  The only field currently required within config is `config.groupRef`.
+                  GroupRef references an existing MCPGroup that defines backend workloads.
+                  The referenced MCPGroup must exist in the same namespace.
+                  The telemetry and audit config from here are also supported, but not required.
                 properties:
-                  conflictResolution:
-                    default: prefix
+                  aggregation:
                     description: |-
-                      ConflictResolution defines the strategy for resolving tool name conflicts
-                      - prefix: Automatically prefix tool names with workload identifier
-                      - priority: First workload in priority order wins
-                      - manual: Explicitly define overrides for all conflicts
-                    enum:
-                    - prefix
-                    - priority
-                    - manual
-                    type: string
-                  conflictResolutionConfig:
-                    description: ConflictResolutionConfig provides configuration for
-                      the chosen strategy
+                      Aggregation defines tool aggregation and conflict resolution strategies.
+                      Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references.
                     properties:
-                      prefixFormat:
-                        default: '{workload}_'
+                      conflictResolution:
+                        default: prefix
                         description: |-
-                          PrefixFormat defines the prefix format for the "prefix" strategy
-                          Supports placeholders: {workload}, {workload}_, {workload}.
+                          ConflictResolution defines the strategy for resolving tool name conflicts.
+                          - prefix: Automatically prefix tool names with workload identifier
+                          - priority: First workload in priority order wins
+                          - manual: Explicitly define overrides for all conflicts
+                        enum:
+                        - prefix
+                        - priority
+                        - manual
                         type: string
-                      priorityOrder:
-                        description: PriorityOrder defines the workload priority order
-                          for the "priority" strategy
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  tools:
-                    description: |-
-                      Tools defines per-workload tool filtering and overrides
-                      References existing MCPToolConfig resources
-                    items:
-                      description: WorkloadToolConfig defines tool filtering and overrides
-                        for a specific workload
-                      properties:
-                        filter:
-                          description: |-
-                            Filter is an inline list of tool names to allow (allow list)
-                            Only used if ToolConfigRef is not specified
-                          items:
-                            type: string
-                          type: array
-                        overrides:
-                          additionalProperties:
-                            description: |-
-                              ToolOverride represents a tool override configuration.
-                              Both Name and Description can be overridden independently, but
-                              they can't be both empty.
-                            properties:
-                              description:
-                                description: Description is the redefined description
-                                  of the tool
-                                type: string
-                              name:
-                                description: Name is the redefined name of the tool
-                                type: string
-                            type: object
-                          description: |-
-                            Overrides is an inline map of tool overrides
-                            Only used if ToolConfigRef is not specified
-                          type: object
-                        toolConfigRef:
-                          description: |-
-                            ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming
-                            If specified, Filter and Overrides are ignored
-                          properties:
-                            name:
-                              description: Name is the name of the MCPToolConfig resource
-                                in the same namespace
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        workload:
-                          description: Workload is the name of the backend MCPServer
-                            workload
-                          type: string
-                      required:
-                      - workload
-                      type: object
-                    type: array
-                type: object
-              audit:
-                description: |-
-                  Audit configures audit logging for the Virtual MCP server
-                  When enabled, audit logs include MCP protocol operations
-                properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled controls whether audit logging is enabled
-                      When true, enables audit logging with default configuration
-                    type: boolean
-                type: object
-              compositeToolRefs:
-                description: |-
-                  CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
-                  for complex, reusable workflows
-                items:
-                  description: CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition
-                    resource
-                  properties:
-                    name:
-                      description: Name is the name of the VirtualMCPCompositeToolDefinition
-                        resource in the same namespace
-                      type: string
-                  required:
-                  - name
-                  type: object
-                type: array
-              compositeTools:
-                description: |-
-                  CompositeTools defines inline composite tool definitions
-                  For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-                items:
-                  description: |-
-                    CompositeToolSpec defines an inline composite tool
-                    For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
-                  properties:
-                    description:
-                      description: Description describes the composite tool
-                      type: string
-                    name:
-                      description: Name is the name of the composite tool
-                      type: string
-                    output:
-                      description: |-
-                        Output defines the structured output schema for the composite tool.
-                        Specifies how to construct the final output from workflow step results.
-                        If not specified, the workflow returns the last step's output (backward compatible).
-                      properties:
+                      conflictResolutionConfig:
+                        description: ConflictResolutionConfig provides configuration
+                          for the chosen strategy.
                         properties:
-                          additionalProperties:
-                            description: OutputPropertySpec defines a single output
-                              property
-                            properties:
-                              default:
-                                description: Default is the fallback value if template
-                                  expansion fails
-                                x-kubernetes-preserve-unknown-fields: true
-                              description:
-                                description: Description is a human-readable description
-                                  exposed to clients and models
-                                type: string
-                              properties:
-                                description: Properties defines nested properties
-                                  for object types
-                                x-kubernetes-preserve-unknown-fields: true
-                              type:
-                                description: 'Type is the JSON Schema type: "string",
-                                  "integer", "number", "boolean", "object", "array"'
-                                enum:
-                                - string
-                                - integer
-                                - number
-                                - boolean
-                                - object
-                                - array
-                                type: string
-                              value:
-                                description: |-
-                                  Value is a template string for constructing the runtime value
-                                  Supports template syntax: {{ "{{" }}.steps.step_id.output.field{{ "}}" }}, {{ "{{" }}.params.param_name{{ "}}" }}
-                                  For object types, this can be a JSON string that will be deserialized
-                                type: string
-                            required:
-                            - type
-                            type: object
-                          description: |-
-                            Properties defines the output properties
-                            Map key is the property name, value is the property definition
-                          type: object
-                        required:
-                          description: Required lists property names that must be
-                            present in the output
-                          items:
-                            type: string
-                          type: array
-                      type: object
-                    parameters:
-                      description: |-
-                        Parameters defines the input parameter schema in JSON Schema format.
-                        Should be a JSON Schema object with "type": "object" and "properties".
-                        Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
-                        Example:
-                          {
-                            "type": "object",
-                            "properties": {
-                              "param1": {"type": "string", "default": "value"},
-                              "param2": {"type": "integer"}
-                            },
-                            "required": ["param2"]
-                          }
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                    steps:
-                      description: Steps defines the workflow steps
-                      items:
-                        description: WorkflowStep defines a step in a composite tool
-                          workflow
-                        properties:
-                          arguments:
+                          prefixFormat:
+                            default: '{workload}_'
                             description: |-
-                              Arguments is a map of argument values with template expansion support.
-                              Supports Go template syntax with .params and .steps for string values.
-                              Non-string values (integers, booleans, arrays, objects) are passed as-is.
-                              Note: the templating is only supported on the first level of the key-value pairs.
-                            type: object
-                            x-kubernetes-preserve-unknown-fields: true
-                          condition:
-                            description: Condition is a template expression that determines
-                              if the step should execute
+                              PrefixFormat defines the prefix format for the "prefix" strategy.
+                              Supports placeholders: {workload}, {workload}_, {workload}.
                             type: string
-                          defaultResults:
-                            description: |-
-                              DefaultResults provides fallback output values when this step is skipped
-                              (due to condition evaluating to false) or fails (when onError.action is "continue").
-                              Each key corresponds to an output field name referenced by downstream steps.
-                              Required if the step may be skipped AND downstream steps reference this step's output.
-                            x-kubernetes-preserve-unknown-fields: true
-                          dependsOn:
-                            description: DependsOn lists step IDs that must complete
-                              before this step
+                          priorityOrder:
+                            description: PriorityOrder defines the workload priority
+                              order for the "priority" strategy.
                             items:
                               type: string
                             type: array
-                          id:
-                            description: ID is the unique identifier for this step
-                            type: string
-                          message:
-                            description: |-
-                              Message is the elicitation message
-                              Only used when Type is "elicitation"
-                            type: string
-                          onCancel:
-                            description: |-
-                              OnCancel defines the action to take when the user cancels/dismisses the elicitation
-                              Only used when Type is "elicitation"
+                        type: object
+                      excludeAllTools:
+                        description: ExcludeAllTools excludes all tools from aggregation
+                          when true.
+                        type: boolean
+                      tools:
+                        description: Tools defines per-workload tool filtering and
+                          overrides.
+                        items:
+                          description: WorkloadToolConfig defines tool filtering and
+                            overrides for a specific workload.
+                          properties:
+                            excludeAll:
+                              description: ExcludeAll excludes all tools from this
+                                workload when true.
+                              type: boolean
+                            filter:
+                              description: |-
+                                Filter is an inline list of tool names to allow (allow list).
+                                Only used if ToolConfigRef is not specified.
+                              items:
+                                type: string
+                              type: array
+                            overrides:
+                              additionalProperties:
+                                description: ToolOverride defines tool name and description
+                                  overrides.
+                                properties:
+                                  description:
+                                    description: Description is the new tool description.
+                                    type: string
+                                  name:
+                                    description: Name is the new tool name (for renaming).
+                                    type: string
+                                type: object
+                              description: |-
+                                Overrides is an inline map of tool overrides.
+                                Only used if ToolConfigRef is not specified.
+                              type: object
+                            toolConfigRef:
+                              description: |-
+                                ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.
+                                If specified, Filter and Overrides are ignored.
+                                Only used when running in Kubernetes with the operator.
+                              properties:
+                                name:
+                                  description: Name is the name of the MCPToolConfig
+                                    resource in the same namespace.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            workload:
+                              description: Workload is the name of the backend MCPServer
+                                workload.
+                              type: string
+                          required:
+                          - workload
+                          type: object
+                        type: array
+                    type: object
+                  audit:
+                    description: |-
+                      Audit configures audit logging for the Virtual MCP server.
+                      When present, audit logs include MCP protocol operations.
+                      See audit.Config for available configuration options.
+                    properties:
+                      component:
+                        description: Component is the component name to use in audit
+                          events.
+                        type: string
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled controls whether audit logging is enabled.
+                          When true, enables audit logging with the configured options.
+                        type: boolean
+                      eventTypes:
+                        description: EventTypes specifies which event types to audit.
+                          If empty, all events are audited.
+                        items:
+                          type: string
+                        type: array
+                      excludeEventTypes:
+                        description: |-
+                          ExcludeEventTypes specifies which event types to exclude from auditing.
+                          This takes precedence over EventTypes.
+                        items:
+                          type: string
+                        type: array
+                      includeRequestData:
+                        default: false
+                        description: IncludeRequestData determines whether to include
+                          request data in audit logs.
+                        type: boolean
+                      includeResponseData:
+                        default: false
+                        description: IncludeResponseData determines whether to include
+                          response data in audit logs.
+                        type: boolean
+                      logFile:
+                        description: LogFile specifies the file path for audit logs.
+                          If empty, logs to stdout.
+                        type: string
+                      maxDataSize:
+                        default: 1024
+                        description: MaxDataSize limits the size of request/response
+                          data included in audit logs (in bytes).
+                        type: integer
+                    type: object
+                  compositeToolRefs:
+                    description: |-
+                      CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+                      for complex, reusable workflows. Only applicable when running in Kubernetes.
+                      Referenced resources must be in the same namespace as the VirtualMCPServer.
+                    items:
+                      description: |-
+                        CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
+                        The referenced resource must be in the same namespace as the VirtualMCPServer.
+                      properties:
+                        name:
+                          description: Name is the name of the VirtualMCPCompositeToolDefinition
+                            resource in the same namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  compositeTools:
+                    description: |-
+                      CompositeTools defines inline composite tool workflows.
+                      Full workflow definitions are embedded in the configuration.
+                      For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
+                    items:
+                      description: |-
+                        CompositeToolConfig defines a composite tool workflow.
+                        This matches the YAML structure from the proposal (lines 173-255).
+                      properties:
+                        description:
+                          description: Description describes what the workflow does.
+                          type: string
+                        name:
+                          description: Name is the workflow name (unique identifier).
+                          type: string
+                        output:
+                          description: |-
+                            Output defines the structured output schema for this workflow.
+                            If not specified, the workflow returns the last step's output (backward compatible).
+                          properties:
                             properties:
-                              action:
-                                default: abort
+                              additionalProperties:
                                 description: |-
-                                  Action defines the action to take when the user declines or cancels
-                                  - skip_remaining: Skip remaining steps in the workflow
-                                  - abort: Abort the entire workflow execution
-                                  - continue: Continue to the next step
-                                enum:
-                                - skip_remaining
-                                - abort
-                                - continue
+                                  OutputProperty defines a single output property.
+                                  For non-object types, Value is required.
+                                  For object types, either Value or Properties must be specified (but not both).
+                                properties:
+                                  default:
+                                    description: |-
+                                      Default is the fallback value if template expansion fails.
+                                      Type coercion is applied to match the declared Type.
+                                    x-kubernetes-preserve-unknown-fields: true
+                                  description:
+                                    description: Description is a human-readable description
+                                      exposed to clients and models
+                                    type: string
+                                  properties:
+                                    description: |-
+                                      Properties defines nested properties for object types.
+                                      Each nested property has full metadata (type, description, value/properties).
+                                    type: object
+                                    x-kubernetes-preserve-unknown-fields: true
+                                  type:
+                                    description: 'Type is the JSON Schema type: "string",
+                                      "integer", "number", "boolean", "object", "array"'
+                                    enum:
+                                    - string
+                                    - integer
+                                    - number
+                                    - boolean
+                                    - object
+                                    - array
+                                    type: string
+                                  value:
+                                    description: |-
+                                      Value is a template string for constructing the runtime value.
+                                      For object types, this can be a JSON string that will be deserialized.
+                                      Supports template syntax: {{ "{{" }}.steps.step_id.output.field{{ "}}" }}, {{ "{{" }}.params.param_name{{ "}}" }}
+                                    type: string
+                                required:
+                                - type
+                                type: object
+                              description: |-
+                                Properties defines the output properties.
+                                Map key is the property name, value is the property definition.
+                              type: object
+                            required:
+                              description: Required lists property names that must
+                                be present in the output.
+                              items:
                                 type: string
-                            type: object
-                          onDecline:
+                              type: array
+                          required:
+                          - properties
+                          type: object
+                        parameters:
+                          description: |-
+                            Parameters defines input parameter schema in JSON Schema format.
+                            Should be a JSON Schema object with "type": "object" and "properties".
+                            Example:
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "param1": {"type": "string", "default": "value"},
+                                  "param2": {"type": "integer"}
+                                },
+                                "required": ["param2"]
+                              }
+
+                            We use json.Map rather than a typed struct because JSON Schema is highly
+                            flexible with many optional fields (default, enum, minimum, maximum, pattern,
+                            items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map
+                            allows full JSON Schema compatibility without needing to define every possible
+                            field, and matches how the MCP SDK handles inputSchema.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        steps:
+                          description: Steps are the workflow steps to execute.
+                          items:
                             description: |-
-                              OnDecline defines the action to take when the user explicitly declines the elicitation
-                              Only used when Type is "elicitation"
+                              WorkflowStepConfig defines a single workflow step.
+                              This matches the proposal's step configuration (lines 180-255).
                             properties:
-                              action:
-                                default: abort
+                              arguments:
                                 description: |-
-                                  Action defines the action to take when the user declines or cancels
-                                  - skip_remaining: Skip remaining steps in the workflow
-                                  - abort: Abort the entire workflow execution
-                                  - continue: Continue to the next step
+                                  Arguments is a map of argument values with template expansion support.
+                                  Supports Go template syntax with .params and .steps for string values.
+                                  Non-string values (integers, booleans, arrays, objects) are passed as-is.
+                                  Note: the templating is only supported on the first level of the key-value pairs.
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
+                              condition:
+                                description: Condition is a template expression that
+                                  determines if the step should execute
+                                type: string
+                              defaultResults:
+                                description: |-
+                                  DefaultResults provides fallback output values when this step is skipped
+                                  (due to condition evaluating to false) or fails (when onError.action is "continue").
+                                  Each key corresponds to an output field name referenced by downstream steps.
+                                  Required if the step may be skipped AND downstream steps reference this step's output.
+                                x-kubernetes-preserve-unknown-fields: true
+                              dependsOn:
+                                description: DependsOn lists step IDs that must complete
+                                  before this step
+                                items:
+                                  type: string
+                                type: array
+                              id:
+                                description: ID is the unique identifier for this
+                                  step.
+                                type: string
+                              message:
+                                description: |-
+                                  Message is the elicitation message
+                                  Only used when Type is "elicitation"
+                                type: string
+                              onCancel:
+                                description: |-
+                                  OnCancel defines the action to take when the user cancels/dismisses the elicitation
+                                  Only used when Type is "elicitation"
+                                properties:
+                                  action:
+                                    default: abort
+                                    description: |-
+                                      Action defines the action to take when the user declines or cancels
+                                      - skip_remaining: Skip remaining steps in the workflow
+                                      - abort: Abort the entire workflow execution
+                                      - continue: Continue to the next step
+                                    enum:
+                                    - skip_remaining
+                                    - abort
+                                    - continue
+                                    type: string
+                                type: object
+                              onDecline:
+                                description: |-
+                                  OnDecline defines the action to take when the user explicitly declines the elicitation
+                                  Only used when Type is "elicitation"
+                                properties:
+                                  action:
+                                    default: abort
+                                    description: |-
+                                      Action defines the action to take when the user declines or cancels
+                                      - skip_remaining: Skip remaining steps in the workflow
+                                      - abort: Abort the entire workflow execution
+                                      - continue: Continue to the next step
+                                    enum:
+                                    - skip_remaining
+                                    - abort
+                                    - continue
+                                    type: string
+                                type: object
+                              onError:
+                                description: OnError defines error handling behavior
+                                properties:
+                                  action:
+                                    default: abort
+                                    description: Action defines the action to take
+                                      on error
+                                    enum:
+                                    - abort
+                                    - continue
+                                    - retry
+                                    type: string
+                                  retryCount:
+                                    description: |-
+                                      RetryCount is the maximum number of retries
+                                      Only used when Action is "retry"
+                                    type: integer
+                                  retryDelay:
+                                    description: |-
+                                      RetryDelay is the delay between retry attempts
+                                      Only used when Action is "retry"
+                                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                    type: string
+                                type: object
+                              schema:
+                                description: Schema defines the expected response
+                                  schema for elicitation
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
+                              timeout:
+                                description: Timeout is the maximum execution time
+                                  for this step
+                                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                type: string
+                              tool:
+                                description: |-
+                                  Tool is the tool to call (format: "workload.tool_name")
+                                  Only used when Type is "tool"
+                                type: string
+                              type:
+                                default: tool
+                                description: Type is the step type (tool, elicitation,
+                                  etc.)
                                 enum:
-                                - skip_remaining
-                                - abort
-                                - continue
+                                - tool
+                                - elicitation
                                 type: string
+                            required:
+                            - id
                             type: object
-                          onError:
-                            description: OnError defines error handling behavior
-                            properties:
-                              action:
-                                default: abort
-                                description: Action defines the action to take on
-                                  error
-                                enum:
-                                - abort
-                                - continue
-                                - retry
-                                type: string
-                              maxRetries:
-                                description: |-
-                                  MaxRetries is the maximum number of retries
-                                  Only used when Action is "retry"
-                                type: integer
-                              retryDelay:
-                                description: |-
-                                  RetryDelay is the delay between retry attempts
-                                  Only used when Action is "retry"
-                                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
-                                type: string
-                            type: object
-                          schema:
-                            description: Schema defines the expected response schema
-                              for elicitation
-                            type: object
-                            x-kubernetes-preserve-unknown-fields: true
-                          timeout:
-                            description: Timeout is the maximum execution time for
-                              this step
-                            type: string
-                          tool:
-                            description: |-
-                              Tool is the tool to call (format: "workload.tool_name")
-                              Only used when Type is "tool"
-                            type: string
+                          type: array
+                        timeout:
+                          description: Timeout is the maximum workflow execution time.
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
+                      required:
+                      - name
+                      - steps
+                      type: object
+                    type: array
+                  groupRef:
+                    description: |-
+                      Group references an existing MCPGroup that defines backend workloads.
+                      In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+                    type: string
+                  incomingAuth:
+                    description: |-
+                      IncomingAuth configures how clients authenticate to the virtual MCP server.
+                      When using the Kubernetes operator, this is populated by the converter from
+                      VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded.
+                    properties:
+                      authz:
+                        description: Authz contains authorization configuration (optional).
+                        properties:
+                          policies:
+                            description: Policies contains Cedar policy definitions
+                              (when Type = "cedar").
+                            items:
+                              type: string
+                            type: array
                           type:
-                            default: tool
-                            description: Type is the step type (tool, elicitation,
-                              etc.)
-                            enum:
-                            - tool
-                            - elicitation
+                            description: 'Type is the authz type: "cedar", "none"'
                             type: string
                         required:
-                        - id
+                        - type
                         type: object
-                      minItems: 1
-                      type: array
-                    timeout:
-                      default: 30m
-                      description: Timeout is the maximum execution time for the composite
-                        tool
+                      oidc:
+                        description: OIDC contains OIDC configuration (when Type =
+                          "oidc").
+                        properties:
+                          audience:
+                            description: Audience is the required token audience.
+                            type: string
+                          clientId:
+                            description: ClientID is the OAuth client ID.
+                            type: string
+                          clientSecretEnv:
+                            description: |-
+                              ClientSecretEnv is the name of the environment variable containing the client secret.
+                              This is the secure way to reference secrets - the actual secret value is never stored
+                              in configuration files, only the environment variable name.
+                              The secret value will be resolved from this environment variable at runtime.
+                            type: string
+                          insecureAllowHttp:
+                            description: |-
+                              InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+                              WARNING: This is insecure and should NEVER be used in production
+                            type: boolean
+                          issuer:
+                            description: Issuer is the OIDC issuer URL.
+                            type: string
+                          protectedResourceAllowPrivateIp:
+                            description: |-
+                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+                              Use with caution - only enable for trusted internal IDPs or testing
+                            type: boolean
+                          resource:
+                            description: |-
+                              Resource is the OAuth 2.0 resource indicator (RFC 8707).
+                              Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
+                              If not specified, defaults to Audience.
+                            type: string
+                          scopes:
+                            description: Scopes are the required OAuth scopes.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - audience
+                        - clientId
+                        - issuer
+                        type: object
+                      type:
+                        description: 'Type is the auth type: "oidc", "local", "anonymous"'
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  metadata:
+                    additionalProperties:
                       type: string
-                  required:
-                  - description
-                  - name
-                  - steps
-                  type: object
-                type: array
-              groupRef:
-                description: |-
-                  GroupRef references an existing MCPGroup that defines backend workloads
-                  The referenced MCPGroup must exist in the same namespace
-                properties:
+                    description: Metadata stores additional configuration metadata.
+                    type: object
                   name:
-                    description: Name is the name of the MCPGroup resource in the
-                      same namespace
+                    description: Name is the virtual MCP server name.
                     type: string
+                  operational:
+                    description: Operational configures operational settings.
+                    properties:
+                      failureHandling:
+                        description: FailureHandling configures failure handling behavior.
+                        properties:
+                          circuitBreaker:
+                            description: CircuitBreaker configures circuit breaker
+                              behavior.
+                            properties:
+                              enabled:
+                                default: false
+                                description: Enabled controls whether circuit breaker
+                                  is enabled.
+                                type: boolean
+                              failureThreshold:
+                                default: 5
+                                description: FailureThreshold is the number of failures
+                                  before opening the circuit.
+                                type: integer
+                              timeout:
+                                default: 60s
+                                description: Timeout is the duration to wait before
+                                  attempting to close the circuit.
+                                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                type: string
+                            type: object
+                          healthCheckInterval:
+                            default: 30s
+                            description: HealthCheckInterval is the interval between
+                              health checks.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          partialFailureMode:
+                            default: fail
+                            description: |-
+                              PartialFailureMode defines behavior when some backends are unavailable.
+                              - fail: Fail entire request if any backend is unavailable
+                              - best_effort: Continue with available backends
+                            enum:
+                            - fail
+                            - best_effort
+                            type: string
+                          unhealthyThreshold:
+                            default: 3
+                            description: UnhealthyThreshold is the number of consecutive
+                              failures before marking unhealthy.
+                            type: integer
+                        type: object
+                      logLevel:
+                        description: |-
+                          LogLevel sets the logging level for the Virtual MCP server.
+                          The only valid value is "debug" to enable debug logging.
+                          When omitted or empty, the server uses info level logging.
+                        enum:
+                        - debug
+                        type: string
+                      timeouts:
+                        description: Timeouts configures timeout settings.
+                        properties:
+                          default:
+                            default: 30s
+                            description: Default is the default timeout for backend
+                              requests.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          perWorkload:
+                            additionalProperties:
+                              pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                              type: string
+                            description: PerWorkload defines per-workload timeout
+                              overrides.
+                            type: object
+                        type: object
+                    type: object
+                  outgoingAuth:
+                    description: |-
+                      OutgoingAuth configures how the virtual MCP server authenticates to backends.
+                      When using the Kubernetes operator, this is populated by the converter from
+                      VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+                    properties:
+                      backends:
+                        additionalProperties:
+                          description: |-
+                            BackendAuthStrategy defines how to authenticate to a specific backend.
+
+                            This struct provides type-safe configuration for different authentication strategies
+                            using HeaderInjection or TokenExchange fields based on the Type field.
+                          properties:
+                            headerInjection:
+                              description: |-
+                                HeaderInjection contains configuration for header injection auth strategy.
+                                Used when Type = "header_injection".
+                              properties:
+                                headerName:
+                                  description: HeaderName is the name of the header
+                                    to inject (e.g., "Authorization").
+                                  type: string
+                                headerValue:
+                                  description: |-
+                                    HeaderValue is the static header value to inject.
+                                    Either HeaderValue or HeaderValueEnv should be set, not both.
+                                  type: string
+                                headerValueEnv:
+                                  description: |-
+                                    HeaderValueEnv is the environment variable name containing the header value.
+                                    The value will be resolved at runtime from this environment variable.
+                                    Either HeaderValue or HeaderValueEnv should be set, not both.
+                                  type: string
+                              required:
+                              - headerName
+                              type: object
+                            tokenExchange:
+                              description: |-
+                                TokenExchange contains configuration for token exchange auth strategy.
+                                Used when Type = "token_exchange".
+                              properties:
+                                audience:
+                                  description: Audience is the target audience for
+                                    the exchanged token.
+                                  type: string
+                                clientId:
+                                  description: ClientID is the OAuth client ID for
+                                    the token exchange request.
+                                  type: string
+                                clientSecret:
+                                  description: ClientSecret is the OAuth client secret
+                                    (use ClientSecretEnv for security).
+                                  type: string
+                                clientSecretEnv:
+                                  description: |-
+                                    ClientSecretEnv is the environment variable name containing the client secret.
+                                    The value will be resolved at runtime from this environment variable.
+                                  type: string
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    the exchanged token.
+                                  items:
+                                    type: string
+                                  type: array
+                                subjectTokenType:
+                                  description: |-
+                                    SubjectTokenType is the token type of the incoming subject token.
+                                    Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified.
+                                  type: string
+                                tokenUrl:
+                                  description: TokenURL is the OAuth token endpoint
+                                    URL for token exchange.
+                                  type: string
+                              required:
+                              - tokenUrl
+                              type: object
+                            type:
+                              description: 'Type is the auth strategy: "unauthenticated",
+                                "header_injection", "token_exchange"'
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        description: Backends contains per-backend auth configuration.
+                        type: object
+                      default:
+                        description: Default is the default auth strategy for backends
+                          without explicit config.
+                        properties:
+                          headerInjection:
+                            description: |-
+                              HeaderInjection contains configuration for header injection auth strategy.
+                              Used when Type = "header_injection".
+                            properties:
+                              headerName:
+                                description: HeaderName is the name of the header
+                                  to inject (e.g., "Authorization").
+                                type: string
+                              headerValue:
+                                description: |-
+                                  HeaderValue is the static header value to inject.
+                                  Either HeaderValue or HeaderValueEnv should be set, not both.
+                                type: string
+                              headerValueEnv:
+                                description: |-
+                                  HeaderValueEnv is the environment variable name containing the header value.
+                                  The value will be resolved at runtime from this environment variable.
+                                  Either HeaderValue or HeaderValueEnv should be set, not both.
+                                type: string
+                            required:
+                            - headerName
+                            type: object
+                          tokenExchange:
+                            description: |-
+                              TokenExchange contains configuration for token exchange auth strategy.
+                              Used when Type = "token_exchange".
+                            properties:
+                              audience:
+                                description: Audience is the target audience for the
+                                  exchanged token.
+                                type: string
+                              clientId:
+                                description: ClientID is the OAuth client ID for the
+                                  token exchange request.
+                                type: string
+                              clientSecret:
+                                description: ClientSecret is the OAuth client secret
+                                  (use ClientSecretEnv for security).
+                                type: string
+                              clientSecretEnv:
+                                description: |-
+                                  ClientSecretEnv is the environment variable name containing the client secret.
+                                  The value will be resolved at runtime from this environment variable.
+                                type: string
+                              scopes:
+                                description: Scopes are the requested scopes for the
+                                  exchanged token.
+                                items:
+                                  type: string
+                                type: array
+                              subjectTokenType:
+                                description: |-
+                                  SubjectTokenType is the token type of the incoming subject token.
+                                  Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified.
+                                type: string
+                              tokenUrl:
+                                description: TokenURL is the OAuth token endpoint
+                                  URL for token exchange.
+                                type: string
+                            required:
+                            - tokenUrl
+                            type: object
+                          type:
+                            description: 'Type is the auth strategy: "unauthenticated",
+                              "header_injection", "token_exchange"'
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      source:
+                        description: |-
+                          Source defines how to discover backend auth: "inline", "discovered"
+                          - inline: Explicit configuration in OutgoingAuth
+                          - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+                        type: string
+                    required:
+                    - source
+                    type: object
+                  telemetry:
+                    description: |-
+                      Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+                      including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+                    properties:
+                      customAttributes:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+                          These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+                          (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+                        type: object
+                      enablePrometheusMetricsPath:
+                        default: false
+                        description: |-
+                          EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+                          The metrics are served on the main transport port at /metrics.
+                          This is separate from OTLP metrics which are sent to the Endpoint.
+                        type: boolean
+                      endpoint:
+                        description: Endpoint is the OTLP endpoint URL
+                        type: string
+                      environmentVariables:
+                        description: |-
+                          EnvironmentVariables is a list of environment variable names that should be
+                          included in telemetry spans as attributes. Only variables in this list will
+                          be read from the host machine and included in spans for observability.
+                          Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
+                        items:
+                          type: string
+                        type: array
+                      headers:
+                        additionalProperties:
+                          type: string
+                        description: Headers contains authentication headers for the
+                          OTLP endpoint.
+                        type: object
+                      insecure:
+                        default: false
+                        description: Insecure indicates whether to use HTTP instead
+                          of HTTPS for the OTLP endpoint.
+                        type: boolean
+                      metricsEnabled:
+                        default: false
+                        description: |-
+                          MetricsEnabled controls whether OTLP metrics are enabled.
+                          When false, OTLP metrics are not sent even if an endpoint is configured.
+                          This is independent of EnablePrometheusMetricsPath.
+                        type: boolean
+                      samplingRate:
+                        default: "0.05"
+                        description: |-
+                          SamplingRate is the trace sampling rate (0.0-1.0) as a string.
+                          Only used when TracingEnabled is true.
+                          Example: "0.05" for 5% sampling.
+                        type: string
+                      serviceName:
+                        description: |-
+                          ServiceName is the service name for telemetry.
+                          When omitted, defaults to the server name (e.g., VirtualMCPServer name).
+                        type: string
+                      serviceVersion:
+                        description: |-
+                          ServiceVersion is the service version for telemetry.
+                          When omitted, defaults to the ToolHive version.
+                        type: string
+                      tracingEnabled:
+                        default: false
+                        description: |-
+                          TracingEnabled controls whether distributed tracing is enabled.
+                          When false, no tracer provider is created even if an endpoint is configured.
+                        type: boolean
+                    type: object
                 required:
-                - name
+                - groupRef
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
               incomingAuth:
                 description: |-
-                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-                  Must be explicitly set - use "anonymous" type when no authentication is required
+                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
+                  Must be explicitly set - use "anonymous" type when no authentication is required.
+                  This field takes precedence over config.IncomingAuth and should be preferred because it
+                  supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+                  dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
                 properties:
                   authzConfig:
                     description: |-
@@ -643,77 +1107,12 @@ spec:
                 required:
                 - type
                 type: object
-              operational:
-                description: Operational defines operational settings like timeouts
-                  and health checks
-                properties:
-                  failureHandling:
-                    description: FailureHandling configures failure handling behavior
-                    properties:
-                      circuitBreaker:
-                        description: CircuitBreaker configures circuit breaker behavior
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether circuit breaker
-                              is enabled
-                            type: boolean
-                          failureThreshold:
-                            default: 5
-                            description: FailureThreshold is the number of failures
-                              before opening the circuit
-                            type: integer
-                          timeout:
-                            default: 60s
-                            description: Timeout is the duration to wait before attempting
-                              to close the circuit
-                            type: string
-                        type: object
-                      healthCheckInterval:
-                        default: 30s
-                        description: HealthCheckInterval is the interval between health
-                          checks
-                        type: string
-                      partialFailureMode:
-                        default: fail
-                        description: |-
-                          PartialFailureMode defines behavior when some backends are unavailable
-                          - fail: Fail entire request if any backend is unavailable
-                          - best_effort: Continue with available backends
-                        enum:
-                        - fail
-                        - best_effort
-                        type: string
-                      unhealthyThreshold:
-                        default: 3
-                        description: UnhealthyThreshold is the number of consecutive
-                          failures before marking unhealthy
-                        type: integer
-                    type: object
-                  logLevel:
-                    description: |-
-                      LogLevel sets the logging level for the Virtual MCP server.
-                      Set to "debug" to enable debug logging. When not set, defaults to info level.
-                    enum:
-                    - debug
-                    type: string
-                  timeouts:
-                    description: Timeouts configures timeout settings
-                    properties:
-                      default:
-                        default: 30s
-                        description: Default is the default timeout for backend requests
-                        type: string
-                      perWorkload:
-                        additionalProperties:
-                          type: string
-                        description: PerWorkload defines per-workload timeout overrides
-                        type: object
-                    type: object
-                type: object
               outgoingAuth:
-                description: OutgoingAuth configures authentication from Virtual MCP
-                  to backend MCPServers
+                description: |-
+                  OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+                  This field takes precedence over config.OutgoingAuth and should be preferred because it
+                  supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
+                  dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
                 properties:
                   backends:
                     additionalProperties:
@@ -799,75 +1198,7 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
-              telemetry:
-                description: |-
-                  Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-                  including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-                properties:
-                  openTelemetry:
-                    description: OpenTelemetry defines OpenTelemetry configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether OpenTelemetry is enabled
-                        type: boolean
-                      endpoint:
-                        description: Endpoint is the OTLP endpoint URL for tracing
-                          and metrics
-                        type: string
-                      headers:
-                        description: |-
-                          Headers contains authentication headers for the OTLP endpoint
-                          Specified as key=value pairs
-                        items:
-                          type: string
-                        type: array
-                      insecure:
-                        default: false
-                        description: Insecure indicates whether to use HTTP instead
-                          of HTTPS for the OTLP endpoint
-                        type: boolean
-                      metrics:
-                        description: Metrics defines OpenTelemetry metrics-specific
-                          configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP metrics are
-                              sent
-                            type: boolean
-                        type: object
-                      serviceName:
-                        description: |-
-                          ServiceName is the service name for telemetry
-                          If not specified, defaults to the MCPServer name
-                        type: string
-                      tracing:
-                        description: Tracing defines OpenTelemetry tracing configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP tracing is
-                              sent
-                            type: boolean
-                          samplingRate:
-                            default: "0.05"
-                            description: SamplingRate is the trace sampling rate (0.0-1.0)
-                            type: string
-                        type: object
-                    type: object
-                  prometheus:
-                    description: Prometheus defines Prometheus-specific configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether Prometheus metrics endpoint
-                          is exposed
-                        type: boolean
-                    type: object
-                type: object
             required:
-            - groupRef
             - incomingAuth
             type: object
           status:

@@ -38,9 +38,13 @@ const (
 // Subsequent requests: retrieves routing table from VMCPSession and reconstructs context.
 //
 // Returns HTTP 504 for timeouts, HTTP 503 for discovery errors.
+//
+// The registry parameter provides the current list of backends. For dynamic environments
+// (Kubernetes with DynamicRegistry), backends are fetched on each initialize request to
+// ensure the latest backend list is used for capability discovery.
 func Middleware(
 	manager Manager,
-	backends []vmcp.Backend,
+	registry vmcp.BackendRegistry,
 	sessionManager *transportsession.Manager,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -51,7 +55,7 @@ func Middleware(
 			var err error
 			if sessionID == "" {
 				// Initialize request: discover and cache capabilities in session.
-				ctx, err = handleInitializeRequest(ctx, r, manager, backends)
+				ctx, err = handleInitializeRequest(ctx, r, manager, registry)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
@@ -69,14 +73,20 @@ func Middleware(
 
 // handleInitializeRequest performs capability discovery for initialize requests.
 // Returns updated context with discovered capabilities or an error.
+//
+// For dynamic environments, backends are fetched from the registry on each request
+// to ensure the latest backend list is used (e.g., when backends are added/removed).
 func handleInitializeRequest(
 	ctx context.Context,
 	r *http.Request,
 	manager Manager,
-	backends []vmcp.Backend,
+	registry vmcp.BackendRegistry,
 ) (context.Context, error) {
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
+
+	// Get current backend list from registry (supports dynamic backend changes)
+	backends := registry.List(discoveryCtx)
 
 	logger.Debugw("starting capability discovery for initialize request",
 		"method", r.Method,
@@ -136,9 +146,13 @@ func handleSubsequentRequest(
 		return ctx, fmt.Errorf("routing table not initialized")
 	}
 
-	// Reconstruct minimal AggregatedCapabilities for routing
+	// Get tools from session (needed for type coercion in composite tool workflows)
+	tools := vmcpSess.GetTools()
+
+	// Reconstruct AggregatedCapabilities for routing and type coercion
 	capabilities := &aggregator.AggregatedCapabilities{
 		RoutingTable: routingTable,
+		Tools:        tools,
 	}
 
 	logger.Debugw("capabilities retrieved from session",

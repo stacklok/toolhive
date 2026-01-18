@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -231,6 +232,14 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithEndpointPrefix sets the path prefix for SSE endpoint URLs
+func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {
@@ -296,6 +305,15 @@ func WithTransportAndPorts(mcpTransport string, port, targetPort int) RunConfigB
 		b.transportString = mcpTransport
 		b.port = port
 		b.targetPort = targetPort
+		return nil
+	}
+}
+
+// WithExistingPort sets the existing port for update operations
+// This allows port reuse during workload updates by skipping validation for the same port
+func WithExistingPort(port int) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.existingPort = port
 		return nil
 	}
 }
@@ -463,6 +481,9 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
+
+		// Add recovery middleware (always present, added last to be outermost wrapper)
+		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
@@ -641,6 +662,19 @@ func addAuditMiddleware(
 	return middlewareConfigs
 }
 
+// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
+// Middleware is applied in reverse order, so adding last means it executes first
+// and catches panics from all other middleware and handlers.
+func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		logger.Warnf("failed to create recovery middleware: %v", err)
+		return middlewareConfigs
+	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
+	return middlewareConfigs
+}
+
 // NewOperatorRunConfigBuilder creates a new RunConfigBuilder configured for operator use
 func NewOperatorRunConfigBuilder(
 	ctx context.Context,
@@ -691,7 +725,7 @@ func internalRunConfigBuilder(
 	// Apply all the options
 	for _, option := range runConfigOptions {
 		if err := option(b); err != nil {
-			return nil, fmt.Errorf("failed to apply run config option: %v", err)
+			return nil, fmt.Errorf("failed to apply run config option: %w", err)
 		}
 	}
 
@@ -701,7 +735,7 @@ func internalRunConfigBuilder(
 	if envVarValidator != nil {
 		validatedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, b.config, envVars)
 		if err != nil {
-			return nil, fmt.Errorf("failed to validate environment variables: %v", err)
+			return nil, fmt.Errorf("failed to validate environment variables: %w", err)
 		}
 		processedEnvVars = validatedEnvVars
 	}
@@ -709,12 +743,12 @@ func internalRunConfigBuilder(
 	// Do some final validation which can only be done after everything else is set.
 	// Apply image metadata overrides if needed.
 	if err := b.validateConfig(imageMetadata); err != nil {
-		return nil, fmt.Errorf("failed to validate run config: %v", err)
+		return nil, fmt.Errorf("failed to validate run config: %w", err)
 	}
 
 	// Now set environment variables with the correct transport and ports resolved
 	if _, err := b.config.WithEnvironmentVariables(processedEnvVars); err != nil {
-		return nil, fmt.Errorf("failed to set environment variables: %v", err)
+		return nil, fmt.Errorf("failed to set environment variables: %w", err)
 	}
 
 	// Set schema version.
@@ -758,18 +792,27 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		return err
 	}
 
-	// Use registry target port if not overridden and if the mcpTransport is HTTP-based.
+	// Use registry ports if not overridden and if the mcpTransport is HTTP-based.
+	proxyPort := b.port
 	targetPort := b.targetPort
 	if imageMetadata != nil {
 		isHTTPServer := mcpTransport == types.TransportTypeSSE.String() ||
 			mcpTransport == types.TransportTypeStreamableHTTP.String()
-		if targetPort == 0 && isHTTPServer && imageMetadata.TargetPort > 0 {
-			logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
-			targetPort = imageMetadata.TargetPort
+		if isHTTPServer {
+			// Use registry proxy port if not set by CLI
+			if proxyPort == 0 && imageMetadata.ProxyPort > 0 {
+				logger.Debugf("Using registry proxy port: %d", imageMetadata.ProxyPort)
+				proxyPort = imageMetadata.ProxyPort
+			}
+			// Use registry target port if not set by CLI
+			if targetPort == 0 && imageMetadata.TargetPort > 0 {
+				logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
+				targetPort = imageMetadata.TargetPort
+			}
 		}
 	}
 	// Configure ports and target host
-	if _, err = c.WithPorts(b.port, targetPort); err != nil {
+	if _, err = c.WithPorts(proxyPort, targetPort); err != nil {
 		return err
 	}
 
@@ -808,7 +851,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	if c.AuthzConfigPath != "" {
 		authzConfig, err := authz.LoadConfig(c.AuthzConfigPath)
 		if err != nil {
-			return fmt.Errorf("failed to load authorization configuration: %v", err)
+			return fmt.Errorf("failed to load authorization configuration: %w", err)
 		}
 		c.WithAuthz(authzConfig)
 	}
@@ -817,7 +860,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	if c.AuditConfigPath != "" {
 		auditConfig, err := audit.LoadFromFile(c.AuditConfigPath)
 		if err != nil {
-			return fmt.Errorf("failed to load audit configuration: %v", err)
+			return fmt.Errorf("failed to load audit configuration: %w", err)
 		}
 		c.WithAudit(auditConfig)
 	}
@@ -941,7 +984,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		mount := permissions.MountDeclaration(volumeSpec)
 		source, target, err := mount.Parse()
 		if err != nil {
-			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
+			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
 		}
 
 		// Check for duplicate mount target

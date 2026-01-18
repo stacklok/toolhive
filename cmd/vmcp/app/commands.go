@@ -4,10 +4,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/env"
@@ -20,6 +22,8 @@ import (
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -253,6 +257,8 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 }
 
 // runServe implements the serve command logic
+//
+//nolint:gocyclo // Complexity from server initialization and configuration is acceptable
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	configPath := viper.GetString("config")
@@ -291,10 +297,55 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Create discovery manager for lazy per-user capability discovery
-	discoveryMgr, err := discovery.NewManager(agg)
+	// Use DynamicRegistry for version-based cache invalidation
+	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
+	// In standalone mode: backends from config file, no dynamic updates
+	// In K8s mode with discovered auth: backends watched dynamically via BackendWatcher
+	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
+	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
+
+	// Use NewManagerWithRegistry to enable version-based cache invalidation
+	discoveryMgr, err := discovery.NewManagerWithRegistry(agg, dynamicRegistry)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery manager: %w", err)
+	}
+	logger.Info("Dynamic backend registry enabled for Kubernetes environment")
+
+	// Backend watcher for dynamic backend discovery
+	var backendWatcher *k8s.BackendWatcher
+
+	// If outgoingAuth.source is "discovered", start K8s backend watcher to watch backend changes
+	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
+		logger.Info("Detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
+
+		// Get in-cluster REST config
+		restConfig, err := rest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get in-cluster config: %w", err)
+		}
+
+		// Get namespace from environment variable set by operator
+		// The operator sets VMCP_NAMESPACE to the VirtualMCPServer's namespace
+		namespace := os.Getenv("VMCP_NAMESPACE")
+		if namespace == "" {
+			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
+		}
+
+		// Create K8s backend watcher to watch backend changes
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, cfg.Group, dynamicRegistry)
+		if err != nil {
+			return fmt.Errorf("failed to create backend watcher: %w", err)
+		}
+
+		// Start K8s backend watcher in background goroutine
+		go func() {
+			logger.Info("Starting Kubernetes backend watcher in background")
+			if err := backendWatcher.Start(ctx); err != nil {
+				logger.Errorf("Backend watcher stopped with error: %v", err)
+			}
+		}()
+
+		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
 	}
 
 	// Create router
@@ -330,15 +381,39 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}()
 	}
 
+	// Configure health monitoring if enabled
+	var healthMonitorConfig *health.MonitorConfig
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		// Note: HealthCheckInterval is config.Duration (alias for time.Duration), already in nanoseconds
+		// from YAML/JSON parsing via time.ParseDuration. This is a simple type cast, not unit conversion.
+		checkInterval := time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval)
+		if cfg.Operational.FailureHandling.UnhealthyThreshold < 1 {
+			return fmt.Errorf("invalid health check configuration: unhealthy threshold must be >= 1, got %d",
+				cfg.Operational.FailureHandling.UnhealthyThreshold)
+		}
+
+		defaults := health.DefaultConfig()
+		healthMonitorConfig = &health.MonitorConfig{
+			CheckInterval:      checkInterval,
+			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
+			Timeout:            defaults.Timeout,
+			DegradedThreshold:  defaults.DegradedThreshold,
+		}
+		logger.Info("Health monitoring configured from operational settings")
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:              cfg.Name,
-		Version:           getVersion(),
-		Host:              host,
-		Port:              port,
-		AuthMiddleware:    authMiddleware,
-		AuthInfoHandler:   authInfoHandler,
-		TelemetryProvider: telemetryProvider,
-		AuditConfig:       cfg.Audit,
+		Name:                cfg.Name,
+		Version:             getVersion(),
+		GroupRef:            cfg.Group,
+		Host:                host,
+		Port:                port,
+		AuthMiddleware:      authMiddleware,
+		AuthInfoHandler:     authInfoHandler,
+		TelemetryProvider:   telemetryProvider,
+		AuditConfig:         cfg.Audit,
+		HealthMonitorConfig: healthMonitorConfig,
+		Watcher:             backendWatcher,
 	}
 
 	// Convert composite tool configurations to workflow definitions
@@ -350,8 +425,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
 	}
 
-	// Create server with discovery manager, backends, and workflow definitions
-	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	// Create server with discovery manager, backend registry, and workflow definitions
+	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}

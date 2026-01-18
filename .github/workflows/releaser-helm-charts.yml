@@ -87,5 +87,6 @@ jobs:
         version: ${{ fromJSON(needs.release-helm-charts.outputs.released_charts) }}
     with:
       version: ${{ matrix.version }}
+      assign_to: ${{ github.actor }}
     secrets:
       DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}

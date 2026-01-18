@@ -48,6 +48,20 @@ const (
 // RuntimeName is the name identifier for the Kubernetes runtime
 const RuntimeName = "kubernetes"
 
+// Retry configuration for kubectl attach operations
+const (
+	// attachRetryTimeout is the maximum time to retry kubectl attach before giving up
+	// This accommodates typical pod restart times in both local and CI environments,
+	// including container image pulls and startup delays
+	attachRetryTimeout = 90 * time.Second
+
+	// attachMaxRetryInterval is the maximum delay between individual retry attempts
+	attachMaxRetryInterval = 15 * time.Second
+
+	// attachInitialRetryInterval is the initial delay before the first retry
+	attachInitialRetryInterval = 1 * time.Second
+)
+
 // Client implements the Deployer interface for container operations
 type Client struct {
 	runtimeType      runtime.Type
@@ -58,6 +72,8 @@ type Client struct {
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 	// namespaceFunc is used for testing to override namespace detection
 	namespaceFunc func() string
+	// exitFunc is used for testing to override os.Exit behavior
+	exitFunc func(code int)
 }
 
 // NewClient creates a new container client
@@ -103,6 +119,19 @@ func NewClientWithConfigAndPlatformDetector(
 }
 
 // AttachToWorkload implements runtime.Runtime.
+// It establishes a kubectl attach connection to the MCP server pod.
+//
+// Connection Failure Handling:
+// If the connection fails permanently (after retries with exponential backoff),
+// this function causes the process to exit with code 1. This triggers a Kubernetes
+// restart, allowing the proxy to establish a fresh connection to the current pod.
+// This is critical for handling StatefulSet pod restarts - when the MCP pod restarts,
+// the old kubectl attach connection becomes stale and cannot be reused. Exiting allows
+// Kubernetes to restart the proxy, which then attaches to the new pod.
+//
+// The retry configuration (see attachRetryTimeout constant) accommodates typical pod
+// restart times in both local and CI environments, while still failing fast enough
+// for truly unavailable pods.
 func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachToWorkload attaches to a workload in Kubernetes
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
@@ -144,20 +173,19 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	// Create a SPDY executor
 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
+		return nil, nil, fmt.Errorf("failed to create SPDY executor: %w", err)
 	}
 
 	logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
-	//nolint:gosec // we don't check for an error here because it's not critical
-	// and it also returns with an error of statuscode `0`'. perhaps someone
-	// who knows the function a bit more can fix this.
 	go func() {
-		// wrap with retry so we can retry if the connection fails
-		// Create exponential backoff with max 5 retries
+		// Create exponential backoff with extended retry window to handle pod restarts
+		// in both local and CI environments.
 		expBackoff := backoff.NewExponentialBackOff()
+		expBackoff.MaxInterval = attachMaxRetryInterval
+		expBackoff.InitialInterval = attachInitialRetryInterval
 
 		_, err := backoff.Retry(ctx, func() (any, error) {
 			return nil, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
@@ -168,7 +196,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			})
 		},
 			backoff.WithBackOff(expBackoff),
-			backoff.WithMaxTries(5),
+			backoff.WithMaxElapsedTime(attachRetryTimeout),
 			backoff.WithNotify(func(err error, duration time.Duration) {
 				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
 			}),
@@ -181,13 +209,31 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 					statusErr.ErrStatus.Reason,
 					statusErr.ErrStatus.Code)
 
+				// Note: statuscode 0 with empty message indicates the connection was closed
+				// unexpectedly (e.g., container terminated or doesn't read from stdin)
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Info("Empty status error - this typically means the connection was closed unexpectedly")
-					logger.Info("This often happens when the container terminates or doesn't read from stdin")
+					logger.Errorf("Connection closed unexpectedly for workload %s", workloadName)
+					logger.Errorf("This typically means the pod terminated or restarted")
 				}
 			} else {
 				logger.Errorf("Non-status error: %v", err)
 			}
+
+			// Exit the process to trigger a restart by Kubernetes.
+			// This allows the proxy to establish a fresh connection to the current pod
+			// after a pod restart, rather than maintaining a stale connection.
+			//
+			// Note: We call os.Exit(1) directly (bypassing deferred cleanup) because:
+			// 1. The proxy is in a permanently broken state with stale stdin/stdout pipes
+			// 2. Any cleanup of these broken resources would likely fail or hang
+			// 3. We want Kubernetes to perform a complete container restart with fresh state
+			// 4. Deferred cleanup is designed for graceful shutdown, not recovery from broken state
+			logger.Errorf("kubectl attach failed after all retries for workload %s, exiting to allow restart", workloadName)
+			exitFunc := c.exitFunc
+			if exitFunc == nil {
+				exitFunc = os.Exit
+			}
+			exitFunc(1)
 		}
 	}()
 
@@ -195,7 +241,15 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 }
 
 // GetWorkloadLogs implements runtime.Runtime.
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error) {
+	// follow=true means infinite streaming, lines>0 means finite limit - these are contradictory
+	if follow && lines > 0 {
+		return "", fmt.Errorf(
+			"cannot use both follow and line limit: follow mode streams logs indefinitely, " +
+				"which conflicts with line limiting",
+		)
+	}
+
 	// In Kubernetes, workloadID is the statefulset name
 	namespace := c.getCurrentNamespace()
 
@@ -215,12 +269,20 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	// Use the first pod
 	podName := pods.Items[0].Name
 
+	// Configure tail lines based on lines parameter
+	var tailLines *int64
+	if lines > 0 {
+		tailLinesVal := int64(lines)
+		tailLines = &tailLinesVal
+	}
+
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
 		Container:  mcpContainerName,
 		Follow:     follow,
 		Previous:   false,
 		Timestamps: true,
+		TailLines:  tailLines,
 	}
 
 	req := c.client.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
@@ -228,7 +290,12 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	if err != nil {
 		return "", fmt.Errorf("failed to get logs for pod %s: %w", podName, err)
 	}
-	defer podLogs.Close()
+	defer func() {
+		if err := podLogs.Close(); err != nil {
+			// Non-fatal: pod logs cleanup failure
+			logger.Debugf("Failed to close pod logs: %v", err)
+		}
+	}()
 
 	// Read logs
 	logBytes, err := io.ReadAll(podLogs)
@@ -326,7 +393,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			Force:        true,
 		})
 	if err != nil {
-		return 0, fmt.Errorf("failed to apply statefulset: %v", err)
+		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
 	}
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
@@ -335,7 +402,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create headless service: %v", err)
+			return 0, fmt.Errorf("failed to create headless service: %w", err)
 		}
 	}
 
@@ -459,7 +526,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %v", err)
+		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	// Convert to our ContainerInfo format
@@ -596,7 +663,7 @@ func parsePortString(portStr string) (int, error) {
 	port := strings.Split(portStr, "/")[0]
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse port %s: %v", port, err)
+		return 0, fmt.Errorf("failed to parse port %s: %w", port, err)
 	}
 	return portNum, nil
 }
@@ -822,7 +889,7 @@ func (c *Client) createHeadlessService(
 		})
 
 	if err != nil {
-		return fmt.Errorf("failed to apply service: %v", err)
+		return fmt.Errorf("failed to apply service: %w", err)
 	}
 
 	logger.Infof("Created headless service %s for HTTP transport", containerName)
@@ -910,6 +977,11 @@ func applyPodTemplatePatch(
 	// Copy fields from the patched spec to our template
 	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Labels) > 0 {
 		baseTemplate = baseTemplate.WithLabels(patchedSpec.Labels)
+	}
+
+	// Copy annotations from the patched spec to our template
+	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Annotations) > 0 {
+		baseTemplate = baseTemplate.WithAnnotations(patchedSpec.Annotations)
 	}
 
 	if patchedSpec.Spec != nil {

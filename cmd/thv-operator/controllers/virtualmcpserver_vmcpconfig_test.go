@@ -31,9 +31,10 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
+	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpconfigpkg "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -48,12 +49,12 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
-func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfig.Converter {
+func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	converter, err := vmcpconfig.NewConverter(resolver, fakeClient)
+	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
 	return converter
 }
@@ -76,9 +77,7 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			expectedName:     "test-vmcp",
@@ -157,9 +156,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config:       vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: tt.outgoingAuth,
 				},
 			}
@@ -221,9 +218,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Default: tt.authConfig,
 					},
@@ -231,7 +226,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			}
 
 			// For external_auth_config_ref test, create the referenced MCPExternalAuthConfig
-			var converter *vmcpconfig.Converter
+			var converter *vmcpconfigconv.Converter
 			if tt.authConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
 				// Create a fake MCPExternalAuthConfig
 				externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
@@ -252,7 +247,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					WithObjects(externalAuthConfig).
 					Build()
 				var err error
-				converter, err = vmcpconfig.NewConverter(newNoOpMockResolver(t), fakeClient)
+				converter, err = vmcpconfigconv.NewConverter(newNoOpMockResolver(t), fakeClient)
 				require.NoError(t, err)
 			} else {
 				converter = newTestConverter(t, newNoOpMockResolver(t))
@@ -284,7 +279,7 @@ func TestConvertAggregation(t *testing.T) {
 
 	tests := []struct {
 		name                    string
-		aggregation             *mcpv1alpha1.AggregationConfig
+		aggregation             *vmcpconfig.AggregationConfig
 		expectedStrategy        vmcp.ConflictResolutionStrategy
 		hasPrefixFormat         bool
 		hasPriorityOrder        bool
@@ -292,9 +287,9 @@ func TestConvertAggregation(t *testing.T) {
 	}{
 		{
 			name: "prefix strategy",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 					PrefixFormat: "{workload}_",
 				},
 			},
@@ -303,9 +298,9 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "priority strategy",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPriority,
-				ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 					PriorityOrder: []string{"backend-1", "backend-2"},
 				},
 			},
@@ -314,16 +309,16 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "with tool configs",
-			aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				Tools: []mcpv1alpha1.WorkloadToolConfig{
+			aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				Tools: []*vmcpconfig.WorkloadToolConfig{
 					{
 						Workload: "backend-1",
 						Filter:   []string{"tool1", "tool2"},
 					},
 					{
 						Workload: "backend-2",
-						Overrides: map[string]mcpv1alpha1.ToolOverride{
+						Overrides: map[string]*vmcpconfig.ToolOverride{
 							"tool3": {
 								Name:        "renamed_tool3",
 								Description: "Updated description",
@@ -344,10 +339,10 @@ func TestConvertAggregation(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+					Config: vmcpconfig.Config{
+						Group:       "test-group",
+						Aggregation: tt.aggregation,
 					},
-					Aggregation: tt.aggregation,
 				},
 			}
 
@@ -375,23 +370,23 @@ func TestConvertAggregation(t *testing.T) {
 	}
 }
 
-// TestConvertCompositeTools tests composite tool conversion
+// TestConvertCompositeTools tests that composite tools pass through during conversion
 func TestConvertCompositeTools(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name           string
-		compositeTools []mcpv1alpha1.CompositeToolSpec
+		compositeTools []vmcpconfig.CompositeToolConfig
 		expectedCount  int
 	}{
 		{
 			name: "single composite tool",
-			compositeTools: []mcpv1alpha1.CompositeToolSpec{
+			compositeTools: []vmcpconfig.CompositeToolConfig{
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy and verify",
-					Timeout:     "10m",
-					Steps: []mcpv1alpha1.WorkflowStep{
+					Timeout:     vmcpconfig.Duration(10 * time.Minute),
+					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "deploy",
 							Type: mcpv1alpha1.WorkflowStepTypeToolCall,
@@ -404,11 +399,11 @@ func TestConvertCompositeTools(t *testing.T) {
 		},
 		{
 			name: "multiple composite tools",
-			compositeTools: []mcpv1alpha1.CompositeToolSpec{
+			compositeTools: []vmcpconfig.CompositeToolConfig{
 				{
 					Name:        "workflow1",
 					Description: "Workflow 1",
-					Steps: []mcpv1alpha1.WorkflowStep{
+					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: mcpv1alpha1.WorkflowStepTypeToolCall,
@@ -418,7 +413,7 @@ func TestConvertCompositeTools(t *testing.T) {
 				{
 					Name:        "workflow2",
 					Description: "Workflow 2",
-					Steps: []mcpv1alpha1.WorkflowStep{
+					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: mcpv1alpha1.WorkflowStepTypeElicitation,
@@ -437,10 +432,10 @@ func TestConvertCompositeTools(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+					Config: vmcpconfig.Config{
+						Group:          "test-group",
+						CompositeTools: tt.compositeTools,
 					},
-					CompositeTools: tt.compositeTools,
 				},
 			}
 
@@ -470,9 +465,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -502,7 +495,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	// Fetch workload names (matching production behavior)
 	ctx := context.Background()
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.GroupRef.Name)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames)
@@ -543,7 +536,7 @@ func TestValidateVmcpConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator := vmcpconfig.NewValidator()
+			validator := vmcpconfigconv.NewValidator()
 
 			// Type assertion will fail for nil, which is expected
 			if tt.config == nil {
@@ -583,8 +576,42 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				// Aggregation with tool overrides (map)
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPrefix,
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: "workload-1",
+							Overrides: map[string]*vmcpconfig.ToolOverride{
+								"tool-zebra": {
+									Name:        "renamed-zebra",
+									Description: "Zebra tool",
+								},
+								"tool-alpha": {
+									Name:        "renamed-alpha",
+									Description: "Alpha tool",
+								},
+								"tool-middle": {
+									Name:        "renamed-middle",
+									Description: "Middle tool",
+								},
+							},
+						},
+					},
+				},
+				// Operational with PerWorkload timeouts (map)
+				Operational: &vmcpconfig.OperationalConfig{
+					Timeouts: &vmcpconfig.TimeoutConfig{
+						Default: vmcpconfig.Duration(30 * time.Second),
+						PerWorkload: map[string]vmcpconfig.Duration{
+							"workload-zebra":  vmcpconfig.Duration(60 * time.Second),
+							"workload-alpha":  vmcpconfig.Duration(45 * time.Second),
+							"workload-middle": vmcpconfig.Duration(50 * time.Second),
+						},
+					},
+				},
 			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
@@ -598,40 +625,6 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 					},
 					"backend-middle": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
-				},
-			},
-			// Aggregation with tool overrides (map)
-			Aggregation: &mcpv1alpha1.AggregationConfig{
-				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-				Tools: []mcpv1alpha1.WorkloadToolConfig{
-					{
-						Workload: "workload-1",
-						Overrides: map[string]mcpv1alpha1.ToolOverride{
-							"tool-zebra": {
-								Name:        "renamed-zebra",
-								Description: "Zebra tool",
-							},
-							"tool-alpha": {
-								Name:        "renamed-alpha",
-								Description: "Alpha tool",
-							},
-							"tool-middle": {
-								Name:        "renamed-middle",
-								Description: "Middle tool",
-							},
-						},
-					},
-				},
-			},
-			// Operational with PerWorkload timeouts (map)
-			Operational: &mcpv1alpha1.OperationalConfig{
-				Timeouts: &mcpv1alpha1.TimeoutConfig{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"workload-zebra":  "60s",
-						"workload-alpha":  "45s",
-						"workload-middle": "50s",
 					},
 				},
 			},
@@ -666,7 +659,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	// (yaml.v3 should sort map keys alphabetically)
 	firstResult := results[0]
 	assert.Contains(t, firstResult, "name: test-vmcp")
-	assert.Contains(t, firstResult, "group: test-group")
+	assert.Contains(t, firstResult, "groupRef: test-group")
 
 	// Verify the YAML is valid and non-empty
 	assert.NotEmpty(t, firstResult)
@@ -692,19 +685,22 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-			Name:        "test-composite-tool",
-			Description: "A test composite tool definition",
-			Parameters: &runtime.RawExtension{
-				Raw: []byte(`{"type":"object","properties":{"message":{"type":"string"}}}`),
-			},
-			Timeout: "30s",
-			Steps: []mcpv1alpha1.WorkflowStep{
-				{
-					ID:   "step1",
-					Type: "tool",
-					Tool: "backend.echo",
-					Arguments: &runtime.RawExtension{
-						Raw: []byte(`{"input": "{{ .params.message }}"}`),
+			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+				Name:        "test-composite-tool",
+				Description: "A test composite tool definition",
+				Parameters: thvjson.NewMap(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
+					},
+				}),
+				Timeout: vmcpconfig.Duration(30 * time.Second),
+				Steps: []vmcpconfig.WorkflowStepConfig{
+					{
+						ID:        "step1",
+						Type:      "tool",
+						Tool:      "backend.echo",
+						Arguments: thvjson.NewMap(map[string]any{"input": "{{ .params.message }}"}),
 					},
 				},
 			},
@@ -730,14 +726,14 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					{Name: "test-composite-tool"},
+				},
 			},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
-			},
-			CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-				{Name: "test-composite-tool"},
 			},
 		},
 	}
@@ -756,7 +752,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -775,7 +771,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	require.Contains(t, configMap.Data, "config.yaml", "ConfigMap should contain config.yaml")
 
 	// Parse the YAML config
-	var config vmcpconfigpkg.Config
+	var config vmcpconfig.Config
 	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
 	require.NoError(t, err, "should parse config YAML")
 
@@ -786,12 +782,13 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	require.Len(t, config.CompositeTools[0].Steps, 1)
 	assert.Equal(t, "step1", config.CompositeTools[0].Steps[0].ID)
 	assert.Equal(t, "backend.echo", config.CompositeTools[0].Steps[0].Tool)
-	assert.Equal(t, vmcpconfigpkg.Duration(30*time.Second), config.CompositeTools[0].Timeout)
+	assert.Equal(t, vmcpconfig.Duration(30*time.Second), config.CompositeTools[0].Timeout)
 
 	// Verify parameters were converted
 	require.NotNil(t, config.CompositeTools[0].Parameters)
-	params := config.CompositeTools[0].Parameters
-	assert.Equal(t, "object", params["type"])
+	paramsMap, err := config.CompositeTools[0].Parameters.ToMap()
+	require.NoError(t, err)
+	assert.Equal(t, "object", paramsMap["type"])
 }
 
 // TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced tests merging
@@ -809,13 +806,15 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-			Name:        "referenced-tool",
-			Description: "A referenced composite tool",
-			Steps: []mcpv1alpha1.WorkflowStep{
-				{
-					ID:   "step1",
-					Type: "tool",
-					Tool: "backend.referenced",
+			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+				Name:        "referenced-tool",
+				Description: "A referenced composite tool",
+				Steps: []vmcpconfig.WorkflowStepConfig{
+					{
+						ID:   "step1",
+						Type: "tool",
+						Tool: "backend.referenced",
+					},
 				},
 			},
 		},
@@ -840,27 +839,27 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-				{
-					Name:        "inline-tool",
-					Description: "An inline composite tool",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						{
-							ID:   "step1",
-							Type: "tool",
-							Tool: "backend.inline",
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        "inline-tool",
+						Description: "An inline composite tool",
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.inline",
+							},
 						},
 					},
 				},
+				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					{Name: "referenced-tool"},
+				},
 			},
-			CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-				{Name: "referenced-tool"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
 			},
 		},
 	}
@@ -879,7 +878,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -895,7 +894,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 	require.NoError(t, err, "ConfigMap should exist")
 
 	// Parse the YAML config
-	var config vmcpconfigpkg.Config
+	var config vmcpconfig.Config
 	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
 	require.NoError(t, err, "should parse config YAML")
 
@@ -936,14 +935,14 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					{Name: "non-existent-tool"},
+				},
 			},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
-			},
-			CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-				{Name: "non-existent-tool"},
 			},
 		},
 	}
@@ -962,7 +961,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test should fail with not found error

@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	clientmocks "github.com/stacklok/toolhive/pkg/client/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -60,7 +59,7 @@ func TestGroupsRouter(t *testing.T) {
 				gm.EXPECT().List(gomock.Any()).Return(nil, fmt.Errorf("database error"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to list groups",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:   "create group success",
@@ -90,10 +89,10 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/",
 			body:   `{"name":"existinggroup"}`,
 			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
-				gm.EXPECT().Create(gomock.Any(), "existinggroup").Return(errors.NewGroupAlreadyExistsError("group 'existinggroup' already exists", nil))
+				gm.EXPECT().Create(gomock.Any(), "existinggroup").Return(fmt.Errorf("%w: existinggroup", groups.ErrGroupAlreadyExists))
 			},
 			expectedStatus: http.StatusConflict,
-			expectedBody:   "group_already_exists: group 'existinggroup' already exists",
+			expectedBody:   "group already exists: existinggroup\n",
 		},
 		{
 			name:   "create group invalid json",
@@ -104,7 +103,7 @@ func TestGroupsRouter(t *testing.T) {
 				// No mock setup needed as JSON parsing fails first
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid request body",
+			expectedBody:   "invalid request body",
 		},
 		{
 			name:   "get group success",
@@ -122,10 +121,10 @@ func TestGroupsRouter(t *testing.T) {
 			method: "GET",
 			path:   "/nonexistent",
 			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
-				gm.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, fmt.Errorf("group not found"))
+				gm.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, groups.ErrGroupNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Group not found",
+			expectedBody:   "group not found",
 		},
 		{
 			name:   "delete group success",
@@ -147,7 +146,7 @@ func TestGroupsRouter(t *testing.T) {
 				gm.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Group not found",
+			expectedBody:   "group not found",
 		},
 		{
 			name:   "delete default group protected",
@@ -157,7 +156,7 @@ func TestGroupsRouter(t *testing.T) {
 				// No mock setup needed as validation happens before manager call
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Cannot delete the default group",
+			expectedBody:   "cannot delete the default group",
 		},
 		{
 			name:   "delete group with workloads flag true",

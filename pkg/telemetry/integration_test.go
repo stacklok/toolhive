@@ -29,7 +29,7 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 	config := Config{
 		ServiceName:                 "test-toolhive",
 		ServiceVersion:              "1.0.0-test",
-		SamplingRate:                1.0, // Sample everything for testing
+		SamplingRate:                "1.0", // Sample everything for testing
 		Headers:                     make(map[string]string),
 		EnablePrometheusMetricsPath: true, // Enable Prometheus metrics
 	}

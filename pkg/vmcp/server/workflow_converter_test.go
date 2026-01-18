@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -17,7 +18,7 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		input       []*config.CompositeToolConfig
+		input       []config.CompositeToolConfig
 		wantCount   int
 		wantError   bool
 		errContains string
@@ -29,9 +30,9 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 		},
 		{
 			name: "valid tool step",
-			input: []*config.CompositeToolConfig{{
+			input: []config.CompositeToolConfig{{
 				Name: "simple",
-				Steps: []*config.WorkflowStepConfig{
+				Steps: []config.WorkflowStepConfig{
 					{ID: "s1", Type: "tool", Tool: "backend.tool"},
 				},
 			}},
@@ -39,64 +40,64 @@ func TestConvertConfigToWorkflowDefinitions(t *testing.T) {
 		},
 		{
 			name: "valid elicitation step",
-			input: []*config.CompositeToolConfig{{
+			input: []config.CompositeToolConfig{{
 				Name: "confirm",
-				Steps: []*config.WorkflowStepConfig{{
+				Steps: []config.WorkflowStepConfig{{
 					ID: "s1", Type: "elicitation",
 					Message: "Confirm?",
-					Schema:  map[string]any{"type": "object"},
+					Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
 				}},
 			}},
 			wantCount: 1,
 		},
 		{
 			name:        "missing name",
-			input:       []*config.CompositeToolConfig{{Name: "", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t"}}}},
+			input:       []config.CompositeToolConfig{{Name: "", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t"}}}},
 			wantError:   true,
 			errContains: "name is required",
 		},
 		{
 			name: "duplicate names",
-			input: []*config.CompositeToolConfig{
-				{Name: "dup", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t1"}}},
-				{Name: "dup", Steps: []*config.WorkflowStepConfig{{ID: "s2", Type: "tool", Tool: "t2"}}},
+			input: []config.CompositeToolConfig{
+				{Name: "dup", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t1"}}},
+				{Name: "dup", Steps: []config.WorkflowStepConfig{{ID: "s2", Type: "tool", Tool: "t2"}}},
 			},
 			wantError:   true,
 			errContains: "duplicate",
 		},
 		{
 			name:        "no steps",
-			input:       []*config.CompositeToolConfig{{Name: "empty", Steps: []*config.WorkflowStepConfig{}}},
+			input:       []config.CompositeToolConfig{{Name: "empty", Steps: []config.WorkflowStepConfig{}}},
 			wantError:   true,
 			errContains: "at least one step",
 		},
 		{
 			name:        "missing step ID",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "", Type: "tool", Tool: "t"}}}},
+			input:       []config.CompositeToolConfig{{Name: "inv", Steps: []config.WorkflowStepConfig{{ID: "", Type: "tool", Tool: "t"}}}},
 			wantError:   true,
 			errContains: "step ID is required",
 		},
 		{
 			name:        "invalid step type",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "invalid"}}}},
+			input:       []config.CompositeToolConfig{{Name: "inv", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "invalid"}}}},
 			wantError:   true,
 			errContains: "invalid step type",
 		},
 		{
 			name:        "tool step without tool name",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "tool"}}}},
+			input:       []config.CompositeToolConfig{{Name: "inv", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "tool"}}}},
 			wantError:   true,
 			errContains: "tool name is required",
 		},
 		{
 			name:        "elicitation without message",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Schema: map[string]any{}}}}},
+			input:       []config.CompositeToolConfig{{Name: "inv", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Schema: thvjson.NewMap(map[string]any{})}}}},
 			wantError:   true,
 			errContains: "message is required",
 		},
 		{
 			name:        "elicitation without schema",
-			input:       []*config.CompositeToolConfig{{Name: "inv", Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Message: "Test"}}}},
+			input:       []config.CompositeToolConfig{{Name: "inv", Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "elicitation", Message: "Test"}}}},
 			wantError:   true,
 			errContains: "schema is required",
 		},
@@ -213,7 +214,7 @@ func makeTools(names []string) []vmcp.Tool {
 func TestConvertSteps_ComplexWorkflow(t *testing.T) {
 	t.Parallel()
 
-	input := []*config.WorkflowStepConfig{
+	input := []config.WorkflowStepConfig{
 		{
 			ID:   "merge",
 			Type: "tool",
@@ -228,7 +229,7 @@ func TestConvertSteps_ComplexWorkflow(t *testing.T) {
 			ID:        "confirm",
 			Type:      "elicitation",
 			Message:   "Deploy?",
-			Schema:    map[string]any{"type": "object"},
+			Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
 			Timeout:   config.Duration(5 * time.Minute),
 			DependsOn: []string{"merge"},
 			OnDecline: &config.ElicitationResponseConfig{Action: "abort"},
@@ -272,16 +273,16 @@ func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		input  []*config.CompositeToolConfig
+		input  []config.CompositeToolConfig
 		verify func(t *testing.T, defs map[string]*composer.WorkflowDefinition)
 	}{
 		{
 			name: "composite tool with output config",
-			input: []*config.CompositeToolConfig{
+			input: []config.CompositeToolConfig{
 				{
 					Name:        "data_processor",
 					Description: "Process data with typed output",
-					Steps: []*config.WorkflowStepConfig{
+					Steps: []config.WorkflowStepConfig{
 						{ID: "fetch", Type: "tool", Tool: "data.fetch"},
 					},
 					Output: &config.OutputConfig{
@@ -320,10 +321,10 @@ func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
 		},
 		{
 			name: "composite tool without output config (backward compatible)",
-			input: []*config.CompositeToolConfig{
+			input: []config.CompositeToolConfig{
 				{
 					Name:   "simple_tool",
-					Steps:  []*config.WorkflowStepConfig{{ID: "step1", Type: "tool", Tool: "tool"}},
+					Steps:  []config.WorkflowStepConfig{{ID: "step1", Type: "tool", Tool: "tool"}},
 					Output: nil,
 				},
 			},
@@ -338,10 +339,10 @@ func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
 		},
 		{
 			name: "multiple tools with mixed output configs",
-			input: []*config.CompositeToolConfig{
+			input: []config.CompositeToolConfig{
 				{
 					Name:  "with_output",
-					Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t1"}},
+					Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t1"}},
 					Output: &config.OutputConfig{
 						Properties: map[string]config.OutputProperty{
 							"result": {Type: "string", Value: "{{.steps.s1.output.text}}"},
@@ -350,7 +351,7 @@ func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
 				},
 				{
 					Name:   "without_output",
-					Steps:  []*config.WorkflowStepConfig{{ID: "s2", Type: "tool", Tool: "t2"}},
+					Steps:  []config.WorkflowStepConfig{{ID: "s2", Type: "tool", Tool: "t2"}},
 					Output: nil,
 				},
 			},

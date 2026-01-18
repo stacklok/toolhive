@@ -21,7 +21,7 @@ import (
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
-// It uses the Kubernetes client directly to query MCPServer CRDs instead of going through k8s.Manager.
+// It uses the Kubernetes client directly to query MCPServer CRDs instead of going through k8s.BackendWatcher.
 type k8sDiscoverer struct {
 	k8sClient client.Client
 	namespace string

@@ -389,7 +389,7 @@ func processBuffer(
 		var syntaxError *json.SyntaxError
 		err := json.Unmarshal(buffer, &toolsListResponse)
 		if errors.As(err, &syntaxError) {
-			return fmt.Errorf("%w: %v", errKeepBuffering, err)
+			return fmt.Errorf("%w: %w", errKeepBuffering, err)
 		}
 		if err == nil && toolsListResponse.Result.Tools != nil {
 			return processToolsListResponse(config, toolsListResponse, w)
@@ -451,7 +451,7 @@ func processEventStream(
 				// so we need to write the "data: " prefix first.
 				_, err := w.Write([]byte("data: "))
 				if err != nil {
-					return fmt.Errorf("%w: %v", errBug, err)
+					return fmt.Errorf("%w: %w", errBug, err)
 				}
 
 				if err := processToolsListResponse(config, toolsListResponse, w); err != nil {
@@ -464,13 +464,13 @@ func processEventStream(
 		if !written {
 			_, err := w.Write(line)
 			if err != nil {
-				return fmt.Errorf("%w: %v", errBug, err)
+				return fmt.Errorf("%w: %w", errBug, err)
 			}
 		}
 
 		_, err := w.Write(linesep)
 		if err != nil {
-			return fmt.Errorf("%w: %v", errBug, err)
+			return fmt.Errorf("%w: %w", errBug, err)
 		}
 		linesepCount++
 	}
@@ -480,7 +480,7 @@ func processEventStream(
 	if linesepCount < linesepTotal {
 		_, err := w.Write(linesep)
 		if err != nil {
-			return fmt.Errorf("%w: %v", errBug, err)
+			return fmt.Errorf("%w: %w", errBug, err)
 		}
 	}
 
@@ -550,7 +550,7 @@ func processToolsListResponse(
 
 	toolsListResponse.Result.Tools = &filteredTools
 	if err := json.NewEncoder(w).Encode(toolsListResponse); err != nil {
-		return fmt.Errorf("%w: %v", errBug, err)
+		return fmt.Errorf("%w: %w", errBug, err)
 	}
 
 	return nil

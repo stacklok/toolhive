@@ -8,6 +8,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // SetupWebhookWithManager registers the webhook with the manager
@@ -41,9 +44,9 @@ func (*VirtualMCPServer) ValidateDelete(_ context.Context, _ runtime.Object) (ad
 // Validate performs validation for VirtualMCPServer
 // This method can be called by the controller during reconciliation or by the webhook
 func (r *VirtualMCPServer) Validate() error {
-	// Validate GroupRef is set (required field)
-	if r.Spec.GroupRef.Name == "" {
-		return fmt.Errorf("spec.groupRef.name is required")
+	// Validate Group is set (required field)
+	if r.Spec.Config.Group == "" {
+		return fmt.Errorf("spec.config.groupRef is required")
 	}
 
 	// Validate IncomingAuth configuration
@@ -61,14 +64,14 @@ func (r *VirtualMCPServer) Validate() error {
 	}
 
 	// Validate Aggregation configuration
-	if r.Spec.Aggregation != nil {
+	if r.Spec.Config.Aggregation != nil {
 		if err := r.validateAggregation(); err != nil {
 			return err
 		}
 	}
 
 	// Validate CompositeTools
-	if len(r.Spec.CompositeTools) > 0 {
+	if len(r.Spec.Config.CompositeTools) > 0 {
 		if err := r.validateCompositeTools(); err != nil {
 			return err
 		}
@@ -150,31 +153,35 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 // validateAggregation validates Aggregation configuration
 func (r *VirtualMCPServer) validateAggregation() error {
-	agg := r.Spec.Aggregation
+	agg := r.Spec.Config.Aggregation
 
 	// Validate conflict resolution strategy
 	if agg.ConflictResolution != "" {
-		validStrategies := map[string]bool{
-			ConflictResolutionPrefix:   true,
-			ConflictResolutionPriority: true,
-			ConflictResolutionManual:   true,
+		validStrategies := map[vmcp.ConflictResolutionStrategy]bool{
+			vmcp.ConflictStrategyPrefix:   true,
+			vmcp.ConflictStrategyPriority: true,
+			vmcp.ConflictStrategyManual:   true,
 		}
 		if !validStrategies[agg.ConflictResolution] {
-			return fmt.Errorf("spec.aggregation.conflictResolution must be one of: prefix, priority, manual")
+			return fmt.Errorf("config.aggregation.conflictResolution must be one of: prefix, priority, manual")
 		}
 	}
 
 	// Validate conflict resolution config based on strategy
 	if agg.ConflictResolutionConfig != nil {
-		config := agg.ConflictResolutionConfig
+		resConfig := agg.ConflictResolutionConfig
 
 		switch agg.ConflictResolution {
-		case ConflictResolutionPriority:
-			if len(config.PriorityOrder) == 0 {
-				return fmt.Errorf("spec.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority")
+		case vmcp.ConflictStrategyPrefix:
+			// Prefix strategy uses PrefixFormat if specified, otherwise defaults
+			// No additional validation required
+
+		case vmcp.ConflictStrategyPriority:
+			if len(resConfig.PriorityOrder) == 0 {
+				return fmt.Errorf("config.aggregation.conflictResolutionConfig.priorityOrder is required when conflictResolution is priority")
 			}
 
-		case ConflictResolutionManual:
+		case vmcp.ConflictStrategyManual:
 			// For manual resolution, tools must define explicit overrides
 			// This will be validated at runtime when conflicts are detected
 		}
@@ -183,209 +190,37 @@ func (r *VirtualMCPServer) validateAggregation() error {
 	// Validate per-workload tool configurations
 	for i, toolConfig := range agg.Tools {
 		if toolConfig.Workload == "" {
-			return fmt.Errorf("spec.aggregation.tools[%d].workload is required", i)
+			return fmt.Errorf("config.aggregation.tools[%d].workload is required", i)
 		}
 
 		// If ToolConfigRef is specified, ensure it has a name
 		if toolConfig.ToolConfigRef != nil && toolConfig.ToolConfigRef.Name == "" {
-			return fmt.Errorf("spec.aggregation.tools[%d].toolConfigRef.name is required when toolConfigRef is specified", i)
+			return fmt.Errorf("config.aggregation.tools[%d].toolConfigRef.name is required when toolConfigRef is specified", i)
 		}
 	}
 
 	return nil
 }
 
-// validateCompositeTools validates composite tool definitions
+// validateCompositeTools validates composite tool definitions in spec.config.compositeTools.
+// Uses shared validation from pkg/vmcp/config/composite_validation.go.
 func (r *VirtualMCPServer) validateCompositeTools() error {
 	toolNames := make(map[string]bool)
 
-	for i, tool := range r.Spec.CompositeTools {
-		if err := r.validateCompositeTool(i, tool, toolNames); err != nil {
+	for i := range r.Spec.Config.CompositeTools {
+		tool := &r.Spec.Config.CompositeTools[i]
+
+		// Check for duplicate tool names
+		if toolNames[tool.Name] {
+			return fmt.Errorf("spec.config.compositeTools[%d].name %q is duplicated", i, tool.Name)
+		}
+		toolNames[tool.Name] = true
+
+		// Use shared validation
+		if err := config.ValidateCompositeToolConfig(
+			fmt.Sprintf("spec.config.compositeTools[%d]", i), tool,
+		); err != nil {
 			return err
-		}
-	}
-
-	return nil
-}
-
-// validateCompositeTool validates a single composite tool
-func (*VirtualMCPServer) validateCompositeTool(index int, tool CompositeToolSpec, toolNames map[string]bool) error {
-	// Check for required fields
-	if tool.Name == "" {
-		return fmt.Errorf("spec.compositeTools[%d].name is required", index)
-	}
-	if tool.Description == "" {
-		return fmt.Errorf("spec.compositeTools[%d].description is required", index)
-	}
-	if len(tool.Steps) == 0 {
-		return fmt.Errorf("spec.compositeTools[%d].steps must have at least one step", index)
-	}
-
-	// Check for duplicate tool names
-	if toolNames[tool.Name] {
-		return fmt.Errorf("spec.compositeTools[%d].name %q is duplicated", index, tool.Name)
-	}
-	toolNames[tool.Name] = true
-
-	// Validate steps
-	if err := validateCompositeToolSteps(index, tool.Steps); err != nil {
-		return err
-	}
-
-	// Validate defaultResults for skippable steps
-	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", index)
-	return validateDefaultResultsForSteps(pathPrefix, tool.Steps, tool.Output)
-}
-
-// validateCompositeToolSteps validates all steps in a composite tool
-func validateCompositeToolSteps(toolIndex int, steps []WorkflowStep) error {
-	stepIDs := make(map[string]bool)
-
-	for j, step := range steps {
-		if err := validateCompositeToolStep(toolIndex, j, step, steps, stepIDs); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// validateCompositeToolStep validates a single workflow step
-func validateCompositeToolStep(
-	toolIndex, stepIndex int, step WorkflowStep, allSteps []WorkflowStep, stepIDs map[string]bool,
-) error {
-	if step.ID == "" {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].id is required", toolIndex, stepIndex)
-	}
-
-	// Check for duplicate step IDs
-	if stepIDs[step.ID] {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].id %q is duplicated", toolIndex, stepIndex, step.ID)
-	}
-	stepIDs[step.ID] = true
-
-	// Validate step type
-	if err := validateStepType(toolIndex, stepIndex, step); err != nil {
-		return err
-	}
-
-	// Validate dependsOn references
-	if err := validateStepDependencies(toolIndex, stepIndex, step, allSteps, stepIDs); err != nil {
-		return err
-	}
-
-	// Validate error handling
-	if err := validateStepErrorHandling(toolIndex, stepIndex, step); err != nil {
-		return err
-	}
-
-	// Validate elicitation response handlers
-	if err := validateStepElicitationResponseHandlers(toolIndex, stepIndex, step); err != nil {
-		return err
-	}
-
-	// Validate templates in arguments and other fields
-	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", toolIndex)
-	return validateWorkflowStepTemplates(pathPrefix, stepIndex, step)
-}
-
-// validateStepType validates the step type and type-specific requirements
-func validateStepType(toolIndex, stepIndex int, step WorkflowStep) error {
-	if step.Type != "" && step.Type != WorkflowStepTypeToolCall && step.Type != WorkflowStepTypeElicitation {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].type must be tool or elicitation", toolIndex, stepIndex)
-	}
-
-	stepType := step.Type
-	if stepType == "" {
-		stepType = WorkflowStepTypeToolCall // default
-	}
-
-	if stepType == WorkflowStepTypeToolCall && step.Tool == "" {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].tool is required when type is tool", toolIndex, stepIndex)
-	}
-
-	if stepType == WorkflowStepTypeElicitation && step.Message == "" {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].message is required when type is elicitation", toolIndex, stepIndex)
-	}
-
-	return nil
-}
-
-// validateStepDependencies validates that dependsOn references exist
-func validateStepDependencies(
-	toolIndex, stepIndex int, step WorkflowStep, allSteps []WorkflowStep, stepIDs map[string]bool,
-) error {
-	for _, depID := range step.DependsOn {
-		if !stepIDs[depID] {
-			// Check if it's a forward reference
-			found := false
-			for k := stepIndex + 1; k < len(allSteps); k++ {
-				if allSteps[k].ID == depID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("spec.compositeTools[%d].steps[%d].dependsOn references unknown step %q",
-					toolIndex, stepIndex, depID)
-			}
-		}
-	}
-	return nil
-}
-
-// validateStepErrorHandling validates error handling configuration for a step
-func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) error {
-	if step.OnError == nil || step.OnError.Action == "" {
-		return nil
-	}
-
-	validActions := map[string]bool{
-		ErrorActionAbort:    true,
-		ErrorActionContinue: true,
-		ErrorActionRetry:    true,
-	}
-	if !validActions[step.OnError.Action] {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.action must be abort, continue, or retry",
-			toolIndex, stepIndex)
-	}
-
-	if step.OnError.Action == ErrorActionRetry && step.OnError.MaxRetries < 1 {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.maxRetries must be at least 1 when action is retry",
-			toolIndex, stepIndex)
-	}
-
-	if step.OnError.Action == ErrorActionRetry && step.OnError.RetryDelay != "" {
-		if err := validateDuration(step.OnError.RetryDelay); err != nil {
-			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.retryDelay: %w",
-				toolIndex, stepIndex, err)
-		}
-	}
-
-	return nil
-}
-
-// validateStepElicitationResponseHandlers validates elicitation response handler configuration for a step
-func validateStepElicitationResponseHandlers(toolIndex, stepIndex int, step WorkflowStep) error {
-	validActions := map[string]bool{
-		"skip_remaining": true,
-		"abort":          true,
-		"continue":       true,
-	}
-
-	// Validate OnDecline action
-	if step.OnDecline != nil && step.OnDecline.Action != "" {
-		if !validActions[step.OnDecline.Action] {
-			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onDecline.action must be one of: skip_remaining, abort, continue",
-				toolIndex, stepIndex)
-		}
-	}
-
-	// Validate OnCancel action
-	if step.OnCancel != nil && step.OnCancel.Action != "" {
-		if !validActions[step.OnCancel.Action] {
-			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onCancel.action must be one of: skip_remaining, abort, continue",
-				toolIndex, stepIndex)
 		}
 	}
 

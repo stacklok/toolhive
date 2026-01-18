@@ -2,6 +2,7 @@ package groups
 
 import (
 	"context"
+	goerr "errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -48,7 +48,7 @@ func TestCRDManager_Create(t *testing.T) {
 		groupName   string
 		setupObjs   []client.Object
 		expectError bool
-		errorType   string
+		errorType   error
 		errorMsg    string
 	}{
 		{
@@ -70,7 +70,7 @@ func TestCRDManager_Create(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorType:   thverrors.ErrGroupAlreadyExists,
+			errorType:   ErrGroupAlreadyExists,
 			errorMsg:    "already exists",
 		},
 		{
@@ -78,7 +78,7 @@ func TestCRDManager_Create(t *testing.T) {
 			groupName:   "MyGroup",
 			setupObjs:   []client.Object{},
 			expectError: true,
-			errorType:   thverrors.ErrInvalidArgument,
+			errorType:   ErrInvalidGroupName,
 			errorMsg:    "must be lowercase",
 		},
 		{
@@ -86,7 +86,7 @@ func TestCRDManager_Create(t *testing.T) {
 			groupName:   "",
 			setupObjs:   []client.Object{},
 			expectError: true,
-			errorType:   thverrors.ErrInvalidArgument,
+			errorType:   ErrInvalidGroupName,
 		},
 	}
 
@@ -101,12 +101,7 @@ func TestCRDManager_Create(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err)
-				if tt.errorType != "" {
-					var thErr *thverrors.Error
-					if assert.ErrorAs(t, err, &thErr) {
-						assert.Equal(t, tt.errorType, thErr.Type)
-					}
-				}
+				assert.ErrorIs(t, err, tt.errorType)
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}
@@ -131,7 +126,7 @@ func TestCRDManager_Get(t *testing.T) {
 		groupName   string
 		setupObjs   []client.Object
 		expectError bool
-		errorType   string
+		errorType   error
 		expected    *Group
 	}{
 		{
@@ -157,7 +152,7 @@ func TestCRDManager_Get(t *testing.T) {
 			groupName:   "nonexistent",
 			setupObjs:   []client.Object{},
 			expectError: true,
-			errorType:   thverrors.ErrGroupNotFound,
+			errorType:   ErrGroupNotFound,
 		},
 		{
 			name:      "group with no registered clients",
@@ -190,11 +185,8 @@ func TestCRDManager_Get(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err)
-				if tt.errorType != "" {
-					var thErr *thverrors.Error
-					if assert.ErrorAs(t, err, &thErr) {
-						assert.Equal(t, tt.errorType, thErr.Type)
-					}
+				if goerr.Is(err, tt.errorType) {
+					assert.ErrorIs(t, err, tt.errorType)
 				}
 				assert.Nil(t, group)
 			} else {
@@ -290,7 +282,7 @@ func TestCRDManager_Delete(t *testing.T) {
 		groupName   string
 		setupObjs   []client.Object
 		expectError bool
-		errorType   string
+		errorType   error
 	}{
 		{
 			name:      "successful deletion",
@@ -311,7 +303,7 @@ func TestCRDManager_Delete(t *testing.T) {
 			groupName:   "nonexistent",
 			setupObjs:   []client.Object{},
 			expectError: true,
-			errorType:   thverrors.ErrGroupNotFound,
+			errorType:   ErrGroupNotFound,
 		},
 	}
 
@@ -326,11 +318,8 @@ func TestCRDManager_Delete(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err)
-				if tt.errorType != "" {
-					var thErr *thverrors.Error
-					if assert.ErrorAs(t, err, &thErr) {
-						assert.Equal(t, tt.errorType, thErr.Type)
-					}
+				if goerr.Is(err, tt.errorType) {
+					assert.ErrorIs(t, err, tt.errorType)
 				}
 			} else {
 				assert.NoError(t, err)

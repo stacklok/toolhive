@@ -40,7 +40,16 @@ type Config struct {
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
+
+	// Bearer token configuration (alternative to OAuth)
+	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
+	BearerTokenFile string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
 }
+
+// BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
+// The bearer token will be read from this environment variable if not provided via flag or file.
+// #nosec G101 - this is an environment variable name, not a credential
+const BearerTokenEnvVarName = "TOOLHIVE_REMOTE_AUTH_BEARER_TOKEN"
 
 // UnmarshalJSON implements custom JSON unmarshaling for backward compatibility
 // This handles both the old PascalCase format and the new snake_case format
@@ -70,6 +79,8 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 			Headers          []*registry.Header `json:"Headers,omitempty"`
 			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
 			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
+			BearerToken      string             `json:"BearerToken,omitempty"`
+			BearerTokenFile  string             `json:"BearerTokenFile,omitempty"`
 		}
 
 		if err := json.Unmarshal(data, &oldFormat); err != nil {
@@ -91,6 +102,8 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 		r.Headers = oldFormat.Headers
 		r.EnvVars = oldFormat.EnvVars
 		r.OAuthParams = oldFormat.OAuthParams
+		r.BearerToken = oldFormat.BearerToken
+		r.BearerTokenFile = oldFormat.BearerTokenFile
 		return nil
 	}
 

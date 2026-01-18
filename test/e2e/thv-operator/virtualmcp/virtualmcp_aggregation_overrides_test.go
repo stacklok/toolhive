@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -46,29 +47,29 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					// Tool overrides: rename echo to custom_echo_tool with new description
-					// Note: Filter uses the user-facing name (after override), so we filter by
-					// the renamed tool name, not the original name.
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backendName,
-							Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
-							Overrides: map[string]mcpv1alpha1.ToolOverride{
-								originalToolName: {
-									Name:        renamedToolName,
-									Description: newDescription,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						// Tool overrides: rename echo to custom_echo_tool with new description
+						// Note: Filter uses the user-facing name (after override), so we filter by
+						// the renamed tool name, not the original name.
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backendName,
+								Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
+								Overrides: map[string]*vmcpconfig.ToolOverride{
+									originalToolName: {
+										Name:        renamedToolName,
+										Description: newDescription,
+									},
 								},
 							},
 						},
 					},
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
 			},
@@ -180,11 +181,11 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(1))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(1))
 
 			// Verify backend config has overrides
-			backendConfig := vmcpServer.Spec.Aggregation.Tools[0]
+			backendConfig := vmcpServer.Spec.Config.Aggregation.Tools[0]
 			Expect(backendConfig.Workload).To(Equal(backendName))
 			Expect(backendConfig.Overrides).To(HaveLen(1))
 

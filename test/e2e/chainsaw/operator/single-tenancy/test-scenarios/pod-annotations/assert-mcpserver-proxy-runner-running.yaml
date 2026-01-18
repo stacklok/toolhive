@@ -1,0 +1,8 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ($testPrefix)
+  namespace: toolhive-system
+status:
+  availableReplicas: 1
+

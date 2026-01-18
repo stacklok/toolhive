@@ -3,8 +3,10 @@ package v1alpha1
 import (
 	"strings"
 	"testing"
+	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
@@ -19,13 +21,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid minimal workflow",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application to production",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Type: WorkflowStepTypeToolCall,
-							Tool: "kubectl.apply",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application to production",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Type: WorkflowStepTypeToolCall,
+								Tool: "kubectl.apply",
+							},
 						},
 					},
 				},
@@ -36,12 +40,14 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "missing workflow name",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Tool: "kubectl.apply",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Tool: "kubectl.apply",
+							},
 						},
 					},
 				},
@@ -53,12 +59,14 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "missing description",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Tool: "kubectl.apply",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Tool: "kubectl.apply",
+							},
 						},
 					},
 				},
@@ -70,9 +78,11 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "no steps",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps:       []WorkflowStep{},
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps:       []config.WorkflowStepConfig{},
+					},
 				},
 			},
 			wantErr: true,
@@ -82,16 +92,18 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "duplicate step IDs",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Tool: "kubectl.apply",
-						},
-						{
-							ID:   "step1",
-							Tool: "kubectl.get",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Tool: "kubectl.apply",
+							},
+							{
+								ID:   "step1",
+								Tool: "kubectl.get",
+							},
 						},
 					},
 				},
@@ -103,31 +115,32 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid workflow with parameters",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application with parameters",
-					Parameters: &runtime.RawExtension{
-						Raw: []byte(`{
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application with parameters",
+						Parameters: thvjson.NewMap(map[string]any{
 							"type": "object",
-							"properties": {
-								"environment": {
-									"type": "string",
-									"description": "Target environment"
+							"properties": map[string]any{
+								"environment": map[string]any{
+									"type":        "string",
+									"description": "Target environment",
 								},
-								"replicas": {
-									"type": "integer",
+								"replicas": map[string]any{
+									"type":        "integer",
 									"description": "Number of replicas",
-									"default": 3
-								}
+									"default":     3,
+								},
 							},
-							"required": ["environment"]
-						}`),
-					},
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-							Arguments: &runtime.RawExtension{
-								Raw: []byte(`{"namespace": "{{.params.environment}}", "replicas": "{{.params.replicas}}"}`),
+							"required": []any{"environment"},
+						}),
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+								Arguments: thvjson.NewMap(map[string]any{
+									"namespace": "{{.params.environment}}",
+									"replicas":  "{{.params.replicas}}",
+								}),
 							},
 						},
 					},
@@ -139,22 +152,20 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "invalid parameter type",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Parameters: &runtime.RawExtension{
-						Raw: []byte(`{
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Parameters: thvjson.NewMap(map[string]any{
 							"type": "invalid_type_not_object",
-							"properties": {
-								"environment": {
-									"type": "string"
-								}
-							}
-						}`),
-					},
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Tool: "kubectl.apply",
+							"properties": map[string]any{
+								"environment": map[string]any{"type": "string"},
+							},
+						}),
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Tool: "kubectl.apply",
+							},
 						},
 					},
 				},
@@ -166,12 +177,14 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "missing step ID",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "",
-							Tool: "kubectl.apply",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "",
+								Tool: "kubectl.apply",
+							},
 						},
 					},
 				},
@@ -183,13 +196,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "missing tool for tool step",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Type: WorkflowStepTypeToolCall,
-							Tool: "",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Type: WorkflowStepTypeToolCall,
+								Tool: "",
+							},
 						},
 					},
 				},
@@ -198,35 +213,39 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			errMsg:  "spec.steps[0].tool is required when type is tool",
 		},
 		{
-			name: "invalid tool reference format",
+			name: "invalid tool reference with special characters",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "step1",
-							Type: WorkflowStepTypeToolCall,
-							Tool: "invalid-tool-reference",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Type: WorkflowStepTypeToolCall,
+								Tool: "invalid@tool!",
+							},
 						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.steps[0].tool must be in format 'workload.tool_name'",
+			errMsg:  "spec.steps[0].tool must be a valid tool name",
 		},
 		{
 			name: "valid elicitation step",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "interactive_deploy",
-					Description: "Deploy with user confirmation",
-					Steps: []WorkflowStep{
-						{
-							ID:      "confirm",
-							Type:    WorkflowStepTypeElicitation,
-							Message: "Are you sure you want to deploy to production?",
-							Schema:  &runtime.RawExtension{Raw: []byte(`{"type": "boolean"}`)},
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "interactive_deploy",
+						Description: "Deploy with user confirmation",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:      "confirm",
+								Type:    WorkflowStepTypeElicitation,
+								Message: "Are you sure you want to deploy to production?",
+								Schema:  thvjson.NewMap(map[string]any{"type": "boolean"}),
+							},
 						},
 					},
 				},
@@ -237,13 +256,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "missing message for elicitation step",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "interactive_deploy",
-					Description: "Deploy with user confirmation",
-					Steps: []WorkflowStep{
-						{
-							ID:      "confirm",
-							Type:    WorkflowStepTypeElicitation,
-							Message: "",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "interactive_deploy",
+						Description: "Deploy with user confirmation",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:      "confirm",
+								Type:    WorkflowStepTypeElicitation,
+								Message: "",
+							},
 						},
 					},
 				},
@@ -252,58 +273,22 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			errMsg:  "spec.steps[0].message is required when type is elicitation",
 		},
 		{
-			name: "invalid JSON Schema in elicitation step",
-			ctd: &VirtualMCPCompositeToolDefinition{
-				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "interactive_deploy",
-					Description: "Deploy with user confirmation",
-					Steps: []WorkflowStep{
-						{
-							ID:      "confirm",
-							Type:    WorkflowStepTypeElicitation,
-							Message: "Confirm deployment?",
-							Schema:  &runtime.RawExtension{Raw: []byte(`{"type": "invalid_json_schema_type"}`)},
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.steps[0].schema: invalid JSON Schema",
-		},
-		{
-			name: "malformed JSON in elicitation step schema",
-			ctd: &VirtualMCPCompositeToolDefinition{
-				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "interactive_deploy",
-					Description: "Deploy with user confirmation",
-					Steps: []WorkflowStep{
-						{
-							ID:      "confirm",
-							Type:    WorkflowStepTypeElicitation,
-							Message: "Confirm deployment?",
-							Schema:  &runtime.RawExtension{Raw: []byte(`{invalid json}`)},
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.steps[0].schema: invalid JSON Schema",
-		},
-		{
 			name: "valid workflow with dependencies",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_and_verify",
-					Description: "Deploy and verify application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-						},
-						{
-							ID:        "verify",
-							Tool:      "kubectl.get",
-							DependsOn: []string{"deploy"},
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_and_verify",
+						Description: "Deploy and verify application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+							},
+							{
+								ID:        "verify",
+								Tool:      "kubectl.get",
+								DependsOn: []string{"deploy"},
+							},
 						},
 					},
 				},
@@ -314,13 +299,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "invalid dependency reference",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_and_verify",
-					Description: "Deploy and verify application",
-					Steps: []WorkflowStep{
-						{
-							ID:        "verify",
-							Tool:      "kubectl.get",
-							DependsOn: []string{"nonexistent"},
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_and_verify",
+						Description: "Deploy and verify application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:        "verify",
+								Tool:      "kubectl.get",
+								DependsOn: []string{"nonexistent"},
+							},
 						},
 					},
 				},
@@ -332,18 +319,20 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "dependency cycle",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "cyclic_workflow",
-					Description: "Workflow with dependency cycle",
-					Steps: []WorkflowStep{
-						{
-							ID:        "step1",
-							Tool:      "tool.a",
-							DependsOn: []string{"step2"},
-						},
-						{
-							ID:        "step2",
-							Tool:      "tool.b",
-							DependsOn: []string{"step1"},
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "cyclic_workflow",
+						Description: "Workflow with dependency cycle",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:        "step1",
+								Tool:      "tool.a",
+								DependsOn: []string{"step2"},
+							},
+							{
+								ID:        "step2",
+								Tool:      "tool.b",
+								DependsOn: []string{"step1"},
+							},
 						},
 					},
 				},
@@ -355,15 +344,17 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid error handling with retry",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "resilient_deploy",
-					Description: "Deploy with retry logic",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-							OnError: &ErrorHandling{
-								Action:     ErrorActionRetry,
-								MaxRetries: 3,
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "resilient_deploy",
+						Description: "Deploy with retry logic",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+								OnError: &config.StepErrorHandling{
+									Action:     ErrorActionRetry,
+									RetryCount: 3,
+								},
 							},
 						},
 					},
@@ -372,38 +363,42 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid error handling - retry without maxRetries",
+			name: "invalid error handling - retry without retryCount",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-							OnError: &ErrorHandling{
-								Action:     ErrorActionRetry,
-								MaxRetries: 0,
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+								OnError: &config.StepErrorHandling{
+									Action:     ErrorActionRetry,
+									RetryCount: 0,
+								},
 							},
 						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.steps[0].onError.maxRetries must be at least 1 when action is retry",
+			errMsg:  "spec.steps[0].onError.retryCount must be at least 1 when action is retry",
 		},
 		{
 			name: "invalid error handling action",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-							OnError: &ErrorHandling{
-								Action: "invalid",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+								OnError: &config.StepErrorHandling{
+									Action: "invalid",
+								},
 							},
 						},
 					},
@@ -416,88 +411,35 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid timeout configuration",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "timed_deploy",
-					Description: "Deploy with timeout",
-					Timeout:     "5m",
-					Steps: []WorkflowStep{
-						{
-							ID:      "deploy",
-							Tool:    "kubectl.apply",
-							Timeout: "2m",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "timed_deploy",
+						Description: "Deploy with timeout",
+						Timeout:     config.Duration(5 * time.Minute),
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:      "deploy",
+								Tool:    "kubectl.apply",
+								Timeout: config.Duration(2 * time.Minute),
+							},
 						},
 					},
 				},
 			},
 			wantErr: false,
-		},
-		{
-			name: "invalid timeout format",
-			ctd: &VirtualMCPCompositeToolDefinition{
-				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Timeout:     "invalid",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.timeout",
-		},
-		{
-			name: "valid failure mode configuration",
-			ctd: &VirtualMCPCompositeToolDefinition{
-				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "continue_deploy",
-					Description: "Deploy with continue mode",
-					FailureMode: ErrorActionContinue,
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy1",
-							Tool: "kubectl.apply",
-						},
-						{
-							ID:   "deploy2",
-							Tool: "kubectl.apply",
-						},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid failure mode",
-			ctd: &VirtualMCPCompositeToolDefinition{
-				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					FailureMode: "invalid",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.failureMode must be one of: abort, continue",
 		},
 		{
 			name: "valid conditional step",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "conditional_deploy",
-					Description: "Deploy with condition",
-					Steps: []WorkflowStep{
-						{
-							ID:        "check",
-							Tool:      "kubectl.get",
-							Condition: "{{.params.production}}",
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "conditional_deploy",
+						Description: "Deploy with condition",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:        "check",
+								Tool:      "kubectl.get",
+								Condition: "{{.params.production}}",
+							},
 						},
 					},
 				},
@@ -508,14 +450,16 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "invalid template syntax in arguments",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "deploy_app",
-					Description: "Deploy application",
-					Steps: []WorkflowStep{
-						{
-							ID:   "deploy",
-							Tool: "kubectl.apply",
-							Arguments: &runtime.RawExtension{
-								Raw: []byte(`{"namespace": "{{.params.env"}`),
+					CompositeToolConfig: config.CompositeToolConfig{
+						Name:        "deploy_app",
+						Description: "Deploy application",
+						Steps: []config.WorkflowStepConfig{
+							{
+								ID:   "deploy",
+								Tool: "kubectl.apply",
+								Arguments: thvjson.NewMap(map[string]any{
+									"namespace": "{{.params.env",
+								}),
 							},
 						},
 					},
@@ -546,71 +490,6 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 	}
 }
 
-func TestValidateDuration(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		duration string
-		wantErr  bool
-	}{
-		{
-			name:     "valid seconds",
-			duration: "30s",
-			wantErr:  false,
-		},
-		{
-			name:     "valid minutes",
-			duration: "5m",
-			wantErr:  false,
-		},
-		{
-			name:     "valid hours",
-			duration: "1h",
-			wantErr:  false,
-		},
-		{
-			name:     "valid milliseconds",
-			duration: "500ms",
-			wantErr:  false,
-		},
-		{
-			name:     "valid compound",
-			duration: "1h30m",
-			wantErr:  false,
-		},
-		{
-			name:     "valid decimal",
-			duration: "1.5s",
-			wantErr:  false,
-		},
-		{
-			name:     "invalid format",
-			duration: "invalid",
-			wantErr:  true,
-		},
-		{
-			name:     "invalid unit",
-			duration: "30x",
-			wantErr:  true,
-		},
-		{
-			name:     "empty string",
-			duration: "",
-			wantErr:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := validateDuration(tt.duration)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateDuration() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestIsValidToolReference(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -619,7 +498,7 @@ func TestIsValidToolReference(t *testing.T) {
 		wantValid bool
 	}{
 		{
-			name:      "valid tool reference",
+			name:      "valid tool reference with dot",
 			tool:      "kubectl.apply",
 			wantValid: true,
 		},
@@ -634,28 +513,38 @@ func TestIsValidToolReference(t *testing.T) {
 			wantValid: true,
 		},
 		{
-			name:      "invalid - missing dot",
-			tool:      "kubectl-apply",
-			wantValid: false,
+			name:      "valid simple name without dot",
+			tool:      "kubectl",
+			wantValid: true,
 		},
 		{
-			name:      "invalid - empty workload",
+			name:      "valid with multiple dots",
+			tool:      "kubectl.apply.extra",
+			wantValid: true,
+		},
+		{
+			name:      "valid with trailing dot",
+			tool:      "kubectl.",
+			wantValid: true,
+		},
+		{
+			name:      "invalid - starts with dot",
 			tool:      ".apply",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - empty tool",
-			tool:      "kubectl.",
+			name:      "invalid - empty string",
+			tool:      "",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - multiple dots",
-			tool:      "kubectl.apply.extra",
+			name:      "invalid - special characters",
+			tool:      "invalid@tool!",
 			wantValid: false,
 		},
 		{
-			name:      "invalid - no dot",
-			tool:      "kubectl",
+			name:      "invalid - contains spaces",
+			tool:      "my tool",
 			wantValid: false,
 		},
 	}
@@ -663,9 +552,9 @@ func TestIsValidToolReference(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			valid := isValidToolReference(tt.tool)
+			valid := config.IsValidToolReference(tt.tool)
 			if valid != tt.wantValid {
-				t.Errorf("isValidToolReference() = %v, want %v", valid, tt.wantValid)
+				t.Errorf("config.IsValidToolReference() = %v, want %v", valid, tt.wantValid)
 			}
 		})
 	}

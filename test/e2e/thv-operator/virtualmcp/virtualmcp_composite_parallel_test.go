@@ -1,7 +1,6 @@
 package virtualmcp
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,10 +8,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -42,36 +42,6 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
 		}, timeout, pollingInterval)
 
-		// JSON Schema for composite tool parameters
-		parameterSchema := map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"message": map[string]interface{}{
-					"type":        "string",
-					"description": "The message to echo in parallel to both backends",
-				},
-			},
-			"required": []string{"message"},
-		}
-		paramSchemaBytes, err := json.Marshal(parameterSchema)
-		Expect(err).ToNot(HaveOccurred())
-
-		// Build arguments as JSON for runtime.RawExtension
-		backend1Args, err := json.Marshal(map[string]any{
-			"input": "backend1: {{ .params.message }}",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		backend2Args, err := json.Marshal(map[string]any{
-			"input": "backend2: {{ .params.message }}",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		combineArgs, err := json.Marshal(map[string]any{
-			"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
 		By("Creating VirtualMCPServer with composite parallel workflow")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -79,56 +49,63 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+					// Define a composite tool that echoes to both backends in parallel
+					// Steps without DependsOn can execute concurrently
+					CompositeTools: []vmcpconfig.CompositeToolConfig{
+						{
+							Name:        compositeToolName,
+							Description: "Echoes message to both backends in parallel, then combines results",
+							Parameters: thvjson.NewMap(map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"message": map[string]any{
+										"type":        "string",
+										"description": "The message to echo in parallel to both backends",
+									},
+								},
+								"required": []any{"message"},
+							}),
+							Timeout: vmcpconfig.Duration(60 * time.Second),
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									// Step 1: Echo to backend1 (no dependencies - runs in parallel)
+									ID:   "echo_backend1",
+									Type: "tool",
+									Tool: fmt.Sprintf("%s.echo", backend1Name),
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "backend1: {{ .params.message }}",
+									}),
+								},
+								{
+									// Step 2: Echo to backend2 (no dependencies - runs in parallel with step 1)
+									ID:   "echo_backend2",
+									Type: "tool",
+									Tool: fmt.Sprintf("%s.echo", backend2Name),
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "backend2: {{ .params.message }}",
+									}),
+								},
+								{
+									// Step 3: Final aggregation - depends on both parallel steps
+									ID:        "combine_results",
+									Type:      "tool",
+									Tool:      fmt.Sprintf("%s.echo", backend1Name),
+									DependsOn: []string{"echo_backend1", "echo_backend2"},
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
+									}),
+								},
+							},
+						},
+					},
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-				},
-				// Define a composite tool that echoes to both backends in parallel
-				// Steps without DependsOn can execute concurrently
-				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-					{
-						Name:        compositeToolName,
-						Description: "Echoes message to both backends in parallel, then combines results",
-						Parameters: &runtime.RawExtension{
-							Raw: paramSchemaBytes,
-						},
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								// Step 1: Echo to backend1 (no dependencies - runs in parallel)
-								ID:   "echo_backend1",
-								Type: "tool",
-								Tool: fmt.Sprintf("%s.echo", backend1Name),
-								Arguments: &runtime.RawExtension{
-									Raw: backend1Args,
-								},
-							},
-							{
-								// Step 2: Echo to backend2 (no dependencies - runs in parallel with step 1)
-								ID:   "echo_backend2",
-								Type: "tool",
-								Tool: fmt.Sprintf("%s.echo", backend2Name),
-								Arguments: &runtime.RawExtension{
-									Raw: backend2Args,
-								},
-							},
-							{
-								// Step 3: Final aggregation - depends on both parallel steps
-								ID:        "combine_results",
-								Type:      "tool",
-								Tool:      fmt.Sprintf("%s.echo", backend1Name),
-								DependsOn: []string{"echo_backend1", "echo_backend2"},
-								Arguments: &runtime.RawExtension{
-									Raw: combineArgs,
-								},
-							},
-						},
-						Timeout: "60s",
-					},
 				},
 				ServiceType: "NodePort",
 			},
@@ -250,9 +227,9 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.CompositeTools).To(HaveLen(1))
+			Expect(vmcpServer.Spec.Config.CompositeTools).To(HaveLen(1))
 
-			compositeTool := vmcpServer.Spec.CompositeTools[0]
+			compositeTool := vmcpServer.Spec.Config.CompositeTools[0]
 			Expect(compositeTool.Name).To(Equal(compositeToolName))
 			Expect(compositeTool.Steps).To(HaveLen(3))
 
@@ -270,9 +247,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			Expect(step3.ID).To(Equal("combine_results"))
 			Expect(step3.DependsOn).To(ContainElements("echo_backend1", "echo_backend2"))
 
-			// Verify template usage combines outputs from parallel steps (unmarshal from RawExtension)
-			var step3Args map[string]any
-			Expect(json.Unmarshal(step3.Arguments.Raw, &step3Args)).To(Succeed())
+			// Verify template usage combines outputs from parallel steps
+			step3Args := step3.Arguments.Value
 			Expect(step3Args["input"]).To(ContainSubstring(".steps.echo_backend1"))
 			Expect(step3Args["input"]).To(ContainSubstring(".steps.echo_backend2"))
 		})
@@ -285,7 +261,7 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			compositeTool := vmcpServer.Spec.CompositeTools[0]
+			compositeTool := vmcpServer.Spec.Config.CompositeTools[0]
 
 			// Verify steps target different backends
 			step1 := compositeTool.Steps[0]

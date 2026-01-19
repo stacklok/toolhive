@@ -45,11 +45,11 @@ optimizer:
   # Enable the optimizer
   enabled: true
   
-  # Embedding backend: "ollama", "openai-compatible", or "placeholder"
-  # - "ollama": Uses local Ollama HTTP API for embeddings
+  # Embedding backend: "ollama" (default), "openai-compatible", or "vllm"
+  # - "ollama": Uses local Ollama HTTP API for embeddings (default, requires 'ollama serve')
   # - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
-  # - "placeholder": Uses deterministic hash-based embeddings (for testing)
-  embeddingBackend: placeholder
+  # - "vllm": Alias for OpenAI-compatible API
+  embeddingBackend: ollama
   
   # Embedding dimension (common values: 384, 768, 1536)
   # 384 is standard for all-MiniLM-L6-v2 and nomic-embed-text
@@ -75,7 +75,7 @@ optimizer:
   # Option 1: Local Ollama (good for development/testing)
   # embeddingBackend: ollama
   # embeddingURL: http://localhost:11434
-  # embeddingModel: nomic-embed-text
+  # embeddingModel: all-minilm  # Default model (all-MiniLM-L6-v2)
   # embeddingDimension: 384
   
   # Option 2: vLLM (recommended for production with GPU acceleration)

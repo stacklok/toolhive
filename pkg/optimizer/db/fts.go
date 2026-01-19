@@ -316,6 +316,22 @@ func (fts *FTSDatabase) SearchBM25(
 	return results, nil
 }
 
+// GetTotalToolTokens returns the sum of token_count across all tools
+func (fts *FTSDatabase) GetTotalToolTokens(ctx context.Context) (int, error) {
+	fts.mu.RLock()
+	defer fts.mu.RUnlock()
+
+	var totalTokens int
+	query := "SELECT COALESCE(SUM(token_count), 0) FROM backend_tools_fts"
+
+	err := fts.db.QueryRowContext(ctx, query).Scan(&totalTokens)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get total tool tokens: %w", err)
+	}
+
+	return totalTokens, nil
+}
+
 // Close closes the FTS database connection
 func (fts *FTSDatabase) Close() error {
 	return fts.db.Close()

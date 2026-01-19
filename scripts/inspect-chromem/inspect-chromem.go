@@ -35,9 +35,9 @@ func main() {
 	fmt.Println("  - backend_tools")
 	fmt.Println()
 
-	// Create a dummy embedding function (we're just inspecting, not querying)
+	// Create an embedding function for collection access (we're just inspecting, not querying)
 	dummyEmbedding := func(ctx context.Context, text string) ([]float32, error) {
-		return make([]float32, 384), nil // Placeholder
+		return make([]float32, 384), nil
 	}
 
 	// Inspect backend_servers collection

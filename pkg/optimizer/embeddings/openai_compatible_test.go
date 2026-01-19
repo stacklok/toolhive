@@ -206,30 +206,18 @@ func TestManagerWithUnified(t *testing.T) {
 
 func TestManagerFallbackBehavior(t *testing.T) {
 	t.Parallel()
-	// Test that invalid vLLM backend falls back to placeholder
+	// Test that invalid vLLM backend fails gracefully during initialization
+	// (No fallback behavior is currently implemented)
 	config := &Config{
 		BackendType: "vllm",
-		BaseURL:     "http://invalid-host-that-does-not-exist:99999",
+		BaseURL:     "http://invalid-host-that-does-not-exist:9999",
 		Model:       "test-model",
 		Dimension:   384,
 	}
 
-	manager, err := NewManager(config)
-	if err != nil {
-		t.Fatalf("Failed to create manager: %v", err)
+	_, err := NewManager(config)
+	if err == nil {
+		t.Error("Expected error when creating manager with invalid backend URL")
 	}
-	defer manager.Close()
-
-	// Should still work with placeholder fallback
-	embeddings, err := manager.GenerateEmbedding([]string{"test"})
-	if err != nil {
-		t.Fatalf("Failed to generate embeddings with fallback: %v", err)
-	}
-
-	if len(embeddings) != 1 {
-		t.Errorf("Expected 1 embedding, got %d", len(embeddings))
-	}
-	if len(embeddings[0]) != 384 {
-		t.Errorf("Expected dimension 384, got %d", len(embeddings[0]))
-	}
+	// Test passes if error is returned (no fallback behavior)
 }

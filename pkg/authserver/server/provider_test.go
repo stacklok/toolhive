@@ -480,26 +480,30 @@ func TestNewAuthorizationServer(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	params := &AuthorizationServerParams{
-		Issuer:               "https://auth.example.com",
-		AccessTokenLifespan:  time.Hour,
-		RefreshTokenLifespan: time.Hour * 24,
-		AuthCodeLifespan:     time.Minute * 10,
-		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
-		SigningKeyID:         "key-1",
-		SigningKeyAlgorithm:  "RS256",
-		SigningKey:           rsaKey,
+	// Helper function to create a fresh config for each subtest
+	createConfig := func(t *testing.T) *AuthorizationServerConfig {
+		t.Helper()
+		params := &AuthorizationServerParams{
+			Issuer:               "https://auth.example.com",
+			AccessTokenLifespan:  time.Hour,
+			RefreshTokenLifespan: time.Hour * 24,
+			AuthCodeLifespan:     time.Minute * 10,
+			HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+			SigningKeyID:         "key-1",
+			SigningKeyAlgorithm:  "RS256",
+			SigningKey:           rsaKey,
+		}
+		authzServerConfig, err := NewAuthorizationServerConfig(params)
+		require.NoError(t, err)
+		return authzServerConfig
 	}
-
-	authzServerConfig, err := NewAuthorizationServerConfig(params)
-	require.NoError(t, err)
 
 	storage := &mockStorage{}
 
 	t.Run("creates provider with no factories", func(t *testing.T) {
 		t.Parallel()
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil)
+		provider := NewAuthorizationServer(createConfig(t), storage, nil)
 		require.NotNil(t, provider)
 	})
 
@@ -510,7 +514,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 			return &mockAuthorizeHandler{}
 		}
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil, factory)
+		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
 		require.NotNil(t, provider)
 	})
 
@@ -521,7 +525,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 			return &mockTokenHandler{}
 		}
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil, factory)
+		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
 		require.NotNil(t, provider)
 	})
 
@@ -541,7 +545,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 			return &mockRevocationHandler{}
 		}
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil,
+		provider := NewAuthorizationServer(createConfig(t), storage, nil,
 			authorizeFactory, tokenFactory, introspectorFactory, revocationFactory)
 		require.NotNil(t, provider)
 	})
@@ -553,7 +557,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 			return nil
 		}
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil, factory)
+		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
 		require.NotNil(t, provider)
 	})
 
@@ -564,7 +568,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 			return "not a handler"
 		}
 
-		provider := NewAuthorizationServer(authzServerConfig, storage, nil, factory)
+		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
 		require.NotNil(t, provider)
 	})
 }

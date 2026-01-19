@@ -133,8 +133,8 @@ func (s *Server) WaitForReady() error {
 			}
 			_ = resp.Body.Close()
 
-			// Server is ready if we get any response
-			if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusServiceUnavailable {
+			// Server is ready if we get the expected response.
+			if resp.StatusCode == http.StatusNoContent {
 				return nil
 			}
 		}

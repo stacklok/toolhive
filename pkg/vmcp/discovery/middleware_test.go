@@ -347,7 +347,17 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 
 	// Use Do to capture and verify backends separately, since order may vary
 	mockMgr.EXPECT().
-		Discover(gomock.Any(), unorderedBackendsMatcher{backends}).
+		Discover(gomock.Any(), gomock.Any()).
+		Do(func(_ context.Context, actualBackends []vmcp.Backend) {
+			// Verify that we got the expected backends regardless of order
+			assert.Len(t, actualBackends, 2)
+			backendIDs := make(map[string]bool)
+			for _, b := range actualBackends {
+				backendIDs[b.ID] = true
+			}
+			assert.True(t, backendIDs["backend1"], "backend1 should be present")
+			assert.True(t, backendIDs["backend2"], "backend2 should be present")
+		}).
 		Return(expectedCaps, nil)
 
 	// Create handler that inspects context in detail

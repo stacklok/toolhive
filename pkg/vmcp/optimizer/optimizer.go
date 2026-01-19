@@ -284,7 +284,10 @@ func resolveToolName(routingTable *vmcp.RoutingTable, backendID string, original
 
 // convertSearchResultsToResponse converts database search results to the response format.
 // It resolves tool names using the routing table to ensure returned names match routing table keys.
-func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata, routingTable *vmcp.RoutingTable) ([]map[string]any, int) {
+func convertSearchResultsToResponse(
+	results []*models.BackendToolWithMetadata,
+	routingTable *vmcp.RoutingTable,
+) ([]map[string]any, int) {
 	responseTools := make([]map[string]any, 0, len(results))
 	totalReturnedTokens := 0
 

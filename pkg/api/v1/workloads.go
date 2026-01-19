@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,6 +17,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
+)
+
+const (
+	// asyncOperationTimeout is the timeout for async workload operations.
+	// This matches the timeout used in the workloads manager to ensure consistency.
+	asyncOperationTimeout = 5 * time.Minute
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -291,7 +298,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Failure		404			{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/edit [post]
 func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) error {
-	ctx := context.Background()
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Parse request body
@@ -315,7 +322,13 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
+	// Create a background context with timeout for the async update operation.
+	// This ensures the update continues even if the HTTP request is cancelled,
+	// while still enforcing a reasonable timeout to prevent operations from hanging indefinitely.
+	asyncCtx, cancel := context.WithTimeout(context.Background(), asyncOperationTimeout)
+	defer cancel()
+
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(asyncCtx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes
 	}

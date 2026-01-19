@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/philippgille/chromem-go"
 
@@ -63,8 +64,13 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool,
 	}
 
 	// Also add to FTS5 database if available (for BM25 search)
+	// Use background context to avoid cancellation issues - FTS5 is supplementary
 	if ops.db.fts != nil {
-		if err := ops.db.fts.UpsertToolMeta(ctx, tool, serverName); err != nil {
+		// Use background context with timeout for FTS operations
+		// This ensures FTS operations complete even if the original context is canceled
+		ftsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := ops.db.fts.UpsertToolMeta(ftsCtx, tool, serverName); err != nil {
 			// Log but don't fail - FTS5 is supplementary
 			logger.Warnf("Failed to upsert tool to FTS5: %v", err)
 		}

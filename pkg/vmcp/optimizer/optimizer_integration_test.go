@@ -4,14 +4,17 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // mockBackendClient implements vmcp.BackendClient for integration testing
@@ -107,18 +110,36 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 		},
 	})
 
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: embeddings.BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
+		return
+	}
+	t.Cleanup(func() { _ = embeddingManager.Close() })
+
 	// Configure optimizer
 	optimizerConfig := &Config{
 		Enabled:     true,
 		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
 		EmbeddingConfig: &embeddings.Config{
-			BackendType: "placeholder",
+			BackendType: embeddings.BackendTypeOllama,
+			BaseURL:     "http://localhost:11434",
+			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
 	}
 
 	// Create optimizer integration
-	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient)
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	defer func() { _ = integration.Close() }()
 

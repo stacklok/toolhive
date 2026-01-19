@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // TokenIntrospector defines the interface for token introspection providers
@@ -342,17 +343,6 @@ var (
 	ErrMissingIssuerAndJWKSURL = errors.New("either issuer or JWKS URL must be provided")
 )
 
-// OIDCDiscoveryDocument represents the OIDC discovery document structure
-type OIDCDiscoveryDocument struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	UserinfoEndpoint      string `json:"userinfo_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
-	IntrospectionEndpoint string `json:"introspection_endpoint"`
-	// Add other fields as needed
-}
-
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
 	// OIDC configuration
@@ -423,14 +413,14 @@ func discoverOIDCConfiguration(
 	issuer, caCertPath, authTokenFile string,
 	allowPrivateIP bool,
 	insecureAllowHTTP bool,
-) (*OIDCDiscoveryDocument, error) {
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// Validate issuer URL scheme
 	if err := networking.ValidateEndpointURLWithInsecure(issuer, insecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid issuer URL: %w", err)
 	}
 
 	// Construct the well-known endpoint URL
-	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
+	wellKnownURL := strings.TrimSuffix(issuer, "/") + oauthproto.WellKnownOIDCPath
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
@@ -468,7 +458,7 @@ func discoverOIDCConfiguration(
 	}
 
 	// Parse the response
-	var doc OIDCDiscoveryDocument
+	var doc oauthproto.OIDCDiscoveryDocument
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
 	}

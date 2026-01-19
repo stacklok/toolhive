@@ -21,6 +21,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Config contains configuration for OAuth authentication
@@ -265,7 +266,7 @@ func (f *Flow) buildAuthURL() string {
 	if f.config.UsePKCE {
 		opts = append(opts,
 			oauth2.SetAuthURLParam("code_challenge", f.codeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+			oauth2.SetAuthURLParam("code_challenge_method", oauthproto.PKCEMethodS256),
 		)
 	}
 

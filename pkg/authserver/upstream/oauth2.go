@@ -31,6 +31,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
@@ -355,7 +356,7 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	if codeChallenge != "" {
 		oauth2Opts = append(oauth2Opts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+			oauth2.SetAuthURLParam("code_challenge_method", oauthproto.PKCEMethodS256),
 		)
 	}
 

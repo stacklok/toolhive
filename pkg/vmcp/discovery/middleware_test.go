@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
-// SPDX-License-Identifier: Apache-2.0
-
 package discovery
 
 import (
@@ -29,50 +26,6 @@ func createTestSessionManager(t *testing.T) *transportsession.Manager {
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
 	t.Cleanup(func() { _ = sessionMgr.Stop() })
 	return sessionMgr
-}
-
-// unorderedBackendsMatcher is a gomock matcher that compares backend slices without caring about order.
-// This is needed because ImmutableRegistry.List() iterates over a map which doesn't guarantee order.
-type unorderedBackendsMatcher struct {
-	expected []vmcp.Backend
-}
-
-func (m unorderedBackendsMatcher) Matches(x any) bool {
-	actual, ok := x.([]vmcp.Backend)
-	if !ok {
-		return false
-	}
-	if len(actual) != len(m.expected) {
-		return false
-	}
-
-	// Create maps for comparison
-	expectedMap := make(map[string]vmcp.Backend)
-	for _, b := range m.expected {
-		expectedMap[b.ID] = b
-	}
-
-	actualMap := make(map[string]vmcp.Backend)
-	for _, b := range actual {
-		actualMap[b.ID] = b
-	}
-
-	// Check all expected backends are present
-	for id, expectedBackend := range expectedMap {
-		actualBackend, found := actualMap[id]
-		if !found {
-			return false
-		}
-		if expectedBackend.ID != actualBackend.ID || expectedBackend.Name != actualBackend.Name {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (unorderedBackendsMatcher) String() string {
-	return "matches backends regardless of order"
 }
 
 func TestMiddleware_InitializeRequest(t *testing.T) {
@@ -114,7 +67,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 
 	// Expect discovery to be called for initialize request (no session ID)
 	mockMgr.EXPECT().
-		Discover(gomock.Any(), unorderedBackendsMatcher{backends}).
+		Discover(gomock.Any(), backends).
 		Return(expectedCaps, nil)
 
 	// Create a test handler that verifies capabilities are in context
@@ -348,8 +301,19 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		},
 	}
 
+	// Use Do to capture and verify backends separately, since order may vary
 	mockMgr.EXPECT().
-		Discover(gomock.Any(), unorderedBackendsMatcher{backends}).
+		Discover(gomock.Any(), gomock.Any()).
+		Do(func(_ context.Context, actualBackends []vmcp.Backend) {
+			// Verify that we got the expected backends regardless of order
+			assert.Len(t, actualBackends, 2)
+			backendIDs := make(map[string]bool)
+			for _, b := range actualBackends {
+				backendIDs[b.ID] = true
+			}
+			assert.True(t, backendIDs["backend1"], "backend1 should be present")
+			assert.True(t, backendIDs["backend2"], "backend2 should be present")
+		}).
 		Return(expectedCaps, nil)
 
 	// Create handler that inspects context in detail

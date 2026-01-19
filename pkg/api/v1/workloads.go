@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -22,9 +21,6 @@ import (
 const (
 	// maxAPILogLines is the maximum number of log lines returned by API endpoints
 	maxAPILogLines = 1000
-	// asyncOperationTimeout is the timeout for async workload operations.
-	// This matches the timeout used in the workloads manager to ensure consistency.
-	asyncOperationTimeout = 5 * time.Minute
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -324,13 +320,11 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	// Create a background context with timeout for the async update operation.
-	// This ensures the update continues even if the HTTP request is cancelled,
-	// while still enforcing a reasonable timeout to prevent operations from hanging indefinitely.
-	asyncCtx, cancel := context.WithTimeout(context.Background(), asyncOperationTimeout)
-	defer cancel()
-
-	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(asyncCtx, name, &createReq, existingWorkload.Port)
+	// UpdateWorkloadFromRequest uses the request context for synchronous operations
+	// (validation, building config). The manager's UpdateWorkload method creates its own
+	// background context with timeout for the async operation, so we don't need to create
+	// one here.
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes
 	}

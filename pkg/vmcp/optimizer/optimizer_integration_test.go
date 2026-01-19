@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -300,4 +301,136 @@ func TestOptimizerIntegration_DisabledEmbeddingTime(t *testing.T) {
 	var nilIntegration *OptimizerIntegration
 	err = nilIntegration.IngestInitialBackends(ctx, backends)
 	require.NoError(t, err, "Should handle nil integration gracefully")
+}
+
+// TestOptimizerIntegration_TokenMetrics tests that token metrics are calculated and returned in optim.find_tool
+func TestOptimizerIntegration_TokenMetrics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create MCP server
+	mcpServer := server.NewMCPServer("vmcp-test", "1.0")
+
+	// Create mock backend client with multiple tools
+	mockClient := newMockIntegrationBackendClient()
+	mockClient.addBackend("github", &vmcp.CapabilityList{
+		Tools: []vmcp.Tool{
+			{
+				Name:        "create_issue",
+				Description: "Create a GitHub issue",
+			},
+			{
+				Name:        "get_pull_request",
+				Description: "Get a pull request from GitHub",
+			},
+			{
+				Name:        "list_repositories",
+				Description: "List repositories from GitHub",
+			},
+		},
+	})
+
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: embeddings.BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
+		return
+	}
+	t.Cleanup(func() { _ = embeddingManager.Close() })
+
+	// Configure optimizer
+	optimizerConfig := &Config{
+		Enabled:     true,
+		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingConfig: &embeddings.Config{
+			BackendType: embeddings.BackendTypeOllama,
+			BaseURL:     "http://localhost:11434",
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
+		},
+	}
+
+	// Create optimizer integration
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
+	require.NoError(t, err)
+	defer func() { _ = integration.Close() }()
+
+	// Ingest backends
+	backends := []vmcp.Backend{
+		{
+			ID:            "github",
+			Name:          "GitHub",
+			BaseURL:       "http://localhost:8000",
+			TransportType: "sse",
+		},
+	}
+
+	err = integration.IngestInitialBackends(ctx, backends)
+	require.NoError(t, err)
+
+	// Get the find_tool handler
+	handler := integration.CreateFindToolHandler()
+	require.NotNil(t, handler)
+
+	// Call optim.find_tool
+	request := mcp.CallToolRequest{
+		Params: mcp.CallToolRequestParams{
+			Name: "optim.find_tool",
+			Arguments: map[string]any{
+				"tool_description": "create issue",
+				"limit":            5,
+			},
+		},
+	}
+
+	result, err := handler(ctx, request)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify result contains token_metrics
+	require.NotNil(t, result.Content)
+	require.Len(t, result.Content, 1)
+	textResult, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok, "Result should be TextContent")
+
+	// Parse JSON response
+	var response map[string]any
+	err = json.Unmarshal([]byte(textResult.Text), &response)
+	require.NoError(t, err)
+
+	// Verify token_metrics exist
+	tokenMetrics, ok := response["token_metrics"].(map[string]any)
+	require.True(t, ok, "Response should contain token_metrics")
+
+	// Verify token metrics fields
+	baselineTokens, ok := tokenMetrics["baseline_tokens"].(float64)
+	require.True(t, ok, "token_metrics should contain baseline_tokens")
+	require.Greater(t, baselineTokens, float64(0), "baseline_tokens should be greater than 0")
+
+	returnedTokens, ok := tokenMetrics["returned_tokens"].(float64)
+	require.True(t, ok, "token_metrics should contain returned_tokens")
+	require.GreaterOrEqual(t, returnedTokens, float64(0), "returned_tokens should be >= 0")
+
+	tokensSaved, ok := tokenMetrics["tokens_saved"].(float64)
+	require.True(t, ok, "token_metrics should contain tokens_saved")
+	require.GreaterOrEqual(t, tokensSaved, float64(0), "tokens_saved should be >= 0")
+
+	savingsPercentage, ok := tokenMetrics["savings_percentage"].(float64)
+	require.True(t, ok, "token_metrics should contain savings_percentage")
+	require.GreaterOrEqual(t, savingsPercentage, float64(0), "savings_percentage should be >= 0")
+	require.LessOrEqual(t, savingsPercentage, float64(100), "savings_percentage should be <= 100")
+
+	// Verify tools are returned
+	tools, ok := response["tools"].([]any)
+	require.True(t, ok, "Response should contain tools")
+	require.Greater(t, len(tools), 0, "Should return at least one tool")
 }

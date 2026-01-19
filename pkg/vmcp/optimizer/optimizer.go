@@ -434,7 +434,7 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 }
 
 // recordTokenMetrics records OpenTelemetry metrics for token savings
-func (_ *OptimizerIntegration) recordTokenMetrics(
+func (*OptimizerIntegration) recordTokenMetrics(
 	ctx context.Context,
 	baselineTokens int,
 	returnedTokens int,

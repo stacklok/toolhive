@@ -40,6 +40,7 @@ type Server struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	serverErr  chan error
+	done       chan struct{}
 	httpClient *http.Client
 }
 
@@ -63,6 +64,7 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		ctx:       ctx,
 		cancel:    cancel,
 		serverErr: make(chan error, 1),
+		done:      make(chan struct{}),
 		httpClient: &http.Client{
 			Timeout: config.RequestTimeout,
 		},
@@ -70,6 +72,7 @@ func NewServer(config *ServerConfig) (*Server, error) {
 
 	// Start the server in a goroutine
 	go func() {
+		defer close(server.done)
 		// Create container runtime for the API server
 		containerRuntime, err := container.NewFactory().Create(ctx)
 		if err != nil {
@@ -144,8 +147,8 @@ func (s *Server) WaitForReady() error {
 // Stop stops the API server
 func (s *Server) Stop() {
 	s.cancel()
-	// Give server time to shut down gracefully
-	time.Sleep(100 * time.Millisecond)
+	// Wait for server to shut down gracefully
+	<-s.done
 }
 
 // Get performs a GET request to the specified path

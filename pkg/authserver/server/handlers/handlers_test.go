@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -149,7 +150,7 @@ func TestOAuthDiscoveryHandler(t *testing.T) {
 	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
 
 	// Parse the OAuth AS metadata document
-	var metadata OAuthAuthorizationServerMetadata
+	var metadata sharedobauth.AuthorizationServerMetadata
 	err := json.NewDecoder(rec.Body).Decode(&metadata)
 	require.NoError(t, err)
 
@@ -208,7 +209,7 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
 
 	// Parse the discovery document
-	var discovery OIDCDiscoveryDocument
+	var discovery sharedobauth.OIDCDiscoveryDocument
 	err := json.NewDecoder(rec.Body).Decode(&discovery)
 	require.NoError(t, err)
 

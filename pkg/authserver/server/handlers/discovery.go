@@ -23,6 +23,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/logger"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Cache-Control max-age values for discovery endpoints.
@@ -36,36 +37,6 @@ const (
 	// Aligned with Google's OIDC discovery cache policy.
 	DefaultDiscoveryCacheMaxAge = 3600
 )
-
-// OAuthAuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata
-// per RFC 8414. This is the base structure that OIDC Discovery extends.
-type OAuthAuthorizationServerMetadata struct {
-	// REQUIRED fields per RFC 8414
-	Issuer string `json:"issuer"`
-
-	// RECOMMENDED fields per RFC 8414
-	AuthorizationEndpoint  string   `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint          string   `json:"token_endpoint,omitempty"`
-	JWKSURI                string   `json:"jwks_uri,omitempty"`
-	RegistrationEndpoint   string   `json:"registration_endpoint,omitempty"`
-	ResponseTypesSupported []string `json:"response_types_supported,omitempty"`
-
-	// OPTIONAL fields per RFC 8414
-	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
-	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
-	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
-}
-
-// OIDCDiscoveryDocument represents the OIDC discovery document structure.
-// Implements OpenID Connect Discovery 1.0 specification, which extends RFC 8414.
-type OIDCDiscoveryDocument struct {
-	// Embed OAuth 2.0 AS Metadata (RFC 8414) as the base
-	OAuthAuthorizationServerMetadata
-
-	// REQUIRED fields specific to OIDC Discovery 1.0 (not in RFC 8414)
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-}
 
 // getSigningAlgorithms extracts the signing algorithms from the JWKS keys.
 // If no keys are available, it falls back to RS256 per OIDC Core Section 15.1.
@@ -121,10 +92,10 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 
 // buildOAuthMetadata constructs the base OAuth 2.0 Authorization Server Metadata (RFC 8414).
 // This is shared between the OAuth AS metadata endpoint and the OIDC discovery endpoint.
-func (h *Handler) buildOAuthMetadata() OAuthAuthorizationServerMetadata {
+func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata {
 	issuer := h.config.GetAccessTokenIssuer()
 
-	return OAuthAuthorizationServerMetadata{
+	return sharedobauth.AuthorizationServerMetadata{
 		// REQUIRED
 		Issuer: issuer,
 
@@ -133,7 +104,7 @@ func (h *Handler) buildOAuthMetadata() OAuthAuthorizationServerMetadata {
 		TokenEndpoint:          issuer + "/oauth/token",
 		JWKSURI:                issuer + "/.well-known/jwks.json",
 		RegistrationEndpoint:   issuer + "/oauth/register",
-		ResponseTypesSupported: []string{"code"},
+		ResponseTypesSupported: []string{sharedobauth.ResponseTypeCode},
 
 		// OPTIONAL
 		GrantTypesSupported: []string{
@@ -141,7 +112,7 @@ func (h *Handler) buildOAuthMetadata() OAuthAuthorizationServerMetadata {
 			string(fosite.GrantTypeRefreshToken),
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: []string{"none"},
+		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
 	}
 }
 
@@ -173,9 +144,9 @@ func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
 	// Get signing algorithms from the actual JWKS keys
 	signingAlgs := h.getSigningAlgorithms()
 
-	discovery := OIDCDiscoveryDocument{
+	discovery := sharedobauth.OIDCDiscoveryDocument{
 		// Include all OAuth 2.0 AS Metadata (RFC 8414)
-		OAuthAuthorizationServerMetadata: h.buildOAuthMetadata(),
+		AuthorizationServerMetadata: h.buildOAuthMetadata(),
 
 		// OIDC-specific REQUIRED fields
 		SubjectTypesSupported:            []string{"public"},

@@ -13,6 +13,8 @@ get started. You can find some hints for starting development in ToolHive's
 - [How to contribute](#how-to-contribute)
   - [Using GitHub Issues](#using-github-issues)
   - [Not sure how to start contributing?](#not-sure-how-to-start-contributing)
+  - [Claiming an issue](#claiming-an-issue)
+  - [What to expect](#what-to-expect)
   - [Pull request process](#pull-request-process)
   - [Contributing to docs](#contributing-to-docs)
   - [Contributing to design proposals](#contributing-to-design-proposals)
@@ -50,6 +52,24 @@ sample project that reproduces the problem.
 PRs to resolve existing issues are greatly appreciated, and issues labeled as
 ["good first issue"](https://github.com/stacklok/toolhive/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22)
 are a great place to start!
+
+### Claiming an issue
+
+If you'd like to work on an existing issue:
+
+1. Leave a comment saying "I'd like to work on this"
+2. Wait for a team member to assign you before starting work
+
+This helps us avoid situations where multiple people work on the same thing.
+If you create an issue with the intent to implement it yourself, mention that
+in the description so we know you're planning to submit a PR.
+
+### What to expect
+
+Reviews of external contributions are on a best effort basis. ToolHive moves
+fast and is corporate-backed, so priorities can shift. We may occasionally
+need to pick up urgent issues ourselves, but we'll always try to coordinate
+with active contributors first.
 
 ### Pull request process
 

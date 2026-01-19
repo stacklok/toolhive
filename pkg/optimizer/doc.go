@@ -69,7 +69,9 @@
 //
 //	// Create embedding manager
 //	embMgr, err := embeddings.NewManager(embeddings.Config{
-//	    BackendType: "placeholder", // or "ollama" or "openai-compatible"
+//	    BackendType: "ollama", // or "openai-compatible" or "vllm"
+//	    BaseURL:     "http://localhost:11434",
+//	    Model:       "all-minilm",
 //	    Dimension:   384,
 //	})
 //

@@ -8,17 +8,19 @@ import (
 )
 
 const (
-	// BackendTypePlaceholder is the placeholder backend type
-	BackendTypePlaceholder = "placeholder"
+	// DefaultModelAllMiniLM is the default Ollama model name
+	DefaultModelAllMiniLM = "all-minilm"
+	// BackendTypeOllama is the Ollama backend type
+	BackendTypeOllama = "ollama"
 )
 
 // Config holds configuration for the embedding manager
 type Config struct {
 	// BackendType specifies which backend to use:
-	// - "ollama": Ollama native API
+	// - "ollama": Ollama native API (default)
 	// - "vllm": vLLM OpenAI-compatible API
 	// - "unified": Generic OpenAI-compatible API (works with both)
-	// - "placeholder": Hash-based embeddings for testing
+	// - "openai": OpenAI-compatible API
 	BackendType string
 
 	// BaseURL is the base URL for the embedding service
@@ -27,7 +29,7 @@ type Config struct {
 	BaseURL string
 
 	// Model is the model name to use
-	// - Ollama: "nomic-embed-text", "all-minilm"
+	// - Ollama: "all-minilm" (default), "nomic-embed-text"
 	// - vLLM: "sentence-transformers/all-MiniLM-L6-v2", "intfloat/e5-mistral-7b-instruct"
 	Model string
 
@@ -68,9 +70,9 @@ func NewManager(config *Config) (*Manager, error) {
 		config.MaxCacheSize = 1000
 	}
 
-	// Default to placeholder (zero dependencies)
+	// Default to Ollama
 	if config.BackendType == "" {
-		config.BackendType = "placeholder"
+		config.BackendType = BackendTypeOllama
 	}
 
 	// Initialize backend based on configuration
@@ -78,7 +80,7 @@ func NewManager(config *Config) (*Manager, error) {
 	var err error
 
 	switch config.BackendType {
-	case "ollama":
+	case BackendTypeOllama:
 		// Use Ollama native API (requires ollama serve)
 		baseURL := config.BaseURL
 		if baseURL == "" {
@@ -86,13 +88,17 @@ func NewManager(config *Config) (*Manager, error) {
 		}
 		model := config.Model
 		if model == "" {
-			model = "nomic-embed-text"
+			model = DefaultModelAllMiniLM // Default: all-MiniLM-L6-v2
+		}
+		// Update dimension if not set and using default model
+		if config.Dimension == 0 && model == DefaultModelAllMiniLM {
+			config.Dimension = 384
 		}
 		backend, err = NewOllamaBackend(baseURL, model)
 		if err != nil {
-			logger.Warnf("Failed to initialize Ollama backend: %v", err)
-			logger.Info("Falling back to placeholder embeddings. To use Ollama: ollama serve && ollama pull nomic-embed-text")
-			backend = &PlaceholderBackend{dimension: config.Dimension}
+			return nil, fmt.Errorf(
+				"failed to initialize Ollama backend: %w (ensure 'ollama serve' is running and 'ollama pull %s' has been executed)",
+				err, DefaultModelAllMiniLM)
 		}
 
 	case "vllm", "unified", "openai":
@@ -107,17 +113,11 @@ func NewManager(config *Config) (*Manager, error) {
 		}
 		backend, err = NewOpenAICompatibleBackend(config.BaseURL, config.Model, config.Dimension)
 		if err != nil {
-			logger.Warnf("Failed to initialize %s backend: %v", config.BackendType, err)
-			logger.Infof("Falling back to placeholder embeddings")
-			backend = &PlaceholderBackend{dimension: config.Dimension}
+			return nil, fmt.Errorf("failed to initialize %s backend: %w", config.BackendType, err)
 		}
 
-	case BackendTypePlaceholder:
-		// Use placeholder for testing
-		backend = &PlaceholderBackend{dimension: config.Dimension}
-
 	default:
-		return nil, fmt.Errorf("unknown backend type: %s (supported: ollama, vllm, unified, placeholder)", config.BackendType)
+		return nil, fmt.Errorf("unknown backend type: %s (supported: ollama, vllm, unified, openai)", config.BackendType)
 	}
 
 	m := &Manager{
@@ -154,17 +154,7 @@ func (m *Manager) GenerateEmbedding(texts []string) ([][]float32, error) {
 	// Use backend to generate embeddings
 	embeddings, err := m.backend.EmbedBatch(texts)
 	if err != nil {
-		// If backend fails, fall back to placeholder for non-placeholder backends
-		if m.config.BackendType != "placeholder" {
-			logger.Warnf("%s backend failed: %v, falling back to placeholder", m.config.BackendType, err)
-			placeholder := &PlaceholderBackend{dimension: m.config.Dimension}
-			embeddings, err = placeholder.EmbedBatch(texts)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate embeddings: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("failed to generate embeddings: %w", err)
-		}
+		return nil, fmt.Errorf("failed to generate embeddings: %w", err)
 	}
 
 	// Cache single embeddings
@@ -174,65 +164,6 @@ func (m *Manager) GenerateEmbedding(texts []string) ([][]float32, error) {
 
 	logger.Debugf("Generated %d embeddings (dimension: %d)", len(embeddings), m.backend.Dimension())
 	return embeddings, nil
-}
-
-// PlaceholderBackend is a simple backend for testing
-type PlaceholderBackend struct {
-	dimension int
-}
-
-// Embed generates a deterministic hash-based embedding for the given text.
-func (p *PlaceholderBackend) Embed(text string) ([]float32, error) {
-	return p.generatePlaceholderEmbedding(text), nil
-}
-
-// EmbedBatch generates embeddings for multiple texts.
-func (p *PlaceholderBackend) EmbedBatch(texts []string) ([][]float32, error) {
-	embeddings := make([][]float32, len(texts))
-	for i, text := range texts {
-		embeddings[i] = p.generatePlaceholderEmbedding(text)
-	}
-	return embeddings, nil
-}
-
-// Dimension returns the embedding dimension.
-func (p *PlaceholderBackend) Dimension() int {
-	return p.dimension
-}
-
-// Close closes the backend (no-op for placeholder).
-func (*PlaceholderBackend) Close() error {
-	return nil
-}
-
-func (p *PlaceholderBackend) generatePlaceholderEmbedding(text string) []float32 {
-	embedding := make([]float32, p.dimension)
-
-	// Simple hash-based generation for testing
-	hash := 0
-	for _, c := range text {
-		hash = (hash*31 + int(c)) % 1000000
-	}
-
-	// Generate deterministic values
-	for i := range embedding {
-		hash = (hash*1103515245 + 12345) % 1000000
-		embedding[i] = float32(hash) / 1000000.0
-	}
-
-	// Normalize the embedding (L2 normalization)
-	var norm float32
-	for _, v := range embedding {
-		norm += v * v
-	}
-	if norm > 0 {
-		norm = float32(1.0 / float64(norm))
-		for i := range embedding {
-			embedding[i] *= norm
-		}
-	}
-
-	return embedding
 }
 
 // GetCacheStats returns cache statistics

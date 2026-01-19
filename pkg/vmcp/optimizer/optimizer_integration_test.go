@@ -383,7 +383,7 @@ func TestOptimizerIntegration_TokenMetrics(t *testing.T) {
 
 	// Call optim.find_tool
 	request := mcp.CallToolRequest{
-		Params: mcp.CallToolRequestParams{
+		Params: mcp.CallToolParams{
 			Name: "optim.find_tool",
 			Arguments: map[string]any{
 				"tool_description": "create issue",

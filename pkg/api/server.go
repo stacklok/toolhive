@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -318,17 +319,45 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
-// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 errors to 413
-// after MaxBytesReader hits the limit
+// maxBytesTracker wraps an io.ReadCloser to track bytes read and detect size limit violations
+type maxBytesTracker struct {
+	io.ReadCloser
+	bytesRead     *int64
+	limit         int64
+	limitExceeded *bool
+}
+
+func (t *maxBytesTracker) Read(p []byte) (n int, err error) {
+	n, err = t.ReadCloser.Read(p)
+	*t.bytesRead += int64(n)
+
+	// Check if we've reached/exceeded the limit or if this is a MaxBytesError
+	// Use >= because MaxBytesReader stops AT the limit, not after it
+	if *t.bytesRead >= t.limit {
+		*t.limitExceeded = true
+	}
+
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			*t.limitExceeded = true
+		}
+	}
+
+	return n, err
+}
+
+// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 to 413 only when
+// MaxBytesReader's limit was exceeded (not for validation errors)
 type bodySizeResponseWriter struct {
 	http.ResponseWriter
-	written bool
+	limitExceeded *bool
+	written       bool
 }
 
 func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
-	// If handler is returning 400 and we haven't written yet,
-	// it's likely from MaxBytesReader - change to 413
-	if statusCode == http.StatusBadRequest && !w.written {
+	// Only convert 400 to 413 if MaxBytesReader's limit was actually exceeded
+	if statusCode == http.StatusBadRequest && !w.written && *w.limitExceeded {
 		statusCode = http.StatusRequestEntityTooLarge
 	}
 	w.written = true
@@ -354,16 +383,30 @@ func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handl
 				return
 			}
 
-			// Wrap ResponseWriter to intercept MaxBytesReader errors and return 413
-			wrapped := &bodySizeResponseWriter{
+			// Track if MaxBytesReader's limit is exceeded
+			limitExceeded := false
+			bytesRead := int64(0)
+
+			// Wrap ResponseWriter to intercept only MaxBytesReader errors
+			wrappedWriter := &bodySizeResponseWriter{
 				ResponseWriter: w,
+				limitExceeded:  &limitExceeded,
 				written:        false,
 			}
 
 			// Set MaxBytesReader as a safety net for requests without Content-Length
-			r.Body = http.MaxBytesReader(wrapped, r.Body, maxSize)
+			limitedBody := http.MaxBytesReader(wrappedWriter, r.Body, maxSize)
 
-			next.ServeHTTP(wrapped, r)
+			// Wrap the limited body to detect when size limit is exceeded
+			tracker := &maxBytesTracker{
+				ReadCloser:    limitedBody,
+				bytesRead:     &bytesRead,
+				limit:         maxSize,
+				limitExceeded: &limitExceeded,
+			}
+			r.Body = tracker
+
+			next.ServeHTTP(wrappedWriter, r)
 		})
 	}
 }

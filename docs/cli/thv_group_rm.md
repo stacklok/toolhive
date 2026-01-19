@@ -25,7 +25,7 @@ thv group rm [group-name] [flags]
 
 ```
   -h, --help             help for rm
-      --with-workloads   Delete all workloads in the group along with the group
+      --with-workloads   Delete all workloads in the group along with the group (default false)
 ```
 
 ### Options inherited from parent commands

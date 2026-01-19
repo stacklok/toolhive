@@ -3755,7 +3755,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/logs": {
             "get": {
-                "description": "Retrieve at most 100 lines of logs for a specific workload by name.",
+                "description": "Retrieve at most 1000 lines of logs for a specific workload by name.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3807,7 +3807,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/proxy-logs": {
             "get": {
-                "description": "Retrieve proxy logs for a specific workload by name from the file system.",
+                "description": "Retrieve at most 1000 lines of proxy logs for a specific workload by name from the file system.",
                 "parameters": [
                     {
                         "description": "Workload name",

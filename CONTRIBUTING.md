@@ -68,7 +68,7 @@ in the description so we know you're planning to submit a PR.
 
 Reviews of external contributions are on a best effort basis. ToolHive moves
 fast, so priorities can shift. We may occasionally
-need to pick up urgent issues ourselves, but we'll always try to coordinate
+need to pick up urgent issues ourselves, but we'll always coordinate
 with active contributors first.
 
 ### Pull request process

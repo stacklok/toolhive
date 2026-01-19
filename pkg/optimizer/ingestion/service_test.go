@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
@@ -106,6 +107,78 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	}
 	require.True(t, toolNamesFound["get_weather"], "get_weather should be in results")
 	require.True(t, toolNamesFound["search_web"], "search_web should be in results")
+}
+
+// TestService_EmbeddingTimeTracking tests that embedding time is tracked correctly
+func TestService_EmbeddingTimeTracking(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: "ollama",
+		BaseURL:     "http://localhost:11434",
+		Model:       "all-minilm",
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull all-minilm'", err)
+		return
+	}
+	_ = embeddingManager.Close()
+
+	// Initialize service
+	config := &Config{
+		DBConfig: &db.Config{
+			PersistPath: filepath.Join(tmpDir, "test-db"),
+		},
+		EmbeddingConfig: &embeddings.Config{
+			BackendType: "ollama",
+			BaseURL:     "http://localhost:11434",
+			Model:       "all-minilm",
+			Dimension:   384,
+		},
+	}
+
+	svc, err := NewService(config)
+	require.NoError(t, err)
+	defer func() { _ = svc.Close() }()
+
+	// Initially, embedding time should be 0
+	initialTime := svc.GetTotalEmbeddingTime()
+	require.Equal(t, time.Duration(0), initialTime, "Initial embedding time should be 0")
+
+	// Create test tools
+	tools := []mcp.Tool{
+		{
+			Name:        "test_tool_1",
+			Description: "First test tool for embedding",
+		},
+		{
+			Name:        "test_tool_2",
+			Description: "Second test tool for embedding",
+		},
+	}
+
+	// Reset embedding time before ingestion
+	svc.ResetEmbeddingTime()
+
+	// Ingest server with tools (this will generate embeddings)
+	err = svc.IngestServer(ctx, "test-server-id", "TestServer", nil, tools)
+	require.NoError(t, err)
+
+	// After ingestion, embedding time should be greater than 0
+	totalEmbeddingTime := svc.GetTotalEmbeddingTime()
+	require.Greater(t, totalEmbeddingTime, time.Duration(0), 
+		"Total embedding time should be greater than 0 after ingestion")
+
+	// Reset and verify it's back to 0
+	svc.ResetEmbeddingTime()
+	resetTime := svc.GetTotalEmbeddingTime()
+	require.Equal(t, time.Duration(0), resetTime, "Embedding time should be 0 after reset")
 }
 
 // TestServiceWithOllama demonstrates using real embeddings (requires Ollama running)

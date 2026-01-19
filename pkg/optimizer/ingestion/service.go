@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
@@ -47,6 +52,11 @@ type Service struct {
 	tokenCounter     *tokens.Counter
 	backendServerOps *db.BackendServerOps
 	backendToolOps   *db.BackendToolOps
+	tracer           trace.Tracer
+	
+	// Embedding time tracking
+	embeddingTimeMu  sync.Mutex
+	totalEmbeddingTime time.Duration
 }
 
 // NewService creates a new ingestion service
@@ -80,27 +90,58 @@ func NewService(config *Config) (*Service, error) {
 	// Initialize token counter
 	tokenCounter := tokens.NewCounter()
 
-	// Create chromem-go embeddingFunc from our embedding manager
-	embeddingFunc := func(_ context.Context, text string) ([]float32, error) {
-		// Our manager takes a slice, so wrap the single text
-		embeddingsResult, err := embeddingManager.GenerateEmbedding([]string{text})
-		if err != nil {
-			return nil, err
-		}
-		if len(embeddingsResult) == 0 {
-			return nil, fmt.Errorf("no embeddings generated")
-		}
-		return embeddingsResult[0], nil
-	}
+	// Initialize tracer
+	tracer := otel.Tracer("github.com/stacklok/toolhive/pkg/optimizer/ingestion")
 
 	svc := &Service{
 		config:           config,
 		database:         database,
 		embeddingManager: embeddingManager,
 		tokenCounter:     tokenCounter,
-		backendServerOps: db.NewBackendServerOps(database, embeddingFunc),
-		backendToolOps:   db.NewBackendToolOps(database, embeddingFunc),
+		tracer:           tracer,
+		totalEmbeddingTime: 0,
 	}
+
+	// Create chromem-go embeddingFunc from our embedding manager with tracing
+	embeddingFunc := func(ctx context.Context, text string) ([]float32, error) {
+		// Create a span for embedding calculation
+		ctx, span := svc.tracer.Start(ctx, "optimizer.ingestion.calculate_embedding",
+			trace.WithAttributes(
+				attribute.String("operation", "embedding_calculation"),
+			))
+		defer span.End()
+
+		start := time.Now()
+		
+		// Our manager takes a slice, so wrap the single text
+		embeddingsResult, err := embeddingManager.GenerateEmbedding([]string{text})
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, err
+		}
+		if len(embeddingsResult) == 0 {
+			err := fmt.Errorf("no embeddings generated")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, err
+		}
+
+		// Track embedding time
+		duration := time.Since(start)
+		svc.embeddingTimeMu.Lock()
+		svc.totalEmbeddingTime += duration
+		svc.embeddingTimeMu.Unlock()
+
+		span.SetAttributes(
+			attribute.Int64("embedding.duration_ms", duration.Milliseconds()),
+		)
+
+		return embeddingsResult[0], nil
+	}
+
+	svc.backendServerOps = db.NewBackendServerOps(database, embeddingFunc)
+	svc.backendToolOps = db.NewBackendToolOps(database, embeddingFunc)
 
 	logger.Info("Ingestion service initialized for event-driven ingestion (chromem-go)")
 	return svc, nil
@@ -129,6 +170,16 @@ func (s *Service) IngestServer(
 	description *string,
 	tools []mcp.Tool,
 ) error {
+	// Create a span for the entire ingestion operation
+	ctx, span := s.tracer.Start(ctx, "optimizer.ingestion.ingest_server",
+		trace.WithAttributes(
+			attribute.String("server.id", serverID),
+			attribute.String("server.name", serverName),
+			attribute.Int("tools.count", len(tools)),
+		))
+	defer span.End()
+
+	start := time.Now()
 	logger.Infof("Ingesting server: %s (%d tools) [serverID=%s]", serverName, len(tools), serverID)
 
 	// Create backend server record (simplified - vMCP manages lifecycle)
@@ -144,6 +195,8 @@ func (s *Service) IngestServer(
 
 	// Create or update server (chromem-go handles embeddings)
 	if err := s.backendServerOps.Update(ctx, backendServer); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to create/update server %s: %w", serverName, err)
 	}
 	logger.Debugf("Created/updated server: %s", serverName)
@@ -151,18 +204,42 @@ func (s *Service) IngestServer(
 	// Sync tools for this server
 	toolCount, err := s.syncBackendTools(ctx, serverID, serverName, tools)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to sync tools for %s: %w", serverName, err)
 	}
 
-	logger.Infof("Successfully ingested server %s with %d tools", serverName, toolCount)
+	duration := time.Since(start)
+	span.SetAttributes(
+		attribute.Int64("ingestion.duration_ms", duration.Milliseconds()),
+		attribute.Int("tools.ingested", toolCount),
+	)
+
+	logger.Infow("Successfully ingested server",
+		"server_name", serverName,
+		"server_id", serverID,
+		"tools_count", toolCount,
+		"duration_ms", duration.Milliseconds())
 	return nil
 }
 
 // syncBackendTools synchronizes tools for a backend server
 func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
+	// Create a span for tool synchronization
+	ctx, span := s.tracer.Start(ctx, "optimizer.ingestion.sync_backend_tools",
+		trace.WithAttributes(
+			attribute.String("server.id", serverID),
+			attribute.String("server.name", serverName),
+			attribute.Int("tools.count", len(tools)),
+		))
+	defer span.End()
+
 	logger.Debugf("syncBackendTools: server=%s, serverID=%s, tool_count=%d", serverName, serverID, len(tools))
+	
 	// Delete existing tools
 	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)
 	}
 
@@ -178,6 +255,8 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 		// Convert InputSchema to JSON
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return 0, fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
 		}
 
@@ -193,6 +272,8 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 		}
 
 		if err := s.backendToolOps.Create(ctx, backendTool, serverName); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return 0, fmt.Errorf("failed to create tool %s: %w", tool.Name, err)
 		}
 	}
@@ -226,6 +307,20 @@ func (s *Service) GetTotalToolTokens(ctx context.Context) int {
 	// Fallback: query all tools (less efficient but works)
 	logger.Warn("FTS database not available, using fallback for token counting")
 	return 0
+}
+
+// GetTotalEmbeddingTime returns the total time spent calculating embeddings
+func (s *Service) GetTotalEmbeddingTime() time.Duration {
+	s.embeddingTimeMu.Lock()
+	defer s.embeddingTimeMu.Unlock()
+	return s.totalEmbeddingTime
+}
+
+// ResetEmbeddingTime resets the total embedding time counter
+func (s *Service) ResetEmbeddingTime() {
+	s.embeddingTimeMu.Lock()
+	defer s.embeddingTimeMu.Unlock()
+	s.totalEmbeddingTime = 0
 }
 
 // Close releases resources

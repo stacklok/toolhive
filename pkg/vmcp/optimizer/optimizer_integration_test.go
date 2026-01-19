@@ -186,3 +186,118 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 	// of this integration test. The RegisterTools method is tested separately
 	// in unit tests where we can properly mock the MCP server behavior.
 }
+
+// TestOptimizerIntegration_EmbeddingTimeTracking tests that embedding time is tracked and logged
+func TestOptimizerIntegration_EmbeddingTimeTracking(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create MCP server
+	mcpServer := server.NewMCPServer("vmcp-test", "1.0")
+
+	// Create mock backend client
+	mockClient := newMockIntegrationBackendClient()
+	mockClient.addBackend("github", &vmcp.CapabilityList{
+		Tools: []vmcp.Tool{
+			{
+				Name:        "create_issue",
+				Description: "Create a GitHub issue",
+			},
+			{
+				Name:        "get_repo",
+				Description: "Get repository information",
+			},
+		},
+	})
+
+	// Try to use Ollama if available, otherwise skip test
+	embeddingConfig := &embeddings.Config{
+		BackendType: embeddings.BackendTypeOllama,
+		BaseURL:     "http://localhost:11434",
+		Model:       embeddings.DefaultModelAllMiniLM,
+		Dimension:   384,
+	}
+
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
+	if err != nil {
+		t.Skipf("Skipping test: Ollama not available. Error: %v. Run 'ollama serve && ollama pull %s'", err, embeddings.DefaultModelAllMiniLM)
+		return
+	}
+	t.Cleanup(func() { _ = embeddingManager.Close() })
+
+	// Configure optimizer
+	optimizerConfig := &Config{
+		Enabled:     true,
+		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingConfig: &embeddings.Config{
+			BackendType: embeddings.BackendTypeOllama,
+			BaseURL:     "http://localhost:11434",
+			Model:       embeddings.DefaultModelAllMiniLM,
+			Dimension:   384,
+		},
+	}
+
+	// Create optimizer integration
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
+	require.NoError(t, err)
+	defer func() { _ = integration.Close() }()
+
+	// Verify embedding time starts at 0
+	embeddingTime := integration.ingestionService.GetTotalEmbeddingTime()
+	require.Equal(t, time.Duration(0), embeddingTime, "Initial embedding time should be 0")
+
+	// Ingest backends
+	backends := []vmcp.Backend{
+		{
+			ID:            "github",
+			Name:          "GitHub",
+			BaseURL:       "http://localhost:8000",
+			TransportType: "sse",
+		},
+	}
+
+	err = integration.IngestInitialBackends(ctx, backends)
+	require.NoError(t, err)
+
+	// After ingestion, embedding time should be tracked
+	// Note: The actual time depends on Ollama performance, but it should be > 0
+	finalEmbeddingTime := integration.ingestionService.GetTotalEmbeddingTime()
+	require.Greater(t, finalEmbeddingTime, time.Duration(0), 
+		"Embedding time should be tracked after ingestion")
+}
+
+// TestOptimizerIntegration_DisabledEmbeddingTime tests that embedding time is 0 when optimizer is disabled
+func TestOptimizerIntegration_DisabledEmbeddingTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Create optimizer integration with disabled optimizer
+	optimizerConfig := &Config{
+		Enabled: false,
+	}
+
+	mcpServer := server.NewMCPServer("vmcp-test", "1.0")
+	mockClient := newMockIntegrationBackendClient()
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	
+	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
+	require.NoError(t, err)
+	require.Nil(t, integration, "Integration should be nil when optimizer is disabled")
+
+	// Try to ingest backends - should return nil without error
+	backends := []vmcp.Backend{
+		{
+			ID:            "github",
+			Name:          "GitHub",
+			BaseURL:       "http://localhost:8000",
+			TransportType: "sse",
+		},
+	}
+
+	// This should handle nil integration gracefully
+	var nilIntegration *OptimizerIntegration
+	err = nilIntegration.IngestInitialBackends(ctx, backends)
+	require.NoError(t, err, "Should handle nil integration gracefully")
+}

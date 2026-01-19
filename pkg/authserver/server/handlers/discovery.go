@@ -37,25 +37,34 @@ const (
 	DefaultDiscoveryCacheMaxAge = 3600
 )
 
-// OIDCDiscoveryDocument represents the OIDC discovery document structure.
-// Implements OpenID Connect Discovery 1.0 specification.
-type OIDCDiscoveryDocument struct {
-	// REQUIRED fields per OIDC Discovery 1.0
-	Issuer                           string   `json:"issuer"`
-	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
-	TokenEndpoint                    string   `json:"token_endpoint"`
-	JWKSURI                          string   `json:"jwks_uri"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
+// OAuthAuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata
+// per RFC 8414. This is the base structure that OIDC Discovery extends.
+type OAuthAuthorizationServerMetadata struct {
+	// REQUIRED fields per RFC 8414
+	Issuer string `json:"issuer"`
 
-	// RECOMMENDED fields
-	RegistrationEndpoint string `json:"registration_endpoint,omitempty"`
+	// RECOMMENDED fields per RFC 8414
+	AuthorizationEndpoint  string   `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint          string   `json:"token_endpoint,omitempty"`
+	JWKSURI                string   `json:"jwks_uri,omitempty"`
+	RegistrationEndpoint   string   `json:"registration_endpoint,omitempty"`
+	ResponseTypesSupported []string `json:"response_types_supported,omitempty"`
 
-	// OPTIONAL fields
+	// OPTIONAL fields per RFC 8414
 	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+}
+
+// OIDCDiscoveryDocument represents the OIDC discovery document structure.
+// Implements OpenID Connect Discovery 1.0 specification, which extends RFC 8414.
+type OIDCDiscoveryDocument struct {
+	// Embed OAuth 2.0 AS Metadata (RFC 8414) as the base
+	OAuthAuthorizationServerMetadata
+
+	// REQUIRED fields specific to OIDC Discovery 1.0 (not in RFC 8414)
+	SubjectTypesSupported            []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 }
 
 // getSigningAlgorithms extracts the signing algorithms from the JWKS keys.
@@ -95,38 +104,36 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultJWKSCacheMaxAge))
-
-	if err := json.NewEncoder(w).Encode(publicJWKS); err != nil {
+	data, err := json.Marshal(publicJWKS)
+	if err != nil {
 		logger.Errorw("failed to encode JWKS",
 			"error", err.Error(),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultJWKSCacheMaxAge))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
 }
 
-// OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.
-// It returns the OIDC discovery document describing the authorization server capabilities.
-func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
+// buildOAuthMetadata constructs the base OAuth 2.0 Authorization Server Metadata (RFC 8414).
+// This is shared between the OAuth AS metadata endpoint and the OIDC discovery endpoint.
+func (h *Handler) buildOAuthMetadata() OAuthAuthorizationServerMetadata {
 	issuer := h.config.GetAccessTokenIssuer()
 
-	// Get signing algorithms from the actual JWKS keys
-	signingAlgs := h.getSigningAlgorithms()
-
-	discovery := OIDCDiscoveryDocument{
+	return OAuthAuthorizationServerMetadata{
 		// REQUIRED
-		Issuer:                           issuer,
-		AuthorizationEndpoint:            issuer + "/oauth/authorize",
-		TokenEndpoint:                    issuer + "/oauth/token",
-		JWKSURI:                          issuer + "/.well-known/jwks.json",
-		ResponseTypesSupported:           []string{"code"},
-		SubjectTypesSupported:            []string{"public"},
-		IDTokenSigningAlgValuesSupported: signingAlgs,
+		Issuer: issuer,
 
 		// RECOMMENDED
-		RegistrationEndpoint: issuer + "/oauth/register",
+		AuthorizationEndpoint:  issuer + "/oauth/authorize",
+		TokenEndpoint:          issuer + "/oauth/token",
+		JWKSURI:                issuer + "/.well-known/jwks.json",
+		RegistrationEndpoint:   issuer + "/oauth/register",
+		ResponseTypesSupported: []string{"code"},
 
 		// OPTIONAL
 		GrantTypesSupported: []string{
@@ -136,15 +143,56 @@ func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
 		TokenEndpointAuthMethodsSupported: []string{"none"},
 	}
+}
+
+// OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.
+// It returns the OAuth 2.0 Authorization Server Metadata per RFC 8414.
+// This endpoint is useful for non-OIDC OAuth clients.
+func (h *Handler) OAuthDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
+	metadata := h.buildOAuthMetadata()
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		logger.Errorw("failed to encode OAuth AS metadata",
+			"error", err.Error(),
+		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultDiscoveryCacheMaxAge))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
+}
 
-	if err := json.NewEncoder(w).Encode(discovery); err != nil {
+// OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.
+// It returns the OIDC discovery document describing the authorization server capabilities.
+// This extends the OAuth 2.0 AS Metadata (RFC 8414) with OIDC-specific fields.
+func (h *Handler) OIDCDiscoveryHandler(w http.ResponseWriter, _ *http.Request) {
+	// Get signing algorithms from the actual JWKS keys
+	signingAlgs := h.getSigningAlgorithms()
+
+	discovery := OIDCDiscoveryDocument{
+		// Include all OAuth 2.0 AS Metadata (RFC 8414)
+		OAuthAuthorizationServerMetadata: h.buildOAuthMetadata(),
+
+		// OIDC-specific REQUIRED fields
+		SubjectTypesSupported:            []string{"public"},
+		IDTokenSigningAlgValuesSupported: signingAlgs,
+	}
+
+	data, err := json.Marshal(discovery)
+	if err != nil {
 		logger.Errorw("failed to encode discovery document",
 			"error", err.Error(),
 		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultDiscoveryCacheMaxAge))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
 }

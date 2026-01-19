@@ -88,7 +88,7 @@ func TestJWKSHandler(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	assert.Contains(t, rec.Header().Get("Cache-Control"), "max-age=")
+	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
 
 	// Parse the response as JWKS
 	var jwks jose.JSONWebKeySet
@@ -135,6 +135,65 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+func TestOAuthDiscoveryHandler(t *testing.T) {
+	t.Parallel()
+	handler := testSetup(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	rec := httptest.NewRecorder()
+
+	handler.OAuthDiscoveryHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
+
+	// Parse the OAuth AS metadata document
+	var metadata OAuthAuthorizationServerMetadata
+	err := json.NewDecoder(rec.Body).Decode(&metadata)
+	require.NoError(t, err)
+
+	// Verify REQUIRED field per RFC 8414
+	assert.Equal(t, "https://auth.example.com", metadata.Issuer)
+
+	// Verify RECOMMENDED fields per RFC 8414
+	assert.Equal(t, "https://auth.example.com/oauth/token", metadata.TokenEndpoint)
+	assert.Equal(t, "https://auth.example.com/oauth/authorize", metadata.AuthorizationEndpoint)
+	assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", metadata.JWKSURI)
+	assert.Equal(t, "https://auth.example.com/oauth/register", metadata.RegistrationEndpoint)
+	assert.Contains(t, metadata.ResponseTypesSupported, "code")
+
+	// Verify OPTIONAL fields per RFC 8414
+	assert.Contains(t, metadata.GrantTypesSupported, "authorization_code")
+	assert.Contains(t, metadata.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, metadata.CodeChallengeMethodsSupported, "S256")
+	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "none")
+}
+
+func TestOAuthDiscoveryHandler_DoesNotContainOIDCFields(t *testing.T) {
+	t.Parallel()
+	handler := testSetup(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	rec := httptest.NewRecorder()
+
+	handler.OAuthDiscoveryHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Parse as raw JSON to check for OIDC-specific fields
+	var rawResponse map[string]interface{}
+	err := json.NewDecoder(rec.Body).Decode(&rawResponse)
+	require.NoError(t, err)
+
+	// Verify OIDC-specific fields are NOT present in OAuth AS metadata
+	_, hasSubjectTypes := rawResponse["subject_types_supported"]
+	assert.False(t, hasSubjectTypes, "subject_types_supported should not be in OAuth AS metadata")
+
+	_, hasIDTokenSigningAlgs := rawResponse["id_token_signing_alg_values_supported"]
+	assert.False(t, hasIDTokenSigningAlgs, "id_token_signing_alg_values_supported should not be in OAuth AS metadata")
+}
+
 func TestOIDCDiscoveryHandler(t *testing.T) {
 	t.Parallel()
 	handler := testSetup(t)
@@ -146,7 +205,7 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	assert.Contains(t, rec.Header().Get("Cache-Control"), "max-age=")
+	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
 
 	// Parse the discovery document
 	var discovery OIDCDiscoveryDocument
@@ -189,6 +248,7 @@ func TestWellKnownRoutes(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/.well-known/jwks.json"},
+		{http.MethodGet, "/.well-known/oauth-authorization-server"},
 		{http.MethodGet, "/.well-known/openid-configuration"},
 	}
 

@@ -66,8 +66,13 @@ func (*Handler) OAuthRoutes(_ chi.Router) {
 	// - POST /oauth/register -> h.RegisterClientHandler (RFC 7591 dynamic client registration)
 }
 
-// WellKnownRoutes registers well-known endpoints (JWKS, OIDC discovery) on the provided router.
+// WellKnownRoutes registers well-known endpoints (JWKS, OAuth/OIDC discovery) on the provided router.
+// Both discovery endpoints are registered per the MCP specification requirement to provide
+// at least one discovery mechanism, with both supported for maximum interoperability:
+// - /.well-known/oauth-authorization-server (RFC 8414) for OAuth-only clients
+// - /.well-known/openid-configuration (OIDC Discovery 1.0) for OIDC clients
 func (h *Handler) WellKnownRoutes(r chi.Router) {
 	r.Get("/.well-known/jwks.json", h.JWKSHandler)
+	r.Get("/.well-known/oauth-authorization-server", h.OAuthDiscoveryHandler)
 	r.Get("/.well-known/openid-configuration", h.OIDCDiscoveryHandler)
 }

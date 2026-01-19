@@ -234,8 +234,57 @@ func extractFindToolParams(args map[string]any) (toolDescription, toolKeywords s
 	return toolDescription, toolKeywords, limit, nil
 }
 
-// convertSearchResultsToResponse converts database search results to the response format
-func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata) ([]map[string]any, int) {
+// resolveToolName looks up the resolved name for a tool in the routing table.
+// Returns the resolved name if found, otherwise returns the original name.
+//
+// The routing table maps resolved names (after conflict resolution) to BackendTarget.
+// Each BackendTarget contains:
+//   - WorkloadID: the backend ID
+//   - OriginalCapabilityName: the original tool name (empty if not renamed)
+//
+// We need to find the resolved name by matching backend ID and original name.
+func resolveToolName(routingTable *vmcp.RoutingTable, backendID string, originalName string) string {
+	if routingTable == nil || routingTable.Tools == nil {
+		return originalName
+	}
+
+	// Search through routing table to find the resolved name
+	// Match by backend ID and original capability name
+	for resolvedName, target := range routingTable.Tools {
+		// Case 1: Tool was renamed (OriginalCapabilityName is set)
+		// Match by backend ID and original name
+		if target.WorkloadID == backendID && target.OriginalCapabilityName == originalName {
+			logger.Debugw("Resolved tool name (renamed)",
+				"backend_id", backendID,
+				"original_name", originalName,
+				"resolved_name", resolvedName)
+			return resolvedName
+		}
+
+		// Case 2: Tool was not renamed (OriginalCapabilityName is empty)
+		// Match by backend ID and resolved name equals original name
+		if target.WorkloadID == backendID && target.OriginalCapabilityName == "" && resolvedName == originalName {
+			logger.Debugw("Resolved tool name (not renamed)",
+				"backend_id", backendID,
+				"original_name", originalName,
+				"resolved_name", resolvedName)
+			return resolvedName
+		}
+	}
+
+	// If not found, return original name (fallback for tools not in routing table)
+	// This can happen if:
+	// - Tool was just ingested but routing table hasn't been updated yet
+	// - Tool belongs to a backend that's not currently registered
+	logger.Debugw("Tool name not found in routing table, using original name",
+		"backend_id", backendID,
+		"original_name", originalName)
+	return originalName
+}
+
+// convertSearchResultsToResponse converts database search results to the response format.
+// It resolves tool names using the routing table to ensure returned names match routing table keys.
+func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata, routingTable *vmcp.RoutingTable) ([]map[string]any, int) {
 	responseTools := make([]map[string]any, 0, len(results))
 	totalReturnedTokens := 0
 
@@ -258,8 +307,11 @@ func convertSearchResultsToResponse(results []*models.BackendToolWithMetadata) (
 			description = *result.Description
 		}
 
+		// Resolve tool name using routing table to ensure it matches routing table keys
+		resolvedName := resolveToolName(routingTable, result.MCPServerID, result.ToolName)
+
 		tool := map[string]any{
-			"name":             result.ToolName,
+			"name":             resolvedName,
 			"description":      description,
 			"input_schema":     inputSchema,
 			"backend_id":       result.MCPServerID,
@@ -321,8 +373,14 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err2)), nil
 		}
 
-		// Convert results to response format
-		responseTools, totalReturnedTokens := convertSearchResultsToResponse(results)
+		// Get routing table from context to resolve tool names
+		var routingTable *vmcp.RoutingTable
+		if capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx); ok && capabilities != nil {
+			routingTable = capabilities.RoutingTable
+		}
+
+		// Convert results to response format, resolving tool names to match routing table
+		responseTools, totalReturnedTokens := convertSearchResultsToResponse(results, routingTable)
 
 		// Calculate token metrics
 		baselineTokens := o.ingestionService.GetTotalToolTokens(ctx)

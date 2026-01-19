@@ -390,7 +390,7 @@ func New(
 
 	// Initialize optimizer integration if enabled
 	var optimizerInteg OptimizerIntegration
-	
+
 	if cfg.OptimizerConfig != nil {
 		if cfg.OptimizerConfig.Enabled {
 			logger.Infow("Initializing optimizer integration (chromem-go)",

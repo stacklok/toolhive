@@ -53,9 +53,9 @@ type Service struct {
 	backendServerOps *db.BackendServerOps
 	backendToolOps   *db.BackendToolOps
 	tracer           trace.Tracer
-	
+
 	// Embedding time tracking
-	embeddingTimeMu  sync.Mutex
+	embeddingTimeMu    sync.Mutex
 	totalEmbeddingTime time.Duration
 }
 
@@ -94,11 +94,11 @@ func NewService(config *Config) (*Service, error) {
 	tracer := otel.Tracer("github.com/stacklok/toolhive/pkg/optimizer/ingestion")
 
 	svc := &Service{
-		config:           config,
-		database:         database,
-		embeddingManager: embeddingManager,
-		tokenCounter:     tokenCounter,
-		tracer:           tracer,
+		config:             config,
+		database:           database,
+		embeddingManager:   embeddingManager,
+		tokenCounter:       tokenCounter,
+		tracer:             tracer,
 		totalEmbeddingTime: 0,
 	}
 
@@ -112,7 +112,7 @@ func NewService(config *Config) (*Service, error) {
 		defer span.End()
 
 		start := time.Now()
-		
+
 		// Our manager takes a slice, so wrap the single text
 		embeddingsResult, err := embeddingManager.GenerateEmbedding([]string{text})
 		if err != nil {
@@ -235,7 +235,7 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 	defer span.End()
 
 	logger.Debugf("syncBackendTools: server=%s, serverID=%s, tool_count=%d", serverName, serverID, len(tools))
-	
+
 	// Delete existing tools
 	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
 		span.RecordError(err)

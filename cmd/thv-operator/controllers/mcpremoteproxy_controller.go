@@ -465,6 +465,9 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
+// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
+// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
+// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 

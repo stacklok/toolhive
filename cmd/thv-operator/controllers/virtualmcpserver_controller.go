@@ -497,8 +497,13 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 }
 
 // ensureRBACResources ensures RBAC resources for VirtualMCPServer in dynamic mode.
-// In static mode, RBAC creation is skipped. Existing RBAC resources (if any) remain until
-// the VirtualMCPServer is deleted - they will be garbage collected via owner references.
+// In static mode, RBAC creation is skipped. When switching dynamic→static, existing RBAC
+// resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
+// This follows standard Kubernetes garbage collection patterns.
+//
+// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
+// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
+// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -506,8 +511,8 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	// Determine the outgoing auth source mode
 	source := outgoingAuthSource(vmcp)
 
-	// Static mode (inline): Skip RBAC creation
-	// Owner references ensure garbage collection when VirtualMCPServer is deleted
+	// Static mode (inline): Skip RBAC creation/deletion
+	// Existing resources from dynamic mode persist until VirtualMCPServer deletion
 	if source == OutgoingAuthSourceInline {
 		return nil
 	}

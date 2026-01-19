@@ -175,6 +175,7 @@ type IncomingAuthConfig struct {
 // +gendoc
 type OIDCConfig struct {
 	// Issuer is the OIDC issuer URL.
+	// +kubebuilder:validation:Pattern=`^https?://`
 	Issuer string `json:"issuer" yaml:"issuer"`
 
 	// ClientID is the OAuth client ID.
@@ -230,6 +231,7 @@ type StaticBackendConfig struct {
 
 	// URL is the backend's MCP server base URL.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://`
 	URL string `json:"url" yaml:"url"`
 
 	// Transport is the MCP transport protocol: "sse" or "streamable-http"

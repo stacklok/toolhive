@@ -343,7 +343,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `issuer` _string_ | Issuer is the OIDC issuer URL. |  |  |
+| `issuer` _string_ | Issuer is the OIDC issuer URL. |  | Pattern: `^https?://` <br /> |
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
@@ -457,7 +457,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the backend identifier.<br />Must match the backend name from the MCPGroup for auth config resolution. |  | Required: \{\} <br /> |
-| `url` _string_ | URL is the backend's MCP server base URL. |  | Required: \{\} <br /> |
+| `url` _string_ | URL is the backend's MCP server base URL. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 

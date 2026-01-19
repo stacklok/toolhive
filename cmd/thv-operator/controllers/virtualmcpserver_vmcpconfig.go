@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
@@ -146,6 +147,11 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 
 		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without authentication",
+				"error", err,
+				"virtualmcpserver", vmcp.Name,
+				"namespace", vmcp.Namespace)
 			authConfig = nil // Continue without auth config on error
 		}
 	}

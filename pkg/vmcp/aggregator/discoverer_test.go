@@ -1169,6 +1169,30 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 	})
 }
 
+// TestStaticBackendDiscoverer_EmptyBackendList verifies that when a static discoverer
+// is created with an empty backend list, it gracefully returns an empty list instead of
+// panicking due to nil groupsManager (regression test for nil pointer dereference).
+func TestStaticBackendDiscoverer_EmptyBackendList(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// Create a static discoverer with empty backend list (not nil, but zero length)
+	// This simulates the edge case where staticBackends was set but is empty
+	discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+		[]config.StaticBackendConfig{}, // Empty slice, not nil
+		nil,                            // No auth config
+		"test-group",
+	)
+
+	// This should return empty list without panicking
+	// Previously would panic when falling through to dynamic mode with nil groupsManager
+	backends, err := discoverer.Discover(ctx, "test-group")
+
+	require.NoError(t, err)
+	assert.Empty(t, backends)
+}
+
 // TestStaticBackendDiscoverer_MetadataGroupOverride verifies that the "group" metadata key
 // is always overridden with the groupRef value, even if user provides a different value.
 func TestStaticBackendDiscoverer_MetadataGroupOverride(t *testing.T) {

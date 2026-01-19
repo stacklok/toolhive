@@ -1674,8 +1674,8 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
 
 			By("Verifying RBAC resources remain after mode switch (left for garbage collection)")
-			// RBAC resources are NOT deleted during mode switching - they remain until VirtualMCPServer deletion
-			// This follows Kubernetes controller patterns: rely on owner references and garbage collection
+			// When switching dynamic→static, RBAC resources are NOT actively deleted.
+			// They persist with owner references and will be garbage collected on VirtualMCPServer deletion.
 			Consistently(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serviceAccountName,
@@ -1683,7 +1683,7 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				}, sa)
 				return err
 			}, 15*time.Second, 2*time.Second).Should(Succeed(),
-				"ServiceAccount not actively deleted on mode switch - left for garbage collection via owner references")
+				"ServiceAccount should persist after dynamic→static mode switch")
 
 			By("Verifying Role remains (left for garbage collection)")
 			role := &rbacv1.Role{}
@@ -1694,7 +1694,7 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				}, role)
 				return err
 			}, 15*time.Second, 2*time.Second).Should(Succeed(),
-				"Role not actively deleted on mode switch - left for garbage collection via owner references")
+				"Role should persist after dynamic→static mode switch")
 
 			By("Verifying RoleBinding remains (left for garbage collection)")
 			rb := &rbacv1.RoleBinding{}
@@ -1705,7 +1705,7 @@ var _ = Describe("VirtualMCPServer Mode Configuration", Ordered, func() {
 				}, rb)
 				return err
 			}, 15*time.Second, 2*time.Second).Should(Succeed(),
-				"RoleBinding not actively deleted on mode switch - left for garbage collection via owner references")
+				"RoleBinding should persist after dynamic→static mode switch")
 
 			By("Verifying Deployment uses default ServiceAccount in static mode")
 			Eventually(func() string {

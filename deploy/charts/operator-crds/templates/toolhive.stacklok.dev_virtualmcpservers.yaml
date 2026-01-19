@@ -255,6 +255,7 @@ spec:
                           type: string
                         url:
                           description: URL is the backend's MCP server base URL.
+                          pattern: ^https?://
                           type: string
                       required:
                       - name
@@ -564,6 +565,7 @@ spec:
                             type: boolean
                           issuer:
                             description: Issuer is the OIDC issuer URL.
+                            pattern: ^https?://
                             type: string
                           protectedResourceAllowPrivateIp:
                             description: |-

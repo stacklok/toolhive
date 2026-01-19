@@ -126,6 +126,14 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		return d.discoverFromStaticConfig()
 	}
 
+	// If staticBackends was explicitly set (even if empty), but groupsManager is nil,
+	// this discoverer was created for static mode with an empty backend list.
+	// Return empty list instead of falling through to dynamic mode which would panic.
+	if d.staticBackends != nil && d.groupsManager == nil {
+		logger.Infof("Static mode with empty backend list, returning no backends")
+		return []vmcp.Backend{}, nil
+	}
+
 	// Dynamic mode: Discover backends from K8s API at runtime
 	logger.Infof("Dynamic mode: discovering backends from K8s API")
 

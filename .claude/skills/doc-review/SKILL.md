@@ -1,5 +1,5 @@
 ---
-name: Documentation review
+name: doc-review
 description: Reviews documentation for factual accuracy
 ---
 

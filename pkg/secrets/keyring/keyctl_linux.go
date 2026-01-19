@@ -81,7 +81,12 @@ func (k *keyctlProvider) Get(service, key string) (string, error) {
 func (k *keyctlProvider) Delete(service, key string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	return k.deleteKeyUnlocked(service, key)
+}
 
+// deleteKeyUnlocked performs the actual key deletion without acquiring the lock.
+// This is used internally by Delete and DeleteAll to avoid deadlocks.
+func (k *keyctlProvider) deleteKeyUnlocked(service, key string) error {
 	keyName := fmt.Sprintf("%s:%s", service, key)
 	keyID, err := unix.KeyctlSearch(k.ringID, "user", keyName, 0)
 	if err != nil {
@@ -108,20 +113,32 @@ func (k *keyctlProvider) DeleteAll(service string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	serviceKeys, exists := k.keys[service]
-	if !exists {
-		return nil
+	// Always try to delete the known key pattern from kernel keyring
+	// regardless of what's in the in-memory map. This ensures cross-process
+	// deletion works since the in-memory map is not persisted.
+	if err := k.deleteKeyUnlocked(service, service); err != nil {
+		return err
 	}
 
-	var lastErr error
-	for key := range serviceKeys {
-		if err := k.Delete(service, key); err != nil {
-			lastErr = err
+	// Also delete any keys tracked in the in-memory map (for keys added in this process)
+	if serviceKeys, exists := k.keys[service]; exists {
+		var lastErr error
+		for key := range serviceKeys {
+			if key == service {
+				// Already deleted above
+				continue
+			}
+			if err := k.deleteKeyUnlocked(service, key); err != nil {
+				lastErr = err
+			}
+		}
+		delete(k.keys, service)
+		if lastErr != nil {
+			return lastErr
 		}
 	}
 
-	delete(k.keys, service)
-	return lastErr
+	return nil
 }
 
 func (k *keyctlProvider) IsAvailable() bool {

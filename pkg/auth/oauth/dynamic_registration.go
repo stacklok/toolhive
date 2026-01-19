@@ -245,7 +245,7 @@ func createHTTPRequest(
 }
 
 // getHTTPClient returns the HTTP client to use for the request
-func getHTTPClient(client httpClient) httpClient {
+func getHTTPClient(client networking.HTTPClient) networking.HTTPClient {
 	if client != nil {
 		return client
 	}
@@ -319,7 +319,7 @@ func registerClientDynamicallyWithClient(
 	ctx context.Context,
 	registrationEndpoint string,
 	request *DynamicClientRegistrationRequest,
-	client httpClient,
+	client networking.HTTPClient,
 ) (*DynamicClientRegistrationResponse, error) {
 	// Validate registration endpoint URL
 	if _, err := validateRegistrationEndpoint(registrationEndpoint); err != nil {

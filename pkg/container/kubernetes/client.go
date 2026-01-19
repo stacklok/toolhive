@@ -241,7 +241,15 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 }
 
 // GetWorkloadLogs implements runtime.Runtime.
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error) {
+	// follow=true means infinite streaming, lines>0 means finite limit - these are contradictory
+	if follow && lines > 0 {
+		return "", fmt.Errorf(
+			"cannot use both follow and line limit: follow mode streams logs indefinitely, " +
+				"which conflicts with line limiting",
+		)
+	}
+
 	// In Kubernetes, workloadID is the statefulset name
 	namespace := c.getCurrentNamespace()
 
@@ -261,12 +269,20 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	// Use the first pod
 	podName := pods.Items[0].Name
 
+	// Configure tail lines based on lines parameter
+	var tailLines *int64
+	if lines > 0 {
+		tailLinesVal := int64(lines)
+		tailLines = &tailLinesVal
+	}
+
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
 		Container:  mcpContainerName,
 		Follow:     follow,
 		Previous:   false,
 		Timestamps: true,
+		TailLines:  tailLines,
 	}
 
 	req := c.client.CoreV1().Pods(namespace).GetLogs(podName, logOptions)

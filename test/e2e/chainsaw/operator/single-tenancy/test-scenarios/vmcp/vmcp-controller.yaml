@@ -6,6 +6,13 @@ metadata:
 spec:
   config:
     groupRef: test-group-controller
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
   incomingAuth:
     # Using anonymous authentication for testing
     type: anonymous
@@ -16,10 +23,3 @@ spec:
           - 'permit(principal, action, resource);'
   outgoingAuth:
     source: discovered
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s

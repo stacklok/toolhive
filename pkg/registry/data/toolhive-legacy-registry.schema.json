@@ -144,6 +144,12 @@
           "minimum": 1,
           "maximum": 65535
         },
+        "proxy_port": {
+          "type": "integer",
+          "description": "Port for the HTTP proxy to listen on (host port). If not specified, a random available port will be assigned",
+          "minimum": 1,
+          "maximum": 65535
+        },
         "tier": {
           "type": "string",
           "description": "Tier classification of the server, (Official or Community)",

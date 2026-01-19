@@ -6,6 +6,10 @@ metadata:
 spec:
   config:
     groupRef: test-group-controller
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
   incomingAuth:
     type: oidc
     oidcConfig:
@@ -21,7 +25,3 @@ spec:
           key: clientSecret
   outgoingAuth:
     source: discovered
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"

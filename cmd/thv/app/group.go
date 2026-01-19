@@ -73,7 +73,7 @@ var groupRunCmd = &cobra.Command{
 func validateGroupArg() func(cmd *cobra.Command, args []string) error {
 	return func(_ *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return fmt.Errorf("group name is required")
+			return fmt.Errorf("group name is required. Hint: use 'thv group list' to see available groups")
 		}
 		if err := validation.ValidateGroupName(args[0]); err != nil {
 			return fmt.Errorf("invalid group name: %w", err)
@@ -153,7 +153,10 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	if strings.EqualFold(groupName, groups.DefaultGroup) {
-		return fmt.Errorf("cannot delete the %s group", groups.DefaultGroup)
+		return fmt.Errorf(
+			"cannot delete the %s group. "+
+				"Hint: the 'default' group is reserved for workloads that are not assigned to any other group",
+			groups.DefaultGroup)
 	}
 	manager, err := groups.NewManager()
 	if err != nil {
@@ -166,7 +169,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Create workloads manager
@@ -453,7 +456,10 @@ func validateRuntimeGroupDoesNotExist(ctx context.Context, groupName string) err
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return fmt.Errorf("runtime group '%s' already exists", groupName)
+		return fmt.Errorf(
+			"runtime group '%s' already exists. "+
+				"Hint: use 'thv group rm %s' to remove it first, or choose a different group name",
+			groupName, groupName)
 	}
 	return nil
 }
@@ -476,7 +482,10 @@ func validateServersDoNotExist(ctx context.Context, registryGroup *types.Group) 
 			return fmt.Errorf("failed to check if server '%s' exists: %w", serverName, err)
 		}
 		if exists {
-			return fmt.Errorf("MCP server '%s' already exists", serverName)
+			return fmt.Errorf(
+				"MCP server '%s' already exists. "+
+					"Hint: use 'thv rm %s' to remove it first, or rename the existing server",
+				serverName, serverName)
 		}
 	}
 
@@ -487,7 +496,10 @@ func validateServersDoNotExist(ctx context.Context, registryGroup *types.Group) 
 			return fmt.Errorf("failed to check if server '%s' exists: %w", serverName, err)
 		}
 		if exists {
-			return fmt.Errorf("MCP server '%s' already exists", serverName)
+			return fmt.Errorf(
+				"MCP server '%s' already exists. "+
+					"Hint: use 'thv rm %s' to remove it first, or rename the existing server",
+				serverName, serverName)
 		}
 	}
 
@@ -708,7 +720,7 @@ func init() {
 
 	// Add --with-workloads flag to group rm command
 	groupRmCmd.Flags().BoolVar(&withWorkloadsFlag, "with-workloads", false,
-		"Delete all workloads in the group along with the group")
+		"Delete all workloads in the group along with the group (default false)")
 
 	// Add flags to group run command
 	groupRunCmd.Flags().StringArrayVar(&groupSecrets, "secret", []string{},

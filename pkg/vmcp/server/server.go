@@ -266,6 +266,9 @@ func New(
 	// Create workflow auditor if audit config is provided
 	var workflowAuditor *audit.WorkflowAuditor
 	if cfg.AuditConfig != nil {
+		if err := cfg.AuditConfig.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid audit configuration: %w", err)
+		}
 		var err error
 		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
 		if err != nil {
@@ -501,6 +504,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
+		if err := s.config.AuditConfig.Validate(); err != nil {
+			return fmt.Errorf("invalid audit configuration: %w", err)
+		}
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport

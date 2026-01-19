@@ -200,6 +200,10 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 
 	// Ensure server cleanup
 	defer func() {
+		// Use Background context for server shutdown. This cleanup operation runs after
+		// the OAuth flow completes (or fails). The parent context may already be cancelled,
+		// so we need a fresh context with its own timeout to ensure the server shuts down
+		// gracefully regardless of the parent context state.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := f.server.Shutdown(shutdownCtx); err != nil {
@@ -231,7 +235,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 	select {
 	case token := <-tokenChan:
 		logger.Info("OAuth flow completed successfully")
-		return f.processToken(token), nil
+		return f.processToken(ctx, token), nil
 	case err := <-errorChan:
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
 	case <-ctx.Done():
@@ -301,8 +305,8 @@ func (f *Flow) handleCallback(tokenChan chan<- *oauth2.Token, errorChan chan<- e
 			return
 		}
 
-		// Exchange code for token
-		ctx := context.Background()
+		// Exchange code for token using the request context to respect cancellation
+		ctx := r.Context()
 		opts := []oauth2.AuthCodeOption{}
 
 		// Add PKCE verifier if enabled
@@ -450,7 +454,7 @@ func (*Flow) writeErrorPage(w http.ResponseWriter, err error) {
 }
 
 // processToken processes the received token and extracts claims
-func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
+func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResult {
 	result := &TokenResult{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
@@ -458,8 +462,8 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 		Expiry:       token.Expiry,
 	}
 
-	// Create a base token source using the original token
-	base := f.oauth2Config.TokenSource(context.Background(), token)
+	// Create a base token source using the original token with the provided context
+	base := f.oauth2Config.TokenSource(ctx, token)
 
 	// ReuseTokenSource ensures that refresh happens only when needed
 	f.tokenSource = oauth2.ReuseTokenSource(token, base)

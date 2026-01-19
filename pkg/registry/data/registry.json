@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-12T00:20:15Z",
+  "last_updated": "2026-01-19T00:19:53Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.3.0",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.4.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -484,7 +484,7 @@
         "api",
         "devops"
       ],
-      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.3.1",
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.3.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -588,7 +588,7 @@
         "architecture",
         "visualization"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.13",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.16",
       "permissions": {
         "network": {
           "outbound": {}
@@ -638,7 +638,7 @@
         "cloud",
         "reference"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.14",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.16",
       "permissions": {
         "network": {
           "outbound": {
@@ -705,7 +705,7 @@
         "aws-costs",
         "aws-pricing"
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.21",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.23",
       "permissions": {
         "network": {
           "outbound": {
@@ -1050,9 +1050,9 @@
         "wait_for_build"
       ],
       "metadata": {
-        "stars": 41,
+        "stars": 42,
         "pulls": 3424,
-        "last_updated": "2025-12-02T02:34:24Z"
+        "last_updated": "2026-01-17T02:34:24Z"
       },
       "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
       "tags": [
@@ -1191,9 +1191,9 @@
         "take_snapshot"
       ],
       "metadata": {
-        "stars": 16062,
+        "stars": 21379,
         "pulls": 0,
-        "last_updated": "2025-12-07T02:39:37Z"
+        "last_updated": "2026-01-18T02:46:05Z"
       },
       "repository_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
       "tags": [
@@ -1309,8 +1309,8 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "resolve-library-id",
-        "get-library-docs"
+        "query-docs",
+        "resolve-library-id"
       ],
       "metadata": {
         "stars": 39581,
@@ -1322,7 +1322,7 @@
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.33",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:2.1.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1378,9 +1378,9 @@
         "idp_investigate_entity"
       ],
       "metadata": {
-        "stars": 79,
+        "stars": 86,
         "pulls": 3771,
-        "last_updated": "2025-12-07T02:39:38Z"
+        "last_updated": "2026-01-18T02:46:05Z"
       },
       "repository_url": "https://github.com/crowdstrike/falcon-mcp",
       "tags": [
@@ -1483,7 +1483,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.25.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1639,9 +1639,9 @@
         "search"
       ],
       "metadata": {
-        "stars": 560,
+        "stars": 596,
         "pulls": 10995,
-        "last_updated": "2025-12-07T02:39:36Z"
+        "last_updated": "2026-01-18T02:46:04Z"
       },
       "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
       "tags": [
@@ -1731,9 +1731,9 @@
         "sampleLLM"
       ],
       "metadata": {
-        "stars": 73803,
+        "stars": 76391,
         "pulls": 17019,
-        "last_updated": "2025-12-04T02:34:13Z"
+        "last_updated": "2026-01-17T02:34:25Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1964,7 +1964,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.25.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2065,9 +2065,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 24832,
+        "stars": 25949,
         "pulls": 5000,
-        "last_updated": "2025-12-01T02:46:56Z"
+        "last_updated": "2026-01-16T02:40:00Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2083,7 +2083,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.26.3",
+      "image": "ghcr.io/github/github-mcp-server:v0.28.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2527,7 +2527,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251122001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20260112001",
       "permissions": {
         "network": {
           "outbound": {
@@ -3037,8 +3037,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 555,
-        "last_updated": "2025-12-02T02:34:23Z"
+        "pulls": 615,
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -3641,7 +3641,7 @@
         "gateway",
         "intelligent"
       ],
-      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.2.1",
+      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.2.3",
       "target_port": 9900,
       "permissions": {
         "network": {
@@ -3705,7 +3705,7 @@
       "metadata": {
         "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-12-04T02:34:12Z"
+        "last_updated": "2026-01-17T02:34:24Z"
       },
       "repository_url": "https://github.com/nokia/mcp-redfish",
       "tags": [
@@ -3715,7 +3715,7 @@
         "hardware",
         "server-management"
       ],
-      "image": "ghcr.io/nokia/mcp-redfish:0.3.1",
+      "image": "ghcr.io/nokia/mcp-redfish:0.3.3",
       "env_vars": [
         {
           "name": "REDFISH_HOSTS",
@@ -4097,7 +4097,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:1.3.1",
+      "image": "docker.io/mongodb/mongodb-mcp-server:1.4.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -4437,9 +4437,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 25,
+        "stars": 24,
         "pulls": 10318,
-        "last_updated": "2025-12-02T02:34:23Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4544,9 +4544,9 @@
         "update_team"
       ],
       "metadata": {
-        "stars": 37,
+        "stars": 40,
         "pulls": 0,
-        "last_updated": "2025-12-07T02:39:36Z"
+        "last_updated": "2026-01-18T02:46:05Z"
       },
       "repository_url": "https://github.com/PagerDuty/pagerduty-mcp-server",
       "tags": [
@@ -4557,7 +4557,7 @@
         "monitoring",
         "alerting"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.11.0",
+      "image": "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.11.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -4600,9 +4600,9 @@
         "perplexity_reason"
       ],
       "metadata": {
-        "stars": 1811,
+        "stars": 1880,
         "pulls": 15188,
-        "last_updated": "2025-12-04T02:34:14Z"
+        "last_updated": "2026-01-17T02:34:26Z"
       },
       "repository_url": "https://github.com/ppl-ai/modelcontextprotocol",
       "tags": [
@@ -4672,7 +4672,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.3.1",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.3.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -4746,7 +4746,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.54",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.56",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4876,9 +4876,9 @@
         "get_targets"
       ],
       "metadata": {
-        "stars": 297,
+        "stars": 339,
         "pulls": 0,
-        "last_updated": "2025-12-01T17:31:24Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/pab1it0/prometheus-mcp-server",
       "tags": [
@@ -4947,7 +4947,6 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "get_audit_logs",
         "get_cpu_information",
         "get_disk_usage",
         "get_hardware_information",
@@ -4983,7 +4982,7 @@
         "troubleshooting",
         "networking"
       ],
-      "image": "quay.io/redhat-services-prod/rhel-lightspeed-tenant/linux-mcp-server:0.1.0a4",
+      "image": "quay.io/redhat-services-prod/rhel-lightspeed-tenant/linux-mcp-server:1.1.0",
       "env_vars": [
         {
           "name": "LINUX_MCP_USER",
@@ -5066,9 +5065,9 @@
         "unsubscribe"
       ],
       "metadata": {
-        "stars": 353,
+        "stars": 390,
         "pulls": 10366,
-        "last_updated": "2025-12-04T02:34:13Z"
+        "last_updated": "2026-01-17T02:34:25Z"
       },
       "repository_url": "https://github.com/redis/mcp-redis",
       "tags": [
@@ -5309,9 +5308,9 @@
         "sequentialthinking"
       ],
       "metadata": {
-        "stars": 73803,
+        "stars": 76468,
         "pulls": 14819,
-        "last_updated": "2025-12-04T02:34:14Z"
+        "last_updated": "2026-01-18T02:46:04Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -5571,7 +5570,7 @@
         "baas",
         "postgresql"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.10",
+      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.6.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -5627,7 +5626,7 @@
         "api",
         "real-time"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.11",
+      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.12",
       "permissions": {
         "network": {
           "outbound": {
@@ -5922,9 +5921,9 @@
         "get_regional_availability"
       ],
       "metadata": {
-        "stars": 7516,
+        "stars": 7879,
         "pulls": 0,
-        "last_updated": "2025-12-02T02:34:22Z"
+        "last_updated": "2026-01-16T02:40:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [

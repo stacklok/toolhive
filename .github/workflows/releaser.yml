@@ -66,7 +66,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -151,6 +151,7 @@ jobs:
     uses: ./.github/workflows/update-docs-website.yml
     with:
       version: ${{ github.ref_name }}
+      assign_to: ${{ github.actor }}
     secrets:
       DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
 

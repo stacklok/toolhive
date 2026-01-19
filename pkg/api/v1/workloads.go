@@ -3,21 +3,24 @@ package v1
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
-	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
+)
+
+const (
+	// maxAPILogLines is the maximum number of log lines returned by API endpoints
+	maxAPILogLines = 1000
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -58,20 +61,20 @@ func WorkloadRouter(
 	}
 
 	r := chi.NewRouter()
-	r.Get("/", routes.listWorkloads)
-	r.Post("/", routes.createWorkload)
-	r.Post("/stop", routes.stopWorkloadsBulk)
-	r.Post("/restart", routes.restartWorkloadsBulk)
-	r.Post("/delete", routes.deleteWorkloadsBulk)
-	r.Get("/{name}", routes.getWorkload)
-	r.Post("/{name}/edit", routes.updateWorkload)
-	r.Post("/{name}/stop", routes.stopWorkload)
-	r.Post("/{name}/restart", routes.restartWorkload)
-	r.Get("/{name}/status", routes.getWorkloadStatus)
-	r.Get("/{name}/logs", routes.getLogsForWorkload)
-	r.Get("/{name}/proxy-logs", routes.getProxyLogsForWorkload)
-	r.Get("/{name}/export", routes.exportWorkload)
-	r.Delete("/{name}", routes.deleteWorkload)
+	r.Get("/", apierrors.ErrorHandler(routes.listWorkloads))
+	r.Post("/", apierrors.ErrorHandler(routes.createWorkload))
+	r.Post("/stop", apierrors.ErrorHandler(routes.stopWorkloadsBulk))
+	r.Post("/restart", apierrors.ErrorHandler(routes.restartWorkloadsBulk))
+	r.Post("/delete", apierrors.ErrorHandler(routes.deleteWorkloadsBulk))
+	r.Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
+	r.Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
+	r.Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))
+	r.Post("/{name}/restart", apierrors.ErrorHandler(routes.restartWorkload))
+	r.Get("/{name}/status", apierrors.ErrorHandler(routes.getWorkloadStatus))
+	r.Get("/{name}/logs", apierrors.ErrorHandler(routes.getLogsForWorkload))
+	r.Get("/{name}/proxy-logs", apierrors.ErrorHandler(routes.getProxyLogsForWorkload))
+	r.Get("/{name}/export", apierrors.ErrorHandler(routes.exportWorkload))
+	r.Delete("/{name}", apierrors.ErrorHandler(routes.deleteWorkload))
 
 	return r
 }
@@ -86,42 +89,35 @@ func WorkloadRouter(
 //		@Success		200	{object}	workloadListResponse
 //		@Failure		404	{string}	string	"Group not found"
 //		@Router			/api/v1beta/workloads [get]
-func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
 	groupFilter := r.URL.Query().Get("group")
 
 	workloadList, err := s.workloadManager.ListWorkloads(ctx, listAll)
 	if err != nil {
-		logger.Errorf("Failed to list workloads: %v", err)
-		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	// Apply group filtering if specified
 	if groupFilter != "" {
 		if err := validation.ValidateGroupName(groupFilter); err != nil {
-			http.Error(w, "Invalid group name: "+err.Error(), http.StatusBadRequest)
-			return
+			return thverrors.WithCode(
+				fmt.Errorf("invalid group name: %w", err),
+				http.StatusBadRequest,
+			)
 		}
 		workloadList, err = workloads.FilterByGroup(workloadList, groupFilter)
 		if err != nil {
-			if errors.Is(err, groups.ErrGroupNotFound) {
-				http.Error(w, "Group not found", http.StatusNotFound)
-			} else {
-				logger.Errorf("Failed to filter workloads by group: %v", err)
-				http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
-			}
-			return
+			return err // groups.ErrGroupNotFound already has 404 status code
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList})
-	if err != nil {
-		http.Error(w, "Failed to marshal workload list", http.StatusInternalServerError)
-		return
+	if err := json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList}); err != nil {
+		return fmt.Errorf("failed to marshal workload list: %w", err)
 	}
+	return nil
 }
 
 // getWorkload
@@ -134,40 +130,32 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Success		200		{object}	createRequest
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
-func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Check if workload exists first
 	_, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, runtime.ErrWorkloadNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		} else if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to get workload: %v", err)
-		http.Error(w, "Failed to get workload", http.StatusInternalServerError)
-		return
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
 	}
 
 	// Load the workload configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to load workload configuration for %s: %v", name, err)
-		http.Error(w, "Workload configuration not found", http.StatusNotFound)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("workload configuration not found: %w", err),
+			http.StatusNotFound,
+		)
 	}
 
 	config := runConfigToCreateRequest(runConfig)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(config); err != nil {
-		http.Error(w, "Failed to marshal workload configuration", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to marshal workload configuration: %w", err)
 	}
+	return nil
 }
 
 // stopWorkload
@@ -180,22 +168,17 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/stop [post]
-func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) error {
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
+	// Use background context since this is async operation
+	_, err := s.workloadManager.StopWorkloads(context.Background(), []string{name})
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to stop workload: %v", err)
-		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // restartWorkload
@@ -208,22 +191,17 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/restart [post]
-func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) error {
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
 	// Note: In the API, we always assume that the restart is a background operation
 	_, err := s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to restart workload: %v", err)
-		http.Error(w, "Failed to restart workload", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // deleteWorkload
@@ -236,22 +214,17 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
-func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) error {
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
+	// Use background context since this is an async operation
+	_, err := s.workloadManager.DeleteWorkloads(context.Background(), []string{name})
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to delete workload: %v", err)
-		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // createWorkload
@@ -266,39 +239,34 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		409		{string}	string	"Conflict"
 //	@Router			/api/v1beta/workloads [post]
-func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Failed to decode request", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("failed to decode request: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	// check if the workload already exists
 	if req.Name != "" {
 		exists, err := s.workloadManager.DoesWorkloadExist(ctx, req.Name)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to check if workload exists: %v", err), http.StatusInternalServerError)
-			return
+			return fmt.Errorf("failed to check if workload exists: %w", err)
 		}
 		if exists {
-			http.Error(w, fmt.Sprintf("Workload with name %s already exists", req.Name), http.StatusConflict)
-			return
+			return thverrors.WithCode(
+				fmt.Errorf("workload with name %s already exists", req.Name),
+				http.StatusConflict,
+			)
 		}
 	}
 
 	// Create the workload using shared logic
 	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &req)
 	if err != nil {
-		// Error messages already logged in createWorkloadFromRequest
-		if errors.Is(err, retriever.ErrImageNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound)
-		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-		return
+		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes
 	}
 
 	// Return name so that the client will get the auto-generated name.
@@ -309,9 +277,9 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		Port: runConfig.Port,
 	}
 	if err = json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to marshal workload details: %w", err)
 	}
+	return nil
 }
 
 // updateWorkload
@@ -327,23 +295,23 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Failure		400			{string}	string	"Bad Request"
 //	@Failure		404			{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/edit [post]
-func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Parse request body
 	var updateReq updateRequest
 	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("invalid JSON: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	// Check if workload exists and get its current port
 	existingWorkload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to get workload: %v", err)
-		http.Error(w, "Workload not found", http.StatusNotFound)
-		return
+		return err // ErrWorkloadNotFound (404) already has status code
 	}
 
 	// Convert updateRequest to createRequest with the existing workload name
@@ -354,15 +322,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 
 	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
-		// Error messages already logged in UpdateWorkloadFromRequest
-		if errors.Is(err, retriever.ErrImageNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound)
-		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-		return
+		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes
 	}
 
 	// Return the same response format as create
@@ -372,9 +332,9 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Port: runConfig.Port,
 	}
 	if err = json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to marshal workload details: %w", err)
 	}
+	return nil
 }
 
 // stopWorkloadsBulk
@@ -387,39 +347,34 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/stop [post]
-func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Failed to decode request", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("failed to decode request: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.StopWorkloads(ctx, workloadNames)
+	_, err = s.workloadManager.StopWorkloads(context.Background(), workloadNames)
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to stop workloads: %v", err)
-		http.Error(w, "Failed to stop workloads", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // restartWorkloadsBulk
@@ -432,24 +387,24 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/restart [post]
-func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Failed to decode request", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("failed to decode request: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
@@ -457,15 +412,10 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 	// Note: In the API, we always assume that the restart is a background operation.
 	_, err = s.workloadManager.RestartWorkloads(context.Background(), workloadNames, false)
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to restart workloads: %v", err)
-		http.Error(w, "Failed to restart workloads", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // deleteWorkloadsBulk
@@ -478,45 +428,40 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
-func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Failed to decode request", http.StatusBadRequest)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("failed to decode request: %w", err),
+			http.StatusBadRequest,
+		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return thverrors.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.DeleteWorkloads(ctx, workloadNames)
+	_, err = s.workloadManager.DeleteWorkloads(context.Background(), workloadNames)
 	if err != nil {
-		if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to delete workloads: %v", err)
-		http.Error(w, "Failed to delete workloads", http.StatusInternalServerError)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 // getLogsForWorkload
 //
 // @Summary      Get logs for a specific workload
-// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Description  Retrieve at most 1000 lines of logs for a specific workload by name.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -524,39 +469,31 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // @Failure      400   {string}  string  "Invalid workload name"
 // @Failure      404   {string}  string  "Not Found"
 // @Router       /api/v1beta/workloads/{name}/logs [get]
-func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Validate workload name to prevent path traversal
 	if err := wt.ValidateWorkloadName(name); err != nil {
-		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetLogs(ctx, name, false)
+	logs, err := s.workloadManager.GetLogs(ctx, name, false, maxAPILogLines)
 	if err != nil {
-		if errors.Is(err, runtime.ErrWorkloadNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get logs: %v", err)
-		http.Error(w, "Failed to get logs", http.StatusInternalServerError)
-		return
+		return err // ErrWorkloadNotFound (404) already has status code
 	}
+
 	w.Header().Set("Content-Type", "text/plain")
-	_, err = w.Write([]byte(logs))
-	if err != nil {
-		logger.Errorf("Failed to write logs response: %v", err)
-		http.Error(w, "Failed to write logs response", http.StatusInternalServerError)
-		return
+	if _, err = w.Write([]byte(logs)); err != nil {
+		return fmt.Errorf("failed to write logs response: %w", err)
 	}
+	return nil
 }
 
 // getProxyLogsForWorkload
 //
 // @Summary      Get proxy logs for a specific workload
-// @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Description  Retrieve at most 1000 lines of proxy logs for a specific workload by name from the file system.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -564,30 +501,28 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 // @Failure      400   {string}  string  "Invalid workload name"
 // @Failure      404   {string}  string  "Proxy logs not found for workload"
 // @Router       /api/v1beta/workloads/{name}/proxy-logs [get]
-func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Validate workload name to prevent path traversal
 	if err := wt.ValidateWorkloadName(name); err != nil {
-		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-		return
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
+	logs, err := s.workloadManager.GetProxyLogs(ctx, name, maxAPILogLines)
 	if err != nil {
-		logger.Errorf("Failed to get proxy logs: %v", err)
-		http.Error(w, "Proxy logs not found for workload", http.StatusNotFound)
-		return
+		return thverrors.WithCode(
+			fmt.Errorf("proxy logs not found for workload: %w", err),
+			http.StatusNotFound,
+		)
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	_, err = w.Write([]byte(logs))
-	if err != nil {
-		logger.Errorf("Failed to write proxy logs response: %v", err)
-		http.Error(w, "Failed to write proxy logs response", http.StatusInternalServerError)
-		return
+	if _, err = w.Write([]byte(logs)); err != nil {
+		return fmt.Errorf("failed to write proxy logs response: %w", err)
 	}
+	return nil
 }
 
 // getWorkloadStatus
@@ -600,22 +535,13 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 //	@Success		200		{object}	workloadStatusResponse
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/status [get]
-func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Request) {
+func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	workload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, runtime.ErrWorkloadNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		} else if errors.Is(err, wt.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to get workload: %v", err)
-		http.Error(w, "Failed to get workload", http.StatusInternalServerError)
-		return
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
 	}
 
 	response := workloadStatusResponse{
@@ -624,9 +550,9 @@ func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to marshal workload status", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to marshal workload status: %w", err)
 	}
+	return nil
 }
 
 // exportWorkload
@@ -639,27 +565,20 @@ func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Reques
 //	@Success		200		{object}	runner.RunConfig
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/export [get]
-func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
+func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Load the saved run configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		if errors.Is(err, werr.ErrRunConfigNotFound) {
-			http.Error(w, "Workload configuration not found", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to load workload configuration: %v", err)
-		http.Error(w, "Failed to load workload configuration", http.StatusInternalServerError)
-		return
+		return err // ErrRunConfigNotFound (404) already has status code
 	}
 
 	// Return the configuration as JSON
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(runConfig); err != nil {
-		logger.Errorf("Failed to encode workload configuration: %v", err)
-		http.Error(w, "Failed to encode workload configuration", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to encode workload configuration: %w", err)
 	}
+	return nil
 }

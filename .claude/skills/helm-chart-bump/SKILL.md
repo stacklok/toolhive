@@ -1,5 +1,5 @@
 ---
-name: Bumping Helm Chart
+name: helm-chart-bump
 description: Ensures that all necessary tasks have been performed for a Helm Chart bump.
 ---
 

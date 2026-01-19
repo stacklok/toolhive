@@ -539,6 +539,55 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 	return registry, nil
 }
 
+// isTestOrExampleIssuer checks if an issuer URL is clearly for testing/development.
+// Only matches patterns that are unambiguously non-production:
+//   - Reserved example domains (example.com, example.org, example.net)
+//   - Reserved TLDs for testing (.test, .localhost, .local, .example, .invalid)
+//   - Localhost/loopback addresses
+//
+// This avoids false positives on production URLs that contain "test" as a substring
+// (e.g., attest.azure.com, latest-service.com, fastest-api.com).
+func isTestOrExampleIssuer(issuer string) bool {
+	if issuer == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return false
+	}
+
+	// Check for localhost/loopback using Host (includes port and IPv6 brackets)
+	// networking.IsLocalhost expects the full host with brackets for IPv6
+	if networking.IsLocalhost(parsed.Host) {
+		return true
+	}
+
+	// Use Hostname (without port/brackets) for domain checks
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return false
+	}
+
+	// Check for reserved example domains (RFC 2606)
+	exampleDomains := []string{"example.com", "example.org", "example.net"}
+	for _, domain := range exampleDomains {
+		if hostname == domain || strings.HasSuffix(hostname, "."+domain) {
+			return true
+		}
+	}
+
+	// Check for reserved testing TLDs (RFC 2606, RFC 6761)
+	testTLDs := []string{".test", ".example", ".invalid", ".localhost", ".local"}
+	for _, tld := range testTLDs {
+		if strings.HasSuffix(hostname, tld) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
 	// Log warning if insecure HTTP is enabled
@@ -554,8 +603,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 
 	// If JWKS URL is not provided but issuer is, try to discover it
 	// Skip discovery for test/example issuers (for testing only)
-	isTestIssuer := config.Issuer != "" &&
-		(strings.Contains(config.Issuer, "example.com") || strings.Contains(config.Issuer, "test"))
+	isTestIssuer := isTestOrExampleIssuer(config.Issuer)
 	if isTestIssuer {
 		logger.Warnf("Test/example issuer detected (%s) - OIDC discovery skipped (testing only!)", config.Issuer)
 		// Use a dummy JWKS URL when discovery is skipped

@@ -1750,3 +1750,74 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 		}
 	})
 }
+
+func TestIsTestOrExampleIssuer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		issuer   string
+		expected bool
+	}{
+		// Test issuers - should return true
+		{"localhost", "http://localhost:8080", true},
+		{"localhost without port", "http://localhost", true},
+		{"127.0.0.1", "http://127.0.0.1:8080", true},
+		{"127.0.0.1 without port", "http://127.0.0.1", true},
+		{"IPv6 loopback", "http://[::1]:8080", true},
+		{"IPv6 loopback without port", "http://[::1]", true},
+
+		// RFC 2606 example domains
+		{"example.com", "https://example.com", true},
+		{"example.org", "https://example.org", true},
+		{"example.net", "https://example.net", true},
+		{"subdomain of example.com", "https://auth.example.com", true},
+		{"subdomain of example.org", "https://test.example.org", true},
+		{"subdomain of example.net", "https://api.example.net", true},
+
+		// RFC 2606/6761 reserved testing TLDs
+		{".test TLD", "https://myapp.test", true},
+		{".example TLD", "https://myapp.example", true},
+		{".invalid TLD", "https://myapp.invalid", true},
+		{".localhost TLD", "https://myapp.localhost", true},
+		{".local TLD", "https://myapp.local", true},
+		{"subdomain with .test", "https://auth.myapp.test", true},
+
+		// Production URLs that should NOT match (contain "test" but not reserved)
+		{"attest.azure.com", "https://attest.azure.com", false},
+		{"latest-service.com", "https://latest-service.com", false},
+		{"fastest-api.com", "https://fastest-api.com", false},
+		{"test.production.com", "https://test.production.com", false},
+		{"production-test.company.com", "https://production-test.company.com", false},
+		{"my-testing-env.aws.com", "https://my-testing-env.aws.com", false},
+
+		// Production URLs with "example" that should NOT match
+		{"examplify.com", "https://examplify.com", false},
+		{"best-example.com", "https://best-example.com", false},
+		{"exampleservice.io", "https://exampleservice.io", false},
+
+		// Real-world production OAuth issuers
+		{"Google", "https://accounts.google.com", false},
+		{"GitHub", "https://github.com/login/oauth/authorize", false},
+		{"Microsoft", "https://login.microsoftonline.com", false},
+		{"Auth0", "https://myapp.auth0.com", false},
+		{"Okta", "https://mycompany.okta.com", false},
+		{"Keycloak", "https://keycloak.mycompany.com", false},
+
+		// Edge cases
+		{"empty string", "", false},
+		{"malformed URL", "not-a-url", false},
+		{"URL without hostname", "https://", false},
+		{"just a path", "/oauth/callback", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := isTestOrExampleIssuer(tt.issuer)
+			if result != tt.expected {
+				t.Errorf("isTestOrExampleIssuer(%q) = %v, expected %v", tt.issuer, result, tt.expected)
+			}
+		})
+	}
+}

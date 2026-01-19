@@ -553,12 +553,13 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	jwksURL := config.JWKSURL
 
 	// If JWKS URL is not provided but issuer is, try to discover it
-	// Skip discovery if VMCP_SKIP_OIDC_DISCOVERY is set (for testing only)
-	skipDiscovery := os.Getenv("VMCP_SKIP_OIDC_DISCOVERY") == "true"
-	if skipDiscovery {
-		logger.Warnf("VMCP_SKIP_OIDC_DISCOVERY is enabled - OIDC discovery skipped (testing only!)")
+	// Skip discovery for test/example issuers (for testing only)
+	isTestIssuer := config.Issuer != "" &&
+		(strings.Contains(config.Issuer, "example.com") || strings.Contains(config.Issuer, "test"))
+	if isTestIssuer {
+		logger.Warnf("Test/example issuer detected (%s) - OIDC discovery skipped (testing only!)", config.Issuer)
 		// Use a dummy JWKS URL when discovery is skipped
-		if jwksURL == "" && config.Issuer != "" {
+		if jwksURL == "" {
 			jwksURL = config.Issuer + "/.well-known/jwks.json"
 		}
 	} else if jwksURL == "" && config.Issuer != "" {

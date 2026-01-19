@@ -56,6 +56,9 @@ jobs:
           - title: proxy-mw
             label_filter: 'proxy || middleware || stability'
             artifact: e2e-test-results-proxy-mw
+          - title: api
+            label_filter: api
+            artifact: e2e-test-results-api
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 

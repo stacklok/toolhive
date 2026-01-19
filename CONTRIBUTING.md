@@ -67,7 +67,7 @@ in the description so we know you're planning to submit a PR.
 ### What to expect
 
 Reviews of external contributions are on a best effort basis. ToolHive moves
-fast and is corporate-backed, so priorities can shift. We may occasionally
+fast, so priorities can shift. We may occasionally
 need to pick up urgent issues ourselves, but we'll always try to coordinate
 with active contributors first.
 

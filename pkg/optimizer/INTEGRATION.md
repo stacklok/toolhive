@@ -93,7 +93,10 @@ func TestOptimizerIntegration(t *testing.T) {
     optimizerSvc, err := ingestion.NewService(&ingestion.Config{
         DBConfig: &db.Config{Path: "/tmp/test-optimizer.db"},
         EmbeddingConfig: &embeddings.Config{
-            BackendType: "placeholder",
+            BackendType: "ollama",
+            BaseURL:     "http://localhost:11434",
+            Model:       "all-minilm",
+            Dimension:   384,
             Dimension:   384,
         },
     })

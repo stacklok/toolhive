@@ -172,7 +172,7 @@ func TestService_EmbeddingTimeTracking(t *testing.T) {
 
 	// After ingestion, embedding time should be greater than 0
 	totalEmbeddingTime := svc.GetTotalEmbeddingTime()
-	require.Greater(t, totalEmbeddingTime, time.Duration(0), 
+	require.Greater(t, totalEmbeddingTime, time.Duration(0),
 		"Total embedding time should be greater than 0 after ingestion")
 
 	// Reset and verify it's back to 0

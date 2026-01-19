@@ -105,7 +105,7 @@ func NewService(config *Config) (*Service, error) {
 	// Create chromem-go embeddingFunc from our embedding manager with tracing
 	embeddingFunc := func(ctx context.Context, text string) ([]float32, error) {
 		// Create a span for embedding calculation
-		ctx, span := svc.tracer.Start(ctx, "optimizer.ingestion.calculate_embedding",
+		_, span := svc.tracer.Start(ctx, "optimizer.ingestion.calculate_embedding",
 			trace.WithAttributes(
 				attribute.String("operation", "embedding_calculation"),
 			))

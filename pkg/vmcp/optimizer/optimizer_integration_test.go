@@ -264,7 +264,7 @@ func TestOptimizerIntegration_EmbeddingTimeTracking(t *testing.T) {
 	// After ingestion, embedding time should be tracked
 	// Note: The actual time depends on Ollama performance, but it should be > 0
 	finalEmbeddingTime := integration.ingestionService.GetTotalEmbeddingTime()
-	require.Greater(t, finalEmbeddingTime, time.Duration(0), 
+	require.Greater(t, finalEmbeddingTime, time.Duration(0),
 		"Embedding time should be tracked after ingestion")
 }
 
@@ -281,7 +281,7 @@ func TestOptimizerIntegration_DisabledEmbeddingTime(t *testing.T) {
 	mcpServer := server.NewMCPServer("vmcp-test", "1.0")
 	mockClient := newMockIntegrationBackendClient()
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
-	
+
 	integration, err := NewIntegration(ctx, optimizerConfig, mcpServer, mockClient, sessionMgr)
 	require.NoError(t, err)
 	require.Nil(t, integration, "Integration should be nil when optimizer is disabled")

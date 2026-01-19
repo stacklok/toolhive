@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ory/fosite"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -136,48 +137,23 @@ func (c *OAuth2Config) Validate() error {
 	return c.CommonOAuthConfig.Validate()
 }
 
-// validateRedirectURI validates an OAuth redirect URI according to RFC 6749 Section 3.1.2.
-// It ensures the URI is:
-//   - A parseable, absolute URL with scheme and host
-//   - Free of fragments (per RFC 6749 Section 3.1.2.2)
-//   - Free of user credentials
-//   - Using http or https scheme only
-//   - Using HTTPS for non-loopback addresses (HTTP allowed only for 127.0.0.1, ::1, localhost)
-//   - Not containing wildcard hostnames
+// validateRedirectURI validates an OAuth redirect URI per RFC 6749 and RFC 8252.
+// This is our own callback URL where upstream IDPs redirect back to us. The upstream
+// IDP validates this against their registered redirect URIs, so we only do basic checks.
 func validateRedirectURI(uri string) error {
 	parsed, err := url.Parse(uri)
 	if err != nil {
-		return errors.New("redirect_uri must be an absolute URL with scheme and host")
+		return errors.New("redirect_uri must be an absolute URI without a fragment")
 	}
 
-	// Must be absolute URL (has scheme and host)
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return errors.New("redirect_uri must be an absolute URL with scheme and host")
+	// Use fosite for RFC 6749 Section 3.1.2 validation (absolute URI, no fragment)
+	if !fosite.IsValidRedirectURI(parsed) {
+		return errors.New("redirect_uri must be an absolute URI without a fragment")
 	}
 
-	// Must not contain fragment per RFC 6749 Section 3.1.2.2
-	if parsed.Fragment != "" {
-		return errors.New("redirect_uri must not contain a fragment (#)")
-	}
-
-	// Must not contain user credentials
-	if parsed.User != nil {
-		return errors.New("redirect_uri must not contain user credentials")
-	}
-
-	// Must use http or https scheme
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("redirect_uri must use http or https scheme")
-	}
-
-	// HTTP scheme is only allowed for loopback addresses
-	if parsed.Scheme == "http" && !networking.IsLocalhost(parsed.Host) {
-		return errors.New("redirect_uri with http scheme requires loopback address (127.0.0.1, ::1, or localhost)")
-	}
-
-	// Must not contain wildcard hostname
-	if strings.Contains(parsed.Hostname(), "*") {
-		return errors.New("redirect_uri must not contain wildcard hostname")
+	// Use fosite for RFC 8252 scheme security (HTTPS required, HTTP only for loopback)
+	if !fosite.IsRedirectURISecureStrict(context.Background(), parsed) {
+		return errors.New("redirect_uri must use http (for loopback) or https scheme")
 	}
 
 	return nil

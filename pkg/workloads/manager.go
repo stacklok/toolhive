@@ -573,7 +573,10 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
 	// This will be addressed in a future re-think of the secrets manager interface.
 	if d.needSecretsPassword(runConfig.Secrets) {
-		password, err := secrets.GetSecretsPassword("")
+		// Get the password but don't store it yet - the detached process will validate
+		// and store the password after successful decryption. This prevents caching
+		// wrong passwords before validation.
+		password, _, err := secrets.GetSecretsPassword("")
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %w", err)
 		}

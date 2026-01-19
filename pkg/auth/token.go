@@ -539,53 +539,39 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 	return registry, nil
 }
 
-// isTestOrExampleIssuer checks if an issuer URL is clearly for testing/development.
-// Only matches patterns that are unambiguously non-production:
-//   - Reserved example domains (example.com, example.org, example.net)
-//   - Reserved TLDs for testing (.test, .localhost, .local, .example, .invalid)
-//   - Localhost/loopback addresses
-//
-// This avoids false positives on production URLs that contain "test" as a substring
-// (e.g., attest.azure.com, latest-service.com, fastest-api.com).
-func isTestOrExampleIssuer(issuer string) bool {
-	if issuer == "" {
-		return false
-	}
+// resolveJWKSURL resolves the JWKS URL from config or via OIDC discovery.
+// It returns an error if neither JWKS URL nor issuer is provided.
+func resolveJWKSURL(ctx context.Context, config TokenValidatorConfig) (string, error) {
+	jwksURL := config.JWKSURL
 
-	parsed, err := url.Parse(issuer)
-	if err != nil {
-		return false
-	}
-
-	// Check for localhost/loopback using Host (includes port and IPv6 brackets)
-	// networking.IsLocalhost expects the full host with brackets for IPv6
-	if networking.IsLocalhost(parsed.Host) {
-		return true
-	}
-
-	// Use Hostname (without port/brackets) for domain checks
-	hostname := parsed.Hostname()
-	if hostname == "" {
-		return false
-	}
-
-	// Check for reserved example domains (RFC 2606)
-	exampleDomains := []string{"example.com", "example.org", "example.net"}
-	for _, domain := range exampleDomains {
-		if hostname == domain || strings.HasSuffix(hostname, "."+domain) {
-			return true
+	// If JWKS URL is not provided but issuer is, try to discover it
+	// Skip discovery if explicitly requested via environment variable (for testing only)
+	if os.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true" && config.Issuer != "" {
+		logger.Warnf(
+			"OIDC discovery skipped for issuer '%s' (TOOLHIVE_SKIP_OIDC_DISCOVERY=true)",
+			config.Issuer,
+		)
+		// Use a dummy JWKS URL when discovery is skipped
+		if jwksURL == "" {
+			jwksURL = config.Issuer + "/.well-known/jwks.json"
 		}
-	}
-
-	// Check for reserved testing TLDs (RFC 2606, RFC 6761)
-	testTLDs := []string{".test", ".example", ".invalid", ".localhost", ".local"}
-	for _, tld := range testTLDs {
-		if strings.HasSuffix(hostname, tld) {
-			return true
+	} else if jwksURL == "" && config.Issuer != "" {
+		doc, err := discoverOIDCConfiguration(
+			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
+			config.AllowPrivateIP, config.InsecureAllowHTTP,
+		)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
 		}
+		jwksURL = doc.JWKSURI
 	}
 
-	return false
+	// Ensure we have a JWKS URL either provided or discovered
+	if jwksURL == "" {
+		return "", ErrMissingIssuerAndJWKSURL
+	}
+
+	return jwksURL, nil
 }
 
 // NewTokenValidator creates a new token validator.
@@ -599,31 +585,10 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		)
 	}
 
-	jwksURL := config.JWKSURL
-
-	// If JWKS URL is not provided but issuer is, try to discover it
-	// Skip discovery for test/example issuers (for testing only)
-	isTestIssuer := isTestOrExampleIssuer(config.Issuer)
-	if isTestIssuer {
-		logger.Warnf("Test/example issuer detected (%s) - OIDC discovery skipped (testing only!)", config.Issuer)
-		// Use a dummy JWKS URL when discovery is skipped
-		if jwksURL == "" {
-			jwksURL = config.Issuer + "/.well-known/jwks.json"
-		}
-	} else if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(
-			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
-			config.AllowPrivateIP, config.InsecureAllowHTTP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
-		}
-		jwksURL = doc.JWKSURI
-	}
-
-	// Ensure we have a JWKS URL either provided or discovered
-	if jwksURL == "" {
-		return nil, ErrMissingIssuerAndJWKSURL
+	// Resolve JWKS URL from config or discovery
+	jwksURL, err := resolveJWKSURL(ctx, config)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS

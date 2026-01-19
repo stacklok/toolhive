@@ -690,8 +690,10 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 
 	t.Run("failed OIDC discovery", func(t *testing.T) {
 		t.Parallel()
+		// Use a .com domain that doesn't exist (not RFC-reserved like .example)
+		// so that OIDC discovery will actually be attempted and fail
 		config := TokenValidatorConfig{
-			Issuer:   "https://non-existent-domain.example",
+			Issuer:   "https://non-existent-domain-toolhive-test-12345.com",
 			Audience: "test-audience",
 			ClientID: "test-client",
 			// No CA cert or AllowPrivateIP for this test - it should fail
@@ -708,6 +710,39 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		// Check that the error is related to OIDC discovery
 		if !errors.Is(err, ErrFailedToDiscoverOIDC) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
+		}
+	})
+
+	t.Run("skip discovery with TOOLHIVE_SKIP_OIDC_DISCOVERY", func(t *testing.T) {
+		t.Parallel()
+
+		// Manually set and restore the environment variable
+		oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+		t.Cleanup(func() {
+			if hadValue {
+				os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+			} else {
+				os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+			}
+		})
+
+		// Use a production issuer that would normally require discovery
+		config := TokenValidatorConfig{
+			Issuer:   "https://accounts.google.com",
+			Audience: "test-audience",
+			ClientID: "test-client",
+		}
+
+		validator, err := NewTokenValidator(ctx, config)
+		if err != nil {
+			t.Fatalf("Failed to create token validator: %v", err)
+		}
+
+		// Verify that discovery was skipped and fallback JWKS URL was used
+		expectedJWKSURL := "https://accounts.google.com/.well-known/jwks.json"
+		if validator.jwksURL != expectedJWKSURL {
+			t.Errorf("Expected JWKS URL %s but got %s", expectedJWKSURL, validator.jwksURL)
 		}
 	})
 }
@@ -1749,75 +1784,4 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 			t.Errorf("Should not use Google tokeninfo method for non-Google URL, got error: %v", err)
 		}
 	})
-}
-
-func TestIsTestOrExampleIssuer(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		issuer   string
-		expected bool
-	}{
-		// Test issuers - should return true
-		{"localhost", "http://localhost:8080", true},
-		{"localhost without port", "http://localhost", true},
-		{"127.0.0.1", "http://127.0.0.1:8080", true},
-		{"127.0.0.1 without port", "http://127.0.0.1", true},
-		{"IPv6 loopback", "http://[::1]:8080", true},
-		{"IPv6 loopback without port", "http://[::1]", true},
-
-		// RFC 2606 example domains
-		{"example.com", "https://example.com", true},
-		{"example.org", "https://example.org", true},
-		{"example.net", "https://example.net", true},
-		{"subdomain of example.com", "https://auth.example.com", true},
-		{"subdomain of example.org", "https://test.example.org", true},
-		{"subdomain of example.net", "https://api.example.net", true},
-
-		// RFC 2606/6761 reserved testing TLDs
-		{".test TLD", "https://myapp.test", true},
-		{".example TLD", "https://myapp.example", true},
-		{".invalid TLD", "https://myapp.invalid", true},
-		{".localhost TLD", "https://myapp.localhost", true},
-		{".local TLD", "https://myapp.local", true},
-		{"subdomain with .test", "https://auth.myapp.test", true},
-
-		// Production URLs that should NOT match (contain "test" but not reserved)
-		{"attest.azure.com", "https://attest.azure.com", false},
-		{"latest-service.com", "https://latest-service.com", false},
-		{"fastest-api.com", "https://fastest-api.com", false},
-		{"test.production.com", "https://test.production.com", false},
-		{"production-test.company.com", "https://production-test.company.com", false},
-		{"my-testing-env.aws.com", "https://my-testing-env.aws.com", false},
-
-		// Production URLs with "example" that should NOT match
-		{"examplify.com", "https://examplify.com", false},
-		{"best-example.com", "https://best-example.com", false},
-		{"exampleservice.io", "https://exampleservice.io", false},
-
-		// Real-world production OAuth issuers
-		{"Google", "https://accounts.google.com", false},
-		{"GitHub", "https://github.com/login/oauth/authorize", false},
-		{"Microsoft", "https://login.microsoftonline.com", false},
-		{"Auth0", "https://myapp.auth0.com", false},
-		{"Okta", "https://mycompany.okta.com", false},
-		{"Keycloak", "https://keycloak.mycompany.com", false},
-
-		// Edge cases
-		{"empty string", "", false},
-		{"malformed URL", "not-a-url", false},
-		{"URL without hostname", "https://", false},
-		{"just a path", "/oauth/callback", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := isTestOrExampleIssuer(tt.issuer)
-			if result != tt.expected {
-				t.Errorf("isTestOrExampleIssuer(%q) = %v, expected %v", tt.issuer, result, tt.expected)
-			}
-		})
-	}
 }

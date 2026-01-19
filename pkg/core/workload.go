@@ -43,6 +43,8 @@ type Workload struct {
 	ToolsFilter []string `json:"tools,omitempty"`
 	// Remote indicates whether this is a remote workload (true) or a container workload (false).
 	Remote bool `json:"remote,omitempty"`
+	// StartedAt is when the container was last started (changes on restart)
+	StartedAt time.Time `json:"started_at"`
 }
 
 // SortWorkloadsByName sorts a slice of Workload by the Name field in ascending alphabetical order.

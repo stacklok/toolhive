@@ -53,6 +53,7 @@ thv [flags]
 * [thv secret](thv_secret.md)	 - Manage secrets
 * [thv serve](thv_serve.md)	 - Start the ToolHive API server
 * [thv start](thv_start.md)	 - Start (resume) a tooling server
+* [thv status](thv_status.md)	 - Show detailed status of an MCP server
 * [thv stop](thv_stop.md)	 - Stop one or more MCP servers
 * [thv version](thv_version.md)	 - Show the version of ToolHive
 

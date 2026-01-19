@@ -40,9 +40,9 @@ thv logs [workload-name|prune] [flags]
 ### Options
 
 ```
-  -f, --follow   Follow log output (only for workload logs)
+  -f, --follow   Follow log output (only for workload logs) (default false)
   -h, --help     help for logs
-  -p, --proxy    Show proxy logs instead of container logs
+  -p, --proxy    Show proxy logs instead of container logs (default false)
 ```
 
 ### Options inherited from parent commands

@@ -172,25 +172,59 @@ type UpstreamTokenStorage interface {
 // upstream IDP tokens, pending authorization requests, and client registration.
 // The auth server requires a Storage implementation; use NewMemoryStorage() for
 // single-instance deployments or NewRedisStorage() for distributed deployments.
+//
+// # Fosite Interface Segregation
+//
+// Fosite splits storage into separate interfaces (AuthorizeCodeStorage, AccessTokenStorage,
+// RefreshTokenStorage, PKCERequestStorage) following the Interface Segregation Principle.
+// This enables:
+//   - Feature composition: Only enable OAuth features you need
+//   - Testing isolation: Mock specific interfaces for focused tests
+//   - Clear contracts: Each interface documents its requirements
+//
+// # Key Design Patterns
+//
+// All token storage methods store fosite.Requester (not just token values) because token
+// validation requires the full authorization context (client, scopes, session).
+//
+// Methods use two key types:
+//   - Signature: Cryptographic token identifier for token-specific operations
+//   - Request ID: Grant identifier for finding all tokens from one authorization
+//
+// See doc.go for comprehensive documentation of fosite's storage design.
 type Storage interface {
 	// Embed segregated interfaces for IDP tokens, pending authorizations, and client registry.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
 	ClientRegistry
 
-	// AuthorizeCodeStorage provides authorization code storage
+	// AuthorizeCodeStorage provides authorization code storage for the Authorization Code
+	// Grant (RFC 6749 Section 4.1). Authorization codes are one-time-use and short-lived.
+	// CreateAuthorizeCodeSession stores by code, GetAuthorizeCodeSession retrieves by code,
+	// InvalidateAuthorizeCodeSession marks as used (subsequent Gets return ErrInvalidatedAuthorizeCode).
 	oauth2.AuthorizeCodeStorage
 
-	// AccessTokenStorage provides access token storage
+	// AccessTokenStorage provides access token session storage. Methods use "signature"
+	// (derived from token value) as the key for O(1) lookup when validating tokens.
+	// The stored fosite.Requester contains the full authorization context including
+	// the Session with expiration times via session.GetExpiresAt(fosite.AccessToken).
 	oauth2.AccessTokenStorage
 
-	// RefreshTokenStorage provides refresh token storage
+	// RefreshTokenStorage provides refresh token session storage. CreateRefreshTokenSession
+	// accepts an accessSignature to link refresh tokens to their access tokens for rotation.
+	// RotateRefreshToken uses requestID to invalidate both the refresh token and all
+	// related access tokens from the same authorization grant.
 	oauth2.RefreshTokenStorage
 
-	// TokenRevocationStorage provides token revocation per RFC 7009
+	// TokenRevocationStorage provides token revocation per RFC 7009. RevokeAccessToken
+	// and RevokeRefreshToken take requestID (not signature) because RFC 7009 requires
+	// revoking a refresh token SHOULD also invalidate associated access tokens, which
+	// requires finding all tokens by their common grant identifier.
 	oauth2.TokenRevocationStorage
 
-	// PKCERequestStorage provides PKCE storage
+	// PKCERequestStorage provides PKCE challenge/verifier storage (RFC 7636).
+	// Stores the code_challenge during authorization, validates code_verifier during
+	// token exchange. Keyed by the same code/signature as the authorization code.
 	pkce.PKCERequestStorage
 
 	// Close releases any resources held by the storage implementation.

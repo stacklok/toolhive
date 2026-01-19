@@ -48,7 +48,7 @@ thv config set-build-auth-file <name> [content] [flags]
 
 ```
   -h, --help    help for set-build-auth-file
-      --stdin   Read file content from stdin instead of command line argument
+      --stdin   Read file content from stdin instead of command line argument (default false)
 ```
 
 ### Options inherited from parent commands

@@ -65,6 +65,11 @@ func NewService(config *Config) (*Service, error) {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
+	// Clear database on startup to ensure fresh embeddings
+	// This is important when the embedding model changes or for consistency
+	database.Reset()
+	logger.Info("Cleared optimizer database on startup")
+
 	// Initialize embedding manager
 	embeddingManager, err := embeddings.NewManager(config.EmbeddingConfig)
 	if err != nil {
@@ -124,7 +129,7 @@ func (s *Service) IngestServer(
 	description *string,
 	tools []mcp.Tool,
 ) error {
-	logger.Infof("Ingesting server: %s (%d tools)", serverName, len(tools))
+	logger.Infof("Ingesting server: %s (%d tools) [serverID=%s]", serverName, len(tools), serverID)
 
 	// Create backend server record (simplified - vMCP manages lifecycle)
 	// chromem-go will generate embeddings automatically from the content
@@ -155,6 +160,7 @@ func (s *Service) IngestServer(
 
 // syncBackendTools synchronizes tools for a backend server
 func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverName string, tools []mcp.Tool) (int, error) {
+	logger.Debugf("syncBackendTools: server=%s, serverID=%s, tool_count=%d", serverName, serverID, len(tools))
 	// Delete existing tools
 	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)
@@ -193,6 +199,33 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 
 	logger.Infof("Synced %d tools for server %s", len(tools), serverName)
 	return len(tools), nil
+}
+
+// GetEmbeddingManager returns the embedding manager for this service
+func (s *Service) GetEmbeddingManager() *embeddings.Manager {
+	return s.embeddingManager
+}
+
+// GetBackendToolOps returns the backend tool operations for search and retrieval
+func (s *Service) GetBackendToolOps() *db.BackendToolOps {
+	return s.backendToolOps
+}
+
+// GetTotalToolTokens returns the total token count across all tools in the database
+func (s *Service) GetTotalToolTokens(ctx context.Context) int {
+	// Use FTS database to efficiently count all tool tokens
+	if s.database.GetFTSDB() != nil {
+		totalTokens, err := s.database.GetFTSDB().GetTotalToolTokens(ctx)
+		if err != nil {
+			logger.Warnw("Failed to get total tool tokens from FTS", "error", err)
+			return 0
+		}
+		return totalTokens
+	}
+
+	// Fallback: query all tools (less efficient but works)
+	logger.Warn("FTS database not available, using fallback for token counting")
+	return 0
 }
 
 // Close releases resources

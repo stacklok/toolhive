@@ -63,7 +63,7 @@ func TestNewMonitor_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			monitor, err := NewMonitor(mockClient, backends, tt.config)
+			monitor, err := NewMonitor(mockClient, backends, tt.config, "")
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Nil(t, monitor)
@@ -98,7 +98,7 @@ func TestMonitor_StartStop(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	// Start monitor
@@ -175,7 +175,7 @@ func TestMonitor_StartErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			monitor, err := NewMonitor(mockClient, backends, config)
+			monitor, err := NewMonitor(mockClient, backends, config, "")
 			require.NoError(t, err)
 
 			err = tt.setupFunc(monitor)
@@ -205,7 +205,7 @@ func TestMonitor_StopWithoutStart(t *testing.T) {
 		Timeout:            50 * time.Millisecond,
 	}
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	// Try to stop without starting
@@ -236,7 +236,7 @@ func TestMonitor_PeriodicHealthChecks(t *testing.T) {
 		Return(nil, errors.New("backend unavailable")).
 		MinTimes(2)
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -286,7 +286,7 @@ func TestMonitor_GetHealthSummary(t *testing.T) {
 		}).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -330,7 +330,7 @@ func TestMonitor_GetBackendStatus(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -379,7 +379,7 @@ func TestMonitor_GetBackendState(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -430,7 +430,7 @@ func TestMonitor_GetAllBackendStates(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -474,7 +474,7 @@ func TestMonitor_ContextCancellation(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		AnyTimes()
 
-	monitor, err := NewMonitor(mockClient, backends, config)
+	monitor, err := NewMonitor(mockClient, backends, config, "")
 	require.NoError(t, err)
 
 	// Start with cancellable context

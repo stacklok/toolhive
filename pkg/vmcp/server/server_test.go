@@ -196,6 +196,7 @@ func TestNew_WithAuditConfig(t *testing.T) {
 		name        string
 		auditConfig *audit.Config
 		wantErr     bool
+		errContains string
 	}{
 		{
 			name:        "nil audit config is valid",
@@ -219,6 +220,33 @@ func TestNew_WithAuditConfig(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "negative MaxDataSize is invalid",
+			auditConfig: &audit.Config{
+				Component:   "vmcp-server",
+				MaxDataSize: -100,
+			},
+			wantErr:     true,
+			errContains: "maxDataSize cannot be negative",
+		},
+		{
+			name: "invalid event type is rejected",
+			auditConfig: &audit.Config{
+				Component:  "vmcp-server",
+				EventTypes: []string{"invalid_event_type"},
+			},
+			wantErr:     true,
+			errContains: "unknown event type: invalid_event_type",
+		},
+		{
+			name: "invalid exclude event type is rejected",
+			auditConfig: &audit.Config{
+				Component:         "vmcp-server",
+				ExcludeEventTypes: []string{"bad_event"},
+			},
+			wantErr:     true,
+			errContains: "unknown exclude event type: bad_event",
+		},
 	}
 
 	for _, tt := range tests {
@@ -240,6 +268,9 @@ func TestNew_WithAuditConfig(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
 				return
 			}
 

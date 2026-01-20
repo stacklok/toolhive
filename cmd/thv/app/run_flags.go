@@ -121,6 +121,9 @@ type RunFlags struct {
 	// Remote authentication
 	RemoteAuthFlags RemoteAuthFlags
 	OAuthParams     map[string]string
+
+	// Interactive mode
+	Interactive bool
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -250,6 +253,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Load global ignore patterns from ~/.config/toolhive/thvignore")
 	cmd.Flags().BoolVar(&config.PrintOverlays, "print-resolved-overlays", false,
 		"Debug: show resolved container paths for tmpfs overlays (default false)")
+
+	// Interactive mode
+	cmd.Flags().BoolVarP(&config.Interactive, "interactive", "i", false,
+		"Run interactive wizard to configure the MCP server")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration

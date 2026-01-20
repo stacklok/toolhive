@@ -121,6 +121,10 @@ thv run github-remote --remote-auth \
 		if runFlags.FromConfig != "" {
 			return nil
 		}
+		// If --interactive is provided, no args are required
+		if runFlags.Interactive {
+			return nil
+		}
 		// Otherwise, require at least 1 argument
 		return cobra.MinimumNArgs(1)(cmd, args)
 	},
@@ -168,6 +172,11 @@ func cleanupAndWait(workloadManager workloads.Manager, name string) {
 // nolint:gocyclo // This function is complex by design
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
+
+	// Check if interactive mode is requested
+	if runFlags.Interactive {
+		return runInteractive(ctx, cmd)
+	}
 
 	// Check if we should load configuration from a file
 	if runFlags.FromConfig != "" {

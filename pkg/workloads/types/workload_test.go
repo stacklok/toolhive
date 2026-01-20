@@ -29,7 +29,6 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 	tests := []struct {
 		name               string
 		containerLabels    map[string]string
-		runConfigTransport types.TransportType
 		runConfigProxyMode string
 		expectedTransport  types.TransportType
 		expectedProxyMode  string
@@ -38,24 +37,22 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 			name: "stdio transport with streamable-http proxy mode",
 			containerLabels: map[string]string{
 				labels.LabelBaseName:  "test-workload",
-				labels.LabelTransport: "streamable-http", // Label shows proxy mode
+				labels.LabelTransport: "stdio", // Corrected label
 				labels.LabelPort:      "8080",
 			},
-			runConfigTransport: types.TransportTypeStdio,
 			runConfigProxyMode: "streamable-http",
-			expectedTransport:  types.TransportTypeStdio, // Should favor run config
+			expectedTransport:  types.TransportTypeStdio,
 			expectedProxyMode:  "streamable-http",
 		},
 		{
 			name: "stdio transport with sse proxy mode",
 			containerLabels: map[string]string{
 				labels.LabelBaseName:  "test-workload-sse",
-				labels.LabelTransport: "sse", // Label shows proxy mode
+				labels.LabelTransport: "stdio", // Corrected label
 				labels.LabelPort:      "8080",
 			},
-			runConfigTransport: types.TransportTypeStdio,
 			runConfigProxyMode: "sse",
-			expectedTransport:  types.TransportTypeStdio, // Should favor run config
+			expectedTransport:  types.TransportTypeStdio,
 			expectedProxyMode:  "sse",
 		},
 		{
@@ -65,21 +62,9 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 				labels.LabelTransport: "sse",
 				labels.LabelPort:      "8080",
 			},
-			runConfigTransport: types.TransportTypeSSE,
 			runConfigProxyMode: "",
 			expectedTransport:  types.TransportTypeSSE,
 			expectedProxyMode:  "sse",
-		},
-		{
-			name: "missing run config favors label",
-			containerLabels: map[string]string{
-				labels.LabelBaseName:  "no-config-workload",
-				labels.LabelTransport: "stdio",
-				labels.LabelPort:      "8080",
-			},
-			runConfigTransport: "", // No config will be created
-			expectedTransport:  types.TransportTypeStdio,
-			expectedProxyMode:  "",
 		},
 	}
 
@@ -87,22 +72,19 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			workloadName := tt.containerLabels[labels.LabelBaseName]
 
-			// Create run config if specified
-			if tt.runConfigTransport != "" {
-				config := minimalRunConfig{
-					Transport: tt.runConfigTransport,
-					ProxyMode: tt.runConfigProxyMode,
-				}
-				data, err := json.Marshal(config)
-				require.NoError(t, err)
-
-				writer, err := store.GetWriter(ctx, workloadName)
-				require.NoError(t, err)
-				_, err = writer.Write(data)
-				require.NoError(t, err)
-				err = writer.Close()
-				require.NoError(t, err)
+			// Create run config with proxy mode
+			config := minimalRunConfig{
+				ProxyMode: tt.runConfigProxyMode,
 			}
+			data, err := json.Marshal(config)
+			require.NoError(t, err)
+
+			writer, err := store.GetWriter(ctx, workloadName)
+			require.NoError(t, err)
+			_, err = writer.Write(data)
+			require.NoError(t, err)
+			err = writer.Close()
+			require.NoError(t, err)
 
 			container := &runtime.ContainerInfo{
 				Name:    workloadName,

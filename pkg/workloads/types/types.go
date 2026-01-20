@@ -17,9 +17,8 @@ import (
 
 // minimalRunConfig represents just the fields we need from a run configuration
 type minimalRunConfig struct {
-	Group     string              `json:"group,omitempty" yaml:"group,omitempty"`
-	ProxyMode string              `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
-	Transport types.TransportType `json:"transport,omitempty" yaml:"transport,omitempty"`
+	Group     string `json:"group,omitempty" yaml:"group,omitempty"`
+	ProxyMode string `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 }
 
 // loadRunConfigFields attempts to load specific fields from the runconfig
@@ -77,10 +76,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	runConfig, err := loadRunConfigFields(ctx, name)
 	if err != nil {
 		return core.Workload{}, err
-	}
-
-	if runConfig.Transport != "" {
-		tType = runConfig.Transport
 	}
 
 	// Generate URL for the MCP server

@@ -4,7 +4,7 @@ metadata:
   name: ($testPrefix)
   namespace: toolhive-system
 spec:
-  model: "sentence-transformers/all-MiniLM-L6-v2"
+  model: "sentence-transformers/paraphrase-MiniLM-L3-v2"
   image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"
   imagePullPolicy: IfNotPresent
   port: 8080

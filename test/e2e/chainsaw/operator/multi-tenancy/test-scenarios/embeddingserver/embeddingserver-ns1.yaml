@@ -4,7 +4,7 @@ metadata:
   name: ($testPrefix)
   namespace: ($namespace1)
 spec:
-  model: "sentence-transformers/all-MiniLM-L6-v2"
+  model: "sentence-transformers/paraphrase-MiniLM-L3-v2"
   image: "text-embeddings-inference"
   imagePullPolicy: IfNotPresent
   port: 8080

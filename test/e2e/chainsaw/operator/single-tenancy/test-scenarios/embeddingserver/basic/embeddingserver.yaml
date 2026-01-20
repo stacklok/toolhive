@@ -4,8 +4,8 @@ metadata:
   name: ($testPrefix)
   namespace: toolhive-system
 spec:
-  # Use a lightweight model for testing
-  model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Use a very lightweight model for testing (17.4M params)
+  model: "sentence-transformers/paraphrase-MiniLM-L3-v2"
   image: "text-embeddings-inference"
   imagePullPolicy: IfNotPresent
   port: 8080

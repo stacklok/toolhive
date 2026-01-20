@@ -266,17 +266,17 @@ func (m *RunWizardModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Global keys
 	switch key {
-	case "ctrl+c":
+	case keyCtrlC:
 		m.Quitting = true
 		m.Confirmed = false
 		return m, tea.Quit
-	case "q":
+	case keyQ:
 		if !m.EditMode {
 			m.Quitting = true
 			m.Confirmed = false
 			return m, tea.Quit
 		}
-	case "esc":
+	case keyEsc:
 		if m.EditMode {
 			m.EditMode = false
 			m.SearchInput.Blur()
@@ -313,17 +313,17 @@ func (m *RunWizardModel) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *RunWizardModel) handleServerSourceKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "up", "k":
+	case keyUp, keyK:
 		if m.SourceCursor > 0 {
 			m.SourceCursor--
 			m.ServerSource = ServerSourceType(m.SourceCursor)
 		}
-	case "down", "j":
+	case keyDown, keyJ:
 		if m.SourceCursor < 3 {
 			m.SourceCursor++
 			m.ServerSource = ServerSourceType(m.SourceCursor)
 		}
-	case "enter":
+	case keyEnter:
 		m.CurrentStep = StepServerSelection
 		if m.ServerSource == SourceRegistry {
 			m.SearchInput.Focus()
@@ -357,15 +357,15 @@ func (m *RunWizardModel) handleServerSelectionKeys(key string, msg tea.KeyMsg) (
 
 func (m *RunWizardModel) handleRegistrySelectionKeys(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
-	case "up", "k":
+	case keyUp, keyK:
 		if !m.SearchInput.Focused() && m.ServerCursor > 0 {
 			m.ServerCursor--
 		}
-	case "down", "j":
+	case keyDown, keyJ:
 		if !m.SearchInput.Focused() && m.ServerCursor < len(m.FilteredServers)-1 {
 			m.ServerCursor++
 		}
-	case "tab":
+	case keyTab:
 		if m.SearchInput.Focused() {
 			m.SearchInput.Blur()
 			m.EditMode = false
@@ -374,7 +374,7 @@ func (m *RunWizardModel) handleRegistrySelectionKeys(key string, msg tea.KeyMsg)
 			m.EditMode = true
 			return m, textinput.Blink
 		}
-	case "enter":
+	case keyEnter:
 		if len(m.FilteredServers) > 0 {
 			server := m.FilteredServers[m.ServerCursor]
 			m.Config.ServerOrImage = server.GetName()
@@ -399,7 +399,7 @@ func (m *RunWizardModel) handleRegistrySelectionKeys(key string, msg tea.KeyMsg)
 
 func (m *RunWizardModel) handleTextInputKeys(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
-	case "enter":
+	case keyEnter:
 		value := m.TextInput.Value()
 		if value == "" {
 			m.Error = "Please enter a value"
@@ -439,15 +439,15 @@ func (m *RunWizardModel) handleTransportSelectionKeys(key string) (tea.Model, te
 	transports := m.getAvailableTransports()
 
 	switch key {
-	case "up", "k":
+	case keyUp, keyK:
 		if m.TransportCursor > 0 {
 			m.TransportCursor--
 		}
-	case "down", "j":
+	case keyDown, keyJ:
 		if m.TransportCursor < len(transports)-1 {
 			m.TransportCursor++
 		}
-	case "enter":
+	case keyEnter:
 		m.Transport = transports[m.TransportCursor]
 		m.Config.Transport = m.Transport
 		m.CurrentStep = StepAdvancedOptions
@@ -466,7 +466,7 @@ func (m *RunWizardModel) handleAdvancedOptionsKeys(key string, msg tea.KeyMsg) (
 }
 
 func (m *RunWizardModel) handleAdvancedEditMode(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if key == "enter" {
+	if key == keyEnter {
 		m.saveAdvancedField()
 		m.EditMode = false
 		return m, nil
@@ -516,17 +516,17 @@ func (m *RunWizardModel) updateAdvancedInput(msg tea.KeyMsg) (tea.Model, tea.Cmd
 
 func (m *RunWizardModel) handleAdvancedNavigationMode(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "up", "k":
+	case keyUp, keyK:
 		if m.AdvancedCursor > 0 {
 			m.AdvancedCursor--
 		}
-	case "down", "j":
+	case keyDown, keyJ:
 		if m.AdvancedCursor < advancedFieldCount-1 {
 			m.AdvancedCursor++
 		}
-	case "enter":
+	case keyEnter:
 		return m.handleAdvancedEnter()
-	case "d":
+	case keyD:
 		m.handleAdvancedDelete()
 	}
 	return m, nil
@@ -571,14 +571,14 @@ func (m *RunWizardModel) handleAdvancedDelete() {
 
 func (m *RunWizardModel) handlePreviewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
-	case "enter", "y":
+	case keyEnter, keyY:
 		m.Confirmed = true
 		m.Quitting = true
 		return m, tea.Quit
-	case "e":
+	case keyE:
 		// Edit mode - go back to first step
 		m.CurrentStep = StepServerSource
-	case "n":
+	case keyN:
 		m.Confirmed = false
 		m.Quitting = true
 		return m, tea.Quit

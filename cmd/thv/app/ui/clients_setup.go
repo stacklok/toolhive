@@ -41,20 +41,20 @@ func (*setupModel) Init() tea.Cmd { return nil }
 func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
-		case "ctrl+c", "q":
+		case keyCtrlC, keyQ:
 			m.Confirmed = false
 			m.Quitting = true
 			return m, tea.Quit
-		case "up", "k":
+		case keyUp, keyK:
 			if m.Cursor > 0 {
 				m.Cursor--
 			}
-		case "down", "j":
+		case keyDown, keyJ:
 			maxItems := m.getMaxCursorPosition()
 			if m.Cursor < maxItems-1 {
 				m.Cursor++
 			}
-		case "enter":
+		case keyEnter:
 			if m.CurrentStep == stepGroupSelection {
 				// Require at least one group to be selected before proceeding
 				if len(m.SelectedGroups) == 0 {
@@ -69,7 +69,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Confirmed = true
 			m.Quitting = true
 			return m, tea.Quit
-		case " ":
+		case keySpace:
 			if m.CurrentStep == stepGroupSelection {
 				// Toggle group selection
 				if _, ok := m.SelectedGroups[m.Cursor]; ok {

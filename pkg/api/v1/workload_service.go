@@ -97,7 +97,8 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 	}
 
 	// Use the manager's UpdateWorkload method to handle the lifecycle
-	if _, err := s.workloadManager.UpdateWorkload(ctx, name, runConfig); err != nil {
+	// Use background context since this is async operation
+	if _, err := s.workloadManager.UpdateWorkload(context.Background(), name, runConfig); err != nil {
 		return nil, fmt.Errorf("failed to update workload: %w", err)
 	}
 

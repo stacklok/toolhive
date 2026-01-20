@@ -712,39 +712,77 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
 		}
 	})
+}
 
-	t.Run("skip discovery with TOOLHIVE_SKIP_OIDC_DISCOVERY", func(t *testing.T) {
-		t.Parallel()
+func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) {
+	t.Parallel()
 
-		// Manually set and restore the environment variable
-		oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-		os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
-		t.Cleanup(func() {
-			if hadValue {
-				os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
-			} else {
-				os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-			}
-		})
-
-		// Use a production issuer that would normally require discovery
-		config := TokenValidatorConfig{
-			Issuer:   "https://accounts.google.com",
-			Audience: "test-audience",
-			ClientID: "test-client",
-		}
-
-		validator, err := NewTokenValidator(ctx, config)
-		if err != nil {
-			t.Fatalf("Failed to create token validator: %v", err)
-		}
-
-		// Verify that discovery was skipped and fallback JWKS URL was used
-		expectedJWKSURL := "https://accounts.google.com/.well-known/jwks.json"
-		if validator.jwksURL != expectedJWKSURL {
-			t.Errorf("Expected JWKS URL %s but got %s", expectedJWKSURL, validator.jwksURL)
+	// Set and restore environment variable
+	// Note: Cannot use t.Setenv() because it's incompatible with t.Parallel()
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
 		}
 	})
+	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+
+	ctx := context.Background()
+
+	// When TOOLHIVE_SKIP_OIDC_DISCOVERY=true without explicit JWKSURL, should fail
+	config := TokenValidatorConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "test-audience",
+		ClientID: "test-client",
+		// JWKSURL intentionally omitted
+	}
+
+	_, err := NewTokenValidator(ctx, config)
+	if err == nil {
+		t.Fatal("Expected error when TOOLHIVE_SKIP_OIDC_DISCOVERY=true without JWKSURL")
+	}
+	if !strings.Contains(err.Error(), "requires explicit JWKSURL") {
+		t.Errorf("Expected error about requiring explicit JWKSURL, got: %v", err)
+	}
+}
+
+func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T) {
+	t.Parallel()
+
+	// Set and restore environment variable
+	// Note: Cannot use t.Setenv() because it's incompatible with t.Parallel()
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		}
+	})
+	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+
+	ctx := context.Background()
+
+	// When TOOLHIVE_SKIP_OIDC_DISCOVERY=true with explicit JWKSURL, should succeed
+	explicitJWKSURL := "https://issuer.example.com/jwks"
+	config := TokenValidatorConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "test-audience",
+		ClientID: "test-client",
+		JWKSURL:  explicitJWKSURL,
+	}
+
+	validator, err := NewTokenValidator(ctx, config)
+	if err != nil {
+		t.Fatalf("Failed to create token validator: %v", err)
+	}
+
+	// Verify that the explicit JWKS URL was used
+	if validator.jwksURL != explicitJWKSURL {
+		t.Errorf("Expected JWKS URL %s but got %s", explicitJWKSURL, validator.jwksURL)
+	}
 }
 
 func TestTokenValidator_OpaqueToken(t *testing.T) {

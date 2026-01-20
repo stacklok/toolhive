@@ -544,17 +544,22 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 func resolveJWKSURL(ctx context.Context, config TokenValidatorConfig) (string, error) {
 	jwksURL := config.JWKSURL
 
+	// Check if OIDC discovery should be skipped (for testing only)
+	skipDiscovery := os.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
+
 	// If JWKS URL is not provided but issuer is, try to discover it
 	// Skip discovery if explicitly requested via environment variable (for testing only)
-	if os.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true" && config.Issuer != "" {
+	if skipDiscovery && config.Issuer != "" {
+		if jwksURL == "" {
+			return "", fmt.Errorf(
+				"TOOLHIVE_SKIP_OIDC_DISCOVERY=true requires explicit JWKSURL in config. " +
+					"This env var is for testing only and cannot guess provider-specific JWKS URLs",
+			)
+		}
 		logger.Warnf(
 			"OIDC discovery skipped for issuer '%s' (TOOLHIVE_SKIP_OIDC_DISCOVERY=true)",
 			config.Issuer,
 		)
-		// Use a dummy JWKS URL when discovery is skipped
-		if jwksURL == "" {
-			jwksURL = config.Issuer + "/.well-known/jwks.json"
-		}
 	} else if jwksURL == "" && config.Issuer != "" {
 		doc, err := discoverOIDCConfiguration(
 			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,

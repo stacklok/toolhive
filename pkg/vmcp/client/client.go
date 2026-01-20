@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -198,8 +199,10 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	})
 
 	// Create HTTP client with configured transport chain
+	// Set timeouts to prevent long-lived connections that require continuous listening
 	httpClient := &http.Client{
 		Transport: sizeLimitedTransport,
+		Timeout:   30 * time.Second, // Prevent hanging on connections
 	}
 
 	var c *client.Client
@@ -208,8 +211,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	case "streamable-http", "streamable":
 		c, err = client.NewStreamableHttpClient(
 			target.BaseURL,
-			transport.WithHTTPTimeout(0),
-			transport.WithContinuousListening(),
+			transport.WithHTTPTimeout(30*time.Second), // Set timeout instead of 0
 			transport.WithHTTPBasicClient(httpClient),
 		)
 		if err != nil {

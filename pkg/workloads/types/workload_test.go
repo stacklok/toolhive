@@ -68,7 +68,9 @@ func TestWorkloadFromContainerInfo(t *testing.T) {
 		},
 	}
 
+	//nolint:paralleltest // t.Setenv is incompatible with t.Parallel
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			workloadName := tt.containerLabels[labels.LabelBaseName]
 

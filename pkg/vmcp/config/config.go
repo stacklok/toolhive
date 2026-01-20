@@ -17,6 +17,19 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
+// Transport type constants for static backend configuration.
+// These define the allowed network transport protocols for vMCP backends in static mode.
+const (
+	// TransportSSE is the Server-Sent Events transport protocol.
+	TransportSSE = "sse"
+	// TransportStreamableHTTP is the streamable HTTP transport protocol.
+	TransportStreamableHTTP = "streamable-http"
+)
+
+// StaticModeAllowedTransports lists all transport types allowed for static backend configuration.
+// This must be kept in sync with the CRD enum validation in StaticBackendConfig.Transport.
+var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP}
+
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
 // +kubebuilder:validation:Type=string
@@ -79,6 +92,14 @@ type Config struct {
 	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
 	// +kubebuilder:validation:Required
 	Group string `json:"groupRef" yaml:"groupRef"`
+
+	// Backends defines pre-configured backend servers for static mode.
+	// When OutgoingAuth.Source is "inline", this field contains the full list of backend
+	// servers with their URLs and transport types, eliminating the need for K8s API access.
+	// When OutgoingAuth.Source is "discovered", this field is empty and backends are
+	// discovered at runtime via Kubernetes API.
+	// +optional
+	Backends []StaticBackendConfig `json:"backends,omitempty" yaml:"backends,omitempty"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
 	// When using the Kubernetes operator, this is populated by the converter from
@@ -154,6 +175,7 @@ type IncomingAuthConfig struct {
 // +gendoc
 type OIDCConfig struct {
 	// Issuer is the OIDC issuer URL.
+	// +kubebuilder:validation:Pattern=`^https?://`
 	Issuer string `json:"issuer" yaml:"issuer"`
 
 	// ClientID is the OAuth client ID.
@@ -194,6 +216,36 @@ type AuthzConfig struct {
 
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
+}
+
+// StaticBackendConfig defines a pre-configured backend server for static mode.
+// This allows vMCP to operate without Kubernetes API access by embedding all backend
+// information directly in the configuration.
+// +gendoc
+// +kubebuilder:object:generate=true
+type StaticBackendConfig struct {
+	// Name is the backend identifier.
+	// Must match the backend name from the MCPGroup for auth config resolution.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+
+	// URL is the backend's MCP server base URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url" yaml:"url"`
+
+	// Transport is the MCP transport protocol: "sse" or "streamable-http"
+	// Only network transports supported by vMCP client are allowed.
+	// +kubebuilder:validation:Enum=sse;streamable-http
+	// +kubebuilder:validation:Required
+	Transport string `json:"transport" yaml:"transport"`
+
+	// Metadata is a custom key-value map for storing additional backend information
+	// such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
+	// This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
+	// Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
+	// +optional
+	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // OutgoingAuthConfig configures backend authentication.

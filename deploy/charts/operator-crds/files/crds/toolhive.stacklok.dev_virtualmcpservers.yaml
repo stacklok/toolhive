@@ -674,6 +674,21 @@ spec:
                             type: object
                         type: object
                     type: object
+                  optimizer:
+                    description: |-
+                      Optimizer configures the MCP optimizer for context optimization on large toolsets.
+                      When enabled, vMCP exposes only find_tool and call_tool operations to clients
+                      instead of all backend tools directly. This reduces token usage by allowing
+                      LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+                    properties:
+                      embeddingService:
+                        description: |-
+                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
+                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                        type: string
+                    required:
+                    - embeddingService
+                    type: object
                   outgoingAuth:
                     description: |-
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.

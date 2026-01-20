@@ -7,12 +7,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/sync/errgroup"
 
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
+	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -290,10 +290,10 @@ func TestHandler_StopServer_WithMocks(t *testing.T) {
 			name:       "successful stop",
 			serverName: "test-server",
 			setupMocks: func(m *workloadsmocks.MockManager) {
-				group := &errgroup.Group{}
+				complete := func() error { return nil }
 				m.EXPECT().
 					StopWorkloads(gomock.Any(), []string{"test-server"}).
-					Return(group, nil)
+					Return(workloads.CompletionFunc(complete), nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
@@ -374,10 +374,10 @@ func TestHandler_RemoveServer_WithMocks(t *testing.T) {
 			name:       "successful remove",
 			serverName: "test-server",
 			setupMocks: func(m *workloadsmocks.MockManager) {
-				group := &errgroup.Group{}
+				complete := func() error { return nil }
 				m.EXPECT().
 					DeleteWorkloads(gomock.Any(), []string{"test-server"}).
-					Return(group, nil)
+					Return(workloads.CompletionFunc(complete), nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
@@ -461,7 +461,7 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 			logs:       "2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080",
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
-					GetLogs(gomock.Any(), "test-server", false).
+					GetLogs(gomock.Any(), "test-server", false, 0).
 					Return("2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080", nil)
 			},
 			wantErr: false,
@@ -478,7 +478,7 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 			serverName: "nonexistent",
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
-					GetLogs(gomock.Any(), "nonexistent", false).
+					GetLogs(gomock.Any(), "nonexistent", false, 0).
 					Return("", assert.AnError)
 			},
 			wantErr: false,

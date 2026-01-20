@@ -14,6 +14,11 @@ import (
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
 )
 
+// GenerateUniqueServerName creates a unique server name for tests
+func GenerateUniqueServerName(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
+}
+
 // TestConfig holds configuration for e2e tests
 type TestConfig struct {
 	THVBinary    string

@@ -105,6 +105,9 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 		return err
 	}
 
+	// Validate the GroupRef if specified
+	r.validateGroupRef(ctx, proxy)
+
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
@@ -418,7 +421,53 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	return nil
 }
 
+// validateGroupRef validates the GroupRef field of the MCPRemoteProxy.
+// This function only sets conditions on the proxy object - the caller is responsible
+// for persisting the status update to avoid multiple conflicting status updates.
+func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
+	if proxy.Spec.GroupRef == "" {
+		// No group reference - remove any existing GroupRefValidated condition
+		// to avoid showing stale info from a previous reconciliation
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated)
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Find the referenced MCPGroup
+	group := &mcpv1alpha1.MCPGroup{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: proxy.Spec.GroupRef}, group); err != nil {
+		ctxLogger.Error(err, "Failed to validate GroupRef")
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", proxy.Spec.GroupRef, proxy.Namespace),
+			ObservedGeneration: proxy.Generation,
+		})
+	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotReady,
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", proxy.Spec.GroupRef, group.Status.Phase),
+			ObservedGeneration: proxy.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Status:             metav1.ConditionTrue,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated,
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", proxy.Spec.GroupRef),
+			ObservedGeneration: proxy.Generation,
+		})
+	}
+}
+
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
+// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
+// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
+// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 

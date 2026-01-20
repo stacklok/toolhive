@@ -12,6 +12,7 @@ import (
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
+	RegistryFormatUpstream = "upstream"
 )
 
 // MCPRegistrySpec defines the desired state of MCPRegistry
@@ -57,6 +58,11 @@ type MCPRegistrySpec struct {
 	//   - ConnMaxLifetime: "30m"
 	// +optional
 	DatabaseConfig *MCPRegistryDatabaseConfig `json:"databaseConfig,omitempty"`
+
+	// AuthConfig defines the authentication configuration for the registry API server.
+	// If not specified, defaults to anonymous authentication.
+	// +optional
+	AuthConfig *MCPRegistryAuthConfig `json:"authConfig,omitempty"`
 }
 
 // MCPRegistryConfig defines the configuration for a registry data source
@@ -290,6 +296,147 @@ type MCPRegistryDatabaseConfig struct {
 	// +kubebuilder:default="30m"
 	// +optional
 	ConnMaxLifetime string `json:"connMaxLifetime,omitempty"`
+
+	// DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
+	// The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
+	// that is mounted to the registry API container.
+	//
+	// +kubebuilder:validation:Required
+	DBAppUserPasswordSecretRef corev1.SecretKeySelector `json:"dbAppUserPasswordSecretRef"`
+
+	// DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.
+	// The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file
+	// that is mounted to the registry API container.
+	//
+	// +kubebuilder:validation:Required
+	DBMigrationUserPasswordSecretRef corev1.SecretKeySelector `json:"dbMigrationUserPasswordSecretRef"`
+}
+
+// MCPRegistryAuthMode represents the authentication mode for the registry API server
+type MCPRegistryAuthMode string
+
+const (
+	// MCPRegistryAuthModeAnonymous allows unauthenticated access
+	MCPRegistryAuthModeAnonymous MCPRegistryAuthMode = "anonymous"
+
+	// MCPRegistryAuthModeOAuth enables OAuth/OIDC authentication
+	MCPRegistryAuthModeOAuth MCPRegistryAuthMode = "oauth"
+)
+
+// MCPRegistryAuthConfig defines authentication configuration for the registry API server.
+type MCPRegistryAuthConfig struct {
+	// Mode specifies the authentication mode (anonymous or oauth)
+	// Defaults to "anonymous" if not specified.
+	// Use "oauth" to enable OAuth/OIDC authentication.
+	// +kubebuilder:validation:Enum=anonymous;oauth
+	// +kubebuilder:default="anonymous"
+	// +optional
+	Mode MCPRegistryAuthMode `json:"mode,omitempty"`
+
+	// OAuth defines OAuth/OIDC specific authentication settings
+	// Only used when Mode is "oauth"
+	// +optional
+	OAuth *MCPRegistryOAuthConfig `json:"oauth,omitempty"`
+}
+
+// MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
+type MCPRegistryOAuthConfig struct {
+	// ResourceURL is the URL identifying this protected resource (RFC 9728)
+	// Used in the /.well-known/oauth-protected-resource endpoint
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
+
+	// Providers defines the OAuth/OIDC providers for authentication
+	// Multiple providers can be configured (e.g., Kubernetes + external IDP)
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	Providers []MCPRegistryOAuthProviderConfig `json:"providers,omitempty"`
+
+	// ScopesSupported defines the OAuth scopes supported by this resource (RFC 9728)
+	// Defaults to ["mcp-registry:read", "mcp-registry:write"] if not specified
+	// +optional
+	ScopesSupported []string `json:"scopesSupported,omitempty"`
+
+	// Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)
+	// Defaults to "mcp-registry" if not specified
+	// +optional
+	Realm string `json:"realm,omitempty"`
+}
+
+// MCPRegistryOAuthProviderConfig defines configuration for an OAuth/OIDC provider
+type MCPRegistryOAuthProviderConfig struct {
+	// Name is a unique identifier for this provider (e.g., "kubernetes", "keycloak")
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)
+	// The JWKS URL will be discovered automatically from .well-known/openid-configuration
+	// unless JwksUrl is explicitly specified
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	IssuerURL string `json:"issuerUrl"`
+
+	// JwksUrl is the URL to fetch the JSON Web Key Set (JWKS) from
+	// If specified, OIDC discovery is skipped and this URL is used directly
+	// Example: https://kubernetes.default.svc/openid/v1/jwks
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	// +optional
+	JwksUrl string `json:"jwksUrl,omitempty"`
+
+	// Audience is the expected audience claim in the token (REQUIRED)
+	// Per RFC 6749 Section 4.1.3, tokens must be validated against expected audience
+	// For Kubernetes, this is typically the API server URL
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Audience string `json:"audience"`
+
+	// ClientID is the OAuth client ID for token introspection (optional)
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
+
+	// ClientSecretRef is a reference to a Secret containing the client secret
+	// The secret should have a key "clientSecret" containing the secret value
+	// +optional
+	ClientSecretRef *corev1.SecretKeySelector `json:"clientSecretRef,omitempty"`
+
+	// CACertRef is a reference to a ConfigMap containing the CA certificate bundle
+	// for verifying the provider's TLS certificate.
+	// Required for Kubernetes in-cluster authentication or self-signed certificates
+	// +optional
+	CACertRef *corev1.ConfigMapKeySelector `json:"caCertRef,omitempty"`
+
+	// CaCertPath is the path to the CA certificate bundle for verifying the provider's TLS certificate.
+	// Required for Kubernetes in-cluster authentication or self-signed certificates
+	// +optional
+	CaCertPath string `json:"caCertPath,omitempty"`
+
+	// AuthTokenRef is a reference to a Secret containing a bearer token for authenticating
+	// to OIDC/JWKS endpoints. Useful when the OIDC discovery or JWKS endpoint requires authentication.
+	// Example: ServiceAccount token for Kubernetes API server
+	// +optional
+	AuthTokenRef *corev1.SecretKeySelector `json:"authTokenRef,omitempty"`
+
+	// AuthTokenFile is the path to a file containing a bearer token for authenticating to OIDC/JWKS endpoints.
+	// Useful when the OIDC discovery or JWKS endpoint requires authentication.
+	// Example: /var/run/secrets/kubernetes.io/serviceaccount/token
+	// +optional
+	AuthTokenFile string `json:"authTokenFile,omitempty"`
+
+	// IntrospectionURL is the OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	// Used for validating opaque (non-JWT) tokens
+	// If not specified, only JWT tokens can be validated via JWKS
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	// +optional
+	IntrospectionURL string `json:"introspectionUrl,omitempty"`
+
+	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	// Required when the OAuth provider (e.g., Kubernetes API server) is running on a private network
+	// Example: Set to true when using https://kubernetes.default.svc as the issuer URL
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
@@ -574,4 +721,65 @@ func (r *MCPRegistry) HasPodTemplateSpec() bool {
 // GetPodTemplateSpecRaw returns the raw PodTemplateSpec
 func (r *MCPRegistry) GetPodTemplateSpecRaw() *runtime.RawExtension {
 	return r.Spec.PodTemplateSpec
+}
+
+// BuildPGPassSecretName returns the name of the generated pgpass secret for this registry
+func (r *MCPRegistry) BuildPGPassSecretName() string {
+	return fmt.Sprintf("%s-db-pgpass", r.Name)
+}
+
+// HasDatabaseConfig returns true if the MCPRegistry has a valid database configuration.
+// A valid configuration requires:
+// - DatabaseConfig to be non-nil
+// - Host to be specified
+// - Database to be specified
+// - User to be specified
+// - MigrationUser to be specified
+// - DBAppUserPasswordSecretRef.Name to be specified
+// - DBMigrationUserPasswordSecretRef.Name to be specified
+func (r *MCPRegistry) HasDatabaseConfig() bool {
+	if r.Spec.DatabaseConfig == nil {
+		return false
+	}
+
+	dbConfig := r.Spec.DatabaseConfig
+
+	// All required fields must be specified
+	if dbConfig.Host == "" {
+		return false
+	}
+	if dbConfig.Database == "" {
+		return false
+	}
+	if dbConfig.User == "" {
+		return false
+	}
+	if dbConfig.MigrationUser == "" {
+		return false
+	}
+	if dbConfig.DBAppUserPasswordSecretRef.Name == "" {
+		return false
+	}
+	if dbConfig.DBMigrationUserPasswordSecretRef.Name == "" {
+		return false
+	}
+
+	return true
+}
+
+// GetDatabaseConfig returns the database configuration.
+// Callers should check HasDatabaseConfig() before calling this method.
+func (r *MCPRegistry) GetDatabaseConfig() *MCPRegistryDatabaseConfig {
+	return r.Spec.DatabaseConfig
+}
+
+// GetDatabasePort returns the database port.
+// If the port is not specified, it returns 5432.
+// We do this because its likely to be 5432 due to
+// it being the default port for PostgreSQL.
+func (r *MCPRegistry) GetDatabasePort() int {
+	if r.Spec.DatabaseConfig == nil || r.Spec.DatabaseConfig.Port == 0 {
+		return 5432
+	}
+	return r.Spec.DatabaseConfig.Port
 }

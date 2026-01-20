@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -157,7 +158,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 				Type: "invalid",
 			},
 			wantErr: true,
-			errMsg:  "incoming_auth.type must be one of",
+			errMsg:  "incomingAuth.type must be one of",
 		},
 		{
 			name: "OIDC without config",
@@ -165,7 +166,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 				Type: "oidc",
 			},
 			wantErr: true,
-			errMsg:  "incoming_auth.oidc is required",
+			errMsg:  "incomingAuth.oidc is required",
 		},
 		{
 			name: "OIDC missing issuer",
@@ -221,7 +222,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid header_injection backend",
+			name: "valid headerInjection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Backends: map[string]*authtypes.BackendAuthStrategy{
@@ -260,7 +261,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 				Source: "invalid",
 			},
 			wantErr: true,
-			errMsg:  "outgoing_auth.source must be one of",
+			errMsg:  "outgoingAuth.source must be one of",
 		},
 		{
 			name: "invalid backend auth type",
@@ -368,7 +369,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
-			errMsg:  "prefix_format is required",
+			errMsg:  "prefixFormat is required",
 		},
 		{
 			name: "priority strategy missing order",
@@ -377,7 +378,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
-			errMsg:  "priority_order is required",
+			errMsg:  "priorityOrder is required",
 		},
 		{
 			name: "manual strategy missing overrides",
@@ -414,7 +415,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		tools   []*CompositeToolConfig
+		tools   []CompositeToolConfig
 		wantErr bool
 		errMsg  string
 	}{
@@ -425,12 +426,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "valid composite tool",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -443,11 +444,11 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "missing tool name",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -461,12 +462,12 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "duplicate tool name",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "deploy",
 					Description: "Deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -478,7 +479,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 					Name:        "deploy",
 					Description: "Another deploy workflow",
 					Timeout:     Duration(30 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "merge",
 							Type: "tool",
@@ -492,19 +493,17 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "type inferred from tool field",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "fetch_data",
 					Description: "Fetch data workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
-							ID:   "fetch",
-							Type: "tool", // Type would be inferred by loader from tool field
-							Tool: "fetch_fetch",
-							Arguments: map[string]any{
-								"url": "https://example.com",
-							},
+							ID:        "fetch",
+							Type:      "tool", // Type would be inferred by loader from tool field
+							Tool:      "backend.fetch",
+							Arguments: thvjson.NewMap(map[string]any{"url": "https://example.com"}),
 						},
 					},
 				},
@@ -513,16 +512,16 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		},
 		{
 			name: "timeout omitted uses default",
-			tools: []*CompositeToolConfig{
+			tools: []CompositeToolConfig{
 				{
 					Name:        "no_timeout",
 					Description: "Workflow without explicit timeout",
 					Timeout:     0, // Omitted - should use default (30 minutes)
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: "tool", // Type would be inferred by loader from tool field
-							Tool: "some_tool",
+							Tool: "backend.some_tool",
 						},
 					},
 				},
@@ -530,63 +529,80 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "elicitation requires explicit type",
-			tools: []*CompositeToolConfig{
+			name: "elicitation step with explicit type",
+			tools: []CompositeToolConfig{
 				{
 					Name:        "confirm_action",
 					Description: "Confirmation workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:      "confirm",
-							Message: "Proceed?", // Elicitation field present
-							Schema:  map[string]any{"type": "object"},
-							// Type is missing - should fail
+							Type:    "elicitation", // Explicit type
+							Message: "Proceed?",
+							Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
 						},
 					},
 				},
 			},
-			wantErr: true,
-			errMsg:  "type is required",
+			wantErr: false,
 		},
 		{
-			name: "missing both type and identifying fields",
-			tools: []*CompositeToolConfig{
+			name: "missing tool field when type defaults to tool",
+			tools: []CompositeToolConfig{
 				{
 					Name:        "invalid_step",
 					Description: "Invalid step workflow",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID: "step1",
-							// No type, no tool, no message - cannot infer
+							// No type (defaults to "tool"), no tool field
 						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "type is required",
+			errMsg:  "tool is required",
 		},
 		{
-			name: "both tool and message fields present",
-			tools: []*CompositeToolConfig{
+			name: "both tool and message fields present without explicit type",
+			tools: []CompositeToolConfig{
 				{
 					Name:        "ambiguous_step",
 					Description: "Step with both tool and message",
 					Timeout:     Duration(5 * time.Minute),
-					Steps: []*WorkflowStepConfig{
+					Steps: []WorkflowStepConfig{
 						{
 							ID:      "step1",
-							Tool:    "some_tool",    // Tool field present
-							Message: "Some message", // Message field also present
-							// Type will be inferred as "tool" during loading
-							// This should fail validation due to ambiguity
+							Tool:    "backend.some_tool", // Tool field present
+							Message: "Some message",      // Message field also present
+							// Type is missing - ambiguous configuration
 						},
 					},
 				},
 			},
 			wantErr: true,
 			errMsg:  "cannot have both tool and message fields",
+		},
+		{
+			name: "both tool and message fields present with explicit type",
+			tools: []CompositeToolConfig{
+				{
+					Name:        "ambiguous_step",
+					Description: "Step with both tool and message",
+					Timeout:     Duration(5 * time.Minute),
+					Steps: []WorkflowStepConfig{
+						{
+							ID:      "step1",
+							Tool:    "backend.some_tool", // Tool field present
+							Message: "Some message",      // Message field also present
+							Type:    "tool",              // Explicit type resolves ambiguity
+						},
+					},
+				},
+			},
+			wantErr: false, // Explicit type makes it unambiguous
 		},
 	}
 

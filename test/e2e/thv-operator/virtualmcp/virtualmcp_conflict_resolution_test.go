@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -22,7 +24,7 @@ type conflictResolutionTestSetup struct {
 	backend1Name    string
 	backend2Name    string
 	namespace       string
-	aggregation     *mcpv1alpha1.AggregationConfig
+	aggregation     *vmcpconfig.AggregationConfig
 	timeout         time.Duration
 	pollingInterval time.Duration
 }
@@ -35,11 +37,11 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 		fmt.Sprintf("Test MCP Group for %s conflict resolution", setup.aggregation.ConflictResolution),
 		setup.timeout, setup.pollingInterval)
 
-	By(fmt.Sprintf("Creating backend MCPServers: %s, %s", setup.backend1Name, setup.backend2Name))
-	CreateMCPServerAndWait(ctx, k8sClient, setup.backend1Name, setup.namespace, setup.groupName,
-		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
-	CreateMCPServerAndWait(ctx, k8sClient, setup.backend2Name, setup.namespace, setup.groupName,
-		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
+	By(fmt.Sprintf("Creating backend MCPServers in parallel: %s, %s", setup.backend1Name, setup.backend2Name))
+	CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+		{Name: setup.backend1Name, Namespace: setup.namespace, GroupRef: setup.groupName, Image: images.YardstickServerImage},
+		{Name: setup.backend2Name, Namespace: setup.namespace, GroupRef: setup.groupName, Image: images.YardstickServerImage},
+	}, setup.timeout, setup.pollingInterval)
 
 	By(fmt.Sprintf("Creating VirtualMCPServer: %s with %s conflict resolution", setup.vmcpName, setup.aggregation.ConflictResolution))
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -48,20 +50,20 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 			Namespace: setup.namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: setup.groupName,
+			Config: vmcpconfig.Config{
+				Group:       setup.groupName,
+				Aggregation: setup.aggregation,
 			},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
-			Aggregation: setup.aggregation,
 			ServiceType: "NodePort",
 		},
 	}
 	Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 	By("Waiting for VirtualMCPServer to be ready")
-	WaitForVirtualMCPServerReady(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout)
+	WaitForVirtualMCPServerReady(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout, setup.pollingInterval)
 
 	By("Getting NodePort for VirtualMCPServer")
 	vmcpNodePort := GetVMCPNodePort(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout, setup.pollingInterval)
@@ -105,8 +107,8 @@ func cleanupConflictResolutionTest(groupName, vmcpName, backend1Name, backend2Na
 var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 	)
 
 	Describe("Prefix Strategy", Ordered, func() {
@@ -127,9 +129,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPrefix,
+					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 						PrefixFormat: "{workload}_",
 					},
 				},
@@ -176,41 +178,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call prefixed tools successfully", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-prefix-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing available tools")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
-
-				// Find a prefixed tool to call (e.g., echo tool)
-				var targetToolName string
-				for _, tool := range tools.Tools {
-					if (strings.HasPrefix(tool.Name, backend1Name+"_") || strings.HasPrefix(tool.Name, backend2Name+"_")) &&
-						strings.Contains(tool.Name, "echo") {
-						targetToolName = tool.Name
-						break
-					}
-				}
-				Expect(targetToolName).ToNot(BeEmpty(), "Should find a prefixed echo tool")
-
-				By(fmt.Sprintf("Calling prefixed tool: %s", targetToolName))
-				testInput := "prefix-test-123"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call prefixed tool")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Prefixed tool call successful: %s\n", targetToolName)
+				// Use shared helper to test tool listing and calling
+				TestToolListingAndCall(vmcpNodePort, "toolhive-prefix-test", "echo", "prefix-test-123")
 			})
 
 			It("should expose tools from both backends with different prefixes", func() {
@@ -318,9 +287,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionPriority,
-					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPriority,
+					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 						PriorityOrder: []string{backend1Name, backend2Name},
 					},
 				},
@@ -363,40 +332,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call tools successfully with priority resolution", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-priority-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing available tools")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
-
-				// Find an echo tool (should be from backend1 due to priority)
-				var targetToolName string
-				for _, tool := range tools.Tools {
-					if strings.Contains(tool.Name, "echo") {
-						targetToolName = tool.Name
-						break
-					}
-				}
-				Expect(targetToolName).ToNot(BeEmpty(), "Should find an echo tool")
-
-				By(fmt.Sprintf("Calling tool with priority resolution: %s", targetToolName))
-				testInput := "priority-test-123"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call tool with priority resolution")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Priority tool call successful: %s\n", targetToolName)
+				// Use shared helper to test tool listing and calling
+				TestToolListingAndCall(vmcpNodePort, "toolhive-priority-test", "echo", "priority-test-123")
 			})
 
 			It("should resolve conflicts by using highest priority backend", func() {
@@ -461,12 +398,12 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				}, vmcpServer)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal(mcpv1alpha1.ConflictResolutionPriority))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder).To(HaveLen(2))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder[0]).To(Equal(backend1Name))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder[1]).To(Equal(backend2Name))
+				Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolution).To(Equal(vmcp.ConflictStrategyPriority))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder).To(HaveLen(2))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder[0]).To(Equal(backend1Name))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder[1]).To(Equal(backend2Name))
 			})
 		})
 	})
@@ -489,18 +426,18 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionManual,
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyManual,
+					Tools: []*vmcpconfig.WorkloadToolConfig{
 						{
 							Workload: backend1Name,
-							Overrides: map[string]mcpv1alpha1.ToolOverride{
+							Overrides: map[string]*vmcpconfig.ToolOverride{
 								"echo": {Name: "echo_backend1"},
 							},
 						},
 						{
 							Workload: backend2Name,
-							Overrides: map[string]mcpv1alpha1.ToolOverride{
+							Overrides: map[string]*vmcpconfig.ToolOverride{
 								"echo": {Name: "echo_backend2"},
 							},
 						},
@@ -542,38 +479,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call manually overridden tools successfully", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-manual-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Calling manually overridden tool from backend1")
-				testInput := "manual-test-backend1"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = "echo_backend1"
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call manually overridden tool from backend1")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				By("Calling manually overridden tool from backend2")
-				testInput2 := "manual-test-backend2"
-				callRequest2 := mcp.CallToolRequest{}
-				callRequest2.Params.Name = "echo_backend2"
-				callRequest2.Params.Arguments = map[string]any{
-					"input": testInput2,
-				}
-
-				result2, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest2)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call manually overridden tool from backend2")
-				Expect(result2).ToNot(BeNil())
-				Expect(result2.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Manual tool calls successful: echo_backend1 and echo_backend2\n")
+				// Use shared helper to test calling both manually overridden tools
+				TestToolListingAndCall(vmcpNodePort, "toolhive-manual-test", "echo_backend1", "manual-test-backend1")
+				TestToolListingAndCall(vmcpNodePort, "toolhive-manual-test", "echo_backend2", "manual-test-backend2")
 			})
 
 			It("should have correct manual configuration with overrides", func() {
@@ -584,19 +492,19 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				}, vmcpServer)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal(mcpv1alpha1.ConflictResolutionManual))
-				Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(2))
+				Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolution).To(Equal(vmcp.ConflictStrategyManual))
+				Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 				// Verify backend1 overrides
-				var backend1Config *mcpv1alpha1.WorkloadToolConfig
-				var backend2Config *mcpv1alpha1.WorkloadToolConfig
-				for i := range vmcpServer.Spec.Aggregation.Tools {
-					if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend1Name {
-						backend1Config = &vmcpServer.Spec.Aggregation.Tools[i]
+				var backend1Config *vmcpconfig.WorkloadToolConfig
+				var backend2Config *vmcpconfig.WorkloadToolConfig
+				for i := range vmcpServer.Spec.Config.Aggregation.Tools {
+					if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
+						backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					}
-					if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend2Name {
-						backend2Config = &vmcpServer.Spec.Aggregation.Tools[i]
+					if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend2Name {
+						backend2Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					}
 				}
 

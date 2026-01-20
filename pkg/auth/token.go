@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // TokenIntrospector defines the interface for token introspection providers
@@ -122,7 +123,11 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	if err != nil {
 		return nil, fmt.Errorf("google tokeninfo request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read the response with a reasonable limit to prevent DoS attacks
 	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for tokeninfo response
@@ -299,7 +304,11 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	if err != nil {
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read response body with a reasonable limit to prevent DoS attacks
 	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for introspection response
@@ -333,17 +342,6 @@ var (
 	ErrFailedToDiscoverOIDC    = errors.New("failed to discover OIDC configuration")
 	ErrMissingIssuerAndJWKSURL = errors.New("either issuer or JWKS URL must be provided")
 )
-
-// OIDCDiscoveryDocument represents the OIDC discovery document structure
-type OIDCDiscoveryDocument struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	UserinfoEndpoint      string `json:"userinfo_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
-	IntrospectionEndpoint string `json:"introspection_endpoint"`
-	// Add other fields as needed
-}
 
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
@@ -415,14 +413,14 @@ func discoverOIDCConfiguration(
 	issuer, caCertPath, authTokenFile string,
 	allowPrivateIP bool,
 	insecureAllowHTTP bool,
-) (*OIDCDiscoveryDocument, error) {
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// Validate issuer URL scheme
 	if err := networking.ValidateEndpointURLWithInsecure(issuer, insecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid issuer URL: %w", err)
 	}
 
 	// Construct the well-known endpoint URL
-	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
+	wellKnownURL := strings.TrimSuffix(issuer, "/") + oauthproto.WellKnownOIDCPath
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
@@ -448,7 +446,11 @@ func discoverOIDCConfiguration(
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
@@ -456,7 +458,7 @@ func discoverOIDCConfiguration(
 	}
 
 	// Parse the response
-	var doc OIDCDiscoveryDocument
+	var doc oauthproto.OIDCDiscoveryDocument
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
 	}
@@ -527,6 +529,46 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 	return registry, nil
 }
 
+// resolveJWKSURL resolves the JWKS URL from config or via OIDC discovery.
+// It returns an error if neither JWKS URL nor issuer is provided.
+func resolveJWKSURL(ctx context.Context, config TokenValidatorConfig) (string, error) {
+	jwksURL := config.JWKSURL
+
+	// Check if OIDC discovery should be skipped (for testing only)
+	skipDiscovery := os.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
+
+	// If JWKS URL is not provided but issuer is, try to discover it
+	// Skip discovery if explicitly requested via environment variable (for testing only)
+	if skipDiscovery && config.Issuer != "" {
+		if jwksURL == "" {
+			return "", fmt.Errorf(
+				"TOOLHIVE_SKIP_OIDC_DISCOVERY=true requires explicit JWKSURL in config. " +
+					"This env var is for testing only and cannot guess provider-specific JWKS URLs",
+			)
+		}
+		logger.Warnf(
+			"OIDC discovery skipped for issuer '%s' (TOOLHIVE_SKIP_OIDC_DISCOVERY=true)",
+			config.Issuer,
+		)
+	} else if jwksURL == "" && config.Issuer != "" {
+		doc, err := discoverOIDCConfiguration(
+			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
+			config.AllowPrivateIP, config.InsecureAllowHTTP,
+		)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
+		}
+		jwksURL = doc.JWKSURI
+	}
+
+	// Ensure we have a JWKS URL either provided or discovered
+	if jwksURL == "" {
+		return "", ErrMissingIssuerAndJWKSURL
+	}
+
+	return jwksURL, nil
+}
+
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
 	// Log warning if insecure HTTP is enabled
@@ -538,31 +580,10 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		)
 	}
 
-	jwksURL := config.JWKSURL
-
-	// If JWKS URL is not provided but issuer is, try to discover it
-	// Skip discovery if VMCP_SKIP_OIDC_DISCOVERY is set (for testing only)
-	skipDiscovery := os.Getenv("VMCP_SKIP_OIDC_DISCOVERY") == "true"
-	if skipDiscovery {
-		logger.Warnf("VMCP_SKIP_OIDC_DISCOVERY is enabled - OIDC discovery skipped (testing only!)")
-		// Use a dummy JWKS URL when discovery is skipped
-		if jwksURL == "" && config.Issuer != "" {
-			jwksURL = config.Issuer + "/.well-known/jwks.json"
-		}
-	} else if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(
-			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
-			config.AllowPrivateIP, config.InsecureAllowHTTP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
-		}
-		jwksURL = doc.JWKSURI
-	}
-
-	// Ensure we have a JWKS URL either provided or discovered
-	if jwksURL == "" {
-		return nil, ErrMissingIssuerAndJWKSURL
+	// Resolve JWKS URL from config or discovery
+	jwksURL, err := resolveJWKSURL(ctx, config)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS

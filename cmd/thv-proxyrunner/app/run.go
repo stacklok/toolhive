@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/workloads"
+	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
 var runCmd *cobra.Command
@@ -80,7 +80,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	// Select an env var validation strategy depending on how the CLI is run:
@@ -135,7 +135,12 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("found config file at %s but failed to open: %w", path, err)
 		}
-		defer file.Close()
+		defer func() {
+			if err := file.Close(); err != nil {
+				// Non-fatal: file cleanup failure after successful read
+				logger.Warnf("Failed to close config file: %v", err)
+			}
+		}()
 
 		// Use existing runner.ReadJSON function for consistency
 		runConfig, err := runner.ReadJSON(file)
@@ -178,7 +183,7 @@ func runWithFileBasedConfig(
 	if envVarValidator != nil {
 		validatedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, config, config.EnvVars)
 		if err != nil {
-			return fmt.Errorf("failed to validate environment variables: %v", err)
+			return fmt.Errorf("failed to validate environment variables: %w", err)
 		}
 		config.EnvVars = validatedEnvVars
 	}
@@ -187,7 +192,7 @@ func runWithFileBasedConfig(
 	if config.EnvFileDir != "" {
 		updatedConfig, err := config.WithEnvFilesFromDirectory(config.EnvFileDir)
 		if err != nil {
-			return fmt.Errorf("failed to process environment files from directory %s: %v", config.EnvFileDir, err)
+			return fmt.Errorf("failed to process environment files from directory %s: %w", config.EnvFileDir, err)
 		}
 		config = updatedConfig
 	}
@@ -197,9 +202,8 @@ func runWithFileBasedConfig(
 		config.Name = imageMetadata.Name
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
-	}
-	return workloadManager.RunWorkload(ctx, config)
+	// statusManager is only needed for the local use case, use a stub here.
+	statusManager := statuses.NewNoopStatusManager()
+	mcpRunner := runner.NewRunner(config, statusManager)
+	return mcpRunner.Run(ctx)
 }

@@ -82,7 +82,7 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 	// Get the PID file path with fallback
 	pidFilePath, err := getPIDFilePathWithFallback(containerBaseName)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get PID file path: %v", err)
+		return 0, fmt.Errorf("failed to get PID file path: %w", err)
 	}
 
 	// Read the PID from the file
@@ -127,7 +127,7 @@ func RemovePIDFile(containerBaseName string) error {
 	// Try to remove from the new location
 	newPath, err := getPIDFilePath(containerBaseName)
 	if err != nil {
-		return fmt.Errorf("failed to get PID file path: %v", err)
+		return fmt.Errorf("failed to get PID file path: %w", err)
 	}
 
 	if err := os.Remove(newPath); err != nil && !os.IsNotExist(err) {
@@ -140,7 +140,7 @@ func RemovePIDFile(containerBaseName string) error {
 	if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
 		// If we couldn't remove either file and both had errors, return the error
 		if lastErr != nil {
-			return fmt.Errorf("failed to remove PID files: new location: %v, old location: %v", lastErr, err)
+			return fmt.Errorf("failed to remove PID files: new location: %v, old location: %w", lastErr, err)
 		}
 		lastErr = err
 	}

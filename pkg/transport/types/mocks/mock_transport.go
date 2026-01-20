@@ -17,6 +17,7 @@ import (
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
+	oauth2 "golang.org/x/oauth2"
 )
 
 // MockMiddleware is a mock of Middleware interface.
@@ -169,6 +170,20 @@ func (m *MockRunnerConfig) EXPECT() *MockRunnerConfigMockRecorder {
 	return m.recorder
 }
 
+// GetName mocks base method.
+func (m *MockRunnerConfig) GetName() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetName")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetName indicates an expected call of GetName.
+func (mr *MockRunnerConfigMockRecorder) GetName() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetName", reflect.TypeOf((*MockRunnerConfig)(nil).GetName))
+}
+
 // GetPort mocks base method.
 func (m *MockRunnerConfig) GetPort() int {
 	m.ctrl.T.Helper()
@@ -248,6 +263,54 @@ func (m *MockTransport) ProxyPort() int {
 func (mr *MockTransportMockRecorder) ProxyPort() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProxyPort", reflect.TypeOf((*MockTransport)(nil).ProxyPort))
+}
+
+// SetOnHealthCheckFailed mocks base method.
+func (m *MockTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedCallback) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetOnHealthCheckFailed", callback)
+}
+
+// SetOnHealthCheckFailed indicates an expected call of SetOnHealthCheckFailed.
+func (mr *MockTransportMockRecorder) SetOnHealthCheckFailed(callback any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOnHealthCheckFailed", reflect.TypeOf((*MockTransport)(nil).SetOnHealthCheckFailed), callback)
+}
+
+// SetOnUnauthorizedResponse mocks base method.
+func (m *MockTransport) SetOnUnauthorizedResponse(callback types.UnauthorizedResponseCallback) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetOnUnauthorizedResponse", callback)
+}
+
+// SetOnUnauthorizedResponse indicates an expected call of SetOnUnauthorizedResponse.
+func (mr *MockTransportMockRecorder) SetOnUnauthorizedResponse(callback any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOnUnauthorizedResponse", reflect.TypeOf((*MockTransport)(nil).SetOnUnauthorizedResponse), callback)
+}
+
+// SetRemoteURL mocks base method.
+func (m *MockTransport) SetRemoteURL(remoteURL string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetRemoteURL", remoteURL)
+}
+
+// SetRemoteURL indicates an expected call of SetRemoteURL.
+func (mr *MockTransportMockRecorder) SetRemoteURL(remoteURL any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRemoteURL", reflect.TypeOf((*MockTransport)(nil).SetRemoteURL), remoteURL)
+}
+
+// SetTokenSource mocks base method.
+func (m *MockTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetTokenSource", tokenSource)
+}
+
+// SetTokenSource indicates an expected call of SetTokenSource.
+func (mr *MockTransportMockRecorder) SetTokenSource(tokenSource any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTokenSource", reflect.TypeOf((*MockTransport)(nil).SetTokenSource), tokenSource)
 }
 
 // Start mocks base method.

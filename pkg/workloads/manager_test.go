@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	configMocks "github.com/stacklok/toolhive/pkg/config/mocks"
@@ -348,7 +347,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "test-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false).Return("test log content", nil)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false, 0).Return("test log content", nil)
 			},
 			expectedLogs: "test log content",
 			expectError:  false,
@@ -358,7 +357,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "missing-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false).Return("", runtime.ErrWorkloadNotFound)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false, 0).Return("", runtime.ErrWorkloadNotFound)
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -369,7 +368,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "error-workload",
 			follow:       true,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true).Return("", errors.New("runtime failure"))
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true, 0).Return("", errors.New("runtime failure"))
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -392,7 +391,8 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow)
+			// Pass 0 for unlimited logs in these tests
+			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow, 0)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -403,6 +403,82 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDefaultManager_GetLogs_WithLineLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		lines        int
+		expectedLogs string
+	}{
+		{
+			name:         "limit to 3 lines",
+			workloadName: "test-workload",
+			lines:        3,
+			expectedLogs: "line3\nline4\nline5",
+		},
+		{
+			name:         "no limit (0)",
+			workloadName: "test-workload",
+			lines:        0,
+			expectedLogs: "line1\nline2\nline3",
+		},
+		{
+			name:         "fewer lines than limit",
+			workloadName: "test-workload",
+			lines:        10,
+			expectedLogs: "line1\nline2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			// Mock expects the lines parameter and returns already-limited logs
+			mockRuntime.EXPECT().GetWorkloadLogs(gomock.Any(), tt.workloadName, false, tt.lines).Return(tt.expectedLogs, nil)
+
+			manager := &DefaultManager{
+				runtime: mockRuntime,
+			}
+
+			ctx := context.Background()
+			logs, err := manager.GetLogs(ctx, tt.workloadName, false, tt.lines)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedLogs, logs)
+		})
+	}
+}
+
+func TestDefaultManager_GetLogs_FollowWithLimitError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+	// Expect the runtime to return an error when both follow and lines are set
+	mockRuntime.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", true, 100).
+		Return("", errors.New("cannot use both follow and line limit"))
+
+	manager := &DefaultManager{
+		runtime: mockRuntime,
+	}
+
+	ctx := context.Background()
+	logs, err := manager.GetLogs(ctx, "test-workload", true, 100)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot use both follow and line limit")
+	assert.Empty(t, logs)
 }
 
 func TestDefaultManager_StopWorkloads(t *testing.T) {
@@ -440,16 +516,17 @@ func TestDefaultManager_StopWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.StopWorkloads(ctx, tt.workloadNames)
+			complete, err := manager.StopWorkloads(ctx, tt.workloadNames)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -490,16 +567,17 @@ func TestDefaultManager_DeleteWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
+			complete, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -537,16 +615,17 @@ func TestDefaultManager_RestartWorkloads(t *testing.T) {
 			manager := &DefaultManager{}
 
 			ctx := context.Background()
-			group, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
+			complete, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				require.NoError(t, err)
-				assert.NotNil(t, group)
-				assert.IsType(t, &errgroup.Group{}, group)
+				assert.NotNil(t, complete)
+				// Verify it's a CompletionFunc by checking it's callable
+				assert.IsType(t, (CompletionFunc)(nil), complete)
 			}
 		})
 	}
@@ -1501,18 +1580,18 @@ func TestDefaultManager_UpdateWorkload(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			group, err := manager.UpdateWorkload(ctx, tt.workloadName, runConfig)
+			complete, err := manager.UpdateWorkload(ctx, tt.workloadName, runConfig)
 
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}
-				assert.Nil(t, group)
+				assert.Nil(t, complete)
 			} else {
 				assert.NoError(t, err)
-				assert.NotNil(t, group)
-				// For valid cases, we get an errgroup but don't wait for completion
+				assert.NotNil(t, complete)
+				// For valid cases, we get a completion func but don't call it
 				// The async operations inside are tested separately
 			}
 		})
@@ -1628,6 +1707,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx := context.Background()
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -1645,7 +1725,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				configProvider: mockConfigProvider,
 			}
 
-			err := manager.updateSingleWorkload(tt.workloadName, tt.runConfig)
+			err := manager.updateSingleWorkload(ctx, tt.workloadName, tt.runConfig)
 
 			if tt.expectError {
 				assert.Error(t, err)

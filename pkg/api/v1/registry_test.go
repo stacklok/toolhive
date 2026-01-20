@@ -111,38 +111,106 @@ func TestGetRegistryInfo(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest,tparallel // Subtests cannot run in parallel as they share a mock HTTP server
 func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	t.Parallel()
 
 	logger.Initialize()
 
+	// Create a mock HTTP server that serves valid registry JSON
+	validRegistryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		registryData := map[string]interface{}{
+			"servers": map[string]interface{}{
+				"test-server": map[string]interface{}{
+					"command": []string{"test"},
+					"args":    []string{},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(registryData); err != nil {
+			t.Logf("Failed to encode registry data: %v", err)
+		}
+	}))
+	defer validRegistryServer.Close()
+
 	tests := []struct {
 		name         string
-		requestBody  string
+		setupFunc    func(t *testing.T) string // Returns the request body
 		expectedCode int
 		description  string
 	}{
 		{
-			name:         "valid URL registry",
-			requestBody:  `{"url":"https://example.com/test-registry.json"}`,
+			name: "valid URL registry",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				// Use the mock server URL with allow_private_ip to enable HTTP for localhost
+				return `{"url":"` + validRegistryServer.URL + `","allow_private_ip":true}`
+			},
 			expectedCode: http.StatusOK,
-			description:  "Valid HTTPS URL should be accepted",
+			description:  "Valid URL with actual registry data should be accepted",
 		},
 		{
-			name:         "invalid local path registry",
-			requestBody:  `{"local_path":"/tmp/test-registry.json"}`,
+			name: "valid local file registry",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				// Create a temporary file with valid registry JSON
+				tempFile := filepath.Join(t.TempDir(), "valid-registry.json")
+				validJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+				err := os.WriteFile(tempFile, []byte(validJSON), 0600)
+				require.NoError(t, err)
+				return `{"local_path":"` + tempFile + `"}`
+			},
+			expectedCode: http.StatusOK,
+			description:  "Valid local file with proper registry structure should be accepted",
+		},
+		{
+			name: "invalid local file - non-existent",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				return `{"local_path":"/tmp/non-existent-registry-file-12345.json"}`
+			},
 			expectedCode: http.StatusBadRequest,
 			description:  "Non-existent local file should return 400",
 		},
 		{
-			name:         "invalid JSON",
-			requestBody:  `{"invalid":json}`,
+			name: "invalid local file - wrong structure",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				// Create a file with invalid registry structure
+				tempFile := filepath.Join(t.TempDir(), "invalid-registry.json")
+				invalidJSON := `{"test": "registry"}`
+				err := os.WriteFile(tempFile, []byte(invalidJSON), 0600)
+				require.NoError(t, err)
+				return `{"local_path":"` + tempFile + `"}`
+			},
+			expectedCode: http.StatusBadRequest,
+			description:  "Local file with invalid registry structure should return 400",
+		},
+		{
+			name: "invalid URL - unreachable",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				return `{"url":"https://invalid-url-that-does-not-exist-12345.example.com/test.json"}`
+			},
+			expectedCode: http.StatusBadRequest,
+			description:  "Unreachable URL should return 400",
+		},
+		{
+			name: "invalid JSON",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				return `{"invalid":json}`
+			},
 			expectedCode: http.StatusBadRequest,
 			description:  "Invalid JSON should return 400",
 		},
 		{
-			name:         "empty body",
-			requestBody:  `{}`,
+			name: "empty body",
+			setupFunc: func(t *testing.T) string {
+				t.Helper()
+				return `{}`
+			},
 			expectedCode: http.StatusOK,
 			description:  "Empty request resets registry (returns 200)",
 		},
@@ -150,7 +218,7 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			// Note: Not using t.Parallel() here because subtests share the mock server
 
 			// Create a temporary config for this test
 			tempDir := t.TempDir()
@@ -166,7 +234,10 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 			// Create routes with the test config provider
 			routes := NewRegistryRoutesWithProvider(configProvider)
 
-			req := httptest.NewRequest("PUT", "/default", strings.NewReader(tt.requestBody))
+			// Get the request body from the setup function
+			requestBody := tt.setupFunc(t)
+
+			req := httptest.NewRequest("PUT", "/default", strings.NewReader(requestBody))
 			req.Header.Set("Content-Type", "application/json")
 			rctx := chi.NewRouteContext()
 			rctx.URLParams.Add("name", "default")

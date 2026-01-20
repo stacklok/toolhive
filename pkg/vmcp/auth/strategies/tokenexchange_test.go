@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/env/mocks"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // Test constants
@@ -91,6 +92,23 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 		errorContains   string
 		checkAuthHeader func(t *testing.T, req *http.Request)
 	}{
+		{
+			name:     "skips authentication for health checks",
+			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+					t.Error("Server should not be called for health checks")
+				}))
+			},
+			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
+				return createTokenExchangeStrategy(server.URL)
+			},
+			expectError: false,
+			checkAuthHeader: func(t *testing.T, req *http.Request) {
+				t.Helper()
+				assert.Empty(t, req.Header.Get("Authorization"), "Authorization header should not be set for health checks")
+			},
+		},
 		{
 			name:     "successfully exchanges token",
 			setupCtx: func() context.Context { return createContextWithIdentity("user123", "client-token") },

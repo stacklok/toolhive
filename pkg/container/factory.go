@@ -49,7 +49,7 @@ func NewFactory() *Factory {
 // registerDefaultRuntimes registers the built-in docker and kubernetes runtimes
 func (f *Factory) registerDefaultRuntimes() {
 	// Register Docker runtime
-	f.Register(&RuntimeInfo{ //nolint:gosec // Built-in runtime registration cannot fail
+	if err := f.Register(&RuntimeInfo{
 		Name: docker.RuntimeName,
 		Initializer: func(ctx context.Context) (runtime.Runtime, error) {
 			return docker.NewClient(ctx)
@@ -58,10 +58,13 @@ func (f *Factory) registerDefaultRuntimes() {
 			// Check if Docker daemon is actually available
 			return docker.IsAvailable()
 		},
-	})
+	}); err != nil {
+		// This should never happen for built-in runtimes
+		panic(fmt.Sprintf("failed to register built-in runtime: %v", err))
+	}
 
 	// Register Kubernetes runtime
-	f.Register(&RuntimeInfo{ //nolint:gosec // Built-in runtime registration cannot fail
+	if err := f.Register(&RuntimeInfo{
 		Name: kubernetes.RuntimeName,
 		Initializer: func(ctx context.Context) (runtime.Runtime, error) {
 			return kubernetes.NewClient(ctx)
@@ -70,7 +73,10 @@ func (f *Factory) registerDefaultRuntimes() {
 			// Kubernetes is available if we're in a Kubernetes environment
 			return runtime.IsKubernetesRuntime()
 		},
-	})
+	}); err != nil {
+		// This should never happen for built-in runtimes
+		panic(fmt.Sprintf("failed to register built-in runtime: %v", err))
+	}
 }
 
 // Register registers a new runtime with the factory

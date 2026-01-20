@@ -60,6 +60,8 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TargetHost,
 			config.AuthInfoHandler,
 			config.PrometheusHandler,
+			config.EndpointPrefix,
+			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
 	case types.TransportTypeStreamableHTTP:
@@ -73,6 +75,8 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.TargetHost,
 			config.AuthInfoHandler,
 			config.PrometheusHandler,
+			config.EndpointPrefix,
+			config.TrustProxyHeaders,
 			config.Middlewares...,
 		)
 	case types.TransportTypeInspector:

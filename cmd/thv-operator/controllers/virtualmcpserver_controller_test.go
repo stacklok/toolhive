@@ -36,6 +36,8 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
@@ -64,9 +66,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -112,9 +112,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "missing-group",
-					},
+					Config: vmcpconfig.Config{Group: "missing-group"},
 				},
 			},
 			expectError:    true,
@@ -129,9 +127,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "pending-group",
-					},
+					Config: vmcpconfig.Config{Group: "pending-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -224,9 +220,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -267,6 +261,20 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), role.Name)
 	assert.NotEmpty(t, role.Rules)
 
+	// Verify Role includes required ToolHive resources (mcpgroups, mcpservers, mcpremoteproxies, mcpexternalauthconfigs)
+	var toolhiveRule *rbacv1.PolicyRule
+	for i := range role.Rules {
+		if len(role.Rules[i].APIGroups) > 0 && role.Rules[i].APIGroups[0] == "toolhive.stacklok.dev" {
+			toolhiveRule = &role.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, toolhiveRule, "Role should have a rule for toolhive.stacklok.dev API group")
+	assert.Contains(t, toolhiveRule.Resources, "mcpgroups", "Role should allow listing mcpgroups")
+	assert.Contains(t, toolhiveRule.Resources, "mcpservers", "Role should allow listing mcpservers")
+	assert.Contains(t, toolhiveRule.Resources, "mcpremoteproxies", "Role should allow listing mcpremoteproxies")
+	assert.Contains(t, toolhiveRule.Resources, "mcpexternalauthconfigs", "Role should allow listing mcpexternalauthconfigs")
+
 	// Verify RoleBinding was created
 	rb := &rbacv1.RoleBinding{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
@@ -290,9 +298,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -337,7 +343,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	result, err := r.ensureDeployment(context.Background(), vmcp, []string{})
+	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -375,9 +381,7 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -456,9 +460,7 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config:      vmcpconfig.Config{Group: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
@@ -489,9 +491,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -776,9 +776,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -798,9 +796,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -831,9 +827,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -874,9 +868,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -1011,9 +1003,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1036,9 +1026,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1058,9 +1046,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1144,9 +1130,7 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1188,9 +1172,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1263,9 +1245,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1327,7 +1307,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1351,7 +1331,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 8080},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1402,7 +1382,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: "wrong-service-account",
@@ -1427,7 +1407,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1441,11 +1421,11 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
+					Config: vmcpconfig.Config{
+						Group: testGroupName,
+						Operational: &vmcpconfig.OperationalConfig{
+							LogLevel: "debug",
+						},
 					},
 				},
 			},
@@ -1465,7 +1445,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1490,7 +1470,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1507,7 +1487,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp, []string{})
+			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -1748,9 +1728,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1787,7 +1765,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1820,7 +1798,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1852,7 +1830,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1884,7 +1862,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 										{ContainerPort: 4483},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1900,7 +1878,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, []string{})
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -1922,9 +1900,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2057,9 +2033,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "nonexistent-group",
-			},
+			Config: vmcpconfig.Config{Group: "nonexistent-group"},
 		},
 	}
 
@@ -2115,9 +2089,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2211,9 +2183,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2228,7 +2198,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	// Should requeue after 5 seconds when ConfigMap not found
 	assert.NoError(t, err)
@@ -2249,9 +2219,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2279,7 +2247,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2308,9 +2276,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2364,7 +2330,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2393,9 +2359,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2446,7 +2410,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 							Ports: []corev1.ContainerPort{
 								{ContainerPort: 4483},
 							},
-							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
 						},
 					},
 					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2462,7 +2426,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	reconciler.Client = k8sClient
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2481,9 +2445,7 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2525,9 +2487,7 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2589,9 +2549,7 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 

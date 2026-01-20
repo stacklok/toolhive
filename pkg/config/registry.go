@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	registrytypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -44,56 +47,118 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 }
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
-// by checking if the URL returns valid ToolHive registry JSON or has an /openapi.yaml endpoint.
+// by checking if the MCP Registry API endpoint (/v0.1/servers) exists and returns valid API responses.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
 	// Create HTTP client for probing with user's private IP preference
-	client, err := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs).Build()
+	// If private IPs are allowed, also allow HTTP (for localhost testing)
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs)
+	if allowPrivateIPs {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	client, err := builder.Build()
 	if err != nil {
 		// If we can't create a client, default to static JSON
 		return RegistryTypeURL
 	}
 
-	// First, try to fetch and parse as ToolHive registry JSON
-	if isValidRegistryJSON(client, url) {
-		return RegistryTypeURL
-	}
-
-	// If not valid JSON, check for /openapi.yaml endpoint (MCP Registry API)
-	openapiURL, err := neturl.JoinPath(url, "openapi.yaml")
+	// Check if the MCP Registry API endpoint exists by trying a lightweight GET request
+	// Note: We use GET instead of HEAD because some API implementations don't support HEAD
+	apiURL, err := neturl.JoinPath(url, "/v0.1/servers")
 	if err == nil {
-		resp, err := client.Head(openapiURL)
+		// Add query parameters to minimize response size
+		params := neturl.Values{}
+		params.Add("limit", "1")
+		params.Add("version", "latest")
+		fullAPIURL := fmt.Sprintf("%s?%s", apiURL, params.Encode())
+
+		resp, err := client.Get(fullAPIURL)
 		if err == nil {
-			_ = resp.Body.Close()
-			// If openapi.yaml exists (200 OK), treat as API endpoint
-			if resp.StatusCode == http.StatusOK {
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					logger.Debugf("Failed to close response body: %v", err)
+				}
+			}()
+			// If API endpoint returns 2xx or 401/403 (auth errors), it's an API
+			// 404 means endpoint doesn't exist, 405 means method not supported, 5xx means server error
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				// Verify the response looks like an API response
+				if isValidAPIResponse(resp) {
+					return RegistryTypeAPI
+				}
+			} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				// Auth errors indicate an API endpoint (it exists but requires auth)
 				return RegistryTypeAPI
 			}
 		}
+	}
+
+	// If no API endpoint found, check if it's valid registry JSON
+	if isValidRegistryJSON(client, url) {
+		return RegistryTypeURL
 	}
 
 	// Default to static JSON file (validation will catch errors later)
 	return RegistryTypeURL
 }
 
-// isValidRegistryJSON checks if a URL returns valid ToolHive registry JSON
-func isValidRegistryJSON(client *http.Client, url string) bool {
-	resp, err := client.Get(url)
-	if err != nil {
+// isValidAPIResponse checks if an HTTP response contains a valid MCP Registry API response
+// by verifying the JSON structure matches the expected API format (ServerListResponse).
+func isValidAPIResponse(resp *http.Response) bool {
+	// Check Content-Type header
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "application/json") {
 		return false
 	}
-	defer resp.Body.Close()
 
-	// Try to parse as JSON with registry structure
-	// We just check for basic registry fields to avoid pulling in the full types package
+	// Try to parse as MCP Registry API response structure
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return false
 	}
 
-	// Check if it has registry-like structure (servers or remoteServers fields)
-	_, hasServers := data["servers"]
-	_, hasRemoteServers := data["remoteServers"]
-	return hasServers || hasRemoteServers
+	// Check for API-specific structure (servers array and metadata object)
+	servers, hasServers := data["servers"]
+	metadata, hasMetadata := data["metadata"]
+
+	// Valid API response should have both 'servers' (array) and 'metadata' (object)
+	if !hasServers || !hasMetadata {
+		return false
+	}
+
+	// Verify servers is an array
+	if _, ok := servers.([]interface{}); !ok {
+		return false
+	}
+
+	// Verify metadata is an object
+	if _, ok := metadata.(map[string]interface{}); !ok {
+		return false
+	}
+
+	return true
+}
+
+// isValidRegistryJSON checks if a URL returns valid ToolHive registry JSON
+// by attempting to parse it into the actual Registry type
+func isValidRegistryJSON(client *http.Client, url string) bool {
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
+
+	// Parse into the actual Registry type for strong validation
+	registry := &registrytypes.Registry{}
+	if err := json.NewDecoder(resp.Body).Decode(registry); err != nil {
+		return false
+	}
+
+	// Verify registry contains at least one server (in top-level or groups)
+	return registryHasServers(registry)
 }
 
 // setRegistryURL validates and sets a registry URL using the provided provider
@@ -104,16 +169,28 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}
 
+	// Build HTTP client with appropriate security settings
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateRegistryIp)
+	if allowPrivateRegistryIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	registryClient, err := builder.Build()
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
 	// Check for private IP addresses if not allowed
 	if !allowPrivateRegistryIp {
-		registryClient, err := networking.NewHttpClientBuilder().Build()
-		if err != nil {
-			return fmt.Errorf("failed to create HTTP client: %w", err)
-		}
 		_, err = registryClient.Get(registryURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err
 		}
+	}
+
+	// Validate that the URL returns valid ToolHive registry JSON
+	if !isValidRegistryJSON(registryClient, registryURL) {
+		return fmt.Errorf("registry URL does not contain valid ToolHive registry format " +
+			"(expected 'servers' or 'remote_servers' fields)")
 	}
 
 	// Update the configuration
@@ -143,6 +220,11 @@ func setRegistryFile(provider Provider, registryPath string) error {
 		return fmt.Errorf("registry file: %w", err)
 	}
 
+	// Validate registry structure
+	if err := validateRegistryFileStructure(cleanPath); err != nil {
+		return fmt.Errorf("registry file: %w", err)
+	}
+
 	// Make the path absolute
 	absPath, err := makeAbsolutePath(cleanPath)
 	if err != nil {
@@ -157,6 +239,48 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	return nil
+}
+
+// registryHasServers checks if a registry contains at least one server
+// (either in top-level servers/remote_servers or within groups)
+func registryHasServers(registry *registrytypes.Registry) bool {
+	// Check top-level servers
+	if len(registry.Servers) > 0 || len(registry.RemoteServers) > 0 {
+		return true
+	}
+
+	// Check servers within groups
+	for _, group := range registry.Groups {
+		if group != nil && (len(group.Servers) > 0 || len(group.RemoteServers) > 0) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// validateRegistryFileStructure checks if a file contains valid ToolHive registry structure
+// by parsing it into the actual Registry type
+func validateRegistryFileStructure(path string) error {
+	// Read file content
+	// #nosec G304: File path is user-provided but validated by caller
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Parse into the actual Registry type for strong validation
+	registry := &registrytypes.Registry{}
+	if err := json.Unmarshal(data, registry); err != nil {
+		return fmt.Errorf("invalid registry format: %w", err)
+	}
+
+	// Verify registry contains at least one server (in top-level or groups)
+	if !registryHasServers(registry) {
+		return fmt.Errorf("registry contains no servers (expected at least one server in 'servers', 'remote_servers', or 'groups')")
 	}
 
 	return nil
@@ -181,19 +305,14 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 		}
 	}
 
+	// Validate that the URL is accessible if not allowing private IPs
 	if !allowPrivateRegistryIp {
 		registryClient, err := networking.NewHttpClientBuilder().Build()
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
-		// Try to fetch the /openapi.yaml endpoint to validate
-		// Use JoinPath for safe URL construction
-		openapiURL, err := neturl.JoinPath(apiURL, "openapi.yaml")
-		if err != nil {
-			return fmt.Errorf("failed to construct OpenAPI URL: %w", err)
-		}
-		// #nosec G107 -- URL is validated above and path is a constant
-		_, err = registryClient.Get(openapiURL)
+		// Just check the base URL is accessible (don't require specific endpoints)
+		_, err = registryClient.Head(apiURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err
 		}

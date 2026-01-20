@@ -13,10 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-const (
-	mcpToolType = "mcp"
-)
-
 // Client represents a registered ToolHive client.
 type Client struct {
 	Name MCPClient `json:"name"`
@@ -145,7 +141,7 @@ func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Work
 	for _, client := range clients {
 		// Add specified workloads to the client
 		if err := m.addWorkloadsToClient(client.Name, workloads); err != nil {
-			return fmt.Errorf("failed to add workloads to client %s: %v", client.Name, err)
+			return fmt.Errorf("failed to add workloads to client %s: %w", client.Name, err)
 		}
 	}
 	return nil
@@ -156,7 +152,7 @@ func (m *defaultManager) UnregisterClients(_ context.Context, clients []Client, 
 	for _, client := range clients {
 		// Remove specified workloads from the client
 		if err := m.removeWorkloadsFromClient(client.Name, workloads); err != nil {
-			return fmt.Errorf("failed to remove workloads from client %s: %v", client.Name, err)
+			return fmt.Errorf("failed to remove workloads from client %s: %w", client.Name, err)
 		}
 	}
 	return nil
@@ -205,12 +201,6 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	return nil
 }
 
-// shouldSkipWorkload determines if a workload should be skipped when adding/removing servers from clients.
-// Workloads are skipped if they are not MCP tool type and if they are not remote.
-func shouldSkipWorkload(workload core.Workload) bool {
-	return workload.ToolType != mcpToolType && !workload.Remote
-}
-
 // addWorkloadsToClient adds the specified workloads to the client's configuration
 func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []core.Workload) error {
 	if len(workloads) == 0 {
@@ -220,16 +210,12 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 
 	// For each workload, add it to the client configuration
 	for _, workload := range workloads {
-		if shouldSkipWorkload(workload) {
-			continue
-		}
-
 		// Use the common update function (creates config if needed)
 		err := m.updateClientWithServer(
 			string(clientType), workload.Name, workload.URL, string(workload.TransportType),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to add workload %s to client %s: %v", workload.Name, clientType, err)
+			return fmt.Errorf("failed to add workload %s to client %s: %w", workload.Name, clientType, err)
 		}
 
 		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
@@ -247,13 +233,9 @@ func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloa
 
 	// For each workload, remove it from the client configuration
 	for _, workload := range workloads {
-		if shouldSkipWorkload(workload) {
-			continue
-		}
-
 		err := m.removeServerFromClient(clientType, workload.Name)
 		if err != nil {
-			return fmt.Errorf("failed to remove workload %s from client %s: %v", workload.Name, clientType, err)
+			return fmt.Errorf("failed to remove workload %s from client %s: %w", workload.Name, clientType, err)
 		}
 	}
 
@@ -269,7 +251,7 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 
 	// Remove the MCP server configuration with locking
 	if err := clientConfig.ConfigUpdater.Remove(serverName); err != nil {
-		return fmt.Errorf("failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
+		return fmt.Errorf("failed to remove MCP server configuration from %s: %w", clientConfig.Path, err)
 	}
 
 	logger.Infof("Removed MCP server %s from client %s", serverName, clientName)
@@ -294,7 +276,7 @@ func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL,
 	logger.Infof("Updating client configuration: %s", clientConfig.Path)
 
 	if err := Upsert(*clientConfig, serverName, serverURL, transportType); err != nil {
-		return fmt.Errorf("failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
+		return fmt.Errorf("failed to update MCP server configuration in %s: %w", clientConfig.Path, err)
 	}
 
 	logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)

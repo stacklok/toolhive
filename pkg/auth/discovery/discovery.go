@@ -11,6 +11,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Default timeout constants for authentication operations
@@ -159,7 +161,11 @@ func detectAuthWithRequest(
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if we got a 401 Unauthorized with WWW-Authenticate header
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -184,10 +190,10 @@ func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
 		// Endpoint-specific: /.well-known/oauth-protected-resource/<original-path>
 		// Remove leading slash from original path to avoid double slashes
 		cleanPath := strings.TrimPrefix(parsedURL.Path, "/")
-		baseURL.Path = path.Join(auth.WellKnownOAuthResourcePath, cleanPath)
+		baseURL.Path = path.Join(oauthproto.WellKnownOAuthResourcePath, cleanPath)
 	} else {
 		// Root-level: /.well-known/oauth-protected-resource
-		baseURL.Path = auth.WellKnownOAuthResourcePath
+		baseURL.Path = oauthproto.WellKnownOAuthResourcePath
 	}
 
 	return baseURL.String()
@@ -282,7 +288,7 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 	// Check for OAuth/Bearer authentication
 	// Note: We don't split by comma because Bearer parameters can contain commas in quoted values
 	if strings.HasPrefix(header, "Bearer") {
-		authInfo := &AuthInfo{Type: "OAuth"}
+		authInfo := &AuthInfo{Type: "Bearer"}
 
 		// Extract parameters after "Bearer"
 		params := strings.TrimSpace(strings.TrimPrefix(header, "Bearer"))
@@ -578,15 +584,21 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 }
 
 // getDiscoveryDocument retrieves the OIDC discovery document
-func getDiscoveryDocument(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.OIDCDiscoveryDocument, error) {
+func getDiscoveryDocument(
+	ctx context.Context,
+	issuer string,
+	config *OAuthFlowConfig,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// If we already have the registration endpoint from earlier discovery, use it
 	if config.RegistrationEndpoint != "" && config.AuthorizeURL != "" && config.TokenURL != "" {
 		logger.Debugf("Using pre-discovered OAuth endpoints for dynamic registration")
-		return &oauth.OIDCDiscoveryDocument{
-			Issuer:                issuer,
-			AuthorizationEndpoint: config.AuthorizeURL,
-			TokenEndpoint:         config.TokenURL,
-			RegistrationEndpoint:  config.RegistrationEndpoint,
+		return &oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                issuer,
+				AuthorizationEndpoint: config.AuthorizeURL,
+				TokenEndpoint:         config.TokenURL,
+				RegistrationEndpoint:  config.RegistrationEndpoint,
+			},
 		}, nil
 	}
 
@@ -646,7 +658,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	// Start OAuth flow
 	tokenResult, err := flow.Start(oauthCtx, config.SkipBrowser)
 	if err != nil {
-		if oauthCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(oauthCtx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 		}
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
@@ -674,7 +686,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 func registerDynamicClient(
 	ctx context.Context,
 	config *OAuthFlowConfig,
-	discoveredDoc *oauth.OIDCDiscoveryDocument,
+	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
 ) (*oauth.DynamicClientRegistrationResponse, error) {
 
 	// Check if the provider supports Dynamic Client Registration
@@ -733,7 +745,11 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("metadata request failed with status %d", resp.StatusCode)

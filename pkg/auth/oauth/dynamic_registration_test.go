@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
@@ -19,7 +21,7 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 		issuer         string
 		response       string
 		expectedError  bool
-		expectedResult *OIDCDiscoveryDocument
+		expectedResult *oauthproto.OIDCDiscoveryDocument
 	}{
 		{
 			name:   "valid OIDC discovery with registration endpoint",
@@ -33,13 +35,15 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				"registration_endpoint": "{{SERVER_URL}}/oauth/register"
 			}`,
 			expectedError: false,
-			expectedResult: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/oauth/authorize",
-				TokenEndpoint:         "https://example.com/oauth/token",
-				UserinfoEndpoint:      "https://example.com/oauth/userinfo",
-				JWKSURI:               "https://example.com/oauth/jwks",
-				RegistrationEndpoint:  "https://example.com/oauth/register",
+			expectedResult: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://example.com/oauth/authorize",
+					TokenEndpoint:         "https://example.com/oauth/token",
+					UserinfoEndpoint:      "https://example.com/oauth/userinfo",
+					JWKSURI:               "https://example.com/oauth/jwks",
+					RegistrationEndpoint:  "https://example.com/oauth/register",
+				},
 			},
 		},
 		{
@@ -53,13 +57,15 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				"jwks_uri": "{{SERVER_URL}}/oauth/jwks"
 			}`,
 			expectedError: false,
-			expectedResult: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/oauth/authorize",
-				TokenEndpoint:         "https://example.com/oauth/token",
-				UserinfoEndpoint:      "https://example.com/oauth/userinfo",
-				JWKSURI:               "https://example.com/oauth/jwks",
-				RegistrationEndpoint:  "",
+			expectedResult: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://example.com/oauth/authorize",
+					TokenEndpoint:         "https://example.com/oauth/token",
+					UserinfoEndpoint:      "https://example.com/oauth/userinfo",
+					JWKSURI:               "https://example.com/oauth/jwks",
+					RegistrationEndpoint:  "",
+				},
 			},
 		},
 		{
@@ -84,13 +90,15 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				"registration_endpoint": "{{SERVER_URL}}/oauth/register"
 			}`,
 			expectedError: false,
-			expectedResult: &OIDCDiscoveryDocument{
-				Issuer:                "http://localhost:8080",
-				AuthorizationEndpoint: "http://localhost:8080/oauth/authorize",
-				TokenEndpoint:         "http://localhost:8080/oauth/token",
-				UserinfoEndpoint:      "http://localhost:8080/oauth/userinfo",
-				JWKSURI:               "http://localhost:8080/oauth/jwks",
-				RegistrationEndpoint:  "http://localhost:8080/oauth/register",
+			expectedResult: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "http://localhost:8080",
+					AuthorizationEndpoint: "http://localhost:8080/oauth/authorize",
+					TokenEndpoint:         "http://localhost:8080/oauth/token",
+					UserinfoEndpoint:      "http://localhost:8080/oauth/userinfo",
+					JWKSURI:               "http://localhost:8080/oauth/jwks",
+					RegistrationEndpoint:  "http://localhost:8080/oauth/register",
+				},
 			},
 		},
 	}
@@ -105,8 +113,8 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				responseTemplate = tt.response
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					// Handle both OIDC and OAuth discovery endpoints
-					if r.URL.Path == WellKnownOIDCPath ||
-						r.URL.Path == WellKnownOAuthServerPath {
+					if r.URL.Path == oauthproto.WellKnownOIDCPath ||
+						r.URL.Path == oauthproto.WellKnownOAuthServerPath {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusOK)
 						// Replace placeholder with actual server URL
@@ -169,7 +177,7 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 				ClientName:              "ToolHive MCP Client",
 				RedirectURIs:            []string{"http://localhost:8080/callback"},
 				TokenEndpointAuthMethod: "none",
-				GrantTypes:              []string{"authorization_code"},
+				GrantTypes:              []string{"authorization_code", "refresh_token"},
 				ResponseTypes:           []string{"code"},
 				Scopes:                  []string{"openid", "profile"},
 			},
@@ -182,7 +190,7 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 				ClientName:              "ToolHive MCP Client",
 				RedirectURIs:            []string{"http://localhost:8666/callback"},
 				TokenEndpointAuthMethod: "none",
-				GrantTypes:              []string{"authorization_code"},
+				GrantTypes:              []string{"authorization_code", "refresh_token"},
 				ResponseTypes:           []string{"code"},
 				Scopes:                  []string{},
 			},
@@ -503,7 +511,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallback(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		baseURL := "http://" + r.Host
 		switch r.URL.Path {
-		case WellKnownOIDCPath:
+		case oauthproto.WellKnownOIDCPath:
 			// OIDC discovery - no registration_endpoint
 			response := `{
 				"issuer": "` + baseURL + `",
@@ -514,7 +522,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallback(t *testing.T) {
 			}`
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))
-		case WellKnownOAuthServerPath:
+		case oauthproto.WellKnownOAuthServerPath:
 			// OAuth authorization server - has registration_endpoint
 			response := `{
 				"issuer": "` + baseURL + `",
@@ -551,7 +559,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallbackIssuerMismatch(t *testing.
 		w.Header().Set("Content-Type", "application/json")
 		baseURL := "http://" + r.Host
 		switch r.URL.Path {
-		case WellKnownOIDCPath:
+		case oauthproto.WellKnownOIDCPath:
 			// OIDC discovery - no registration_endpoint, different issuer
 			response := `{
 				"issuer": "https://oidc.example.com",
@@ -562,7 +570,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallbackIssuerMismatch(t *testing.
 			}`
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))
-		case WellKnownOAuthServerPath:
+		case oauthproto.WellKnownOAuthServerPath:
 			// OAuth authorization server - has registration_endpoint but different issuer
 			response := `{
 				"issuer": "https://oauth.example.com",

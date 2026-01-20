@@ -1,45 +1,67 @@
 components:
   schemas:
     audit.Config:
-      description: AuditConfig contains the audit logging configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        AuditConfig contains the audit logging configuration
       properties:
         component:
-          description: Component is the component name to use in audit events
+          description: |-
+            Component is the component name to use in audit events.
+            +optional
           type: string
-        event_types:
-          description: EventTypes specifies which event types to audit. If empty,
-            all events are audited.
+        enabled:
+          description: |-
+            Enabled controls whether audit logging is enabled.
+            When true, enables audit logging with the configured options.
+            +kubebuilder:default=false
+            +optional
+          type: boolean
+        eventTypes:
+          description: |-
+            EventTypes specifies which event types to audit. If empty, all events are audited.
+            +optional
           items:
             type: string
           type: array
           uniqueItems: false
-        exclude_event_types:
+        excludeEventTypes:
           description: |-
             ExcludeEventTypes specifies which event types to exclude from auditing.
             This takes precedence over EventTypes.
+            +optional
           items:
             type: string
           type: array
           uniqueItems: false
-        include_request_data:
-          description: IncludeRequestData determines whether to include request data
-            in audit logs
+        includeRequestData:
+          description: |-
+            IncludeRequestData determines whether to include request data in audit logs.
+            +kubebuilder:default=false
+            +optional
           type: boolean
-        include_response_data:
-          description: IncludeResponseData determines whether to include response
-            data in audit logs
+        includeResponseData:
+          description: |-
+            IncludeResponseData determines whether to include response data in audit logs.
+            +kubebuilder:default=false
+            +optional
           type: boolean
-        log_file:
-          description: LogFile specifies the file path for audit logs. If empty, logs
-            to stdout.
+        logFile:
+          description: |-
+            LogFile specifies the file path for audit logs. If empty, logs to stdout.
+            +optional
           type: string
-        max_data_size:
-          description: MaxDataSize limits the size of request/response data included
-            in audit logs (in bytes)
+        maxDataSize:
+          description: |-
+            MaxDataSize limits the size of request/response data included in audit logs (in bytes).
+            +kubebuilder:default=1024
+            +optional
           type: integer
       type: object
     auth.TokenValidatorConfig:
-      description: OIDCConfig contains OIDC configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        OIDCConfig contains OIDC configuration
       properties:
         allowPrivateIP:
           description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
@@ -88,38 +110,42 @@ components:
             type: string
           type: array
       type: object
-    authz.CedarConfig:
-      description: |-
-        Cedar is the Cedar-specific configuration.
-        This is only used when Type is ConfigTypeCedarV1.
-      properties:
-        entities_json:
-          description: EntitiesJSON is the JSON string representing Cedar entities
-          type: string
-        policies:
-          description: Policies is a list of Cedar policy strings
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
     authz.Config:
-      description: AuthzConfig contains the authorization configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        AuthzConfig contains the authorization configuration
       properties:
-        cedar:
-          $ref: '#/components/schemas/authz.CedarConfig'
         type:
-          $ref: '#/components/schemas/authz.ConfigType'
+          description: Type is the type of authorization configuration (e.g., "cedarv1").
+          type: string
         version:
           description: Version is the version of the configuration format.
           type: string
       type: object
-    authz.ConfigType:
-      description: Type is the type of authorization configuration.
-      type: string
-      x-enum-varnames:
-      - ConfigTypeCedarV1
     client.MCPClient:
+      description: ClientType is the type of MCP client
+      enum:
+      - roo-code
+      - cline
+      - cursor
+      - vscode-insider
+      - vscode
+      - claude-code
+      - windsurf
+      - windsurf-jetbrains
+      - amp-cli
+      - amp-vscode
+      - amp-cursor
+      - amp-vscode-insider
+      - amp-windsurf
+      - lm-studio
+      - goose
+      - trae
+      - continue
+      - opencode
+      - kiro
+      - antigravity
+      - zed
       type: string
       x-enum-varnames:
       - RooCode
@@ -146,30 +172,7 @@ components:
     client.MCPClientStatus:
       properties:
         client_type:
-          description: ClientType is the type of MCP client
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -228,17 +231,16 @@ components:
           description: Remote indicates whether this is a remote workload (true) or
             a container workload (false).
           type: boolean
+        started_at:
+          description: StartedAt is when the container was last started (changes on
+            restart)
+          type: string
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
           description: |-
             StatusContext provides additional context about the workload's status.
             The exact meaning is determined by the status and the underlying runtime.
-          type: string
-        tool_type:
-          description: |-
-            ToolType is the type of tool this workload represents.
-            For now, it will always be "mcp" - representing an MCP server.
           type: string
         tools:
           description: ToolsFilter is the filter on tools applied to the workload.
@@ -475,6 +477,11 @@ components:
           $ref: '#/components/schemas/permissions.Profile'
         provenance:
           $ref: '#/components/schemas/registry.Provenance'
+        proxy_port:
+          description: |-
+            ProxyPort is the port for the HTTP proxy to listen on (host port)
+            If not specified, a random available port will be assigned
+          type: integer
         repository_url:
           description: RepositoryURL is the URL to the source code repository for
             the server
@@ -710,6 +717,11 @@ components:
       properties:
         authorize_url:
           type: string
+        bearer_token:
+          description: Bearer token configuration (alternative to OAuth)
+          type: string
+        bearer_token_file:
+          type: string
         callback_port:
           type: integer
         client_id:
@@ -761,13 +773,16 @@ components:
         audit_config:
           $ref: '#/components/schemas/audit.Config'
         audit_config_path:
-          description: AuditConfigPath is the path to the audit configuration file
+          description: |-
+            DEPRECATED: Middleware configuration.
+            AuditConfigPath is the path to the audit configuration file
           type: string
         authz_config:
           $ref: '#/components/schemas/authz.Config'
         authz_config_path:
-          description: AuthzConfigPath is the path to the authorization configuration
-            file
+          description: |-
+            DEPRECATED: Middleware configuration.
+            AuthzConfigPath is the path to the authorization configuration file
           type: string
         base_name:
           description: BaseName is the base name used for the container (without prefixes)
@@ -789,9 +804,15 @@ components:
         debug:
           description: Debug indicates whether debug mode is enabled
           type: boolean
+        endpoint_prefix:
+          description: |-
+            EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+            This is used to handle path-based ingress routing scenarios.
+          type: string
         env_file_dir:
-          description: EnvFileDir is the directory path to load environment files
-            from
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            EnvFileDir is the directory path to load environment files from
           type: string
         env_vars:
           additionalProperties:
@@ -815,8 +836,9 @@ components:
             the container
           type: boolean
         jwks_auth_token_file:
-          description: JWKSAuthTokenFile is the path to file containing auth token
-            for JWKS/OIDC requests
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
           type: string
         k8s_pod_template_patch:
           description: |-
@@ -874,13 +896,16 @@ components:
         telemetry_config:
           $ref: '#/components/schemas/telemetry.Config'
         thv_ca_bundle:
-          description: ThvCABundle is the path to the CA certificate bundle for ToolHive
-            HTTP operations
+          description: |-
+            DEPRECATED: No longer appears to be used.
+            ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
         token_exchange_config:
           $ref: '#/components/schemas/tokenexchange.Config'
         tools_filter:
-          description: ToolsFilter is the list of tools to filter
+          description: |-
+            DEPRECATED: Middleware configuration.
+            ToolsFilter is the list of tools to filter
           items:
             type: string
           type: array
@@ -888,17 +913,12 @@ components:
         tools_override:
           additionalProperties:
             $ref: '#/components/schemas/runner.ToolOverride'
-          description: ToolsOverride is a map from an actual tool to its overridden
-            name and/or description
+          description: |-
+            DEPRECATED: Middleware configuration.
+            ToolsOverride is a map from an actual tool to its overridden name and/or description
           type: object
         transport:
-          description: Transport is the transport mode (stdio, sse, or streamable-http)
-          type: string
-          x-enum-varnames:
-          - TransportTypeStdio
-          - TransportTypeSSE
-          - TransportTypeStreamableHTTP
-          - TransportTypeInspector
+          $ref: '#/components/schemas/types.TransportType'
         trust_proxy_headers:
           description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
             headers from reverse proxies
@@ -922,7 +942,17 @@ components:
           type: string
       type: object
     runtime.WorkloadStatus:
-      description: Status is the current status of the workload.
+      description: Current status of the workload
+      enum:
+      - running
+      - stopped
+      - error
+      - starting
+      - stopping
+      - unhealthy
+      - removing
+      - unknown
+      - unauthenticated
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning
@@ -935,6 +965,7 @@ components:
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
     secrets.SecretParameter:
+      description: Bearer token for authentication (alternative to OAuth)
       properties:
         name:
           type: string
@@ -942,7 +973,9 @@ components:
           type: string
       type: object
     telemetry.Config:
-      description: TelemetryConfig contains the OpenTelemetry configuration
+      description: |-
+        DEPRECATED: Middleware configuration.
+        TelemetryConfig contains the OpenTelemetry configuration
       properties:
         customAttributes:
           additionalProperties:
@@ -951,24 +984,28 @@ components:
             CustomAttributes contains custom resource attributes to be added to all telemetry signals.
             These are parsed from CLI flags (--otel-custom-attributes) or environment variables
             (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
-            We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
-            which doesn't marshal/unmarshal correctly.
+            +optional
           type: object
         enablePrometheusMetricsPath:
           description: |-
-            EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
-            The metrics are served on the main transport port at /metrics
-            This is separate from OTLP metrics which are sent to the Endpoint
+            EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
+            The metrics are served on the main transport port at /metrics.
+            This is separate from OTLP metrics which are sent to the Endpoint.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         endpoint:
-          description: Endpoint is the OTLP endpoint URL
+          description: |-
+            Endpoint is the OTLP endpoint URL
+            +optional
           type: string
         environmentVariables:
           description: |-
             EnvironmentVariables is a list of environment variable names that should be
             included in telemetry spans as attributes. Only variables in this list will
             be read from the host machine and included in spans for observability.
-            Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+            Example: ["NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"]
+            +optional
           items:
             type: string
           type: array
@@ -976,33 +1013,50 @@ components:
         headers:
           additionalProperties:
             type: string
-          description: Headers contains authentication headers for the OTLP endpoint
+          description: |-
+            Headers contains authentication headers for the OTLP endpoint.
+            +optional
           type: object
         insecure:
-          description: Insecure indicates whether to use HTTP instead of HTTPS for
-            the OTLP endpoint
+          description: |-
+            Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         metricsEnabled:
           description: |-
-            MetricsEnabled controls whether OTLP metrics are enabled
-            When false, OTLP metrics are not sent even if an endpoint is configured
-            This is independent of EnablePrometheusMetricsPath
+            MetricsEnabled controls whether OTLP metrics are enabled.
+            When false, OTLP metrics are not sent even if an endpoint is configured.
+            This is independent of EnablePrometheusMetricsPath.
+            +kubebuilder:default=false
+            +optional
           type: boolean
         samplingRate:
           description: |-
-            SamplingRate is the trace sampling rate (0.0-1.0)
-            Only used when TracingEnabled is true
-          type: number
+            SamplingRate is the trace sampling rate (0.0-1.0) as a string.
+            Only used when TracingEnabled is true.
+            Example: "0.05" for 5% sampling.
+            +kubebuilder:default="0.05"
+            +optional
+          type: string
         serviceName:
-          description: ServiceName is the service name for telemetry
+          description: |-
+            ServiceName is the service name for telemetry.
+            When omitted, defaults to the server name (e.g., VirtualMCPServer name).
+            +optional
           type: string
         serviceVersion:
-          description: ServiceVersion is the service version for telemetry
+          description: |-
+            ServiceVersion is the service version for telemetry.
+            When omitted, defaults to the ToolHive version.
+            +optional
           type: string
         tracingEnabled:
           description: |-
-            TracingEnabled controls whether distributed tracing is enabled
-            When false, no tracer provider is created even if an endpoint is configured
+            TracingEnabled controls whether distributed tracing is enabled.
+            When false, no tracer provider is created even if an endpoint is configured.
+            +kubebuilder:default=false
+            +optional
           type: boolean
       type: object
     tokenexchange.Config:
@@ -1055,13 +1109,23 @@ components:
           type: string
       type: object
     types.ProxyMode:
-      description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+      description: |-
+        ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+        Note: "sse" is deprecated; use "streamable-http" instead.
+      enum:
+      - sse
+      - streamable-http
       type: string
       x-enum-varnames:
       - ProxyModeSSE
       - ProxyModeStreamableHTTP
     types.TransportType:
-      description: TransportType is the type of transport used for this workload.
+      description: Transport is the transport mode (stdio, sse, or streamable-http)
+      enum:
+      - stdio
+      - sse
+      - streamable-http
+      - inspector
       type: string
       x-enum-varnames:
       - TransportTypeStdio
@@ -1070,6 +1134,11 @@ components:
       - TransportTypeInspector
     v1.RegistryType:
       description: Type of registry (file, url, or default)
+      enum:
+      - file
+      - url
+      - api
+      - default
       type: string
       x-enum-varnames:
       - RegistryTypeFile
@@ -1113,29 +1182,7 @@ components:
         names:
           description: Names is the list of client names to operate on.
           items:
-            type: string
-            x-enum-varnames:
-            - RooCode
-            - Cline
-            - Cursor
-            - VSCodeInsider
-            - VSCode
-            - ClaudeCode
-            - Windsurf
-            - WindsurfJetBrains
-            - AmpCli
-            - AmpVSCode
-            - AmpCursor
-            - AmpVSCodeInsider
-            - AmpWindsurf
-            - LMStudio
-            - Goose
-            - Trae
-            - Continue
-            - OpenCode
-            - Kiro
-            - Antigravity
-            - Zed
+            $ref: '#/components/schemas/client.MCPClient'
           type: array
           uniqueItems: false
       type: object
@@ -1168,30 +1215,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          description: Name is the type of the client to register.
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     v1.createClientResponse:
       properties:
@@ -1202,30 +1226,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          description: Name is the type of the client that was registered.
-          type: string
-          x-enum-varnames:
-          - RooCode
-          - Cline
-          - Cursor
-          - VSCodeInsider
-          - VSCode
-          - ClaudeCode
-          - Windsurf
-          - WindsurfJetBrains
-          - AmpCli
-          - AmpVSCode
-          - AmpCursor
-          - AmpVSCodeInsider
-          - AmpWindsurf
-          - LMStudio
-          - Goose
-          - Trae
-          - Continue
-          - OpenCode
-          - Kiro
-          - Antigravity
-          - Zed
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     v1.createGroupRequest:
       properties:
@@ -1374,13 +1375,7 @@ components:
             built-in)
           type: string
         type:
-          description: Type of registry (file, url, or default)
-          type: string
-          x-enum-varnames:
-          - RegistryTypeFile
-          - RegistryTypeURL
-          - RegistryTypeAPI
-          - RegistryTypeDefault
+          $ref: '#/components/schemas/v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string
@@ -1529,6 +1524,8 @@ components:
           description: OAuth authorization endpoint URL (alternative to issuer for
             non-OIDC OAuth)
           type: string
+        bearer_token:
+          $ref: '#/components/schemas/secrets.SecretParameter'
         callback_port:
           description: Specific port for OAuth callback server
           type: integer
@@ -1727,18 +1724,7 @@ components:
       description: Response containing workload status information
       properties:
         status:
-          description: Current status of the workload
-          type: string
-          x-enum-varnames:
-          - WorkloadStatusRunning
-          - WorkloadStatusStopped
-          - WorkloadStatusError
-          - WorkloadStatusStarting
-          - WorkloadStatusStopping
-          - WorkloadStatusUnhealthy
-          - WorkloadStatusRemoving
-          - WorkloadStatusUnknown
-          - WorkloadStatusUnauthenticated
+          $ref: '#/components/schemas/runtime.WorkloadStatus'
       type: object
 externalDocs:
   description: ""
@@ -1783,7 +1769,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createClientRequest'
+                description: Client to register
+                summary: client
         description: Client to register
         required: true
       responses:
@@ -1865,7 +1855,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkClientRequest'
+                description: Clients to register
+                summary: clients
         description: Clients to register
         required: true
       responses:
@@ -1893,7 +1887,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkClientRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkClientRequest'
+                description: Clients to unregister
+                summary: clients
         description: Clients to unregister
         required: true
       responses:
@@ -1946,7 +1944,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createGroupRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createGroupRequest'
+                description: Group creation request
+                summary: group
         description: Group creation request
         required: true
       responses:
@@ -2140,7 +2142,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+                description: Registry configuration
+                summary: body
         description: Registry configuration
         required: true
       responses:
@@ -2230,7 +2236,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.setupSecretsRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.setupSecretsRequest'
+                description: Setup secrets provider request
+                summary: request
         description: Setup secrets provider request
         required: true
       responses:
@@ -2318,7 +2328,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createSecretRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createSecretRequest'
+                description: Create secret request
+                summary: request
         description: Create secret request
         required: true
       responses:
@@ -2413,7 +2427,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.updateSecretRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.updateSecretRequest'
+                description: Update secret request
+                summary: request
         description: Update secret request
         required: true
       responses:
@@ -2499,7 +2517,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.createRequest'
+                description: Create workload request
+                summary: request
         description: Create workload request
         required: true
       responses:
@@ -2595,7 +2617,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.updateRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.updateRequest'
+                description: Update workload request
+                summary: request
         description: Update workload request
         required: true
       responses:
@@ -2648,7 +2674,8 @@ paths:
       - workloads
   /api/v1beta/workloads/{name}/logs:
     get:
-      description: Retrieve at most 100 lines of logs for a specific workload by name.
+      description: Retrieve at most 1000 lines of logs for a specific workload by
+        name.
       parameters:
       - description: Workload name
         in: path
@@ -2659,22 +2686,19 @@ paths:
       responses:
         "200":
           content:
-            application/json:
-              schema:
-                type: string
             text/plain:
               schema:
                 type: string
           description: Logs for the specified workload
         "400":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Invalid workload name
         "404":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Not Found
@@ -2683,8 +2707,8 @@ paths:
       - logs
   /api/v1beta/workloads/{name}/proxy-logs:
     get:
-      description: Retrieve proxy logs for a specific workload by name from the file
-        system.
+      description: Retrieve at most 1000 lines of proxy logs for a specific workload
+        by name from the file system.
       parameters:
       - description: Workload name
         in: path
@@ -2695,22 +2719,19 @@ paths:
       responses:
         "200":
           content:
-            application/json:
-              schema:
-                type: string
             text/plain:
               schema:
                 type: string
           description: Proxy logs for the specified workload
         "400":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Invalid workload name
         "404":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Proxy logs not found for workload
@@ -2814,7 +2835,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk delete request (names or group)
+                summary: request
         description: Bulk delete request (names or group)
         required: true
       responses:
@@ -2840,7 +2865,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk restart request (names or group)
+                summary: request
         description: Bulk restart request (names or group)
         required: true
       responses:
@@ -2866,7 +2895,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/v1.bulkOperationRequest'
+                description: Bulk stop request (names or group)
+                summary: request
         description: Bulk stop request (names or group)
         required: true
       responses:

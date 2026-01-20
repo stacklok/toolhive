@@ -7,8 +7,10 @@ package client
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -239,6 +241,69 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	return c, nil
 }
 
+// wrapBackendError wraps an error with the appropriate sentinel error based on error type.
+// This enables type-safe error checking with errors.Is() instead of string matching.
+//
+// Error detection strategy (in order of preference):
+// 1. Check for standard Go error types (context errors, net.Error, url.Error)
+// 2. Fall back to string pattern matching for library-specific errors (MCP SDK, HTTP libs)
+//
+// Error chain preservation:
+// The returned error wraps the sentinel error (ErrTimeout, ErrBackendUnavailable, etc.) with %w
+// and formats the original error with %v. This means:
+// - errors.Is() works for checking the sentinel error (e.g., errors.Is(err, vmcp.ErrTimeout))
+// - errors.As() cannot access the underlying original error type
+// This is a deliberate trade-off due to Go's limitation of one %w per fmt.Errorf call.
+// If access to the underlying error type is needed in the future, consider implementing
+// a custom error type with multiple Unwrap() methods (Go 1.20+).
+func wrapBackendError(err error, backendID string, operation string) error {
+	if err == nil {
+		return nil
+	}
+
+	// 1. Type-based detection: Check for context deadline/cancellation
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: failed to %s for backend %s (timeout): %v",
+			vmcp.ErrTimeout, operation, backendID, err)
+	}
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: failed to %s for backend %s (cancelled): %v",
+			vmcp.ErrCancelled, operation, backendID, err)
+	}
+
+	// 2. Type-based detection: Check for net.Error with Timeout() method
+	// This handles network timeouts from the standard library
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("%w: failed to %s for backend %s (timeout): %v",
+			vmcp.ErrTimeout, operation, backendID, err)
+	}
+
+	// 3. String-based detection: Fall back to pattern matching for cases where
+	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
+	// Authentication errors (401, 403, auth failures)
+	if vmcp.IsAuthenticationError(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+
+	// Timeout errors (deadline exceeded, timeout messages)
+	if vmcp.IsTimeoutError(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s (timeout): %v",
+			vmcp.ErrTimeout, operation, backendID, err)
+	}
+
+	// Connection errors (refused, reset, unreachable)
+	if vmcp.IsConnectionError(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s (connection error): %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, err)
+	}
+
+	// Default to backend unavailable for unknown errors
+	return fmt.Errorf("%w: failed to %s for backend %s: %v",
+		vmcp.ErrBackendUnavailable, operation, backendID, err)
+}
+
 // initializeClient performs MCP protocol initialization handshake and returns server capabilities.
 // This allows the caller to determine which optional features the server supports.
 func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, error) {
@@ -313,14 +378,18 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client and get server capabilities
 	serverCaps, err := initializeClient(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
 	logger.Debugf("Backend %s capabilities: tools=%v, resources=%v, prompts=%v",
@@ -330,17 +399,17 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	// Check for nil BEFORE passing to functions to avoid interface{} nil pointer issues
 	toolsResp, err := queryTools(ctx, c, serverCaps.Tools != nil, target.WorkloadID)
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendError(err, target.WorkloadID, "list tools")
 	}
 
 	resourcesResp, err := queryResources(ctx, c, serverCaps.Resources != nil, target.WorkloadID)
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 	}
 
 	promptsResp, err := queryPrompts(ctx, c, serverCaps.Prompts != nil, target.WorkloadID)
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 	}
 
 	// Convert MCP types to vmcp types
@@ -415,6 +484,8 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -426,13 +497,17 @@ func (h *httpBackendClient) CallTool(
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
 	// Call the tool using the original capability name from the backend's perspective.
@@ -451,7 +526,7 @@ func (h *httpBackendClient) CallTool(
 	})
 	if err != nil {
 		// Network/connection errors are operational errors
-		return nil, fmt.Errorf("%w: tool call failed on backend %s: %v", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
 	// Check if the tool call returned an error (MCP domain error)
@@ -471,8 +546,22 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
 	}
 
-	// Convert result contents to a map
-	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.)
+	// Check for structured content first (preferred for composite tool step chaining).
+	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
+	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	if result.StructuredContent != nil {
+		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
+			logger.Debugf("Using structured content from tool %s on backend %s", toolName, target.WorkloadID)
+			return structuredMap, nil
+		}
+		// StructuredContent is not an object - fall through to Content processing
+		logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
+			toolName, target.WorkloadID)
+	}
+
+	// Fallback: Convert result contents to a map.
+	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
+	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
 	resultMap := make(map[string]any)
 	if len(result.Content) > 0 {
 		textIndex := 0
@@ -509,13 +598,17 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
 	// Read the resource using the original URI from the backend's perspective.
@@ -570,13 +663,17 @@ func (h *httpBackendClient) GetPrompt(
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
-		return "", fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
+		return "", wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
-		return "", fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+		return "", wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
 	// Get the prompt using the original prompt name from the backend's perspective.

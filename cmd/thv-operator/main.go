@@ -7,13 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
+	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
+	// to ensure that exec-entrypoint and run can make use of them.
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -35,6 +36,18 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = log.Log.WithName("setup")
 )
+
+// Feature flags for controller groups
+const (
+	featureServer   = "ENABLE_SERVER"
+	featureRegistry = "ENABLE_REGISTRY"
+	featureVMCP     = "ENABLE_VMCP"
+)
+
+// controllerDependencies maps each controller group to its required dependencies
+var controllerDependencies = map[string][]string{
+	featureVMCP: {featureServer}, // Virtual MCP requires server controllers
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -111,6 +124,69 @@ func main() {
 
 // setupControllersAndWebhooks sets up all controllers and webhooks with the manager
 func setupControllersAndWebhooks(mgr ctrl.Manager) error {
+	// Check feature flags
+	enableServer := isFeatureEnabled(featureServer, true)
+	enableRegistry := isFeatureEnabled(featureRegistry, true)
+	enableVMCP := isFeatureEnabled(featureVMCP, true)
+
+	// Track enabled features for dependency checking
+	enabledFeatures := map[string]bool{
+		featureServer:   enableServer,
+		featureRegistry: enableRegistry,
+		featureVMCP:     enableVMCP,
+	}
+
+	// Check dependencies and log warnings for missing dependencies
+	for feature, deps := range controllerDependencies {
+		if !enabledFeatures[feature] {
+			continue // Skip if feature itself is disabled
+		}
+		for _, dep := range deps {
+			if !enabledFeatures[dep] {
+				setupLog.Info(
+					fmt.Sprintf("%s requires %s to be enabled, skipping %s controllers", feature, dep, feature),
+					"feature", feature,
+					"required_dependency", dep,
+				)
+				enabledFeatures[feature] = false // Mark as effectively disabled
+				break
+			}
+		}
+	}
+
+	// Set up server-related controllers
+	if enabledFeatures[featureServer] {
+		if err := setupServerControllers(mgr, enableRegistry); err != nil {
+			return err
+		}
+	} else {
+		setupLog.Info("ENABLE_SERVER is disabled, skipping server-related controllers")
+	}
+
+	// Set up registry controller
+	if enabledFeatures[featureRegistry] {
+		if err := setupRegistryController(mgr); err != nil {
+			return err
+		}
+	} else {
+		setupLog.Info("ENABLE_REGISTRY is disabled, skipping MCPRegistry controller")
+	}
+
+	// Set up Virtual MCP controllers and webhooks
+	if enabledFeatures[featureVMCP] {
+		if err := setupAggregationControllers(mgr); err != nil {
+			return err
+		}
+	} else {
+		setupLog.Info("ENABLE_VMCP is disabled, skipping Virtual MCP controllers and webhooks")
+	}
+
+	//+kubebuilder:scaffold:builder
+	return nil
+}
+
+// setupServerControllers sets up server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, ToolConfig)
+func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 	// Set up field indexing for MCPServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
@@ -124,24 +200,46 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 			return []string{mcpServer.Spec.GroupRef}
 		},
 	); err != nil {
-		return fmt.Errorf("unable to create field index for spec.groupRef: %w", err)
+		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
 	}
 
-	// Create a shared platform detector for all controllers
-	sharedPlatformDetector := ctrlutil.NewSharedPlatformDetector()
+	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPRemoteProxy{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+			if mcpRemoteProxy.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpRemoteProxy.Spec.GroupRef}
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
+	}
+
+	// Set image validation mode based on whether registry is enabled
+	// If ENABLE_REGISTRY is enabled, enforce registry-based image validation
+	// Otherwise, allow all images
+	imageValidation := validation.ImageValidationAlwaysAllow
+	if enableRegistry {
+		imageValidation = validation.ImageValidationRegistryEnforcing
+	}
+
+	// Set up MCPServer controller
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
-		PlatformDetector: sharedPlatformDetector,
-		ImageValidation:  validation.ImageValidationAlwaysAllow,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		ImageValidation:  imageValidation,
 	}
-
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
 	}
 
-	// Register MCPToolConfig controller
+	// Set up MCPToolConfig controller
 	if err := (&controllers.ToolConfigReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -149,7 +247,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller MCPToolConfig: %w", err)
 	}
 
-	// Register MCPExternalAuthConfig controller
+	// Set up MCPExternalAuthConfig controller
 	if err := (&controllers.MCPExternalAuthConfigReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -157,7 +255,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller MCPExternalAuthConfig: %w", err)
 	}
 
-	// Register MCPRemoteProxy controller
+	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
@@ -166,13 +264,22 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
 
-	// Only register MCPRegistry controller if feature flag is enabled
-	rec.ImageValidation = validation.ImageValidationRegistryEnforcing
+	return nil
+}
 
+// setupRegistryController sets up the MCPRegistry controller
+func setupRegistryController(mgr ctrl.Manager) error {
 	if err := (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRegistry: %w", err)
 	}
+	return nil
+}
 
+// setupAggregationControllers sets up Virtual MCP-related controllers and webhooks
+// (MCPGroup, VirtualMCPServer, and their webhooks)
+// Note: This function assumes server controllers are enabled (enforced by dependency check)
+// The field index for MCPServer.Spec.GroupRef is created in setupServerControllers
+func setupAggregationControllers(mgr ctrl.Manager) error {
 	// Set up MCPGroup controller
 	if err := (&controllers.MCPGroupReconciler{
 		Client: mgr.GetClient(),
@@ -204,9 +311,31 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	if err := (&mcpv1alpha1.MCPExternalAuthConfig{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create webhook MCPExternalAuthConfig: %w", err)
 	}
-	//+kubebuilder:scaffold:builder
 
 	return nil
+}
+
+// isFeatureEnabled checks if a feature flag environment variable is enabled.
+// If the environment variable is not set, it returns the default value.
+// The environment variable is considered enabled if it's set to "true", "1", or "t" (case-insensitive).
+// Invalid values (e.g., "yes", "enabled") will log a warning and return the default value.
+func isFeatureEnabled(envVar string, defaultValue bool) bool {
+	value, found := os.LookupEnv(envVar)
+	if !found {
+		return defaultValue
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		setupLog.Info(
+			"Invalid boolean value for feature flag, using default",
+			"envVar", envVar,
+			"value", value,
+			"default", defaultValue,
+			"validValues", "true, false, 1, 0, t, f",
+		)
+		return defaultValue
+	}
+	return enabled
 }
 
 // getDefaultNamespaces returns a map of namespaces to cache.Config for the operator to watch.

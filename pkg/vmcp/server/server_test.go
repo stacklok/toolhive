@@ -77,7 +77,7 @@ func TestNew(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			require.NotNil(t, s)
 
@@ -101,9 +101,18 @@ func TestServer_Address(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "default configuration",
-			config:   &server.Config{},
+			name: "default host with explicit port",
+			config: &server.Config{
+				Port: 4483,
+			},
 			expected: "127.0.0.1:4483",
+		},
+		{
+			name: "port 0 for dynamic allocation",
+			config: &server.Config{
+				Port: 0,
+			},
+			expected: "127.0.0.1:0",
 		},
 		{
 			name: "custom host and port",
@@ -134,7 +143,7 @@ func TestServer_Address(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			addr := s.Address()
 			assert.Equal(t, tt.expected, addr)
@@ -156,7 +165,7 @@ func TestServer_Stop(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(context.Background(), &server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		s, err := server.New(context.Background(), &server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
@@ -187,6 +196,7 @@ func TestNew_WithAuditConfig(t *testing.T) {
 		name        string
 		auditConfig *audit.Config
 		wantErr     bool
+		errContains string
 	}{
 		{
 			name:        "nil audit config is valid",
@@ -210,6 +220,33 @@ func TestNew_WithAuditConfig(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "negative MaxDataSize is invalid",
+			auditConfig: &audit.Config{
+				Component:   "vmcp-server",
+				MaxDataSize: -100,
+			},
+			wantErr:     true,
+			errContains: "maxDataSize cannot be negative",
+		},
+		{
+			name: "invalid event type is rejected",
+			auditConfig: &audit.Config{
+				Component:  "vmcp-server",
+				EventTypes: []string{"invalid_event_type"},
+			},
+			wantErr:     true,
+			errContains: "unknown event type: invalid_event_type",
+		},
+		{
+			name: "invalid exclude event type is rejected",
+			auditConfig: &audit.Config{
+				Component:         "vmcp-server",
+				ExcludeEventTypes: []string{"bad_event"},
+			},
+			wantErr:     true,
+			errContains: "unknown exclude event type: bad_event",
+		},
 	}
 
 	for _, tt := range tests {
@@ -227,10 +264,13 @@ func TestNew_WithAuditConfig(t *testing.T) {
 				AuditConfig: tt.auditConfig,
 			}
 
-			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
 				return
 			}
 

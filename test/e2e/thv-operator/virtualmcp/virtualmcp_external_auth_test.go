@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -24,12 +24,16 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		vmcpServerName         = "test-vmcp-unauthenticated"
 		backendName            = "backend-fetch-unauthenticated"
 		externalAuthConfigName = "test-unauthenticated-auth-config"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 3 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
+		mockHTTPServer         *MockHTTPServerInfo
 	)
 
 	BeforeAll(func() {
+		By("Creating mock HTTP server for fetch tool testing")
+		mockHTTPServer = CreateMockHTTPServer(ctx, k8sClient, "mock-http-unauth", testNamespace, timeout, pollingInterval)
+
 		By("Creating MCPExternalAuthConfig with unauthenticated type")
 		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -90,9 +94,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -105,10 +107,15 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to stabilize")
+		time.Sleep(5 * time.Second)
 	})
 
 	AfterAll(func() {
@@ -125,21 +132,19 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: externalAuthConfigName, Namespace: testNamespace},
 		})
+
+		By("Cleaning up mock HTTP server")
+		CleanupMockHTTPServer(ctx, k8sClient, "mock-http-unauth", testNamespace)
 	})
 
 	Context("when using unauthenticated backend auth", func() {
-		It("should discover unauthenticated auth from backend MCPServer", func() {
+		It("should discover, validate, and successfully use unauthenticated backend auth", func() {
 			By("Verifying VirtualMCPServer discovered unauthenticated auth")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("discovered"))
-
-			// Check that backend was discovered with auth config
 			Expect(vmcpServer.Status.DiscoveredBackends).ToNot(BeEmpty())
+
 			found := false
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				if backend.Name == backendName {
@@ -149,40 +154,28 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				}
 			}
 			Expect(found).To(BeTrue(), "Backend should be discovered with auth config reference")
-		})
 
-		It("should successfully connect and call tools with unauthenticated backend", func() {
-			By("Creating MCP client")
+			By("Validating MCPExternalAuthConfig")
+			authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: externalAuthConfigName, Namespace: testNamespace}, authConfig)).To(Succeed())
+			Expect(authConfig.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeUnauthenticated))
+			Expect(authConfig.Spec.TokenExchange).To(BeNil())
+			Expect(authConfig.Spec.HeaderInjection).To(BeNil())
+
+			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute, WithHttpLoggerOption())
 			defer mcpClient.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			By("Starting MCP client")
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Initializing MCP session")
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Listing tools from unauthenticated backend")
+			By("Listing and calling tools")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
-			By("Calling a tool from unauthenticated backend")
-			// Find the fetch tool
 			var fetchTool *mcp.Tool
 			for _, tool := range tools.Tools {
 				if tool.Name == fetchToolName || tool.Name == "backend-fetch-unauthenticated_fetch" {
@@ -193,29 +186,13 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 			}
 			Expect(fetchTool).ToNot(BeNil(), "fetch tool should be available")
 
-			// Call the fetch tool
 			callRequest := mcp.CallToolRequest{}
 			callRequest.Params.Name = fetchTool.Name
-			callRequest.Params.Arguments = map[string]interface{}{
-				"url": "https://example.com",
-			}
+			callRequest.Params.Arguments = map[string]interface{}{"url": mockHTTPServer.URL}
 
-			result, err := mcpClient.CallTool(ctx, callRequest)
+			result, err := mcpClient.CallTool(testCtx, callRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.Content).ToNot(BeEmpty())
-		})
-
-		It("should validate MCPExternalAuthConfig with unauthenticated type", func() {
-			By("Verifying MCPExternalAuthConfig exists and is valid")
-			authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      externalAuthConfigName,
-				Namespace: testNamespace,
-			}, authConfig)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(authConfig.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeUnauthenticated))
-			Expect(authConfig.Spec.TokenExchange).To(BeNil())
-			Expect(authConfig.Spec.HeaderInjection).To(BeNil())
 		})
 	})
 })
@@ -227,8 +204,8 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 		vmcpServerName         = "test-vmcp-inline-unauth"
 		backendName            = "backend-inline-unauth"
 		externalAuthConfigName = "test-inline-unauth-config"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 3 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 
@@ -288,9 +265,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -312,10 +287,15 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to stabilize")
+		time.Sleep(5 * time.Second)
 	})
 
 	AfterAll(func() {
@@ -335,50 +315,27 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 	})
 
 	Context("when using inline unauthenticated backend auth", func() {
-		It("should configure inline unauthenticated auth for specific backend", func() {
+		It("should configure and successfully use inline unauthenticated backend auth", func() {
 			By("Verifying VirtualMCPServer has inline auth configured")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
-		})
 
-		It("should successfully proxy tool calls with inline unauthenticated auth", func() {
-			By("Creating MCP client")
+			By("Creating MCP client and listing tools")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			By("Starting and initializing MCP client")
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Listing and calling tools through inline unauthenticated proxy")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
-			// Verify tools are accessible
 			var fetchTool *mcp.Tool
 			for _, tool := range tools.Tools {
 				if tool.Name == fetchToolName || tool.Name == "backend-inline-unauth_fetch" {
@@ -400,12 +357,16 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		backendName            = "backend-fetch-headerinjection"
 		externalAuthConfigName = "test-headerinjection-auth-config"
 		secretName             = "test-headerinjection-secret"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 3 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
+		mockHTTPServer         *MockHTTPServerInfo
 	)
 
 	BeforeAll(func() {
+		By("Creating mock HTTP server for fetch tool testing")
+		mockHTTPServer = CreateMockHTTPServer(ctx, k8sClient, "mock-http-header", testNamespace, timeout, pollingInterval)
+
 		By("Creating Secret for header injection")
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -484,9 +445,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -499,10 +458,15 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to stabilize")
+		time.Sleep(5 * time.Second)
 	})
 
 	AfterAll(func() {
@@ -522,21 +486,18 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNamespace},
 		})
+		By("Cleaning up mock HTTP server")
+		CleanupMockHTTPServer(ctx, k8sClient, "mock-http-header", testNamespace)
 	})
 
 	Context("when using headerInjection backend auth", func() {
-		It("should discover headerInjection auth from backend MCPServer", func() {
+		It("should discover, validate, and successfully use headerInjection backend auth", func() {
 			By("Verifying VirtualMCPServer discovered headerInjection auth")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("discovered"))
-
-			// Check that backend was discovered with auth config
 			Expect(vmcpServer.Status.DiscoveredBackends).ToNot(BeEmpty())
+
 			found := false
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				if backend.Name == backendName {
@@ -546,41 +507,43 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				}
 			}
 			Expect(found).To(BeTrue(), "Backend should be discovered with auth config reference")
-		})
 
-		It("should successfully connect and call tools with headerInjection backend", func() {
-			By("Creating MCP client")
+			By("Validating MCPExternalAuthConfig")
+			authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: externalAuthConfigName, Namespace: testNamespace}, authConfig)).To(Succeed())
+			Expect(authConfig.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeHeaderInjection))
+			Expect(authConfig.Spec.TokenExchange).To(BeNil())
+			Expect(authConfig.Spec.HeaderInjection).ToNot(BeNil())
+			Expect(authConfig.Spec.HeaderInjection.HeaderName).To(Equal("X-API-Key"))
+			Expect(authConfig.Spec.HeaderInjection.ValueSecretRef.Name).To(Equal(secretName))
+			Expect(authConfig.Spec.HeaderInjection.ValueSecretRef.Key).To(Equal("api-key"))
+
+			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			By("Starting MCP client")
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Initializing MCP session")
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Listing tools from headerInjection backend")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
-
-			By("Calling a tool from headerInjection backend")
-			// Find the fetch tool
+			By("Listing and calling tools")
+			var tools *mcp.ListToolsResult
 			var fetchTool *mcp.Tool
+
+			// Retry ListTools to handle transient connection issues
+			Eventually(func() error {
+				listRequest := mcp.ListToolsRequest{}
+				var err error
+				tools, err = mcpClient.ListTools(testCtx, listRequest)
+				if err != nil {
+					return fmt.Errorf("failed to list tools: %w", err)
+				}
+				if len(tools.Tools) == 0 {
+					return fmt.Errorf("no tools returned")
+				}
+				return nil
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Should be able to list tools")
+
+			// Find the fetch tool
 			for _, tool := range tools.Tools {
 				if tool.Name == fetchToolName || tool.Name == "backend-fetch-headerinjection_fetch" {
 					t := tool
@@ -590,32 +553,25 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 			}
 			Expect(fetchTool).ToNot(BeNil(), "fetch tool should be available")
 
-			// Call the fetch tool
-			callRequest := mcp.CallToolRequest{}
-			callRequest.Params.Name = fetchTool.Name
-			callRequest.Params.Arguments = map[string]interface{}{
-				"url": "https://example.com",
-			}
+			// Retry CallTool to handle transient connection issues
+			var result *mcp.CallToolResult
+			Eventually(func() error {
+				callRequest := mcp.CallToolRequest{}
+				callRequest.Params.Name = fetchTool.Name
+				callRequest.Params.Arguments = map[string]interface{}{"url": mockHTTPServer.URL}
 
-			result, err := mcpClient.CallTool(ctx, callRequest)
-			Expect(err).ToNot(HaveOccurred())
+				var err error
+				result, err = mcpClient.CallTool(testCtx, callRequest)
+				if err != nil {
+					return fmt.Errorf("failed to call tool: %w", err)
+				}
+				if len(result.Content) == 0 {
+					return fmt.Errorf("tool returned empty content")
+				}
+				return nil
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Should be able to call tool")
+
 			Expect(result.Content).ToNot(BeEmpty())
-		})
-
-		It("should validate MCPExternalAuthConfig with headerInjection type", func() {
-			By("Verifying MCPExternalAuthConfig exists and is valid")
-			authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      externalAuthConfigName,
-				Namespace: testNamespace,
-			}, authConfig)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(authConfig.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeHeaderInjection))
-			Expect(authConfig.Spec.TokenExchange).To(BeNil())
-			Expect(authConfig.Spec.HeaderInjection).ToNot(BeNil())
-			Expect(authConfig.Spec.HeaderInjection.HeaderName).To(Equal("X-API-Key"))
-			Expect(authConfig.Spec.HeaderInjection.ValueSecretRef.Name).To(Equal(secretName))
-			Expect(authConfig.Spec.HeaderInjection.ValueSecretRef.Key).To(Equal("api-key"))
 		})
 	})
 })
@@ -628,8 +584,8 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 		backendName            = "backend-inline-headerinjection"
 		externalAuthConfigName = "test-inline-headerinjection-config"
 		secretName             = "test-inline-headerinjection-secret"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 3 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 
@@ -708,9 +664,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
+				Config: vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -732,10 +686,15 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to stabilize")
+		time.Sleep(5 * time.Second)
 	})
 
 	AfterAll(func() {
@@ -758,50 +717,27 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 	})
 
 	Context("when using inline headerInjection backend auth", func() {
-		It("should configure inline headerInjection auth for specific backend", func() {
+		It("should configure and successfully use inline headerInjection backend auth", func() {
 			By("Verifying VirtualMCPServer has inline auth configured")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
-		})
 
-		It("should successfully proxy tool calls with inline headerInjection auth", func() {
-			By("Creating MCP client")
+			By("Creating MCP client and listing tools")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			By("Starting and initializing MCP client")
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Listing and calling tools through inline headerInjection proxy")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
-			// Verify tools are accessible
 			var fetchTool *mcp.Tool
 			for _, tool := range tools.Tools {
 				if tool.Name == fetchToolName || tool.Name == "backend-inline-headerinjection_fetch" {

@@ -5,29 +5,41 @@ fullnameOverride: "toolhive-operator"
 
 # -- All values for the operator deployment and associated resources
 operator:
-  # Whether to enable experimental features
+  # Feature flags to enable/disable controller groups
   features:
+    # -- Enable experimental features
     experimental: false
+    # -- Enable server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig).
+    # This automatically sets ENABLE_SERVER environment variable.
+    server: true
+    # -- Enable registry controller (MCPRegistry).
+    # This automatically sets ENABLE_REGISTRY environment variable.
+    registry: true
+    # -- Enable Virtual MCP aggregation features (VirtualMCPServer, MCPGroup controllers and webhooks).
+    # Set to false to disable Virtual MCP controllers when Virtual MCP CRDs are not installed.
+    # This automatically sets ENABLE_VMCP environment variable.
+    # Requires server to be enabled (server: true).
+    virtualMCP: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.6.11
+  image: ghcr.io/stacklok/toolhive/operator:v0.6.16
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.11
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.16
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.6.11
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.6.16
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
-  # -- Environment variables to set in the operator container
+# -- Environment variables to set in the operator container
   env: {}
 
   # -- List of ports to expose from the operator container
@@ -194,7 +206,7 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:v0.4.3"
+  image: "ghcr.io/stacklok/thv-registry-api:v0.4.7"
   # -- Service account configuration for the registry API
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials

@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
@@ -46,7 +47,7 @@ func TestGetWorkload(t *testing.T) {
 					Return(core.Workload{}, runtime.ErrWorkloadNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Workload not found",
+			expectedBody:   "workload not found",
 		},
 		{
 			name:         "invalid workload name",
@@ -56,7 +57,7 @@ func TestGetWorkload(t *testing.T) {
 					Return(core.Workload{}, wt.ErrInvalidWorkloadName)
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid workload name",
+			expectedBody:   "invalid workload name",
 		},
 	}
 
@@ -85,7 +86,7 @@ func TestGetWorkload(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 			w := httptest.NewRecorder()
-			routes.getWorkload(w, req)
+			apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
@@ -111,7 +112,7 @@ func TestCreateWorkload(t *testing.T) {
 			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Failed to decode request",
+			expectedBody:   "failed to decode request",
 		},
 		{
 			name:        "workload already exists",
@@ -120,13 +121,14 @@ func TestCreateWorkload(t *testing.T) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "existing-workload").Return(true, nil)
 			},
 			expectedStatus: http.StatusConflict,
-			expectedBody:   "Workload with name existing-workload already exists",
+			expectedBody:   "workload with name existing-workload already exists",
 		},
 		{
 			name:        "invalid proxy mode",
 			requestBody: `{"name": "test-workload", "image": "test-image", "proxy_mode": "invalid"}`,
-			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil).AnyTimes()
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid proxy_mode",
@@ -231,7 +233,7 @@ func TestCreateWorkload(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			w := httptest.NewRecorder()
-			routes.createWorkload(w, req)
+			apierrors.ErrorHandler(routes.createWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
@@ -259,7 +261,7 @@ func TestUpdateWorkload(t *testing.T) {
 			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid JSON",
+			expectedBody:   "invalid JSON",
 		},
 		{
 			name:         "workload not found",
@@ -267,10 +269,10 @@ func TestUpdateWorkload(t *testing.T) {
 			requestBody:  `{"image": "test-image"}`,
 			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "nonexistent").
-					Return(core.Workload{}, fmt.Errorf("workload not found"))
+					Return(core.Workload{}, runtime.ErrWorkloadNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Workload not found",
+			expectedBody:   "workload not found",
 		},
 		{
 			name:         "stop workload fails",
@@ -284,7 +286,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(nil, fmt.Errorf("stop failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "failed to update workload: stop failed",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:         "delete workload fails",
@@ -298,7 +300,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(nil, fmt.Errorf("delete failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "failed to update workload: delete failed",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:         "with tool filters",
@@ -427,10 +429,158 @@ func TestUpdateWorkload(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 			w := httptest.NewRecorder()
-			routes.updateWorkload(w, req)
+			apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
+		})
+	}
+}
+
+// TestUpdateWorkload_PortReuse tests the port reuse logic when editing workloads
+func TestUpdateWorkload_PortReuse(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	tests := []struct {
+		name           string
+		workloadName   string
+		requestBody    string
+		existingPort   int
+		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		expectedStatus int
+		expectedBody   string
+		description    string
+	}{
+		{
+			name:         "Edit with port=0 should reuse existing port",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 0}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should be reused from existing workload")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When proxy_port is 0, the existing port should be reused",
+		},
+		{
+			name:         "Edit with explicit port should use that port",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 9090}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 9090, runConfig.Port, "Port should be set to explicitly requested port")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When an explicit port is provided, it should be used instead of reusing",
+		},
+		{
+			name:         "Edit with same port should skip validation",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image", "proxy_port": 8080}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should remain the same")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When reusing the same port, validation should be skipped",
+		},
+		{
+			name:         "Edit with no port specified should default to existing",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			existingPort: 8080,
+			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				t.Helper()
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Equal(t, 8080, runConfig.Port, "Port should default to existing port")
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+			description:    "When no port is specified in request, existing port should be reused",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+
+			mockRetriever := makeMockRetriever(t,
+				"test-image",
+				"test-image",
+				&regtypes.ImageMetadata{Image: "test-image"},
+				nil,
+			)
+
+			routes := &WorkloadRoutes{
+				workloadManager:  mockWorkloadManager,
+				containerRuntime: mockRuntime,
+				groupManager:     mockGroupManager,
+				debugMode:        false,
+				workloadService: &WorkloadService{
+					groupManager:     mockGroupManager,
+					workloadManager:  mockWorkloadManager,
+					containerRuntime: mockRuntime,
+					imageRetriever:   mockRetriever,
+					appConfig:        &config.Config{},
+				},
+			}
+
+			req := httptest.NewRequest("POST", "/api/v1beta/workloads/"+tt.workloadName+"/edit",
+				strings.NewReader(tt.requestBody))
+			req.Header.Set("Content-Type", "application/json")
+
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("name", tt.workloadName)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			w := httptest.NewRecorder()
+			apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
+
+			assert.Equal(t, tt.expectedStatus, w.Code, tt.description)
+			assert.Contains(t, w.Body.String(), tt.expectedBody, tt.description)
 		})
 	}
 }

@@ -8,6 +8,13 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
+// Incoming auth type constants.
+const (
+	IncomingAuthTypeOIDC      = "oidc"
+	IncomingAuthTypeLocal     = "local"
+	IncomingAuthTypeAnonymous = "anonymous"
+)
+
 // DefaultValidator implements comprehensive configuration validation.
 type DefaultValidator struct{}
 
@@ -54,6 +61,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Validate composite tool references
+	if err := v.validateCompositeToolRefs(cfg.CompositeToolRefs); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	if len(errors) > 0 {
 		return fmt.Errorf("%w:\n  - %s", vmcp.ErrInvalidConfig, strings.Join(errors, "\n  - "))
 	}
@@ -75,27 +87,27 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 
 func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error {
 	if auth == nil {
-		return fmt.Errorf("incoming_auth is required")
+		return fmt.Errorf("incomingAuth is required")
 	}
 
 	// Validate auth type
-	validTypes := []string{"oidc", "local", "anonymous"}
+	validTypes := []string{IncomingAuthTypeOIDC, IncomingAuthTypeLocal, IncomingAuthTypeAnonymous}
 	if !contains(validTypes, auth.Type) {
-		return fmt.Errorf("incoming_auth.type must be one of: %s", strings.Join(validTypes, ", "))
+		return fmt.Errorf("incomingAuth.type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
 	// Validate OIDC configuration
-	if auth.Type == "oidc" {
+	if auth.Type == IncomingAuthTypeOIDC {
 		if auth.OIDC == nil {
-			return fmt.Errorf("incoming_auth.oidc is required when type is 'oidc'")
+			return fmt.Errorf("incomingAuth.oidc is required when type is 'oidc'")
 		}
 
 		if auth.OIDC.Issuer == "" {
-			return fmt.Errorf("incoming_auth.oidc.issuer is required")
+			return fmt.Errorf("incomingAuth.oidc.issuer is required")
 		}
 
 		if auth.OIDC.Audience == "" {
-			return fmt.Errorf("incoming_auth.oidc.audience is required")
+			return fmt.Errorf("incomingAuth.oidc.audience is required")
 		}
 
 		// ClientID is optional - only required for specific flows:
@@ -112,7 +124,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 	// Validate authorization configuration
 	if auth.Authz != nil {
 		if err := v.validateAuthz(auth.Authz); err != nil {
-			return fmt.Errorf("incoming_auth.authz: %w", err)
+			return fmt.Errorf("incomingAuth.authz: %w", err)
 		}
 	}
 
@@ -134,26 +146,26 @@ func (*DefaultValidator) validateAuthz(authz *AuthzConfig) error {
 
 func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error {
 	if auth == nil {
-		return fmt.Errorf("outgoing_auth is required")
+		return fmt.Errorf("outgoingAuth is required")
 	}
 
 	// Validate source
 	validSources := []string{"inline", "discovered"}
 	if !contains(validSources, auth.Source) {
-		return fmt.Errorf("outgoing_auth.source must be one of: %s", strings.Join(validSources, ", "))
+		return fmt.Errorf("outgoingAuth.source must be one of: %s", strings.Join(validSources, ", "))
 	}
 
 	// Validate default strategy
 	if auth.Default != nil {
 		if err := v.validateBackendAuthStrategy("default", auth.Default); err != nil {
-			return fmt.Errorf("outgoing_auth.default: %w", err)
+			return fmt.Errorf("outgoingAuth.default: %w", err)
 		}
 	}
 
 	// Validate per-backend strategies
 	for backendName, strategy := range auth.Backends {
 		if err := v.validateBackendAuthStrategy(backendName, strategy); err != nil {
-			return fmt.Errorf("outgoing_auth.backends.%s: %w", backendName, err)
+			return fmt.Errorf("outgoingAuth.backends.%s: %w", backendName, err)
 		}
 	}
 
@@ -179,24 +191,24 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 	// Validate type-specific requirements
 	switch strategy.Type {
 	case authtypes.StrategyTypeTokenExchange:
-		// Token exchange requires TokenExchange config with token_url
+		// Token exchange requires TokenExchange config with tokenUrl
 		if strategy.TokenExchange == nil {
-			return fmt.Errorf("token_exchange requires TokenExchange configuration")
+			return fmt.Errorf("tokenExchange requires TokenExchange configuration")
 		}
 		if strategy.TokenExchange.TokenURL == "" {
-			return fmt.Errorf("token_exchange requires token_url field")
+			return fmt.Errorf("tokenExchange requires tokenUrl field")
 		}
 
 	case authtypes.StrategyTypeHeaderInjection:
 		// Header injection requires HeaderInjection config with header name and value
 		if strategy.HeaderInjection == nil {
-			return fmt.Errorf("header_injection requires HeaderInjection configuration")
+			return fmt.Errorf("headerInjection requires HeaderInjection configuration")
 		}
 		if strategy.HeaderInjection.HeaderName == "" {
-			return fmt.Errorf("header_injection requires header_name field")
+			return fmt.Errorf("headerInjection requires headerName field")
 		}
 		if strategy.HeaderInjection.HeaderValue == "" {
-			return fmt.Errorf("header_injection requires header_value field")
+			return fmt.Errorf("headerInjection requires headerValue field")
 		}
 	}
 
@@ -215,12 +227,12 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		vmcp.ConflictStrategyManual,
 	}
 	if !containsStrategy(validStrategies, agg.ConflictResolution) {
-		return fmt.Errorf("conflict_resolution must be one of: prefix, priority, manual")
+		return fmt.Errorf("conflictResolution must be one of: prefix, priority, manual")
 	}
 
 	// Validate strategy-specific configuration
 	if agg.ConflictResolutionConfig == nil {
-		return fmt.Errorf("conflict_resolution_config is required")
+		return fmt.Errorf("conflictResolutionConfig is required")
 	}
 
 	if err := v.validateConflictStrategy(agg); err != nil {
@@ -235,12 +247,12 @@ func (*DefaultValidator) validateConflictStrategy(agg *AggregationConfig) error 
 	switch agg.ConflictResolution {
 	case vmcp.ConflictStrategyPrefix:
 		if agg.ConflictResolutionConfig.PrefixFormat == "" {
-			return fmt.Errorf("prefix_format is required for prefix strategy")
+			return fmt.Errorf("prefixFormat is required for prefix strategy")
 		}
 
 	case vmcp.ConflictStrategyPriority:
 		if len(agg.ConflictResolutionConfig.PriorityOrder) == 0 {
-			return fmt.Errorf("priority_order is required for priority strategy")
+			return fmt.Errorf("priorityOrder is required for priority strategy")
 		}
 
 	case vmcp.ConflictStrategyManual:
@@ -297,7 +309,7 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 
 		for workload, timeout := range ops.Timeouts.PerWorkload {
 			if timeout <= 0 {
-				return fmt.Errorf("operational.timeouts.per_workload.%s must be positive", workload)
+				return fmt.Errorf("operational.timeouts.perWorkload.%s must be positive", workload)
 			}
 		}
 	}
@@ -305,7 +317,7 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 	// Validate failure handling
 	if ops.FailureHandling != nil {
 		if err := v.validateFailureHandling(ops.FailureHandling); err != nil {
-			return fmt.Errorf("operational.failure_handling: %w", err)
+			return fmt.Errorf("operational.failureHandling: %w", err)
 		}
 	}
 
@@ -314,88 +326,49 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 
 func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) error {
 	if fh.HealthCheckInterval <= 0 {
-		return fmt.Errorf("health_check_interval must be positive")
+		return fmt.Errorf("healthCheckInterval must be positive")
 	}
 
 	if fh.UnhealthyThreshold <= 0 {
-		return fmt.Errorf("unhealthy_threshold must be positive")
+		return fmt.Errorf("unhealthyThreshold must be positive")
 	}
 
-	validModes := []string{"fail", "best_effort"}
+	validModes := []string{"fail", "bestEffort"}
 	if !contains(validModes, fh.PartialFailureMode) {
-		return fmt.Errorf("partial_failure_mode must be one of: %s", strings.Join(validModes, ", "))
+		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
 	}
 
 	// Validate circuit breaker
 	if fh.CircuitBreaker != nil && fh.CircuitBreaker.Enabled {
 		if fh.CircuitBreaker.FailureThreshold <= 0 {
-			return fmt.Errorf("circuit_breaker.failure_threshold must be positive")
+			return fmt.Errorf("circuitBreaker.failureThreshold must be positive")
 		}
 		if fh.CircuitBreaker.Timeout <= 0 {
-			return fmt.Errorf("circuit_breaker.timeout must be positive")
+			return fmt.Errorf("circuitBreaker.timeout must be positive")
 		}
 	}
 
 	return nil
 }
 
-func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) error {
+func (*DefaultValidator) validateCompositeTools(tools []CompositeToolConfig) error {
 	if len(tools) == 0 {
 		return nil // Composite tools are optional
 	}
 
 	toolNames := make(map[string]bool)
 
-	for i, tool := range tools {
-		// Validate basic fields
-		if tool.Name == "" {
-			return fmt.Errorf("composite_tools[%d].name is required", i)
-		}
+	for i := range tools {
+		tool := &tools[i]
 
+		// Check for duplicate tool names
 		if toolNames[tool.Name] {
 			return fmt.Errorf("duplicate composite tool name: %s", tool.Name)
 		}
 		toolNames[tool.Name] = true
 
-		if tool.Description == "" {
-			return fmt.Errorf("composite_tools[%d].description is required", i)
-		}
-
-		// Timeout can be 0 (uses default) or positive (explicit timeout)
-		if tool.Timeout < 0 {
-			return fmt.Errorf("composite_tools[%d].timeout cannot be negative", i)
-		}
-
-		// Validate steps
-		if len(tool.Steps) == 0 {
-			return fmt.Errorf("composite_tools[%d] must have at least one step", i)
-		}
-
-		if err := v.validateWorkflowSteps(tool.Name, tool.Steps); err != nil {
-			return fmt.Errorf("composite_tools[%d]: %w", i, err)
-		}
-	}
-
-	return nil
-}
-
-func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []*WorkflowStepConfig) error {
-	stepIDs := make(map[string]bool)
-
-	for i, step := range steps {
-		if err := v.validateStepBasics(step, i, stepIDs); err != nil {
-			return err
-		}
-
-		if err := v.validateStepType(step, i); err != nil {
-			return err
-		}
-
-		if err := v.validateStepDependencies(step, i, stepIDs); err != nil {
-			return err
-		}
-
-		if err := v.validateStepErrorHandling(step, i); err != nil {
+		// Use shared validation
+		if err := ValidateCompositeToolConfig(fmt.Sprintf("compositeTools[%d]", i), tool); err != nil {
 			return err
 		}
 	}
@@ -403,85 +376,31 @@ func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []*WorkflowStep
 	return nil
 }
 
-// validateStepBasics validates basic step requirements (ID uniqueness)
-func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
-	if step.ID == "" {
-		return fmt.Errorf("step[%d].id is required", index)
+func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) error {
+	if len(refs) == 0 {
+		return nil // Composite tool references are optional
 	}
 
-	if stepIDs[step.ID] {
-		return fmt.Errorf("duplicate step ID: %s", step.ID)
-	}
-	stepIDs[step.ID] = true
+	refNames := make(map[string]bool)
 
-	return nil
-}
+	for i := range refs {
+		ref := &refs[i]
 
-// validateStepType validates step type and type-specific requirements.
-// The type should have been inferred during loading if the 'tool' field is present.
-// Elicitation steps must always specify type explicitly for clarity.
-func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
-	// Check for ambiguous configuration: both tool and message fields present
-	if step.Tool != "" && step.Message != "" {
-		return fmt.Errorf("step[%d] cannot have both tool and message fields - use explicit type to clarify intent", index)
-	}
-
-	// Type is required at this point (should have been inferred during loading)
-	if step.Type == "" {
-		return fmt.Errorf("step[%d].type is required (or omit for tool steps with 'tool' field present)", index)
-	}
-
-	validTypes := []string{"tool", "elicitation"}
-	if !contains(validTypes, step.Type) {
-		return fmt.Errorf("step[%d].type must be one of: %s", index, strings.Join(validTypes, ", "))
-	}
-
-	switch step.Type {
-	case "tool":
-		if step.Tool == "" {
-			return fmt.Errorf("step[%d].tool is required for tool steps", index)
+		if ref.Name == "" {
+			return fmt.Errorf("compositeToolRefs[%d].name is required", i)
 		}
 
-	case "elicitation":
-		if step.Message == "" {
-			return fmt.Errorf("step[%d].message is required for elicitation steps", index)
+		if refNames[ref.Name] {
+			return fmt.Errorf("duplicate composite tool reference: %s", ref.Name)
 		}
-		if len(step.Schema) == 0 {
-			return fmt.Errorf("step[%d].schema is required for elicitation steps", index)
-		}
-		// Note: timeout validation is optional - defaults are set during loading
+		refNames[ref.Name] = true
 	}
 
 	return nil
 }
 
-// validateStepDependencies validates step dependency references
-func (*DefaultValidator) validateStepDependencies(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
-	for _, depID := range step.DependsOn {
-		if !stepIDs[depID] {
-			return fmt.Errorf("step[%d].depends_on references non-existent step: %s", index, depID)
-		}
-	}
-	return nil
-}
-
-// validateStepErrorHandling validates step error handling configuration
-func (*DefaultValidator) validateStepErrorHandling(step *WorkflowStepConfig, index int) error {
-	if step.OnError == nil {
-		return nil
-	}
-
-	validActions := []string{"abort", "continue", "retry"}
-	if !contains(validActions, step.OnError.Action) {
-		return fmt.Errorf("step[%d].on_error.action must be one of: %s", index, strings.Join(validActions, ", "))
-	}
-
-	if step.OnError.Action == "retry" && step.OnError.RetryCount <= 0 {
-		return fmt.Errorf("step[%d].on_error.retry_count must be positive for retry action", index)
-	}
-
-	return nil
-}
+// Note: Workflow step validation is now handled by the shared ValidateWorkflowSteps function
+// in composite_validation.go, which is called by ValidateCompositeToolConfig.
 
 // Helper functions
 

@@ -116,6 +116,12 @@ spec:
                 required:
                 - type
                 type: object
+              endpointPrefix:
+                description: |-
+                  EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+                  This is used to handle path-based ingress routing scenarios where the ingress
+                  strips a path prefix before forwarding to the backend.
+                type: string
               externalAuthConfigRef:
                 description: |-
                   ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
@@ -128,6 +134,11 @@ spec:
                 required:
                 - name
                 type: object
+              groupRef:
+                description: |-
+                  GroupRef is the name of the MCPGroup this proxy belongs to
+                  Must reference an existing MCPGroup in the same namespace
+                type: string
               oidcConfig:
                 description: |-
                   OIDCConfig defines OIDC authentication configuration for the proxy
@@ -214,6 +225,13 @@ spec:
                           ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                           Use with caution - only enable for trusted internal IDPs or testing
                         type: boolean
+                      scopes:
+                        description: |-
+                          Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+                          If empty, defaults to ["openid"]
+                        items:
+                          type: string
+                        type: array
                       thvCABundlePath:
                         description: |-
                           ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests

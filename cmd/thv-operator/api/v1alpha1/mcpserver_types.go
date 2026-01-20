@@ -174,6 +174,12 @@ type MCPServerSpec struct {
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios where the ingress
+	// strips a path prefix before forwarding to the backend.
+	// +optional
+	EndpointPrefix string `json:"endpointPrefix,omitempty"`
+
 	// GroupRef is the name of the MCPGroup this server belongs to
 	// Must reference an existing MCPGroup in the same namespace
 	// +optional
@@ -517,6 +523,11 @@ type InlineOIDCConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
+
+	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+	// If empty, defaults to ["openid"]
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

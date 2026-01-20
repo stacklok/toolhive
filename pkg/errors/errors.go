@@ -1,211 +1,62 @@
-// Package errors provides error types and utilities for the toolhive application.
+// Package errors provides error types with HTTP status codes for API error handling.
 package errors
 
 import (
-	"fmt"
+	"errors"
+	"net/http"
 )
 
-// Error types
-const (
-	// ErrInvalidArgument is returned when an invalid argument is provided
-	ErrInvalidArgument = "invalid_argument"
-
-	// ErrContainerRuntime is returned when there is an error with the container runtime
-	ErrContainerRuntime = "container_runtime"
-
-	// ErrContainerNotFound is returned when a container is not found
-	ErrContainerNotFound = "container_not_found"
-
-	// ErrContainerAlreadyExists is returned when a container already exists
-	ErrContainerAlreadyExists = "container_already_exists"
-
-	// ErrContainerNotRunning is returned when a container is not running
-	ErrContainerNotRunning = "container_not_running"
-
-	// ErrContainerAlreadyRunning is returned when a container is already running
-	ErrContainerAlreadyRunning = "container_already_running"
-
-	// ErrRunConfigNotFound is returned when a run configuration is not found
-	ErrRunConfigNotFound = "run_config_not_found"
-
-	// ErrGroupAlreadyExists is returned when a group already exists
-	ErrGroupAlreadyExists = "group_already_exists"
-
-	// ErrGroupNotFound is returned when a group is not found
-	ErrGroupNotFound = "group_not_found"
-
-	// ErrTransport is returned when there is an error with the transport
-	ErrTransport = "transport"
-
-	// ErrPermissions is returned when there is an error with permissions
-	ErrPermissions = "permissions"
-
-	// ErrInternal is returned when there is an internal error
-	ErrInternal = "internal"
-)
-
-// Error represents an error in the application
-type Error struct {
-	// Type is the error type
-	Type string
-
-	// Message is the error message
-	Message string
-
-	// Cause is the underlying error
-	Cause error
+// CodedError wraps an error with an HTTP status code.
+// This allows errors to carry their intended HTTP response code through the call stack,
+// enabling centralized error handling in API handlers.
+type CodedError struct {
+	err  error
+	code int
 }
 
-// Error returns the error message
-func (e *Error) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("%s: %s: %s", e.Type, e.Message, e.Cause)
+// Error implements the error interface.
+func (e *CodedError) Error() string {
+	return e.err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is() and errors.As() compatibility.
+func (e *CodedError) Unwrap() error {
+	return e.err
+}
+
+// HTTPCode returns the HTTP status code associated with this error.
+func (e *CodedError) HTTPCode() int {
+	return e.code
+}
+
+// WithCode wraps an error with an HTTP status code.
+// The returned error implements Unwrap() for use with errors.Is() and errors.As().
+// If err is nil, WithCode returns nil.
+func WithCode(err error, code int) error {
+	if err == nil {
+		return nil
 	}
-	return fmt.Sprintf("%s: %s", e.Type, e.Message)
+	return &CodedError{err: err, code: code}
 }
 
-// Unwrap returns the underlying error
-func (e *Error) Unwrap() error {
-	return e.Cause
-}
-
-// NewError creates a new error
-func NewError(errorType, message string, cause error) *Error {
-	return &Error{
-		Type:    errorType,
-		Message: message,
-		Cause:   cause,
+// Code extracts the HTTP status code from an error.
+// It unwraps the error chain looking for a CodedError.
+// If no CodedError is found, it returns http.StatusInternalServerError (500).
+func Code(err error) int {
+	if err == nil {
+		return http.StatusOK
 	}
+
+	var coded *CodedError
+	if errors.As(err, &coded) {
+		return coded.code
+	}
+
+	return http.StatusInternalServerError
 }
 
-// NewInvalidArgumentError creates a new invalid argument error
-func NewInvalidArgumentError(message string, cause error) *Error {
-	return NewError(ErrInvalidArgument, message, cause)
-}
-
-// NewContainerRuntimeError creates a new container runtime error
-func NewContainerRuntimeError(message string, cause error) *Error {
-	return NewError(ErrContainerRuntime, message, cause)
-}
-
-// NewContainerNotFoundError creates a new container not found error
-func NewContainerNotFoundError(message string, cause error) *Error {
-	return NewError(ErrContainerNotFound, message, cause)
-}
-
-// NewContainerAlreadyExistsError creates a new container already exists error
-func NewContainerAlreadyExistsError(message string, cause error) *Error {
-	return NewError(ErrContainerAlreadyExists, message, cause)
-}
-
-// NewContainerNotRunningError creates a new container not running error
-func NewContainerNotRunningError(message string, cause error) *Error {
-	return NewError(ErrContainerNotRunning, message, cause)
-}
-
-// NewContainerAlreadyRunningError creates a new container already running error
-func NewContainerAlreadyRunningError(message string, cause error) *Error {
-	return NewError(ErrContainerAlreadyRunning, message, cause)
-}
-
-// NewRunConfigNotFoundError creates a new run configuration not found error
-func NewRunConfigNotFoundError(message string, cause error) *Error {
-	return NewError(ErrRunConfigNotFound, message, cause)
-}
-
-// NewGroupAlreadyExistsError creates a new group already exists error
-func NewGroupAlreadyExistsError(message string, cause error) *Error {
-	return NewError(ErrGroupAlreadyExists, message, cause)
-}
-
-// NewGroupNotFoundError creates a new group not found error
-func NewGroupNotFoundError(message string, cause error) *Error {
-	return NewError(ErrGroupNotFound, message, cause)
-}
-
-// NewTransportError creates a new transport error
-func NewTransportError(message string, cause error) *Error {
-	return NewError(ErrTransport, message, cause)
-}
-
-// NewPermissionsError creates a new permissions error
-func NewPermissionsError(message string, cause error) *Error {
-	return NewError(ErrPermissions, message, cause)
-}
-
-// NewInternalError creates a new internal error
-func NewInternalError(message string, cause error) *Error {
-	return NewError(ErrInternal, message, cause)
-}
-
-// IsInvalidArgument checks if the error is an invalid argument error
-func IsInvalidArgument(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrInvalidArgument
-}
-
-// IsContainerRuntime checks if the error is a container runtime error
-func IsContainerRuntime(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrContainerRuntime
-}
-
-// IsContainerNotFound checks if the error is a container not found error
-func IsContainerNotFound(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrContainerNotFound
-}
-
-// IsContainerAlreadyExists checks if the error is a container already exists error
-func IsContainerAlreadyExists(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrContainerAlreadyExists
-}
-
-// IsContainerNotRunning checks if the error is a container not running error
-func IsContainerNotRunning(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrContainerNotRunning
-}
-
-// IsContainerAlreadyRunning checks if the error is a container already running error
-func IsContainerAlreadyRunning(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrContainerAlreadyRunning
-}
-
-// IsRunConfigNotFound checks if the error is a run configuration not found error
-func IsRunConfigNotFound(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrRunConfigNotFound
-}
-
-// IsGroupAlreadyExists checks if the error is a group already exists error
-func IsGroupAlreadyExists(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrGroupAlreadyExists
-}
-
-// IsGroupNotFound checks if the error is a group not found error
-func IsGroupNotFound(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrGroupNotFound
-}
-
-// IsTransport checks if the error is a transport error
-func IsTransport(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrTransport
-}
-
-// IsPermissions checks if the error is a permissions error
-func IsPermissions(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrPermissions
-}
-
-// IsInternal checks if the error is an internal error
-func IsInternal(err error) bool {
-	e, ok := err.(*Error)
-	return ok && e.Type == ErrInternal
+// New creates a new error with the given message and HTTP status code.
+// This is a convenience function equivalent to WithCode(errors.New(message), code).
+func New(message string, code int) error {
+	return &CodedError{err: errors.New(message), code: code}
 }

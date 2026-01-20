@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestMapMCPGroupToVirtualMCPServer tests the MCPGroup watch handler
@@ -54,9 +55,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 			},
@@ -78,9 +77,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 				{
@@ -89,9 +86,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 			},
@@ -113,9 +108,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "other-group",
-						},
+						Config: vmcpconfig.Config{Group: "other-group"},
 					},
 				},
 			},
@@ -137,9 +130,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 				{
@@ -148,9 +139,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "other-group",
-						},
+						Config: vmcpconfig.Config{Group: "other-group"},
 					},
 				},
 			},
@@ -268,9 +257,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 			},
@@ -303,9 +290,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 					},
 				},
 			},
@@ -338,9 +323,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "other-group",
-						},
+						Config: vmcpconfig.Config{Group: "other-group"},
 					},
 				},
 			},
@@ -382,9 +365,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "group-1",
-						},
+						Config: vmcpconfig.Config{Group: "group-1"},
 					},
 				},
 				{
@@ -393,9 +374,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "group-2",
-						},
+						Config: vmcpconfig.Config{Group: "group-2"},
 					},
 				},
 				{
@@ -404,9 +383,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "group-3",
-						},
+						Config: vmcpconfig.Config{Group: "group-3"},
 					},
 				},
 			},
@@ -492,6 +469,256 @@ func TestMapMCPServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	assert.Nil(t, requests, "Expected nil for invalid object type")
 }
 
+// TestMapMCPRemoteProxyToVirtualMCPServer tests the optimized MCPRemoteProxy watch handler
+func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		mcpRemoteProxy    *mcpv1alpha1.MCPRemoteProxy
+		mcpGroups         []mcpv1alpha1.MCPGroup
+		virtualMCPServers []mcpv1alpha1.VirtualMCPServer
+		expectedRequests  int
+		expectedNames     []string
+	}{
+		{
+			name: "MCPRemoteProxy is member of MCPGroup referenced by VirtualMCPServer",
+			mcpRemoteProxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						RemoteProxies: []string{"test-proxy", "other-proxy"},
+					},
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "test-group"},
+					},
+				},
+			},
+			expectedRequests: 1,
+			expectedNames:    []string{"vmcp-1"},
+		},
+		{
+			name: "MCPRemoteProxy is not member of any MCPGroup",
+			mcpRemoteProxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						RemoteProxies: []string{"other-proxy"},
+					},
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "test-group"},
+					},
+				},
+			},
+			expectedRequests: 0,
+			expectedNames:    []string{},
+		},
+		{
+			name: "MCPRemoteProxy is member of MCPGroup but no VirtualMCPServers reference it",
+			mcpRemoteProxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						RemoteProxies: []string{"test-proxy"},
+					},
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "other-group"},
+					},
+				},
+			},
+			expectedRequests: 0,
+			expectedNames:    []string{},
+		},
+		{
+			name: "MCPRemoteProxy is member of multiple MCPGroups with multiple VirtualMCPServers",
+			mcpRemoteProxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group-1",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						RemoteProxies: []string{"test-proxy"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group-2",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						RemoteProxies: []string{"test-proxy", "other-proxy"},
+					},
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "group-1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "group-2"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-3",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "group-3"},
+					},
+				},
+			},
+			expectedRequests: 2,
+			expectedNames:    []string{"vmcp-1", "vmcp-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create scheme
+			scheme := runtime.NewScheme()
+			err := mcpv1alpha1.AddToScheme(scheme)
+			require.NoError(t, err)
+
+			// Create objects slice
+			objs := []client.Object{tt.mcpRemoteProxy}
+			for i := range tt.mcpGroups {
+				objs = append(objs, &tt.mcpGroups[i])
+			}
+			for i := range tt.virtualMCPServers {
+				objs = append(objs, &tt.virtualMCPServers[i])
+			}
+
+			// Create fake client
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				WithStatusSubresource(
+					&mcpv1alpha1.MCPGroup{},
+				).
+				Build()
+
+			// Create reconciler
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			// Test the watch handler
+			requests := r.mapMCPRemoteProxyToVirtualMCPServer(context.Background(), tt.mcpRemoteProxy)
+
+			// Verify results
+			assert.Equal(t, tt.expectedRequests, len(requests), "Expected %d requests, got %d", tt.expectedRequests, len(requests))
+
+			// Verify request names
+			if len(tt.expectedNames) > 0 {
+				requestNames := make([]string, len(requests))
+				for i, req := range requests {
+					requestNames[i] = req.Name
+				}
+				assert.ElementsMatch(t, tt.expectedNames, requestNames)
+			}
+		})
+	}
+}
+
+// TestMapMCPRemoteProxyToVirtualMCPServer_InvalidObject tests error handling
+func TestMapMCPRemoteProxyToVirtualMCPServer_InvalidObject(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	err := mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Pass wrong object type
+	wrongObj := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+	}
+
+	requests := r.mapMCPRemoteProxyToVirtualMCPServer(context.Background(), wrongObj)
+	assert.Nil(t, requests, "Expected nil for invalid object type")
+}
+
 // TestMapExternalAuthConfigToVirtualMCPServer tests the ExternalAuthConfig watch handler
 // This function filters to only reconcile VirtualMCPServers that actually reference the changed ExternalAuthConfig
 func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
@@ -503,6 +730,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 		virtualMCPServers []mcpv1alpha1.VirtualMCPServer
 		mcpGroups         []mcpv1alpha1.MCPGroup
 		mcpServers        []mcpv1alpha1.MCPServer
+		mcpRemoteProxies  []mcpv1alpha1.MCPRemoteProxy
 		expectedRequests  int
 		expectedNames     []string
 	}{
@@ -649,9 +877,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -698,9 +924,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
-						},
+						Config: vmcpconfig.Config{Group: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -722,6 +946,100 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
+						GroupRef: "test-group",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "other-auth",
+						},
+					},
+				},
+			},
+			expectedRequests: 0,
+			expectedNames:    []string{},
+		},
+		{
+			name: "VirtualMCPServer with discovered mode - MCPRemoteProxy references auth config",
+			authConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-auth",
+					Namespace: "default",
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-discovered",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "test-group"},
+						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+							Source: "discovered",
+						},
+					},
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+				},
+			},
+			mcpRemoteProxies: []mcpv1alpha1.MCPRemoteProxy{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						GroupRef: "test-group",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "test-auth",
+						},
+					},
+				},
+			},
+			expectedRequests: 1,
+			expectedNames:    []string{"vmcp-discovered"},
+		},
+		{
+			name: "VirtualMCPServer with discovered mode - no MCPRemoteProxy references auth config",
+			authConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-auth",
+					Namespace: "default",
+				},
+			},
+			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vmcp-discovered",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						Config: vmcpconfig.Config{Group: "test-group"},
+						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+							Source: "discovered",
+						},
+					},
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+				},
+			},
+			mcpRemoteProxies: []mcpv1alpha1.MCPRemoteProxy{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
 						GroupRef: "test-group",
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
@@ -754,8 +1072,11 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 			for i := range tt.mcpServers {
 				objs = append(objs, &tt.mcpServers[i])
 			}
+			for i := range tt.mcpRemoteProxies {
+				objs = append(objs, &tt.mcpRemoteProxies[i])
+			}
 
-			// Create fake client with field indexer for MCPServer.spec.groupRef
+			// Create fake client with field indexers for groupRef fields
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
@@ -765,6 +1086,13 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						return nil
 					}
 					return []string{mcpServer.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+					if mcpRemoteProxy.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
 				Build()
 
@@ -818,11 +1146,13 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
 								},
 							},
@@ -868,11 +1198,13 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
 								},
 							},
@@ -885,16 +1217,18 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Aggregation: &mcpv1alpha1.AggregationConfig{
-							Tools: []mcpv1alpha1.WorkloadToolConfig{
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "test-tool-config",
+						Config: vmcpconfig.Config{
+							Aggregation: &vmcpconfig.AggregationConfig{
+								Tools: []*vmcpconfig.WorkloadToolConfig{
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "test-tool-config",
+										},
 									},
-								},
-								{
-									ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-										Name: "other-tool-config",
+									{
+										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+											Name: "other-tool-config",
+										},
 									},
 								},
 							},
@@ -966,11 +1300,13 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "test-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "test-config",
+									},
 								},
 							},
 						},
@@ -984,11 +1320,13 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer does not reference ToolConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "other-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "other-config",
+									},
 								},
 							},
 						},
@@ -1010,21 +1348,23 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig among multiple tools",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "other-config",
+					Config: vmcpconfig.Config{
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "other-config",
+									},
 								},
-							},
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "test-config",
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "test-config",
+									},
 								},
-							},
-							{
-								ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-									Name: "another-config",
+								{
+									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										Name: "another-config",
+									},
 								},
 							},
 						},
@@ -1052,12 +1392,13 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		vmcp           *mcpv1alpha1.VirtualMCPServer
-		mcpGroups      []mcpv1alpha1.MCPGroup
-		mcpServers     []mcpv1alpha1.MCPServer
-		authConfigName string
-		expected       bool
+		name             string
+		vmcp             *mcpv1alpha1.VirtualMCPServer
+		mcpGroups        []mcpv1alpha1.MCPGroup
+		mcpServers       []mcpv1alpha1.MCPServer
+		mcpRemoteProxies []mcpv1alpha1.MCPRemoteProxy
+		authConfigName   string
+		expected         bool
 	}{
 		{
 			name: "VirtualMCPServer references ExternalAuthConfig in default backend auth",
@@ -1166,9 +1507,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1207,9 +1546,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1248,9 +1585,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "nonexistent-group",
-					},
+					Config: vmcpconfig.Config{Group: "nonexistent-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1267,9 +1602,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1321,6 +1654,84 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 			authConfigName: "test-auth",
 			expected:       true,
 		},
+		{
+			name: "VirtualMCPServer with discovered mode - MCPRemoteProxy references auth config",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vmcp-discovered",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered",
+					},
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+				},
+			},
+			mcpRemoteProxies: []mcpv1alpha1.MCPRemoteProxy{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						GroupRef: "test-group",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "test-auth",
+						},
+					},
+				},
+			},
+			authConfigName: "test-auth",
+			expected:       true,
+		},
+		{
+			name: "VirtualMCPServer with discovered mode - MCPRemoteProxy does not reference auth config",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vmcp-discovered",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered",
+					},
+				},
+			},
+			mcpGroups: []mcpv1alpha1.MCPGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+				},
+			},
+			mcpRemoteProxies: []mcpv1alpha1.MCPRemoteProxy{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						GroupRef: "test-group",
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "other-auth",
+						},
+					},
+				},
+			},
+			authConfigName: "test-auth",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1343,8 +1754,11 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 			for i := range tt.mcpServers {
 				objs = append(objs, &tt.mcpServers[i])
 			}
+			for i := range tt.mcpRemoteProxies {
+				objs = append(objs, &tt.mcpRemoteProxies[i])
+			}
 
-			// Create fake client with field indexer for MCPServer.spec.groupRef
+			// Create fake client with field indexers for groupRef fields
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
@@ -1354,6 +1768,13 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						return nil
 					}
 					return []string{mcpServer.Spec.GroupRef}
+				}).
+				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+					if mcpRemoteProxy.Spec.GroupRef == "" {
+						return nil
+					}
+					return []string{mcpRemoteProxy.Spec.GroupRef}
 				}).
 				Build()
 

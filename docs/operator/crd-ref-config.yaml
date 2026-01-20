@@ -1,5 +1,9 @@
 processor:
   ignoreTypes: []
   ignoreFields: []
+  customMarkers:
+    # Opt-in marker for types outside api/v1alpha1 to be documented
+    - name: "gendoc"
+      target: type
 render:
   kubernetesVersion: 1.27

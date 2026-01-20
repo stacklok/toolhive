@@ -22,9 +22,6 @@ type Workload struct {
 	// Port is the port on which the workload is exposed.
 	// This is embedded in the URL.
 	Port int `json:"port"`
-	// ToolType is the type of tool this workload represents.
-	// For now, it will always be "mcp" - representing an MCP server.
-	ToolType string `json:"tool_type"`
 	// TransportType is the type of transport used for this workload.
 	TransportType types.TransportType `json:"transport_type"`
 	// ProxyMode is the proxy mode that clients should use to connect.
@@ -46,6 +43,8 @@ type Workload struct {
 	ToolsFilter []string `json:"tools,omitempty"`
 	// Remote indicates whether this is a remote workload (true) or a container workload (false).
 	Remote bool `json:"remote,omitempty"`
+	// StartedAt is when the container was last started (changes on restart)
+	StartedAt time.Time `json:"started_at"`
 }
 
 // SortWorkloadsByName sorts a slice of Workload by the Name field in ascending alphabetical order.

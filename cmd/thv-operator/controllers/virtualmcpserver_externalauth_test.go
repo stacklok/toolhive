@@ -32,6 +32,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // TestConvertExternalAuthConfigToStrategy tests the conversion of MCPExternalAuthConfig to BackendAuthStrategy
@@ -231,7 +232,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		vmcp          *mcpv1alpha1.VirtualMCPServer
 		mcpServers    []mcpv1alpha1.MCPServer
 		authConfigs   []mcpv1alpha1.MCPExternalAuthConfig
-		workloadNames []string
+		workloadNames []workloads.TypedWorkload
 		expectError   bool
 		validate      func(*testing.T, *vmcpconfig.OutgoingAuthConfig)
 	}{
@@ -243,7 +244,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -286,8 +287,17 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{"backend-1", "backend-2"},
-			expectError:   false,
+			workloadNames: []workloads.TypedWorkload{
+				{
+					Name: "backend-1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "backend-2",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+			},
+			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
@@ -306,7 +316,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -385,8 +395,17 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{"backend-1", "backend-2"},
-			expectError:   false,
+			workloadNames: []workloads.TypedWorkload{
+				{
+					Name: "backend-1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "backend-2",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+			},
+			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
@@ -408,7 +427,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -450,8 +469,13 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{"backend-1"},
-			expectError:   false,
+			workloadNames: []workloads.TypedWorkload{
+				{
+					Name: "backend-1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+			},
+			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "inline", config.Source)
@@ -468,7 +492,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
@@ -495,7 +519,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{},
+			workloadNames: []workloads.TypedWorkload{},
 			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
@@ -511,7 +535,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -541,7 +565,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{},
+			workloadNames: []workloads.TypedWorkload{},
 			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
@@ -560,7 +584,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -579,8 +603,13 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			workloadNames: []string{"backend-1"},
-			expectError:   false,
+			workloadNames: []workloads.TypedWorkload{
+				{
+					Name: "backend-1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+			},
+			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				// Should not have backend-1 in config since ExternalAuthConfig is missing
@@ -595,11 +624,11 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					// No OutgoingAuth specified
 				},
 			},
-			workloadNames: []string{},
+			workloadNames: []workloads.TypedWorkload{},
 			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
@@ -764,7 +793,7 @@ func TestDiscoverBackendsWithExternalAuthConfigIntegration(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{Group: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
 			},
@@ -859,8 +888,17 @@ func TestDiscoverBackendsWithExternalAuthConfigIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test that buildOutgoingAuthConfig correctly discovers and converts ExternalAuthConfig
-	workloadNames := []string{"backend-1", "backend-2"}
-	authConfigResult, err := r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
+	typedWorkloads := []workloads.TypedWorkload{
+		{
+			Name: "backend-1",
+			Type: workloads.WorkloadTypeMCPServer,
+		},
+		{
+			Name: "backend-2",
+			Type: workloads.WorkloadTypeMCPServer,
+		},
+	}
+	authConfigResult, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 	require.NoError(t, err)
 	require.NotNil(t, authConfigResult)
 

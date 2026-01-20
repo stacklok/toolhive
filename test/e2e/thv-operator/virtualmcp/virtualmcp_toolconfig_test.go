@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -23,8 +24,8 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		toolConfigName  = "test-tool-config"
 		backend1Name    = "gofetch-toolconfig-a"
 		backend2Name    = "gofetch-toolconfig-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -33,13 +34,11 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for MCPToolConfig E2E tests", timeout, pollingInterval)
 
-		By("Creating first gofetch backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.GofetchServerImage, timeout, pollingInterval)
-
-		By("Creating second gofetch backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.GofetchServerImage, timeout, pollingInterval)
+		By("Creating gofetch backend MCPServers in parallel")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{Name: backend1Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.GofetchServerImage},
+			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.GofetchServerImage},
+		}, timeout, pollingInterval)
 
 		By("Creating MCPToolConfig for filtering and overriding tools")
 		toolConfig := &mcpv1alpha1.MCPToolConfig{
@@ -69,28 +68,28 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backend1Name,
+								// Reference MCPToolConfig instead of inline Filter
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									Name: toolConfigName,
+								},
+							},
+							{
+								Workload: backend2Name,
+								// Use inline filter to exclude all tools from backend2
+								Filter: []string{"nonexistent_tool"},
+							},
+						},
+					},
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backend1Name,
-							// Reference MCPToolConfig instead of inline Filter
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-								Name: toolConfigName,
-							},
-						},
-						{
-							Workload: backend2Name,
-							// Use inline filter to exclude all tools from backend2
-							Filter: []string{"nonexistent_tool"},
-						},
-					},
 				},
 				ServiceType: "NodePort",
 			},
@@ -98,7 +97,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
@@ -314,14 +313,14 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(2))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Verify backend1 has ToolConfigRef
-			var backend1Config *mcpv1alpha1.WorkloadToolConfig
-			for i := range vmcpServer.Spec.Aggregation.Tools {
-				if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend1Name {
-					backend1Config = &vmcpServer.Spec.Aggregation.Tools[i]
+			var backend1Config *vmcpconfig.WorkloadToolConfig
+			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
+				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
+					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					break
 				}
 			}
@@ -359,8 +358,8 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		vmcpServerName  = "test-vmcp-toolconfig-update"
 		toolConfigName  = "test-tool-config-update"
 		backendName     = "gofetch-toolconfig-update"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -393,22 +392,22 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
-				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
-						{
-							Workload: backendName,
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-								Name: toolConfigName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+						Tools: []*vmcpconfig.WorkloadToolConfig{
+							{
+								Workload: backendName,
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									Name: toolConfigName,
+								},
 							},
 						},
 					},
+				},
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
 			},
@@ -416,7 +415,7 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)

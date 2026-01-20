@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
@@ -38,9 +39,13 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*Remote
 
 // GetRegistry returns the remote registry data
 func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
-	client, err := networking.NewHttpClientBuilder().
-		WithPrivateIPs(p.allowPrivateIp).
-		Build()
+	// Build HTTP client with security controls
+	// If private IPs are allowed, also allow HTTP (for localhost testing)
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(p.allowPrivateIp)
+	if p.allowPrivateIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	client, err := builder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build http client: %w", err)
 	}
@@ -49,7 +54,11 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Check if the response status code is OK
 	if resp.StatusCode != http.StatusOK {

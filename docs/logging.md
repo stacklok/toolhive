@@ -6,13 +6,18 @@ This document describes ToolHive's logging strategy for both the CLI and server 
 
 1. **Successful operations are silent by default** - When an operation succeeds, do not emit logs at INFO level or above. Users should only see output when something requires their attention or when they explicitly request debug output.
 
-2. **Logs serve their audience** - CLI logs serve end users who need actionable information. Server logs serve operators who need to debug and monitor systems.
+2. **Not all failures are errors** - Just because something fails doesn't mean it should be logged as an error. Choose the appropriate log level based on impact:
+   - **ERROR**: Fatal issues that prevent the operation from completing
+   - **WARN**: Failures that provide context for potential hard errors, or issues where the operation continues with degraded functionality
+   - **DEBUG**: Expected failures that are not essential for ToolHive to work (e.g., optional features, fallback scenarios)
 
-3. **Structured logging for machines, human-readable for terminals** - Use structured (JSON) logging in production server environments and human-readable output for CLI interactions.
+3. **Logs serve their audience** - CLI logs serve end users who need actionable information. Server logs serve operators who need to debug and monitor systems.
 
-4. **Log the "why", not just the "what"** - Include context that helps diagnose issues, such as what was attempted and what state was expected.
+4. **Structured logging for machines, human-readable for terminals** - Use structured (JSON) logging in production server environments and human-readable output for CLI interactions.
 
-5. **No sensitive information in logs** - Never log credentials, tokens, API keys, passwords, or other secrets.
+5. **Log the "why", not just the "what"** - Include context that helps diagnose issues, such as what was attempted and what state was expected.
+
+6. **No sensitive information in logs** - Never log credentials, tokens, API keys, passwords, or other secrets.
 
 ## Log Levels
 

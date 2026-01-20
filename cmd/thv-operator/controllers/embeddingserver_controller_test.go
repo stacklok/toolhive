@@ -525,11 +525,11 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		embedding       *mcpv1alpha1.EmbeddingServer
-		existingSts     *appsv1.StatefulSet
-		expectedUpdate  bool
-		updateReason    string
+		name           string
+		embedding      *mcpv1alpha1.EmbeddingServer
+		existingSts    *appsv1.StatefulSet
+		expectedUpdate bool
+		updateReason   string
 	}{
 		{
 			name:      "no update needed - identical",
@@ -668,11 +668,11 @@ func TestHandleDeletion(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name             string
-		embedding        *mcpv1alpha1.EmbeddingServer
-		expectDone       bool
-		expectError      bool
-		expectFinalizer  bool
+		name            string
+		embedding       *mcpv1alpha1.EmbeddingServer
+		expectDone      bool
+		expectError     bool
+		expectFinalizer bool
 	}{
 		{
 			name: "not being deleted",
@@ -768,12 +768,12 @@ func TestEnsureStatefulSet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		embedding       *mcpv1alpha1.EmbeddingServer
-		existingSts     *appsv1.StatefulSet
-		expectCreate    bool
-		expectUpdate    bool
-		expectDone      bool
+		name         string
+		embedding    *mcpv1alpha1.EmbeddingServer
+		existingSts  *appsv1.StatefulSet
+		expectCreate bool
+		expectUpdate bool
+		expectDone   bool
 	}{
 		{
 			name:         "create new statefulset",
@@ -855,7 +855,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 			assert.NoError(t, err)
 
 			if tt.expectUpdate {
-				assert.True(t, result.Requeue)
+				assert.Greater(t, result.RequeueAfter, time.Duration(0))
 			}
 		})
 	}
@@ -950,4 +950,3 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 		})
 	}
 }
-

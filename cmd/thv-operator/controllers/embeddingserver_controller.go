@@ -215,7 +215,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 				"StatefulSet.Name", statefulSet.Name)
 			return ctrl.Result{}, true, err
 		}
-		return ctrl.Result{Requeue: true}, true, nil
+		return ctrl.Result{RequeueAfter: time.Second}, true, nil
 	}
 
 	// Check if the statefulset spec changed
@@ -228,7 +228,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 				"StatefulSet.Name", statefulSet.Name)
 			return ctrl.Result{}, true, err
 		}
-		return ctrl.Result{Requeue: true}, true, nil
+		return ctrl.Result{RequeueAfter: time.Second}, true, nil
 	}
 
 	return ctrl.Result{}, false, nil

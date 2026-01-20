@@ -60,6 +60,8 @@ const (
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
+//nolint:gocyclo // Reconciliation logic complexity is acceptable
 func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -90,23 +92,33 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return result, err
 	}
 
+	// Track if we need to requeue after status update
+	var requeueResult ctrl.Result
+
 	// Ensure statefulset exists and is up to date
-	if result, done, err := r.ensureStatefulSet(ctx, embedding); done {
-		return result, err
+	if result, err := r.ensureStatefulSet(ctx, embedding); err != nil {
+		return ctrl.Result{}, err
+	} else if result.RequeueAfter > 0 {
+		requeueResult = result
 	}
 
 	// Ensure service exists
-	if result, done, err := r.ensureService(ctx, embedding); done {
-		return result, err
+	if result, err := r.ensureService(ctx, embedding); err != nil {
+		return ctrl.Result{}, err
+	} else if result.RequeueAfter > 0 {
+		// If we already have a requeue scheduled, keep the shorter duration
+		if requeueResult.RequeueAfter == 0 || (result.RequeueAfter > 0 && result.RequeueAfter < requeueResult.RequeueAfter) {
+			requeueResult = result
+		}
 	}
 
-	// Update the EmbeddingServer status (includes URL, phase, and readyReplicas)
+	// Always update the EmbeddingServer status before returning
 	if err := r.updateEmbeddingServerStatus(ctx, embedding); err != nil {
 		ctxLogger.Error(err, "Failed to update EmbeddingServer status")
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return requeueResult, nil
 }
 
 // performValidations performs all early validations for the EmbeddingServer
@@ -191,7 +203,7 @@ func (r *EmbeddingServerReconciler) ensureFinalizer(
 func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
-) (ctrl.Result, bool, error) {
+) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	statefulSet := &appsv1.StatefulSet{}
@@ -200,19 +212,19 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 		sts := r.statefulSetForEmbedding(ctx, embedding)
 		if sts == nil {
 			ctxLogger.Error(nil, "Failed to create StatefulSet object")
-			return ctrl.Result{}, true, fmt.Errorf("failed to create StatefulSet object")
+			return ctrl.Result{}, fmt.Errorf("failed to create StatefulSet object")
 		}
 		ctxLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", sts.Namespace, "StatefulSet.Name", sts.Name)
 		err = r.Create(ctx, sts)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to create new StatefulSet", "StatefulSet.Namespace", sts.Namespace, "StatefulSet.Name", sts.Name)
-			return ctrl.Result{}, true, err
+			return ctrl.Result{}, err
 		}
-		// Continue to create service instead of returning early
-		return ctrl.Result{}, false, nil
+		// StatefulSet created successfully, continue to ensure service
+		return ctrl.Result{}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get StatefulSet")
-		return ctrl.Result{}, true, err
+		return ctrl.Result{}, err
 	}
 
 	// Ensure the statefulset size matches the spec
@@ -223,9 +235,9 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 			ctxLogger.Error(err, "Failed to update StatefulSet replicas",
 				"StatefulSet.Namespace", statefulSet.Namespace,
 				"StatefulSet.Name", statefulSet.Name)
-			return ctrl.Result{}, true, err
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: time.Second}, true, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	// Check if the statefulset spec changed
@@ -236,12 +248,12 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 			ctxLogger.Error(err, "Failed to update StatefulSet",
 				"StatefulSet.Namespace", statefulSet.Namespace,
 				"StatefulSet.Name", statefulSet.Name)
-			return ctrl.Result{}, true, err
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: time.Second}, true, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	return ctrl.Result{}, false, nil
+	return ctrl.Result{}, nil
 }
 
 // updateStatefulSetWithRetry updates the statefulset
@@ -259,7 +271,7 @@ func (r *EmbeddingServerReconciler) updateStatefulSetWithRetry(
 func (r *EmbeddingServerReconciler) ensureService(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
-) (ctrl.Result, bool, error) {
+) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	service := &corev1.Service{}
@@ -268,22 +280,22 @@ func (r *EmbeddingServerReconciler) ensureService(
 		svc := r.serviceForEmbedding(ctx, embedding)
 		if svc == nil {
 			ctxLogger.Error(nil, "Failed to create Service object")
-			return ctrl.Result{}, true, fmt.Errorf("failed to create Service object")
+			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
 		}
 		ctxLogger.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
 		err = r.Create(ctx, svc)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
-			return ctrl.Result{}, true, err
+			return ctrl.Result{}, err
 		}
-		// Continue to update status instead of returning early
-		return ctrl.Result{}, false, nil
+		// Service created successfully, continue to update status
+		return ctrl.Result{}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
-		return ctrl.Result{}, true, err
+		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, false, nil
+	return ctrl.Result{}, nil
 }
 
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and sets the status condition

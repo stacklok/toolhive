@@ -842,9 +842,12 @@ func TestEnsureStatefulSet(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			result, done, err := reconciler.ensureStatefulSet(context.TODO(), tt.embedding)
+			result, err := reconciler.ensureStatefulSet(context.TODO(), tt.embedding)
 			require.NoError(t, err)
-			assert.Equal(t, tt.expectDone, done)
+			// expectDone is now represented by whether we need to requeue
+			if tt.expectDone {
+				assert.True(t, result.RequeueAfter > 0)
+			}
 
 			// Verify statefulset exists
 			sts := &appsv1.StatefulSet{}

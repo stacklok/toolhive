@@ -265,7 +265,7 @@ func (r *EmbeddingServerReconciler) updateStatefulSetWithRetry(
 	return r.Update(ctx, statefulSet)
 }
 
-// ensureService ensures the service exists
+// ensureService ensures the service exists and is up to date
 //
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureService(
@@ -295,7 +295,39 @@ func (r *EmbeddingServerReconciler) ensureService(
 		return ctrl.Result{}, err
 	}
 
+	// Check if the service needs to be updated
+	if r.serviceNeedsUpdate(service, embedding) {
+		desiredService := r.serviceForEmbedding(ctx, embedding)
+		service.Spec.Ports = desiredService.Spec.Ports
+		// Preserve ClusterIP as it's immutable
+		if err := r.Update(ctx, service); err != nil {
+			ctxLogger.Error(err, "Failed to update Service",
+				"Service.Namespace", service.Namespace,
+				"Service.Name", service.Name)
+			return ctrl.Result{}, err
+		}
+		ctxLogger.Info("Updated Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// serviceNeedsUpdate checks if the service needs to be updated based on the embedding spec
+func (r *EmbeddingServerReconciler) serviceNeedsUpdate(
+	service *corev1.Service,
+	embedding *mcpv1alpha1.EmbeddingServer,
+) bool {
+	desiredPort := embedding.GetPort()
+
+	// Check if any port has changed
+	for _, port := range service.Spec.Ports {
+		if port.Name == "http" && port.Port != desiredPort {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and sets the status condition

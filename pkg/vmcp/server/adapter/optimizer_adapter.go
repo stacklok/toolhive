@@ -76,6 +76,8 @@ func createCallToolHandler(opt optimizer.Optimizer) func(context.Context, mcp.Ca
 
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
+			// Exposing the error to the MCP client is important if you want it to correct its behavior.
+			// Without information on the failure, the model is pretty much hopeless in figuring out the problem.
 			return mcp.NewToolResultError(fmt.Sprintf("call_tool failed: %v", err)), nil
 		}
 
@@ -85,6 +87,7 @@ func createCallToolHandler(opt optimizer.Optimizer) func(context.Context, mcp.Ca
 
 // mustMarshalSchema marshals a schema to JSON, panicking on error.
 // This is safe because schemas are generated from known types at startup.
+// This should NOT be called by runtime code.
 func mustGenerateSchema[T any]() json.RawMessage {
 	s, err := schema.GenerateSchema[T]()
 	if err != nil {

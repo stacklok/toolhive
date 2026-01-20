@@ -48,12 +48,6 @@ func (d DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindT
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	// Log all tools in the optimizer for debugging
-	fmt.Printf("[DummyOptimizer.FindTool] Searching for %q in %d tools:\n", input.ToolDescription, len(d.tools))
-	for name, tool := range d.tools {
-		fmt.Printf("  - %q: %q\n", name, tool.Tool.Description)
-	}
-
 	searchTerm := strings.ToLower(input.ToolDescription)
 
 	var matches []ToolMatch
@@ -70,7 +64,7 @@ func (d DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindT
 			matches = append(matches, ToolMatch{
 				Name:        tool.Tool.Name,
 				Description: tool.Tool.Description,
-				Parameters:  schema,
+				InputSchema: schema,
 				Score:       1.0, // Exact match semantics
 			})
 		}

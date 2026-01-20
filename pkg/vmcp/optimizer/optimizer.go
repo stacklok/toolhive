@@ -58,9 +58,9 @@ type ToolMatch struct {
 	// Description is the human-readable description of the tool.
 	Description string `json:"description"`
 
-	// Parameters is the JSON schema for the tool's input parameters.
+	// InputSchema is the JSON schema for the tool's input parameters.
 	// Uses json.RawMessage to preserve the original schema format.
-	Parameters json.RawMessage `json:"parameters"`
+	InputSchema json.RawMessage `json:"input_schema"`
 
 	// Score indicates how well this tool matches the search criteria (0.0-1.0).
 	Score float64 `json:"score"`

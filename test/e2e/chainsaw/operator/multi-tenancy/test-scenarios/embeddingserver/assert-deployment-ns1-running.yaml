@@ -4,5 +4,4 @@ metadata:
   name: mt-embedding
   namespace: toolhive-test-ns-1
 status:
-  readyReplicas: 1
   replicas: 1

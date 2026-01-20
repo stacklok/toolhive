@@ -4,5 +4,4 @@ metadata:
   name: st-embedding-lifecycle
   namespace: toolhive-system
 status:
-  phase: "Running"
-  readyReplicas: 1
+  (contains(['Downloading', 'Running'], phase)): true

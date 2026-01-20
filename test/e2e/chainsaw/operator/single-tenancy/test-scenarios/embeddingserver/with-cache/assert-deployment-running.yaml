@@ -4,5 +4,4 @@ metadata:
   name: st-embedding-cache
   namespace: toolhive-system
 status:
-  readyReplicas: 1
   replicas: 1

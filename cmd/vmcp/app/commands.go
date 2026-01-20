@@ -230,17 +230,28 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}
 
-	// Initialize managers for backend discovery
-	logger.Info("Initializing group manager")
-	groupsManager, err := groups.NewManager()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
-	}
+	// Create backend discoverer based on configuration mode
+	var discoverer aggregator.BackendDiscoverer
+	if len(cfg.Backends) > 0 {
+		// Static mode: Use pre-configured backends from config (no K8s API access needed)
+		logger.Infof("Static mode: using %d pre-configured backends", len(cfg.Backends))
+		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
+			cfg.Backends,
+			cfg.OutgoingAuth,
+			cfg.Group,
+		)
+	} else {
+		// Dynamic mode: Discover backends at runtime from K8s API
+		logger.Info("Dynamic mode: initializing group manager for backend discovery")
+		groupsManager, err := groups.NewManager()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
+		}
 
-	// Create backend discoverer based on runtime environment
-	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+		discoverer, err = aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+		}
 	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)

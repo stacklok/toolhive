@@ -96,6 +96,19 @@ optimizer:
   # (vMCP will resolve the service DNS name)
 
 # =============================================================================
+# TELEMETRY CONFIGURATION (for Jaeger tracing)
+# =============================================================================
+# Configure OpenTelemetry to send traces to Jaeger
+telemetry:
+  endpoint: "localhost:4318"  # OTLP HTTP endpoint (Jaeger collector) - no http:// prefix needed with insecure: true
+  serviceName: "vmcp-optimizer"
+  serviceVersion: "1.0.0"  # Optional: service version
+  tracingEnabled: true
+  metricsEnabled: false  # Set to true if you want metrics too
+  samplingRate: "1.0"  # 100% sampling for development (use lower in production)
+  insecure: true  # Use HTTP instead of HTTPS
+
+# =============================================================================
 # USAGE
 # =============================================================================
 # 1. Start MCP backends in the group:

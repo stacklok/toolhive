@@ -397,6 +397,7 @@ func New(
 
 	// Initialize optimizer integration if enabled
 	var optimizerInteg OptimizerIntegration
+
 	if cfg.OptimizerConfig != nil {
 		if cfg.OptimizerConfig.Enabled {
 			logger.Infow("Initializing optimizer integration (chromem-go)",
@@ -427,16 +428,22 @@ func New(
 			}
 			logger.Info("Optimizer integration initialized successfully")
 
-			// Ingest discovered backends at startup (populate optimizer database)
+			// Ingest discovered backends into optimizer database (for semantic search)
+			// Note: Backends are already discovered and registered with vMCP regardless of optimizer
+			// This step indexes them in the optimizer database for semantic search
+			// Timing is handled inside IngestInitialBackends
 			initialBackends := backendRegistry.List(ctx)
 			if err := optimizerInteg.IngestInitialBackends(ctx, initialBackends); err != nil {
-				logger.Warnf("Failed to ingest initial backends: %v", err)
+				logger.Warnf("Failed to ingest initial backends into optimizer: %v", err)
 				// Don't fail server startup - optimizer can still work with incremental ingestion
 			}
-		} else {
-			logger.Info("Optimizer configuration present but disabled (enabled=false), skipping initialization")
+			// Note: IngestInitialBackends logs "Initial backend ingestion completed" with timing
 		}
+		// When optimizer is disabled, backends are still discovered and registered with vMCP,
+		// but no optimizer ingestion occurs, so no log entry is needed
 	}
+	// When optimizer is not configured, backends are still discovered and registered with vMCP,
+	// but no optimizer ingestion occurs, so no log entry is needed
 
 	// Create Server instance
 	srv := &Server{

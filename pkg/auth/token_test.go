@@ -17,6 +17,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
@@ -377,12 +379,14 @@ func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
 		}
 		issuerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 
-		doc := OIDCDiscoveryDocument{
-			Issuer:                issuerURL,
-			AuthorizationEndpoint: issuerURL + "/auth",
-			TokenEndpoint:         issuerURL + "/token",
-			UserinfoEndpoint:      issuerURL + "/userinfo",
-			JWKSURI:               jwksURL,
+		doc := oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                issuerURL,
+				AuthorizationEndpoint: issuerURL + "/auth",
+				TokenEndpoint:         issuerURL + "/token",
+				UserinfoEndpoint:      issuerURL + "/userinfo",
+				JWKSURI:               jwksURL,
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")

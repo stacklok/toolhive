@@ -16,11 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
 	httpsScheme   = "https"
-	wellKnownPath = WellKnownOIDCPath
+	wellKnownPath = oauthproto.WellKnownOIDCPath
 )
 
 // testDiscoverOIDCEndpoints is a test version that skips TLS verification
@@ -28,7 +29,7 @@ func testDiscoverOIDCEndpoints(
 	ctx context.Context,
 	t *testing.T,
 	issuer string,
-) (*OIDCDiscoveryDocument, error) {
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	t.Helper()
 
 	// Validate issuer URL
@@ -88,7 +89,7 @@ func testDiscoverOIDCEndpoints(
 	limitedReader := http.MaxBytesReader(nil, resp.Body, maxResponseSize)
 
 	// Parse the response
-	var doc OIDCDiscoveryDocument
+	var doc oauthproto.OIDCDiscoveryDocument
 	decoder := json.NewDecoder(limitedReader)
 	decoder.DisallowUnknownFields() // Strict parsing
 	if err := decoder.Decode(&doc); err != nil {
@@ -111,7 +112,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 		serverResponse func() *httptest.Server
 		expectError    bool
 		errorMsg       string
-		validate       func(t *testing.T, doc *OIDCDiscoveryDocument)
+		validate       func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument)
 	}{
 		{
 			name:        "invalid issuer URL",
@@ -138,13 +139,15 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 					// Use the actual server URL but replace 127.0.0.1 with localhost
 					issuerURL := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        issuerURL,
-						AuthorizationEndpoint:         issuerURL + "/auth",
-						TokenEndpoint:                 issuerURL + "/token",
-						JWKSURI:                       issuerURL + "/jwks",
-						UserinfoEndpoint:              issuerURL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256", "plain"},
+					doc := oauthproto.OIDCDiscoveryDocument{
+						AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+							Issuer:                        issuerURL,
+							AuthorizationEndpoint:         issuerURL + "/auth",
+							TokenEndpoint:                 issuerURL + "/token",
+							JWKSURI:                       issuerURL + "/jwks",
+							UserinfoEndpoint:              issuerURL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256", "plain"},
+						},
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -153,7 +156,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 				return server
 			},
 			expectError: false,
-			validate: func(t *testing.T, doc *OIDCDiscoveryDocument) {
+			validate: func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument) {
 				t.Helper()
 				assert.True(t, strings.HasPrefix(doc.Issuer, "http://localhost:"))
 				assert.True(t, strings.HasSuffix(doc.AuthorizationEndpoint, "/auth"))
@@ -173,19 +176,20 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 
 					switch r.URL.Path {
 					case wellKnownPath:
-						doc := OIDCDiscoveryDocument{
-							Issuer:                        server.URL,
-							AuthorizationEndpoint:         server.URL + "/auth",
-							TokenEndpoint:                 server.URL + "/token",
-							JWKSURI:                       server.URL + "/jwks",
-							UserinfoEndpoint:              server.URL + "/userinfo",
-							CodeChallengeMethodsSupported: []string{"S256"},
-							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						doc := oauthproto.OIDCDiscoveryDocument{
+							AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+								Issuer:                        server.URL,
+								AuthorizationEndpoint:         server.URL + "/auth",
+								TokenEndpoint:                 server.URL + "/token",
+								JWKSURI:                       server.URL + "/jwks",
+								UserinfoEndpoint:              server.URL + "/userinfo",
+								CodeChallengeMethodsSupported: []string{"S256"},
+							},
 						}
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case WellKnownOAuthServerPath:
+					case oauthproto.WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)
@@ -196,7 +200,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 				return server
 			},
 			expectError: false,
-			validate: func(t *testing.T, doc *OIDCDiscoveryDocument) {
+			validate: func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument) {
 				t.Helper()
 				// The issuer should match the server URL
 				assert.True(t, strings.HasPrefix(doc.Issuer, "https://127.0.0.1:"))
@@ -247,9 +251,11 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					doc := OIDCDiscoveryDocument{
-						Issuer: server.URL,
-						// Missing required fields
+					doc := oauthproto.OIDCDiscoveryDocument{
+						AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+							Issuer: server.URL,
+							// Missing required fields
+						},
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -265,11 +271,13 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 			issuer: "https://example.com",
 			serverResponse: func() *httptest.Server {
 				return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					doc := OIDCDiscoveryDocument{
-						Issuer:                "https://malicious.com", // Different issuer
-						AuthorizationEndpoint: "https://malicious.com/auth",
-						TokenEndpoint:         "https://malicious.com/token",
-						JWKSURI:               "https://malicious.com/jwks",
+					doc := oauthproto.OIDCDiscoveryDocument{
+						AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+							Issuer:                "https://malicious.com", // Different issuer
+							AuthorizationEndpoint: "https://malicious.com/auth",
+							TokenEndpoint:         "https://malicious.com/token",
+							JWKSURI:               "https://malicious.com/jwks",
+						},
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -329,17 +337,19 @@ func TestValidateOIDCDocument(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name           string
-		doc            *OIDCDiscoveryDocument
+		doc            *oauthproto.OIDCDiscoveryDocument
 		expectedIssuer string
 		expectError    bool
 		errorMsg       string
 	}{
 		{
 			name: "missing issuer",
-			doc: &OIDCDiscoveryDocument{
-				AuthorizationEndpoint: "https://example.com/auth",
-				TokenEndpoint:         "https://example.com/token",
-				JWKSURI:               "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					AuthorizationEndpoint: "https://example.com/auth",
+					TokenEndpoint:         "https://example.com/token",
+					JWKSURI:               "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -347,11 +357,13 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "issuer mismatch",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://malicious.com",
-				AuthorizationEndpoint: "https://example.com/auth",
-				TokenEndpoint:         "https://example.com/token",
-				JWKSURI:               "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://malicious.com",
+					AuthorizationEndpoint: "https://example.com/auth",
+					TokenEndpoint:         "https://example.com/token",
+					JWKSURI:               "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -359,10 +371,12 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "missing authorization endpoint",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:        "https://example.com",
-				TokenEndpoint: "https://example.com/token",
-				JWKSURI:       "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:        "https://example.com",
+					TokenEndpoint: "https://example.com/token",
+					JWKSURI:       "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -370,10 +384,12 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "missing token endpoint",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/auth",
-				JWKSURI:               "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://example.com/auth",
+					JWKSURI:               "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -381,10 +397,12 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "missing JWKS URI",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/auth",
-				TokenEndpoint:         "https://example.com/token",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://example.com/auth",
+					TokenEndpoint:         "https://example.com/token",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -392,11 +410,13 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "invalid authorization endpoint URL",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "not-a-url",
-				TokenEndpoint:         "https://example.com/token",
-				JWKSURI:               "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "not-a-url",
+					TokenEndpoint:         "https://example.com/token",
+					JWKSURI:               "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -404,11 +424,13 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "non-HTTPS endpoint (security check)",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "http://example.com/auth",
-				TokenEndpoint:         "https://example.com/token",
-				JWKSURI:               "https://example.com/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "http://example.com/auth",
+					TokenEndpoint:         "https://example.com/token",
+					JWKSURI:               "https://example.com/jwks",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    true,
@@ -416,23 +438,27 @@ func TestValidateOIDCDocument(t *testing.T) {
 		},
 		{
 			name: "valid document",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "https://example.com",
-				AuthorizationEndpoint: "https://example.com/auth",
-				TokenEndpoint:         "https://example.com/token",
-				JWKSURI:               "https://example.com/jwks",
-				UserinfoEndpoint:      "https://example.com/userinfo",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "https://example.com",
+					AuthorizationEndpoint: "https://example.com/auth",
+					TokenEndpoint:         "https://example.com/token",
+					JWKSURI:               "https://example.com/jwks",
+					UserinfoEndpoint:      "https://example.com/userinfo",
+				},
 			},
 			expectedIssuer: "https://example.com",
 			expectError:    false,
 		},
 		{
 			name: "localhost endpoints allowed",
-			doc: &OIDCDiscoveryDocument{
-				Issuer:                "http://localhost:8080",
-				AuthorizationEndpoint: "http://localhost:8080/auth",
-				TokenEndpoint:         "http://localhost:8080/token",
-				JWKSURI:               "http://localhost:8080/jwks",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                "http://localhost:8080",
+					AuthorizationEndpoint: "http://localhost:8080/auth",
+					TokenEndpoint:         "http://localhost:8080/token",
+					JWKSURI:               "http://localhost:8080/jwks",
+				},
 			},
 			expectedIssuer: "http://localhost:8080",
 			expectError:    false,
@@ -591,13 +617,15 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 	// Create a test server that serves OIDC discovery
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		doc := OIDCDiscoveryDocument{
-			Issuer:                        server.URL,
-			AuthorizationEndpoint:         server.URL + "/auth",
-			TokenEndpoint:                 server.URL + "/token",
-			JWKSURI:                       server.URL + "/jwks",
-			UserinfoEndpoint:              server.URL + "/userinfo",
-			CodeChallengeMethodsSupported: []string{"S256", "plain"},
+		doc := oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                        server.URL,
+				AuthorizationEndpoint:         server.URL + "/auth",
+				TokenEndpoint:                 server.URL + "/token",
+				JWKSURI:                       server.URL + "/jwks",
+				UserinfoEndpoint:              server.URL + "/userinfo",
+				CodeChallengeMethodsSupported: []string{"S256", "plain"},
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -778,11 +806,13 @@ func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userAgentReceived = r.Header.Get("User-Agent")
 
-			doc := OIDCDiscoveryDocument{
-				Issuer:                server.URL,
-				AuthorizationEndpoint: server.URL + "/auth",
-				TokenEndpoint:         server.URL + "/token",
-				JWKSURI:               server.URL + "/jwks",
+			doc := oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                server.URL,
+					AuthorizationEndpoint: server.URL + "/auth",
+					TokenEndpoint:         server.URL + "/token",
+					JWKSURI:               server.URL + "/jwks",
+				},
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -808,11 +838,13 @@ func TestOIDCDiscovery_EdgeCases(t *testing.T) {
 			// Verify the path is correct even with trailing slash in issuer
 			assert.Equal(t, "/.well-known/openid-configuration", r.URL.Path)
 
-			doc := OIDCDiscoveryDocument{
-				Issuer:                server.URL + "/", // Include trailing slash to match the request
-				AuthorizationEndpoint: server.URL + "/auth",
-				TokenEndpoint:         server.URL + "/token",
-				JWKSURI:               server.URL + "/jwks",
+			doc := oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                server.URL + "/", // Include trailing slash to match the request
+					AuthorizationEndpoint: server.URL + "/auth",
+					TokenEndpoint:         server.URL + "/token",
+					JWKSURI:               server.URL + "/jwks",
+				},
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -832,13 +864,15 @@ func TestOIDCDiscovery_EdgeCases(t *testing.T) {
 		t.Parallel()
 		var server *httptest.Server
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			doc := OIDCDiscoveryDocument{
-				Issuer:                server.URL,
-				AuthorizationEndpoint: server.URL + "/auth",
-				TokenEndpoint:         server.URL + "/token",
-				JWKSURI:               server.URL + "/jwks",
-				// UserinfoEndpoint is empty (optional)
-				// CodeChallengeMethodsSupported is empty
+			doc := oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:                server.URL,
+					AuthorizationEndpoint: server.URL + "/auth",
+					TokenEndpoint:         server.URL + "/token",
+					JWKSURI:               server.URL + "/jwks",
+					// UserinfoEndpoint is empty (optional)
+					// CodeChallengeMethodsSupported is empty
+				},
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -865,7 +899,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 		serverResponse func() *httptest.Server
 		expectError    bool
 		errorMsg       string
-		validate       func(t *testing.T, doc *OIDCDiscoveryDocument)
+		validate       func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument)
 	}{
 		{
 			name:        "invalid issuer URL",
@@ -890,19 +924,21 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 					switch r.URL.Path {
 					case wellKnownPath:
-						doc := OIDCDiscoveryDocument{
-							Issuer:                        issuerURL,
-							AuthorizationEndpoint:         issuerURL + "/auth",
-							TokenEndpoint:                 issuerURL + "/token",
-							JWKSURI:                       issuerURL + "/jwks",
-							UserinfoEndpoint:              issuerURL + "/userinfo",
-							CodeChallengeMethodsSupported: []string{"S256", "plain"},
-							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						doc := oauthproto.OIDCDiscoveryDocument{
+							AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+								Issuer:                        issuerURL,
+								AuthorizationEndpoint:         issuerURL + "/auth",
+								TokenEndpoint:                 issuerURL + "/token",
+								JWKSURI:                       issuerURL + "/jwks",
+								UserinfoEndpoint:              issuerURL + "/userinfo",
+								CodeChallengeMethodsSupported: []string{"S256", "plain"},
+								// No registration_endpoint - this will trigger fallback to OAuth endpoint
+							},
 						}
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case WellKnownOAuthServerPath:
+					case oauthproto.WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)
@@ -913,7 +949,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				return server
 			},
 			expectError: false,
-			validate: func(t *testing.T, doc *OIDCDiscoveryDocument) {
+			validate: func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument) {
 				t.Helper()
 				assert.True(t, strings.HasPrefix(doc.Issuer, "http://localhost:"))
 				assert.True(t, strings.HasSuffix(doc.AuthorizationEndpoint, "/auth"))
@@ -933,19 +969,21 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 					switch r.URL.Path {
 					case wellKnownPath:
-						doc := OIDCDiscoveryDocument{
-							Issuer:                        server.URL,
-							AuthorizationEndpoint:         server.URL + "/auth",
-							TokenEndpoint:                 server.URL + "/token",
-							JWKSURI:                       server.URL + "/jwks",
-							UserinfoEndpoint:              server.URL + "/userinfo",
-							CodeChallengeMethodsSupported: []string{"S256"},
-							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						doc := oauthproto.OIDCDiscoveryDocument{
+							AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+								Issuer:                        server.URL,
+								AuthorizationEndpoint:         server.URL + "/auth",
+								TokenEndpoint:                 server.URL + "/token",
+								JWKSURI:                       server.URL + "/jwks",
+								UserinfoEndpoint:              server.URL + "/userinfo",
+								CodeChallengeMethodsSupported: []string{"S256"},
+								// No registration_endpoint - this will trigger fallback to OAuth endpoint
+							},
 						}
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case WellKnownOAuthServerPath:
+					case oauthproto.WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)
@@ -956,7 +994,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				return server
 			},
 			expectError: false,
-			validate: func(t *testing.T, doc *OIDCDiscoveryDocument) {
+			validate: func(t *testing.T, doc *oauthproto.OIDCDiscoveryDocument) {
 				t.Helper()
 				// The issuer should match the server URL
 				assert.True(t, strings.HasPrefix(doc.Issuer, "https://127.0.0.1:"))
@@ -1007,9 +1045,11 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					doc := OIDCDiscoveryDocument{
-						Issuer: server.URL,
-						// Missing required fields
+					doc := oauthproto.OIDCDiscoveryDocument{
+						AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+							Issuer: server.URL,
+							// Missing required fields
+						},
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -1025,11 +1065,13 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			issuer: "https://example.com",
 			serverResponse: func() *httptest.Server {
 				return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					doc := OIDCDiscoveryDocument{
-						Issuer:                "https://malicious.com", // Different issuer
-						AuthorizationEndpoint: "https://malicious.com/auth",
-						TokenEndpoint:         "https://malicious.com/token",
-						JWKSURI:               "https://malicious.com/jwks",
+					doc := oauthproto.OIDCDiscoveryDocument{
+						AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+							Issuer:                "https://malicious.com", // Different issuer
+							AuthorizationEndpoint: "https://malicious.com/auth",
+							TokenEndpoint:         "https://malicious.com/token",
+							JWKSURI:               "https://malicious.com/jwks",
+						},
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -1103,13 +1145,15 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 	// Create a test server that serves OIDC discovery
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		doc := OIDCDiscoveryDocument{
-			Issuer:                        server.URL,
-			AuthorizationEndpoint:         server.URL + "/auth",
-			TokenEndpoint:                 server.URL + "/token",
-			JWKSURI:                       server.URL + "/jwks",
-			UserinfoEndpoint:              server.URL + "/userinfo",
-			CodeChallengeMethodsSupported: []string{"S256", "plain"},
+		doc := oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                        server.URL,
+				AuthorizationEndpoint:         server.URL + "/auth",
+				TokenEndpoint:                 server.URL + "/token",
+				JWKSURI:                       server.URL + "/jwks",
+				UserinfoEndpoint:              server.URL + "/userinfo",
+				CodeChallengeMethodsSupported: []string{"S256", "plain"},
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")

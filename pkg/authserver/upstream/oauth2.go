@@ -16,8 +16,10 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -29,11 +31,16 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
 	// ProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
 	ProviderTypeOAuth2 ProviderType = "oauth2"
+
+	// maxResponseSize is the maximum allowed UserInfo response size (1MB).
+	// This prevents memory exhaustion from malicious or malformed responses.
+	maxResponseSize = 1 << 20
 )
 
 // AuthorizationOption configures authorization URL generation.
@@ -70,6 +77,15 @@ type OAuth2Provider interface {
 
 	// RefreshTokens refreshes the upstream IDP tokens.
 	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
+
+	// ResolveIdentity validates tokens and returns the canonical subject.
+	// For OIDC providers with ID tokens, it validates the token and nonce.
+	// For OAuth2 providers or as fallback, it fetches UserInfo.
+	ResolveIdentity(ctx context.Context, tokens *Tokens, nonce string) (subject string, err error)
+
+	// FetchUserInfo retrieves user information using the provided access token.
+	// Returns an error if the provider is not configured for UserInfo fetching.
+	FetchUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
 }
 
 // defaultTokenExpiration is the default token lifetime when expires_in is not specified.
@@ -133,6 +149,11 @@ func (c *OAuth2Config) Validate() error {
 	}
 	if err := networking.ValidateEndpointURL(c.TokenEndpoint); err != nil {
 		return fmt.Errorf("invalid token_endpoint: %w", err)
+	}
+	if c.UserInfo != nil {
+		if err := c.UserInfo.Validate(); err != nil {
+			return fmt.Errorf("invalid userinfo config: %w", err)
+		}
 	}
 	return c.CommonOAuthConfig.Validate()
 }
@@ -335,7 +356,7 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	if codeChallenge != "" {
 		oauth2Opts = append(oauth2Opts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+			oauth2.SetAuthURLParam("code_challenge_method", oauthproto.PKCEMethodS256),
 		)
 	}
 
@@ -422,6 +443,111 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken str
 	)
 
 	return tokens, nil
+}
+
+// FetchUserInfo fetches user information from the configured UserInfo endpoint.
+// Returns an error if no UserInfo endpoint is configured.
+// The field mapping from UserInfoConfig.FieldMapping is used to extract claims
+// from non-standard provider responses.
+func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
+	if p.config.UserInfo == nil {
+		return nil, errors.New("userinfo endpoint not configured")
+	}
+
+	cfg := p.config.UserInfo
+
+	if accessToken == "" {
+		return nil, errors.New("access token is required")
+	}
+
+	logger.Debugw("fetching user info",
+		"userinfo_endpoint", cfg.EndpointURL,
+	)
+
+	// Determine HTTP method (default GET per OIDC Core Section 5.3.1)
+	method := cfg.HTTPMethod
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, cfg.EndpointURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set authorization header per RFC 6750 (Bearer Token Usage)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	// Add any additional headers (useful for non-standard providers like GitHub)
+	for k, v := range cfg.AdditionalHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("userinfo request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		// Drain response body for connection reuse, but don't log it to avoid
+		// potentially exposing sensitive information from the upstream provider.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		logger.Debugw("userinfo request failed",
+			"status", resp.StatusCode)
+		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read userinfo response: %w", err)
+	}
+
+	var claims map[string]any
+	if err := json.Unmarshal(body, &claims); err != nil {
+		return nil, fmt.Errorf("failed to parse userinfo response: %w", err)
+	}
+
+	// Use configured field mapping for subject extraction
+	mapping := cfg.FieldMapping
+
+	// Extract and validate required subject claim
+	sub, err := mapping.ResolveSubject(claims)
+	if err != nil {
+		return nil, fmt.Errorf("userinfo response missing required subject claim: %w", err)
+	}
+
+	userInfo := &UserInfo{
+		Subject: sub,
+		Claims:  claims,
+	}
+
+	logger.Debugw("user info retrieved",
+		"subject", userInfo.Subject,
+	)
+
+	return userInfo, nil
+}
+
+// ResolveIdentity resolves the user's identity by fetching UserInfo.
+// For pure OAuth2 providers, this fetches user information from the configured endpoint.
+// OIDC-specific validation (ID token nonce, subject matching) will be added when
+// OIDCProvider is implemented.
+func (p *BaseOAuth2Provider) ResolveIdentity(ctx context.Context, tokens *Tokens, _ string) (string, error) {
+	if tokens == nil {
+		return "", ErrIdentityResolutionFailed
+	}
+
+	userInfo, err := p.FetchUserInfo(ctx, tokens.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+	}
+	if userInfo == nil || userInfo.Subject == "" {
+		return "", ErrIdentityResolutionFailed
+	}
+
+	return userInfo.Subject, nil
 }
 
 // formatOAuth2Error extracts error details from oauth2.RetrieveError for better error messages.

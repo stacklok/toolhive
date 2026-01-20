@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -29,12 +30,22 @@ type ollamaEmbedResponse struct {
 	Embedding []float64 `json:"embedding"`
 }
 
+// normalizeLocalhostURL converts localhost to 127.0.0.1 to avoid IPv6 resolution issues
+func normalizeLocalhostURL(url string) string {
+	// Replace localhost with 127.0.0.1 to ensure IPv4 connection
+	// This prevents connection refused errors when Ollama only listens on IPv4
+	return strings.ReplaceAll(url, "localhost", "127.0.0.1")
+}
+
 // NewOllamaBackend creates a new Ollama backend
 // Requires Ollama to be running locally: ollama serve
 // Default model: all-minilm (all-MiniLM-L6-v2, 384 dimensions)
 func NewOllamaBackend(baseURL, model string) (*OllamaBackend, error) {
 	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+		baseURL = "http://127.0.0.1:11434"
+	} else {
+		// Normalize localhost to 127.0.0.1 to avoid IPv6 resolution issues
+		baseURL = normalizeLocalhostURL(baseURL)
 	}
 	if model == "" {
 		model = "all-minilm" // Default embedding model (all-MiniLM-L6-v2)

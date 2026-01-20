@@ -2,6 +2,7 @@ package embeddings
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -24,7 +25,7 @@ type Config struct {
 	BackendType string
 
 	// BaseURL is the base URL for the embedding service
-	// - Ollama: http://localhost:11434
+	// - Ollama: http://127.0.0.1:11434 (or http://localhost:11434, will be normalized to 127.0.0.1)
 	// - vLLM: http://localhost:8000
 	BaseURL string
 
@@ -84,7 +85,10 @@ func NewManager(config *Config) (*Manager, error) {
 		// Use Ollama native API (requires ollama serve)
 		baseURL := config.BaseURL
 		if baseURL == "" {
-			baseURL = "http://localhost:11434"
+			baseURL = "http://127.0.0.1:11434"
+		} else {
+			// Normalize localhost to 127.0.0.1 to avoid IPv6 resolution issues
+			baseURL = strings.ReplaceAll(baseURL, "localhost", "127.0.0.1")
 		}
 		model := config.Model
 		if model == "" {

@@ -17,89 +17,85 @@
 //
 // # Architecture
 //
-// The package is designed around a core Provider interface that abstracts
+// The package is designed around a core OAuth2Provider interface that abstracts
 // upstream IDP operations. The interface captures essential OAuth/OIDC
 // operations without leaking implementation details:
 //
 //   - AuthorizationURL: Build redirect URL for user authentication
 //   - ExchangeCode: Exchange authorization code for tokens
 //   - RefreshTokens: Refresh expired tokens
-//   - UserInfo: Fetch user claims
-//
-// # Optional Capability Interfaces
-//
-// Implementations may also implement optional capability interfaces for
-// OIDC-specific features. Consumers should use type assertions to check:
-//
-//	if validator, ok := provider.(upstream.IDTokenNonceValidator); ok {
-//	    claims, err := validator.ValidateIDTokenWithNonce(idToken, nonce)
-//	}
-//
-// Available optional interfaces:
-//   - IDTokenNonceValidator: OIDC nonce validation for replay protection
-//   - UserInfoSubjectValidator: OIDC subject validation per Section 5.3.4
+//   - ResolveIdentity: Resolve user identity from tokens
+//   - FetchUserInfo: Fetch user claims
 //
 // # Type Hierarchy
 //
-//	Provider (interface)
+//	OAuth2Provider (interface)
 //	    |
-//	OIDCProvider (implementation)
-//	    |-- IDTokenNonceValidator (optional)
-//	    +-- UserInfoSubjectValidator (optional)
+//	BaseOAuth2Provider (pure OAuth 2.0 implementation)
+//
+// Future: OIDCProvider will extend BaseOAuth2Provider with OIDC-specific
+// features like ID token validation and nonce verification.
 //
 // # Value Objects
 //
 //   - Tokens: Token response from upstream IDP
 //   - UserInfo: User claims from UserInfo endpoint
-//   - Config: Configuration for upstream IDP connection
-//   - IDTokenClaims: Parsed claims from ID token
+//   - OAuth2Config: Configuration for OAuth 2.0 providers
+//   - IDTokenClaims: Parsed claims from ID token (for future OIDC support)
 //
 // # Usage
 //
-//	config := &upstream.Config{
-//	    Issuer:       "https://accounts.google.com",
-//	    ClientID:     "your-client-id",
-//	    ClientSecret: "your-client-secret",
-//	    RedirectURI:  "https://your-app.com/callback",
-//	    Scopes:       []string{"openid", "email", "profile"},
+//	config := &upstream.OAuth2Config{
+//	    CommonOAuthConfig: upstream.CommonOAuthConfig{
+//	        ClientID:     "your-client-id",
+//	        ClientSecret: "your-client-secret",
+//	        RedirectURI:  "https://your-app.com/callback",
+//	        Scopes:       []string{"read", "write"},
+//	    },
+//	    AuthorizationEndpoint: "https://provider.com/authorize",
+//	    TokenEndpoint:         "https://provider.com/token",
+//	    UserInfo: &upstream.UserInfoConfig{
+//	        EndpointURL: "https://provider.com/userinfo",
+//	    },
 //	}
 //
-//	provider, err := upstream.NewOIDCProvider(ctx, config)
+//	provider, err := upstream.NewOAuth2Provider(config)
 //	if err != nil {
 //	    return err
 //	}
 //
 //	// Build authorization URL
-//	authURL, err := provider.AuthorizationURL(state, pkceChallenge, nonce)
+//	authURL, err := provider.AuthorizationURL(state, pkceChallenge)
 //
 //	// After callback, exchange code for tokens
 //	tokens, err := provider.ExchangeCode(ctx, code, pkceVerifier)
 //
+//	// Resolve user identity
+//	subject, err := provider.ResolveIdentity(ctx, tokens, "")
+//
 // # Extensibility
 //
-// To add a new IDP type (e.g., SAML), implement the Provider interface.
-// The optional capability interfaces can be implemented as needed.
+// To add a new IDP type (e.g., SAML), implement the OAuth2Provider interface.
 //
 // # UserInfo Extensibility
 //
-// The package supports flexible UserInfo fetching through the UserInfoFetcher
-// interface and UserInfoConfig. This enables:
+// The package supports flexible UserInfo fetching through the OAuth2Provider
+// interface's FetchUserInfo method and UserInfoConfig. This enables:
 //
 //   - Custom field mapping for non-standard provider responses
 //   - Additional headers for provider-specific requirements
 //
-// To check if a provider supports UserInfo fetching:
+// All OAuth2Provider implementations support FetchUserInfo directly:
 //
-//	if fetcher, ok := provider.(upstream.UserInfoFetcher); ok {
-//	    userInfo, err := fetcher.FetchUserInfo(ctx, accessToken)
-//	}
+//	userInfo, err := provider.FetchUserInfo(ctx, accessToken)
 //
 // For custom provider configuration, use UserInfoConfig:
 //
 //	config := &upstream.UserInfoConfig{
 //	    EndpointURL: "https://api.example.com/user",
+//	    HTTPMethod:  "GET",  // or "POST" per OIDC Core Section 5.3.1
 //	    FieldMapping: &upstream.UserInfoFieldMapping{
-//	        SubjectField: "user_id",
+//	        SubjectField: "user_id",  // custom field for non-OIDC providers
 //	    },
 //	}
 package upstream

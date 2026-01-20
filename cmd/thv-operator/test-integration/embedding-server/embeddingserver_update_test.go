@@ -262,6 +262,168 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				},
 			},
 		},
+		// TODO(embeddingserver): Update assertion when Resources update is implemented in controller.
+		// Currently the controller doesn't update StatefulSet when Resources change.
+		{
+			Name: "When updating EmbeddingServer resources",
+			InitialState: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-update-resources",
+					Namespace: defaultNamespace,
+				},
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
+					Model: "sentence-transformers/all-MiniLM-L6-v2",
+					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
+					Resources: mcpv1alpha1.ResourceRequirements{
+						Limits:   mcpv1alpha1.ResourceList{CPU: "1", Memory: "2Gi"},
+						Requests: mcpv1alpha1.ResourceList{CPU: "500m", Memory: "1Gi"},
+					},
+				},
+			},
+			Updates: []UpdateStep{
+				{
+					// TODO(embeddingserver): Expect updated resources when implemented:
+					// Limits: {CPU: "2", Memory: "4Gi"}, Requests: {CPU: "1", Memory: "2Gi"}
+					Name: "Should not change StatefulSet when resource limits change (not yet implemented)",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.Resources = mcpv1alpha1.ResourceRequirements{
+							Limits:   mcpv1alpha1.ResourceList{CPU: "2", Memory: "4Gi"},
+							Requests: mcpv1alpha1.ResourceList{CPU: "1", Memory: "2Gi"},
+						}
+					},
+					// nil means expect no changes - Resources update not implemented yet
+					ExpectedStatefulSet: nil,
+				},
+			},
+		},
+		{
+			Name: "When updating EmbeddingServer args",
+			InitialState: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-update-args",
+					Namespace: defaultNamespace,
+				},
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
+					Model: "sentence-transformers/all-MiniLM-L6-v2",
+					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
+					Args:  []string{"--max-concurrent-requests", "256"},
+				},
+			},
+			Updates: []UpdateStep{
+				{
+					Name: "Should update StatefulSet when args change",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.Args = []string{"--max-concurrent-requests", "512", "--tokenization-workers", "4"}
+					},
+					ExpectedStatefulSet: &appsv1.StatefulSet{
+						Spec: appsv1.StatefulSetSpec{
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{{
+										Args: []string{"--max-concurrent-requests", "512", "--tokenization-workers", "4"},
+									}},
+								},
+							},
+						},
+					},
+				},
+				{
+					Name: "Should update StatefulSet when args are removed",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.Args = nil
+					},
+					ExpectedStatefulSet: &appsv1.StatefulSet{
+						Spec: appsv1.StatefulSetSpec{
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{{
+										Args: []string{"--model-id", "sentence-transformers/all-MiniLM-L6-v2"},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		// TODO(embeddingserver): Update assertion when ImagePullPolicy update is implemented in controller.
+		// Currently the controller doesn't update StatefulSet when ImagePullPolicy changes.
+		{
+			Name: "When updating EmbeddingServer ImagePullPolicy",
+			InitialState: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-update-imagepullpolicy",
+					Namespace: defaultNamespace,
+				},
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
+					Model:           "sentence-transformers/all-MiniLM-L6-v2",
+					Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
+					ImagePullPolicy: "IfNotPresent",
+				},
+			},
+			Updates: []UpdateStep{
+				{
+					// TODO(embeddingserver): Expect ImagePullPolicy: corev1.PullAlways when implemented
+					Name: "Should not change StatefulSet when ImagePullPolicy changes (not yet implemented)",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.ImagePullPolicy = "Always"
+					},
+					// nil means expect no changes - ImagePullPolicy update not implemented yet
+					ExpectedStatefulSet: nil,
+				},
+			},
+		},
+		// TODO(embeddingserver): Update assertions when ResourceOverrides update is implemented.
+		// Currently ResourceOverrides changes don't propagate to StatefulSet/Service.
+		{
+			Name: "When updating EmbeddingServer ResourceOverrides",
+			InitialState: &mcpv1alpha1.EmbeddingServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-update-resourceoverrides",
+					Namespace: defaultNamespace,
+				},
+				Spec: mcpv1alpha1.EmbeddingServerSpec{
+					Model: "sentence-transformers/all-MiniLM-L6-v2",
+					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
+				},
+			},
+			Updates: []UpdateStep{
+				{
+					// TODO(embeddingserver): Expect Annotations: {"new-annotation": "new-value"} when implemented
+					Name: "Should not change StatefulSet when adding annotations (not yet implemented)",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.ResourceOverrides = &mcpv1alpha1.EmbeddingResourceOverrides{
+							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+									Annotations: map[string]string{"new-annotation": "new-value"},
+								},
+							},
+						}
+					},
+					// nil means expect no changes - ResourceOverrides not implemented yet
+					ExpectedStatefulSet: nil,
+				},
+				{
+					// TODO(embeddingserver): Expect Service Annotations: {"service-annotation": "service-value"} when implemented
+					Name: "Should not change Service when adding service annotations (not yet implemented)",
+					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
+						es.Spec.ResourceOverrides = &mcpv1alpha1.EmbeddingResourceOverrides{
+							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+									Annotations: map[string]string{"new-annotation": "new-value"},
+								},
+							},
+							Service: &mcpv1alpha1.ResourceMetadataOverrides{
+								Annotations: map[string]string{"service-annotation": "service-value"},
+							},
+						}
+					},
+					// nil means expect no changes - ResourceOverrides not implemented yet
+					ExpectedStatefulSet: nil,
+					ExpectedService:     nil,
+				},
+			},
+		},
 	}
 
 	// Helper to run a single update test case

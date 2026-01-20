@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
@@ -71,28 +72,6 @@ func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient
 	}
 }
 
-// convertToMCPMeta converts vmcp Meta (map[string]any) to mcp.Meta.
-// This forwards the _meta field from backend responses to MCP clients.
-func convertToMCPMeta(meta map[string]any) *mcp.Meta {
-	if len(meta) == 0 {
-		return nil
-	}
-
-	result := &mcp.Meta{
-		AdditionalFields: make(map[string]any),
-	}
-
-	for k, v := range meta {
-		if k == "progressToken" {
-			result.ProgressToken = v
-		} else {
-			result.AdditionalFields[k] = v
-		}
-	}
-
-	return result
-}
-
 // convertToMCPContent converts vmcp.Content to mcp.Content.
 // This reconstructs MCP content from the vmcp wrapper type.
 func convertToMCPContent(content vmcp.Content) mcp.Content {
@@ -101,11 +80,15 @@ func convertToMCPContent(content vmcp.Content) mcp.Content {
 		return mcp.NewTextContent(content.Text)
 	case "image":
 		return mcp.NewImageContent(content.Data, content.MimeType)
+	case "audio":
+		return mcp.NewAudioContent(content.Data, content.MimeType)
 	case "resource":
 		// Handle embedded resources if needed
 		// For now, convert to text
+		logger.Warnf("Converting resource content to empty text - embedded resources not yet supported")
 		return mcp.NewTextContent("")
 	default:
+		logger.Warnf("Converting unknown content type %q to empty text - this may cause data loss", content.Type)
 		return mcp.NewTextContent("")
 	}
 }
@@ -159,7 +142,7 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		// Create MCP tool result with _meta field preserved
 		mcpResult := &mcp.CallToolResult{
 			Result: mcp.Result{
-				Meta: convertToMCPMeta(result.Meta),
+				Meta: conversion.ToMCPMeta(result.Meta),
 			},
 			Content:           mcpContent,
 			StructuredContent: result.StructuredContent,
@@ -281,7 +264,7 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 		// Create MCP prompt result with _meta field preserved
 		mcpResult := &mcp.GetPromptResult{
 			Result: mcp.Result{
-				Meta: convertToMCPMeta(result.Meta),
+				Meta: conversion.ToMCPMeta(result.Meta),
 			},
 			Description: description,
 			Messages: []mcp.PromptMessage{

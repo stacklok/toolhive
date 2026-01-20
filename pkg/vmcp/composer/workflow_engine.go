@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -474,19 +475,7 @@ func (e *workflowEngine) callToolWithRetry(
 
 		// Fallback: convert Content array to map for backward compatibility.
 		// This happens when backends return only Content without StructuredContent.
-		output := make(map[string]any)
-		textIndex := 0
-		for _, content := range result.Content {
-			if content.Type == "text" {
-				key := "text"
-				if textIndex > 0 {
-					key = "text_" + string(rune(textIndex+'0'))
-				}
-				output[key] = content.Text
-				textIndex++
-			}
-		}
-		return output, nil
+		return conversion.ContentArrayToMap(result.Content), nil
 	}
 
 	// Execute with retry

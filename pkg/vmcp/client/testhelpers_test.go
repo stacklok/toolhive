@@ -28,7 +28,8 @@ func convertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
 	return inputSchema
 }
 
-// convertContentToMap simulates the conversion logic from client.go:228-250
+// convertContentToMap simulates the conversion logic from conversion.ContentArrayToMap
+// This test helper converts MCP SDK content types to a map for testing.
 func convertContentToMap(contents []mcp.Content) map[string]any {
 	resultMap := make(map[string]any)
 	textIndex := 0
@@ -44,6 +45,12 @@ func convertContentToMap(contents []mcp.Content) map[string]any {
 		} else if imageContent, ok := mcp.AsImageContent(content); ok {
 			key := fmt.Sprintf("image_%d", imageIndex)
 			resultMap[key] = imageContent.Data
+			imageIndex++
+		} else if audioContent, ok := mcp.AsAudioContent(content); ok {
+			// Audio content uses the same structure as images (Data + MimeType)
+			// For testing purposes, we use the image_ key prefix (matches conversion.ContentArrayToMap behavior)
+			key := fmt.Sprintf("image_%d", imageIndex)
+			resultMap[key] = audioContent.Data
 			imageIndex++
 		}
 	}

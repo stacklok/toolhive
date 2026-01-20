@@ -1,5 +1,5 @@
 ---
-name: PR Inline Review
+name: pr-inline-review
 description: Submit inline review comments to GitHub Pull Requests using the GitHub CLI, with support for inline code suggestions.
 ---
 

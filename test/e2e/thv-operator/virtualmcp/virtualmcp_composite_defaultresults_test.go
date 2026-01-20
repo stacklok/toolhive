@@ -1,7 +1,6 @@
 package virtualmcp
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,9 +8,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -39,35 +38,6 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 		CreateMCPServerAndWait(ctx, k8sClient, backendName, testNamespace, mcpGroupName,
 			images.YardstickServerImage, timeout, pollingInterval)
 
-		// JSON Schema for composite tool parameters
-		parameterSchema := map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"run_step": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Whether to run the conditional step",
-				},
-				"message": map[string]interface{}{
-					"type":        "string",
-					"description": "Message to echo if step runs",
-				},
-			},
-			"required": []string{"run_step", "message"},
-		}
-		paramSchemaBytes, err := json.Marshal(parameterSchema)
-		Expect(err).ToNot(HaveOccurred())
-
-		// Build arguments for the conditional step
-		conditionalStepArgs, err := json.Marshal(map[string]any{
-			"input": "{{ .params.message }}",
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		// Build defaultResults - uses "text" key to match actual backend output format
-		// (Backend HTTP client stores TextContent under "text" key)
-		defaultResultsBytes, err := json.Marshal("default_value_when_skipped")
-		Expect(err).ToNot(HaveOccurred())
-
 		By("Creating VirtualMCPServer with composite tool using defaultResults")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -75,50 +45,63 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
+					// Define a composite tool with a conditional step that has defaultResults
+					CompositeTools: []vmcpconfig.CompositeToolConfig{
+						{
+							Name:        compositeToolName,
+							Description: "Conditionally echoes input, uses default when skipped",
+							Parameters: thvjson.NewMap(map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"run_step": map[string]any{
+										"type":        "boolean",
+										"description": "Whether to run the conditional step",
+									},
+									"message": map[string]any{
+										"type":        "string",
+										"description": "Message to echo if step runs",
+									},
+								},
+								"required": []any{"run_step", "message"},
+							}),
+							Timeout: vmcpconfig.Duration(30 * time.Second),
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "conditional_step",
+									Type: "tool",
+									Tool: fmt.Sprintf("%s_echo", backendName),
+									// Only run when run_step=true
+									Condition: "{{.params.run_step}}",
+									Arguments: thvjson.NewMap(map[string]any{
+										"input": "{{ .params.message }}",
+									}),
+									// When skipped, use this default value
+									// Uses "text" key to match backend output format
+									DefaultResults: thvjson.NewMap(map[string]any{
+										"text": "default_value_when_skipped",
+									}),
+								},
+							},
+							// Output references the conditional step's output.text
+							Output: &vmcpconfig.OutputConfig{
+								Properties: map[string]vmcpconfig.OutputProperty{
+									"result": {
+										Type:        "string",
+										Description: "Result from conditional step",
+										Value:       "{{.steps.conditional_step.output.text}}",
+									},
+								},
+							},
+						},
+					},
+				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
-				},
-				// Define a composite tool with a conditional step that has defaultResults
-				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-					{
-						Name:        compositeToolName,
-						Description: "Conditionally echoes input, uses default when skipped",
-						Parameters: &runtime.RawExtension{
-							Raw: paramSchemaBytes,
-						},
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "conditional_step",
-								Type: "tool",
-								Tool: fmt.Sprintf("%s_echo", backendName),
-								// Only run when run_step=true
-								Condition: "{{.params.run_step}}",
-								Arguments: &runtime.RawExtension{
-									Raw: conditionalStepArgs,
-								},
-								// When skipped, use this default value
-								// Uses "text" key to match backend output format
-								DefaultResults: map[string]runtime.RawExtension{
-									"text": {Raw: defaultResultsBytes},
-								},
-							},
-						},
-						// Output references the conditional step's output.text
-						Output: &mcpv1alpha1.OutputSpec{
-							Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-								"result": {
-									Type:        "string",
-									Description: "Result from conditional step",
-									Value:       "{{.steps.conditional_step.output.text}}",
-								},
-							},
-						},
-						Timeout: "30s",
-					},
 				},
 				ServiceType: "NodePort",
 			},

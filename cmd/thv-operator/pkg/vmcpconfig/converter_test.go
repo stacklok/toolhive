@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -170,365 +171,10 @@ func TestConverter_OIDCResolution(t *testing.T) {
 	}
 }
 
-func TestConvertCompositeTools_Parameters(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		parameters      *runtime.RawExtension
-		expectedParams  map[string]any
-		expectNilParams bool
-		description     string
-	}{
-		{
-			name:       "valid JSON Schema parameters",
-			parameters: &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)},
-			expectedParams: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{
-						"type": "string",
-					},
-				},
-			},
-			expectNilParams: false,
-			description:     "Should correctly parse valid JSON Schema parameters",
-		},
-		{
-			name:            "nil parameters",
-			parameters:      nil,
-			expectedParams:  nil,
-			expectNilParams: true,
-			description:     "Should handle nil parameters",
-		},
-		{
-			name:            "empty raw extension",
-			parameters:      &runtime.RawExtension{Raw: []byte{}},
-			expectedParams:  nil,
-			expectNilParams: true,
-			description:     "Should handle empty raw extension",
-		},
-		{
-			name:            "invalid JSON - should be nil after error",
-			parameters:      &runtime.RawExtension{Raw: []byte(`{invalid json}`)},
-			expectedParams:  nil,
-			expectNilParams: true,
-			description:     "Should handle invalid JSON gracefully (log error, leave params nil)",
-		},
-		{
-			name:       "complex parameters with required array",
-			parameters: &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name"]}`)},
-			expectedParams: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{"type": "string"},
-					"age":  map[string]any{"type": "integer"},
-				},
-				"required": []any{"name"},
-			},
-			expectNilParams: false,
-			description:     "Should correctly parse complex JSON Schema with required array",
-		},
-		{
-			// This test case explicitly verifies that description and default fields
-			// at the property level are preserved, addressing issue #2775
-			name: "parameters with description and default fields (issue #2775)",
-			parameters: &runtime.RawExtension{Raw: []byte(`{
-				"type": "object",
-				"properties": {
-					"environment": {
-						"type": "string",
-						"description": "Target deployment environment",
-						"default": "staging"
-					},
-					"replicas": {
-						"type": "integer",
-						"description": "Number of pod replicas",
-						"default": 3
-					}
-				},
-				"required": ["environment"]
-			}`)},
-			expectedParams: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"environment": map[string]any{
-						"type":        "string",
-						"description": "Target deployment environment",
-						"default":     "staging",
-					},
-					"replicas": map[string]any{
-						"type":        "integer",
-						"description": "Number of pod replicas",
-						"default":     float64(3), // JSON numbers unmarshal as float64
-					},
-				},
-				"required": []any{"environment"},
-			},
-			expectNilParams: false,
-			description:     "Should preserve description and default fields per issue #2775",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a VirtualMCPServer with the test parameters
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Parameters:  tt.parameters,
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "some-tool",
-								},
-							},
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-
-			// Convert
-			result, err := converter.convertCompositeTools(ctx, vmcpServer)
-			require.NoError(t, err)
-
-			// Assertions
-			require.Len(t, result, 1, "Should have one composite tool")
-
-			if tt.expectNilParams {
-				assert.True(t, result[0].Parameters.IsEmpty(), tt.description)
-			} else {
-				require.False(t, result[0].Parameters.IsEmpty(), tt.description)
-				assert.Equal(t, tt.expectedParams, result[0].Parameters.Value, tt.description)
-			}
-		})
-	}
-}
-
-func TestConvertCompositeTools_Timeout(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		timeout         string
-		expectedTimeout int64 // in nanoseconds (Duration)
-		description     string
-	}{
-		{
-			name:            "valid timeout",
-			timeout:         "5m",
-			expectedTimeout: 5 * 60 * 1e9,
-			description:     "Should correctly parse valid timeout",
-		},
-		{
-			name:            "empty timeout",
-			timeout:         "",
-			expectedTimeout: 0,
-			description:     "Should handle empty timeout",
-		},
-		{
-			name:            "invalid timeout format - should default to 30m",
-			timeout:         "invalid",
-			expectedTimeout: 30 * 60 * 1e9, // 30 minutes (default from CRD)
-			description:     "Should handle invalid timeout format gracefully by using default 30m",
-		},
-		{
-			name:            "timeout in seconds",
-			timeout:         "30s",
-			expectedTimeout: 30 * 1e9,
-			description:     "Should correctly parse seconds timeout",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Timeout:     tt.timeout,
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "some-tool",
-								},
-							},
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-
-			result, err := converter.convertCompositeTools(ctx, vmcpServer)
-			require.NoError(t, err)
-
-			require.Len(t, result, 1)
-			assert.Equal(t, tt.expectedTimeout, int64(result[0].Timeout), tt.description)
-		})
-	}
-}
-
-func TestConverter_ConvertCompositeTools_ErrorHandling(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		errorHandling  *mcpv1alpha1.ErrorHandling
-		expectedAction string
-		expectedRetry  int
-		expectedDelay  vmcpconfig.Duration
-	}{
-		{
-			name: "with retry delay",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action:     mcpv1alpha1.ErrorActionRetry,
-				MaxRetries: 3,
-				RetryDelay: "5s",
-			},
-			expectedAction: mcpv1alpha1.ErrorActionRetry,
-			expectedRetry:  3,
-			expectedDelay:  vmcpconfig.Duration(5 * time.Second),
-		},
-		{
-			name: "with millisecond retry delay",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action:     mcpv1alpha1.ErrorActionRetry,
-				MaxRetries: 5,
-				RetryDelay: "500ms",
-			},
-			expectedAction: mcpv1alpha1.ErrorActionRetry,
-			expectedRetry:  5,
-			expectedDelay:  vmcpconfig.Duration(500 * time.Millisecond),
-		},
-		{
-			name: "with minute retry delay",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action:     mcpv1alpha1.ErrorActionRetry,
-				MaxRetries: 2,
-				RetryDelay: "1m",
-			},
-			expectedAction: mcpv1alpha1.ErrorActionRetry,
-			expectedRetry:  2,
-			expectedDelay:  vmcpconfig.Duration(1 * time.Minute),
-		},
-		{
-			name: "without retry delay",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action:     mcpv1alpha1.ErrorActionRetry,
-				MaxRetries: 3,
-			},
-			expectedAction: mcpv1alpha1.ErrorActionRetry,
-			expectedRetry:  3,
-			expectedDelay:  vmcpconfig.Duration(0),
-		},
-		{
-			name: "abort action",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action: mcpv1alpha1.ErrorActionAbort,
-			},
-			expectedAction: mcpv1alpha1.ErrorActionAbort,
-			expectedRetry:  0,
-			expectedDelay:  vmcpconfig.Duration(0),
-		},
-		{
-			name: "continue action",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action: mcpv1alpha1.ErrorActionContinue,
-			},
-			expectedAction: mcpv1alpha1.ErrorActionContinue,
-			expectedRetry:  0,
-			expectedDelay:  vmcpconfig.Duration(0),
-		},
-		{
-			name: "invalid retry delay format is ignored",
-			errorHandling: &mcpv1alpha1.ErrorHandling{
-				Action:     mcpv1alpha1.ErrorActionRetry,
-				MaxRetries: 3,
-				RetryDelay: "invalid",
-			},
-			expectedAction: mcpv1alpha1.ErrorActionRetry,
-			expectedRetry:  3,
-			expectedDelay:  vmcpconfig.Duration(0),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:      "step1",
-									Type:    "tool",
-									Tool:    "backend/some-tool",
-									OnError: tt.errorHandling,
-								},
-							},
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, vmcpServer)
-
-			require.NoError(t, err)
-			require.NotNil(t, config)
-			require.Len(t, config.CompositeTools, 1)
-			require.Len(t, config.CompositeTools[0].Steps, 1)
-
-			step := config.CompositeTools[0].Steps[0]
-			if tt.errorHandling != nil {
-				require.NotNil(t, step.OnError)
-				assert.Equal(t, tt.expectedAction, step.OnError.Action)
-				assert.Equal(t, tt.expectedRetry, step.OnError.RetryCount)
-				assert.Equal(t, tt.expectedDelay, step.OnError.RetryDelay)
-			} else {
-				assert.Nil(t, step.OnError)
-			}
-		})
-	}
-}
-
-func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
+// TestConverter_CompositeToolsPassThrough verifies that CompositeTools from spec.config.CompositeTools
+// are correctly passed through during conversion and not dropped.
+// It also verifies that Duration fields serialize to human-readable formats (e.g., "30s").
+func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 	t.Parallel()
 
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -537,17 +183,25 @@ func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
-			CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-				{
-					Name:        "test-tool",
-					Description: "A test composite tool",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						{
-							ID:   "step1",
-							Type: "tool",
-							Tool: "backend/some-tool",
-							// No OnError specified
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        "test-composite-tool",
+						Description: "A test composite tool",
+						Timeout:     vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.some-tool",
+							},
+							{
+								ID:        "step2",
+								Type:      "tool",
+								Tool:      "backend.other-tool",
+								DependsOn: []string{"step1"},
+							},
 						},
 					},
 				},
@@ -561,708 +215,21 @@ func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
-	require.Len(t, config.CompositeTools, 1)
-	require.Len(t, config.CompositeTools[0].Steps, 1)
-
-	step := config.CompositeTools[0].Steps[0]
-	assert.Nil(t, step.OnError)
-}
-
-func TestConverter_ConvertCompositeTools_ElicitationResponseHandlers(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                    string
-		onDecline               *mcpv1alpha1.ElicitationResponseHandler
-		onCancel                *mcpv1alpha1.ElicitationResponseHandler
-		expectedOnDeclineAction string
-		expectedOnCancelAction  string
-		expectOnDeclineNil      bool
-		expectOnCancelNil       bool
-	}{
-		{
-			name:                    "with OnDecline skip_remaining",
-			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
-			onCancel:                nil,
-			expectedOnDeclineAction: "skip_remaining",
-			expectOnDeclineNil:      false,
-			expectOnCancelNil:       true,
-		},
-		{
-			name:                    "with OnDecline abort",
-			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
-			onCancel:                nil,
-			expectedOnDeclineAction: "abort",
-			expectOnDeclineNil:      false,
-			expectOnCancelNil:       true,
-		},
-		{
-			name:                    "with OnDecline continue",
-			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "continue"},
-			onCancel:                nil,
-			expectedOnDeclineAction: "continue",
-			expectOnDeclineNil:      false,
-			expectOnCancelNil:       true,
-		},
-		{
-			name:                   "with OnCancel skip_remaining",
-			onDecline:              nil,
-			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
-			expectedOnCancelAction: "skip_remaining",
-			expectOnDeclineNil:     true,
-			expectOnCancelNil:      false,
-		},
-		{
-			name:                   "with OnCancel abort",
-			onDecline:              nil,
-			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
-			expectedOnCancelAction: "abort",
-			expectOnDeclineNil:     true,
-			expectOnCancelNil:      false,
-		},
-		{
-			name:                   "with OnCancel continue",
-			onDecline:              nil,
-			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "continue"},
-			expectedOnCancelAction: "continue",
-			expectOnDeclineNil:     true,
-			expectOnCancelNil:      false,
-		},
-		{
-			name:                    "with both OnDecline and OnCancel",
-			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
-			onCancel:                &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
-			expectedOnDeclineAction: "skip_remaining",
-			expectedOnCancelAction:  "abort",
-			expectOnDeclineNil:      false,
-			expectOnCancelNil:       false,
-		},
-		{
-			name:               "with neither OnDecline nor OnCancel",
-			onDecline:          nil,
-			onCancel:           nil,
-			expectOnDeclineNil: true,
-			expectOnCancelNil:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:        "step1",
-									Type:      "elicitation",
-									Message:   "Please provide input",
-									OnDecline: tt.onDecline,
-									OnCancel:  tt.onCancel,
-								},
-							},
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, vmcpServer)
-
-			require.NoError(t, err)
-			require.NotNil(t, config)
-			require.Len(t, config.CompositeTools, 1)
-			require.Len(t, config.CompositeTools[0].Steps, 1)
-
-			step := config.CompositeTools[0].Steps[0]
-
-			// Check OnDecline
-			if tt.expectOnDeclineNil {
-				assert.Nil(t, step.OnDecline)
-			} else {
-				require.NotNil(t, step.OnDecline)
-				assert.Equal(t, tt.expectedOnDeclineAction, step.OnDecline.Action)
-			}
-
-			// Check OnCancel
-			if tt.expectOnCancelNil {
-				assert.Nil(t, step.OnCancel)
-			} else {
-				require.NotNil(t, step.OnCancel)
-				assert.Equal(t, tt.expectedOnCancelAction, step.OnCancel.Action)
-			}
-		})
-	}
-}
-
-func TestConverter_ConvertCompositeTools_StepTimeout(t *testing.T) {
-	t.Parallel()
-
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
-			CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-				{
-					Name:        "test-tool",
-					Description: "A test composite tool",
-					Timeout:     "30s",
-					Steps: []mcpv1alpha1.WorkflowStep{
-						{
-							ID:      "step1",
-							Type:    "tool",
-							Tool:    "backend/some-tool",
-							Timeout: "10s",
-						},
-					},
-				},
-			},
-		},
-	}
-
-	converter := newTestConverter(t, newNoOpMockResolver(t))
-	ctx := log.IntoContext(context.Background(), logr.Discard())
-	config, err := converter.Convert(ctx, vmcpServer)
-
-	require.NoError(t, err)
-	require.NotNil(t, config)
-	require.Len(t, config.CompositeTools, 1)
+	require.Len(t, config.CompositeTools, 1, "CompositeTools should not be dropped during conversion")
 
 	tool := config.CompositeTools[0]
+	assert.Equal(t, "test-composite-tool", tool.Name)
+	assert.Equal(t, "A test composite tool", tool.Description)
 	assert.Equal(t, vmcpconfig.Duration(30*time.Second), tool.Timeout)
+	require.Len(t, tool.Steps, 2)
+	assert.Equal(t, "step1", tool.Steps[0].ID)
+	assert.Equal(t, "step2", tool.Steps[1].ID)
+	assert.Equal(t, []string{"step1"}, tool.Steps[1].DependsOn)
 
-	require.Len(t, tool.Steps, 1)
-	assert.Equal(t, vmcpconfig.Duration(10*time.Second), tool.Steps[0].Timeout)
-}
-
-func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
-	t.Parallel()
-
-	// Test cases with valid JSON - use round-trip testing where input JSON is parsed
-	// and compared with output to verify types are preserved correctly
-	validJSONTests := []struct {
-		name          string
-		argumentsJSON string
-		description   string
-	}{
-		{
-			name:          "integer arguments",
-			argumentsJSON: `{"max_results": 5, "query": "test"}`,
-			description:   "Should correctly parse integer arguments (as float64)",
-		},
-		{
-			name:          "boolean arguments",
-			argumentsJSON: `{"enabled": true, "verbose": false}`,
-			description:   "Should correctly parse boolean arguments",
-		},
-		{
-			name:          "array arguments",
-			argumentsJSON: `{"tags": ["tag1", "tag2"], "ids": [1, 2, 3]}`,
-			description:   "Should correctly parse array arguments",
-		},
-		{
-			name:          "object arguments",
-			argumentsJSON: `{"config": {"timeout": 30, "retries": 3}}`,
-			description:   "Should correctly parse nested object arguments",
-		},
-		{
-			name:          "mixed types with template strings",
-			argumentsJSON: `{"input": "{{ .params.message }}", "count": 10, "enabled": true}`,
-			description:   "Should preserve template strings alongside non-string types",
-		},
-	}
-
-	for _, tt := range validJSONTests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Parse the expected args from the input JSON (round-trip test)
-			var expectedArgs map[string]any
-			require.NoError(t, json.Unmarshal([]byte(tt.argumentsJSON), &expectedArgs),
-				"Test setup: input JSON should be valid")
-
-			arguments := &runtime.RawExtension{Raw: []byte(tt.argumentsJSON)}
-
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:        "step1",
-									Type:      "tool",
-									Tool:      "backend.some-tool",
-									Arguments: arguments,
-								},
-							},
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-
-			result, err := converter.convertCompositeTools(ctx, vmcpServer)
-			require.NoError(t, err, tt.description)
-			require.Len(t, result, 1, "Should have one composite tool")
-			require.Len(t, result[0].Steps, 1, "Should have one step")
-
-			stepArgs := result[0].Steps[0].Arguments
-			require.False(t, stepArgs.IsEmpty(), tt.description)
-			assert.Equal(t, expectedArgs, stepArgs.Value, tt.description)
-		})
-	}
-
-	t.Run("nil arguments returns empty json.Any", func(t *testing.T) {
-		t.Parallel()
-
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-vmcp",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: "test-group"},
-				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-					{
-						Name:        "test-tool",
-						Description: "A test composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:        "step1",
-								Type:      "tool",
-								Tool:      "backend.some-tool",
-								Arguments: nil, // No arguments
-							},
-						},
-					},
-				},
-			},
-		}
-
-		converter := newTestConverter(t, newNoOpMockResolver(t))
-		ctx := log.IntoContext(context.Background(), logr.Discard())
-
-		result, err := converter.convertCompositeTools(ctx, vmcpServer)
-		require.NoError(t, err)
-		require.Len(t, result, 1)
-		require.Len(t, result[0].Steps, 1)
-
-		stepArgs := result[0].Steps[0].Arguments
-		assert.True(t, stepArgs.IsEmpty(), "Should be empty json.Any")
-	})
-
-	t.Run("invalid JSON returns error", func(t *testing.T) {
-		t.Parallel()
-
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-vmcp",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: "test-group"},
-				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-					{
-						Name:        "test-tool",
-						Description: "A test composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:        "step1",
-								Type:      "tool",
-								Tool:      "backend.some-tool",
-								Arguments: &runtime.RawExtension{Raw: []byte(`{invalid json}`)},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		converter := newTestConverter(t, newNoOpMockResolver(t))
-		ctx := log.IntoContext(context.Background(), logr.Discard())
-
-		_, err := converter.convertCompositeTools(ctx, vmcpServer)
-		require.Error(t, err, "Should return error for invalid JSON")
-		assert.Contains(t, err.Error(), "failed to convert steps")
-	})
-}
-
-// validateOutputProperties is a recursive helper function to validate output properties at any nesting level
-func validateOutputProperties(t *testing.T, expected, actual map[string]vmcpconfig.OutputProperty, path string) {
-	t.Helper()
-
-	for propName, expectedProp := range expected {
-		fullPath := propName
-		if path != "" {
-			fullPath = path + "." + propName
-		}
-
-		actualProp, exists := actual[propName]
-		require.True(t, exists, "Property %s should exist", fullPath)
-		assert.Equal(t, expectedProp.Type, actualProp.Type, "Property %s type mismatch", fullPath)
-		assert.Equal(t, expectedProp.Description, actualProp.Description, "Property %s description mismatch", fullPath)
-		assert.Equal(t, expectedProp.Value, actualProp.Value, "Property %s value mismatch", fullPath)
-		assert.Equal(t, expectedProp.Default, actualProp.Default, "Property %s default mismatch", fullPath)
-
-		// Recursively validate nested properties
-		if len(expectedProp.Properties) > 0 {
-			assert.Equal(t, len(expectedProp.Properties), len(actualProp.Properties),
-				"Property %s nested properties count mismatch", fullPath)
-			validateOutputProperties(t, expectedProp.Properties, actualProp.Properties, fullPath)
-		}
-	}
-}
-
-func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		outputSpec     *mcpv1alpha1.OutputSpec
-		expectedOutput *vmcpconfig.OutputConfig
-		description    string
-	}{
-		{
-			name:           "nil output spec",
-			outputSpec:     nil,
-			expectedOutput: nil,
-			description:    "Should handle nil output spec",
-		},
-		{
-			name: "simple output with string property",
-			outputSpec: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"result": {
-						Type:        "string",
-						Description: "The result of the workflow",
-						Value:       "{{.steps.step1.output.data}}",
-					},
-				},
-				Required: []string{"result"},
-			},
-			expectedOutput: &vmcpconfig.OutputConfig{
-				Properties: map[string]vmcpconfig.OutputProperty{
-					"result": {
-						Type:        "string",
-						Description: "The result of the workflow",
-						Value:       "{{.steps.step1.output.data}}",
-					},
-				},
-				Required: []string{"result"},
-			},
-			description: "Should correctly convert simple output spec",
-		},
-		{
-			name: "output with multiple properties and scalar defaults",
-			outputSpec: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"status": {
-						Type:        "string",
-						Description: "Status of the operation",
-						Value:       "{{.steps.step1.output.status}}",
-						Default:     &runtime.RawExtension{Raw: []byte(`"pending"`)},
-					},
-					"count": {
-						Type:        "integer",
-						Description: "Number of items processed",
-						Value:       "{{.steps.step1.output.count}}",
-						Default:     &runtime.RawExtension{Raw: []byte(`0`)},
-					},
-					"enabled": {
-						Type:        "boolean",
-						Description: "Whether the feature is enabled",
-						Value:       "{{.steps.step1.output.enabled}}",
-						Default:     &runtime.RawExtension{Raw: []byte(`true`)},
-					},
-				},
-				Required: []string{"status"},
-			},
-			expectedOutput: &vmcpconfig.OutputConfig{
-				Properties: map[string]vmcpconfig.OutputProperty{
-					"status": {
-						Type:        "string",
-						Description: "Status of the operation",
-						Value:       "{{.steps.step1.output.status}}",
-						Default:     thvjson.NewAny("pending"),
-					},
-					"count": {
-						Type:        "integer",
-						Description: "Number of items processed",
-						Value:       "{{.steps.step1.output.count}}",
-						Default:     thvjson.NewAny(float64(0)),
-					},
-					"enabled": {
-						Type:        "boolean",
-						Description: "Whether the feature is enabled",
-						Value:       "{{.steps.step1.output.enabled}}",
-						Default:     thvjson.NewAny(true),
-					},
-				},
-				Required: []string{"status"},
-			},
-			description: "Should correctly convert output spec with scalar defaults",
-		},
-		{
-			name: "output with object-typed default value",
-			outputSpec: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"config": {
-						Type:        "object",
-						Description: "Configuration object",
-						Value:       "{{.steps.step1.output.config}}",
-						Default:     &runtime.RawExtension{Raw: []byte(`{"timeout": 30, "retries": 3, "enabled": true}`)},
-					},
-					"tags": {
-						Type:        "array",
-						Description: "List of tags",
-						Value:       "{{.steps.step1.output.tags}}",
-						Default:     &runtime.RawExtension{Raw: []byte(`["default", "prod"]`)},
-					},
-				},
-			},
-			expectedOutput: &vmcpconfig.OutputConfig{
-				Properties: map[string]vmcpconfig.OutputProperty{
-					"config": {
-						Type:        "object",
-						Description: "Configuration object",
-						Value:       "{{.steps.step1.output.config}}",
-						Default:     thvjson.NewAny(map[string]any{"timeout": float64(30), "retries": float64(3), "enabled": true}),
-					},
-					"tags": {
-						Type:        "array",
-						Description: "List of tags",
-						Value:       "{{.steps.step1.output.tags}}",
-						Default:     thvjson.NewAny([]any{"default", "prod"}),
-					},
-				},
-			},
-			description: "Should correctly convert output spec with object and array default values",
-		},
-		{
-			name: "output with nested object properties",
-			outputSpec: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"metadata": {
-						Type:        "object",
-						Description: "Metadata about the result",
-						Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-							"timestamp": {
-								Type:        "string",
-								Description: "When the result was generated",
-								Value:       "{{.steps.step1.output.timestamp}}",
-							},
-							"version": {
-								Type:        "integer",
-								Description: "Version of the result format",
-								Value:       "{{.steps.step1.output.version}}",
-								Default:     &runtime.RawExtension{Raw: []byte(`1`)},
-							},
-						},
-					},
-				},
-			},
-			expectedOutput: &vmcpconfig.OutputConfig{
-				Properties: map[string]vmcpconfig.OutputProperty{
-					"metadata": {
-						Type:        "object",
-						Description: "Metadata about the result",
-						Properties: map[string]vmcpconfig.OutputProperty{
-							"timestamp": {
-								Type:        "string",
-								Description: "When the result was generated",
-								Value:       "{{.steps.step1.output.timestamp}}",
-							},
-							"version": {
-								Type:        "integer",
-								Description: "Version of the result format",
-								Value:       "{{.steps.step1.output.version}}",
-								Default:     thvjson.NewAny(float64(1)),
-							},
-						},
-					},
-				},
-			},
-			description: "Should correctly convert output spec with nested objects",
-		},
-		{
-			name: "output with deeply nested object properties (3+ levels)",
-			outputSpec: &mcpv1alpha1.OutputSpec{
-				Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-					"response": {
-						Type:        "object",
-						Description: "Top level response object",
-						Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-							"data": {
-								Type:        "object",
-								Description: "Second level data object",
-								Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-									"result": {
-										Type:        "object",
-										Description: "Third level result object",
-										Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-											"value": {
-												Type:        "string",
-												Description: "Fourth level actual value",
-												Value:       "{{.steps.step1.output.deep.value}}",
-												Default:     &runtime.RawExtension{Raw: []byte(`"default_value"`)},
-											},
-											"count": {
-												Type:        "integer",
-												Description: "Fourth level count",
-												Value:       "{{.steps.step1.output.deep.count}}",
-												Default:     &runtime.RawExtension{Raw: []byte(`0`)},
-											},
-										},
-									},
-									"metadata": {
-										Type:        "object",
-										Description: "Third level metadata",
-										Properties: map[string]mcpv1alpha1.OutputPropertySpec{
-											"timestamp": {
-												Type:        "string",
-												Description: "Timestamp of operation",
-												Value:       "{{.steps.step1.output.timestamp}}",
-											},
-										},
-									},
-								},
-							},
-							"status": {
-								Type:        "string",
-								Description: "Second level status",
-								Value:       "{{.steps.step1.output.status}}",
-								Default:     &runtime.RawExtension{Raw: []byte(`"success"`)},
-							},
-						},
-					},
-				},
-			},
-			expectedOutput: &vmcpconfig.OutputConfig{
-				Properties: map[string]vmcpconfig.OutputProperty{
-					"response": {
-						Type:        "object",
-						Description: "Top level response object",
-						Properties: map[string]vmcpconfig.OutputProperty{
-							"data": {
-								Type:        "object",
-								Description: "Second level data object",
-								Properties: map[string]vmcpconfig.OutputProperty{
-									"result": {
-										Type:        "object",
-										Description: "Third level result object",
-										Properties: map[string]vmcpconfig.OutputProperty{
-											"value": {
-												Type:        "string",
-												Description: "Fourth level actual value",
-												Value:       "{{.steps.step1.output.deep.value}}",
-												Default:     thvjson.NewAny("default_value"),
-											},
-											"count": {
-												Type:        "integer",
-												Description: "Fourth level count",
-												Value:       "{{.steps.step1.output.deep.count}}",
-												Default:     thvjson.NewAny(float64(0)),
-											},
-										},
-									},
-									"metadata": {
-										Type:        "object",
-										Description: "Third level metadata",
-										Properties: map[string]vmcpconfig.OutputProperty{
-											"timestamp": {
-												Type:        "string",
-												Description: "Timestamp of operation",
-												Value:       "{{.steps.step1.output.timestamp}}",
-											},
-										},
-									},
-								},
-							},
-							"status": {
-								Type:        "string",
-								Description: "Second level status",
-								Value:       "{{.steps.step1.output.status}}",
-								Default:     thvjson.NewAny("success"),
-							},
-						},
-					},
-				},
-			},
-			description: "Should correctly convert output spec with deeply nested objects (4 levels)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "test-tool",
-							Description: "A test composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "backend/some-tool",
-								},
-							},
-							Output: tt.outputSpec,
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, err := converter.Convert(ctx, vmcpServer)
-
-			require.NoError(t, err)
-			require.NotNil(t, config)
-			require.Len(t, config.CompositeTools, 1)
-
-			tool := config.CompositeTools[0]
-			if tt.expectedOutput == nil {
-				assert.Nil(t, tool.Output, tt.description)
-			} else {
-				require.NotNil(t, tool.Output, tt.description)
-				assert.Equal(t, tt.expectedOutput.Required, tool.Output.Required, tt.description)
-				assert.Equal(t, len(tt.expectedOutput.Properties), len(tool.Output.Properties), tt.description)
-
-				// Use recursive helper to validate all nested levels
-				validateOutputProperties(t, tt.expectedOutput.Properties, tool.Output.Properties, "")
-			}
-		})
-	}
+	// Verify that Duration serializes to a human-readable format (e.g., "30s")
+	timeoutJSON, err := json.Marshal(tool.Timeout)
+	require.NoError(t, err)
+	assert.Equal(t, `"30s"`, string(timeoutJSON), "Duration should serialize to human-readable format")
 }
 
 func TestConverter_IncomingAuthRequired(t *testing.T) {
@@ -1421,9 +388,11 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "referenced-tool"},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "referenced-tool"},
+						},
 					},
 				},
 			},
@@ -1434,13 +403,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced composite tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -1465,22 +436,24 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "inline-tool",
-							Description: "An inline composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "backend.inline-tool",
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeTools: []vmcpconfig.CompositeToolConfig{
+							{
+								Name:        "inline-tool",
+								Description: "An inline composite tool",
+								Steps: []vmcpconfig.WorkflowStepConfig{
+									{
+										ID:   "step1",
+										Type: "tool",
+										Tool: "backend.inline-tool",
+									},
 								},
 							},
 						},
-					},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "referenced-tool"},
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "referenced-tool"},
+						},
 					},
 				},
 			},
@@ -1491,13 +464,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced composite tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.referenced-tool",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced composite tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.referenced-tool",
+								},
 							},
 						},
 					},
@@ -1524,9 +499,11 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "non-existent-tool"},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "non-existent-tool"},
+						},
 					},
 				},
 			},
@@ -1542,22 +519,24 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "duplicate-tool",
-							Description: "An inline tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "backend.tool1",
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeTools: []vmcpconfig.CompositeToolConfig{
+							{
+								Name:        "duplicate-tool",
+								Description: "An inline tool",
+								Steps: []vmcpconfig.WorkflowStepConfig{
+									{
+										ID:   "step1",
+										Type: "tool",
+										Tool: "backend.tool1",
+									},
 								},
 							},
 						},
-					},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "referenced-tool"},
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "referenced-tool"},
+						},
 					},
 				},
 			},
@@ -1568,13 +547,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "duplicate-tool", // Same name as inline tool
-						Description: "A referenced tool with duplicate name",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool2",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "duplicate-tool", // Same name as inline tool
+							Description: "A referenced tool with duplicate name",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool2",
+								},
 							},
 						},
 					},
@@ -1607,10 +588,12 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "tool1"},
-						{Name: "tool2"},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "tool1"},
+							{Name: "tool2"},
+						},
 					},
 				},
 			},
@@ -1621,13 +604,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "tool1",
-						Description: "First referenced tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "tool1",
+							Description: "First referenced tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -1638,13 +623,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "tool2",
-						Description: "Second referenced tool",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool2",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "tool2",
+							Description: "Second referenced tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool2",
+								},
 							},
 						},
 					},
@@ -1670,9 +657,11 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "referenced-tool"},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+							{Name: "referenced-tool"},
+						},
 					},
 				},
 			},
@@ -1683,17 +672,22 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
-						Name:        "referenced-tool",
-						Description: "A referenced tool with parameters",
-						Parameters: &runtime.RawExtension{
-							Raw: []byte(`{"type":"object","properties":{"param1":{"type":"string"}}}`),
-						},
-						Timeout: "5m",
-						Steps: []mcpv1alpha1.WorkflowStep{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.tool1",
+						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+							Name:        "referenced-tool",
+							Description: "A referenced tool with parameters",
+							Parameters: thvjson.NewMap(map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"param1": map[string]any{"type": "string"},
+								},
+							}),
+							Timeout: vmcpconfig.Duration(5 * time.Minute),
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
 							},
 						},
 					},
@@ -1765,6 +759,108 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConverter_CompositeToolDefinitionFieldsPreserved verifies that all fields from a
+// VirtualMCPCompositeToolDefinition CRD spec are correctly preserved through conversion.
+func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
+	t.Parallel()
+
+	// Create the expected CompositeToolConfig that will be embedded in the CRD spec
+	expectedConfig := vmcpconfig.CompositeToolConfig{
+		Name:        "comprehensive-tool",
+		Description: "A comprehensive composite tool with all fields",
+		Timeout:     vmcpconfig.Duration(2*time.Minute + 30*time.Second),
+		Parameters: thvjson.NewMap(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"input": map[string]any{"type": "string"},
+				"count": map[string]any{"type": "integer"},
+			},
+			"required": []any{"input"},
+		}),
+		Steps: []vmcpconfig.WorkflowStepConfig{
+			{
+				ID:        "step1",
+				Type:      "tool",
+				Tool:      "backend.first-tool",
+				Arguments: thvjson.NewMap(map[string]any{"arg1": "{{ .params.input }}"}),
+				Timeout:   vmcpconfig.Duration(30 * time.Second),
+				OnError: &vmcpconfig.StepErrorHandling{
+					Action:     "retry",
+					RetryCount: 3,
+					RetryDelay: vmcpconfig.Duration(5 * time.Second),
+				},
+			},
+			{
+				ID:        "step2",
+				Type:      "tool",
+				Tool:      "backend.second-tool",
+				DependsOn: []string{"step1"},
+				Condition: "{{ .steps.step1.success }}",
+				Arguments: thvjson.NewMap(map[string]any{"data": "{{ .steps.step1.result }}"}),
+				OnError: &vmcpconfig.StepErrorHandling{
+					Action: "continue",
+				},
+			},
+		},
+		Output: &vmcpconfig.OutputConfig{
+			Properties: map[string]vmcpconfig.OutputProperty{
+				"result": {
+					Type:        "string",
+					Description: "The final result",
+					Value:       "{{ .steps.step2.result }}",
+				},
+			},
+			Required: []string{"result"},
+		},
+	}
+
+	// Create a VirtualMCPCompositeToolDefinition with all fields populated
+	compositeDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "comprehensive-tool",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+			CompositeToolConfig: expectedConfig,
+		},
+	}
+
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					{Name: "comprehensive-tool"},
+				},
+			},
+		},
+	}
+
+	// Setup fake Kubernetes client
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, compositeDef).
+		Build()
+
+	resolver := newNoOpMockResolver(t)
+	converter, err := NewConverter(resolver, fakeClient)
+	require.NoError(t, err)
+
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+	cfg, err := converter.Convert(ctx, vmcpServer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.CompositeTools, 1)
+
+	// Since the spec embeds CompositeToolConfig directly, the converted result should match
+	require.Equal(t, expectedConfig, cfg.CompositeTools[0])
 }
 
 // Test helpers for MCPToolConfig tests
@@ -1936,66 +1032,12 @@ func TestMergeToolConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestApplyInlineOverrides(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		inline   map[string]mcpv1alpha1.ToolOverride
-		existing map[string]*vmcpconfig.ToolOverride
-		expected map[string]*vmcpconfig.ToolOverride
-	}{
-		{
-			name:     "apply to empty workload",
-			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Inline description")},
-			existing: nil,
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Inline description")},
-		},
-		{
-			name:     "replace existing",
-			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("new_name", "New description")},
-			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("old_name", "Old description")},
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("new_name", "New description")},
-		},
-		{
-			name:     "no change when no inline",
-			inline:   nil,
-			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
-			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
-		},
-		{
-			name: "multiple overrides",
-			inline: map[string]mcpv1alpha1.ToolOverride{
-				"tool1": toolOverride("renamed_tool1", "Description 1"),
-				"tool2": toolOverride("renamed_tool2", "Description 2"),
-			},
-			existing: nil,
-			expected: map[string]*vmcpconfig.ToolOverride{
-				"tool1": vmcpToolOverride("renamed_tool1", "Description 1"),
-				"tool2": vmcpToolOverride("renamed_tool2", "Description 2"),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			wtc := &vmcpconfig.WorkloadToolConfig{Overrides: tt.existing}
-			toolConfig := mcpv1alpha1.WorkloadToolConfig{Overrides: tt.inline}
-			(&Converter{}).applyInlineOverrides(toolConfig, wtc)
-
-			assert.Equal(t, tt.expected, wtc.Overrides)
-		})
-	}
-}
-
-func TestConvertToolConfigs(t *testing.T) {
+func TestResolveToolConfigRefs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name             string
-		tools            []mcpv1alpha1.WorkloadToolConfig
+		tools            []*vmcpconfig.WorkloadToolConfig
 		existingConfig   *mcpv1alpha1.MCPToolConfig
 		expectedWorkload string
 		expectedFilter   []string
@@ -2003,10 +1045,10 @@ func TestConvertToolConfigs(t *testing.T) {
 	}{
 		{
 			name: "inline config only",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:  "backend1",
 				Filter:    []string{"tool1", "tool2"},
-				Overrides: map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Renamed")},
+				Overrides: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Renamed")},
 			}},
 			expectedWorkload: "backend1",
 			expectedFilter:   []string{"tool1", "tool2"},
@@ -2014,9 +1056,9 @@ func TestConvertToolConfigs(t *testing.T) {
 		},
 		{
 			name: "with MCPToolConfig reference",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"fetch"},
 				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("renamed_fetch", "Renamed fetch")}),
@@ -2026,11 +1068,11 @@ func TestConvertToolConfigs(t *testing.T) {
 		},
 		{
 			name: "inline takes precedence",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
 				Filter:        []string{"inline_tool"},
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
-				Overrides:     map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("inline_fetch", "Inline override")},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
+				Overrides:     map[string]*vmcpconfig.ToolOverride{"fetch": vmcpToolOverride("inline_fetch", "Inline override")},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"config_tool"},
 				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("config_fetch", "Config override")}),
@@ -2055,13 +1097,13 @@ func TestConvertToolConfigs(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
+			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
 			}
 
 			agg := &vmcpconfig.AggregationConfig{}
-			err := converter.convertToolConfigs(ctx, vmcp, agg)
+			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
 
 			require.NoError(t, err)
 			require.Len(t, agg.Tools, 1)
@@ -2072,24 +1114,24 @@ func TestConvertToolConfigs(t *testing.T) {
 	}
 }
 
-// TestConvertToolConfigs_FailClosed tests that MCPToolConfig resolution errors cause conversion to fail.
+// TestResolveToolConfigRefs_FailClosed tests that MCPToolConfig resolution errors cause conversion to fail.
 // This is a security feature: if a user explicitly references an MCPToolConfig (for tool filtering or
 // security policy enforcement), we should fail rather than deploy without the intended configuration.
-func TestConvertToolConfigs_FailClosed(t *testing.T) {
+func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name           string
-		tools          []mcpv1alpha1.WorkloadToolConfig
+		tools          []*vmcpconfig.WorkloadToolConfig
 		existingConfig *mcpv1alpha1.MCPToolConfig
 		expectError    bool
 		expectedErrMsg string
 	}{
 		{
 			name: "error when MCPToolConfig reference not found (fail closed)",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "nonexistent-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "nonexistent-config"},
 			}},
 			existingConfig: nil, // MCPToolConfig doesn't exist in cluster
 			expectError:    true,
@@ -2097,7 +1139,7 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "no error when no ToolConfigRef specified",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload: "backend1",
 				Filter:   []string{"tool1"},
 			}},
@@ -2106,9 +1148,9 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "successful when MCPToolConfig exists",
-			tools: []mcpv1alpha1.WorkloadToolConfig{{
+			tools: []*vmcpconfig.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
+				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
 			}},
 			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
 			expectError:    false,
@@ -2130,13 +1172,13 @@ func TestConvertToolConfigs_FailClosed(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
+			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
 			}
 
 			agg := &vmcpconfig.AggregationConfig{}
-			err := converter.convertToolConfigs(ctx, vmcp, agg)
+			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -2165,12 +1207,14 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{{
-							Workload:      "backend1",
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "missing-config"},
-						}},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{{
+								Workload:      "backend1",
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "missing-config"},
+							}},
+						},
 					},
 				},
 			},
@@ -2183,12 +1227,14 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
-					Aggregation: &mcpv1alpha1.AggregationConfig{
-						Tools: []mcpv1alpha1.WorkloadToolConfig{{
-							Workload:      "backend1",
-							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
-						}},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Aggregation: &vmcpconfig.AggregationConfig{
+							Tools: []*vmcpconfig.WorkloadToolConfig{{
+								Workload:      "backend1",
+								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
+							}},
+						},
 					},
 				},
 			},
@@ -2233,6 +1279,267 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotNil(t, config)
 			}
+		})
+	}
+}
+
+// TestConverter_TelemetryConfigPreserved tests that all telemetry config fields are preserved during conversion.
+// This is a regression test for https://github.com/stacklok/toolhive/issues/XXX where
+// CustomAttributes, ServiceVersion, and EnvironmentVariables were being dropped.
+func TestConverter_TelemetryConfigPreserved(t *testing.T) {
+	t.Parallel()
+
+	inputTelemetry := &telemetry.Config{
+		Endpoint:                    "otlp-collector:4317",
+		EnablePrometheusMetricsPath: true,
+		ServiceName:                 "custom-service-name",
+		ServiceVersion:              "v1.2.3",
+		TracingEnabled:              true,
+		MetricsEnabled:              true,
+		SamplingRate:                "0.1",
+		CustomAttributes: map[string]string{
+			"environment":  "production",
+			"region":       "us-west-2",
+			"cluster_name": "main-cluster",
+		},
+		EnvironmentVariables: []string{"PATH", "HOME", "USER"},
+		Headers: map[string]string{
+			"Authorization": "Bearer token123",
+		},
+		Insecure: true,
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			Config: vmcpconfig.Config{
+				Group:     "test-group",
+				Telemetry: inputTelemetry,
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, err := converter.Convert(ctx, vmcp)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify telemetry config is preserved exactly (all fields)
+	require.Equal(t, inputTelemetry, config.Telemetry, "All telemetry config fields should be preserved")
+}
+
+// TestConverter_TelemetryDefaults tests the default behavior for telemetry config.
+// This documents the behavior that was previously enforced by spectoconfig.ConvertTelemetryConfig:
+// - ServiceName defaults to VirtualMCPServer name when not specified
+// - ServiceVersion defaults to ServiceName when not specified
+func TestConverter_TelemetryDefaults(t *testing.T) {
+	t.Parallel()
+
+	// Get the expected build version for tests
+	buildVersion := telemetry.DefaultConfig().ServiceVersion
+
+	tests := []struct {
+		name              string
+		inputTelemetry    *telemetry.Config
+		expectedTelemetry *telemetry.Config
+	}{
+		{
+			name: "defaults ServiceName to vmcp name and ServiceVersion to build version",
+			inputTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "",
+				ServiceVersion:              "",
+			},
+			expectedTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "my-vmcp-server",
+				ServiceVersion:              buildVersion,
+			},
+		},
+		{
+			name: "defaults ServiceVersion to build version when ServiceName is specified",
+			inputTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "custom-service",
+				ServiceVersion:              "",
+			},
+			expectedTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "custom-service",
+				ServiceVersion:              buildVersion,
+			},
+		},
+		{
+			name: "preserves both when explicitly set",
+			inputTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "my-service",
+				ServiceVersion:              "v2.0.0",
+			},
+			expectedTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "my-service",
+				ServiceVersion:              "v2.0.0",
+			},
+		},
+		{
+			name: "defaults ServiceName when only ServiceVersion is set",
+			inputTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "",
+				ServiceVersion:              "v1.0.0",
+			},
+			expectedTelemetry: &telemetry.Config{
+				Endpoint:                    "localhost:4317",
+				EnablePrometheusMetricsPath: true,
+				ServiceName:                 "my-vmcp-server",
+				ServiceVersion:              "v1.0.0",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-vmcp-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					Config: vmcpconfig.Config{
+						Group:     "test-group",
+						Telemetry: tt.inputTelemetry,
+					},
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+
+			config, err := converter.Convert(ctx, vmcp)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+
+			require.Equal(t, tt.expectedTelemetry, config.Telemetry, "Telemetry config should match expected defaults")
+		})
+	}
+}
+
+// TestConverter_TelemetryNil tests that nil telemetry config is handled correctly.
+func TestConverter_TelemetryNil(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			Config: vmcpconfig.Config{
+				Group:     "test-group",
+				Telemetry: nil, // No telemetry config
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, err := converter.Convert(ctx, vmcp)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	assert.Nil(t, config.Telemetry, "Telemetry should be nil when not configured")
+}
+
+// TestConverter_TelemetryEndpointPrefixStripping tests that http:// and https:// prefixes
+// are stripped from the endpoint, as the OTLP client expects host:port format.
+// This matches the behavior of spectoconfig.ConvertTelemetryConfig.
+func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		inputEndpoint    string
+		expectedEndpoint string
+	}{
+		{
+			name:             "strips https:// prefix",
+			inputEndpoint:    "https://otlp-collector:4317",
+			expectedEndpoint: "otlp-collector:4317",
+		},
+		{
+			name:             "strips http:// prefix",
+			inputEndpoint:    "http://localhost:4317",
+			expectedEndpoint: "localhost:4317",
+		},
+		{
+			name:             "preserves endpoint without prefix",
+			inputEndpoint:    "otlp-collector:4317",
+			expectedEndpoint: "otlp-collector:4317",
+		},
+		{
+			name:             "preserves localhost without prefix",
+			inputEndpoint:    "localhost:4317",
+			expectedEndpoint: "localhost:4317",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					Config: vmcpconfig.Config{
+						Group: "test-group",
+						Telemetry: &telemetry.Config{
+							Endpoint:                    tt.inputEndpoint,
+							EnablePrometheusMetricsPath: true,
+						},
+					},
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+
+			config, err := converter.Convert(ctx, vmcp)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			require.NotNil(t, config.Telemetry)
+
+			assert.Equal(t, tt.expectedEndpoint, config.Telemetry.Endpoint,
+				"Endpoint should have http:// or https:// prefix stripped")
 		})
 	}
 }

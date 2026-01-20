@@ -4,7 +4,6 @@ package oauth
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Config contains configuration for OAuth authentication
@@ -134,9 +134,7 @@ func NewFlow(config *Config) (*Flow, error) {
 
 	// Generate PKCE parameters if enabled
 	if config.UsePKCE {
-		if err := flow.generatePKCEParams(); err != nil {
-			return nil, fmt.Errorf("failed to generate PKCE parameters: %w", err)
-		}
+		flow.generatePKCEParams()
 	}
 
 	// Generate state parameter
@@ -147,20 +145,14 @@ func NewFlow(config *Config) (*Flow, error) {
 	return flow, nil
 }
 
-// generatePKCEParams generates PKCE code verifier and challenge
-func (f *Flow) generatePKCEParams() error {
-	// Generate code verifier (43-128 characters, RFC 7636)
-	verifierBytes := make([]byte, 32)
-	if _, err := rand.Read(verifierBytes); err != nil {
-		return fmt.Errorf("failed to generate code verifier: %w", err)
-	}
-	f.codeVerifier = base64.RawURLEncoding.EncodeToString(verifierBytes)
+// generatePKCEParams generates PKCE code verifier and challenge using
+// the standard oauth2 library functions.
+func (f *Flow) generatePKCEParams() {
+	// Generate code verifier using oauth2 stdlib (43-128 characters, RFC 7636)
+	f.codeVerifier = oauth2.GenerateVerifier()
 
 	// Use S256 method for enhanced security (RFC 7636 recommendation)
-	hash := sha256.Sum256([]byte(f.codeVerifier))
-	f.codeChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
-
-	return nil
+	f.codeChallenge = oauth2.S256ChallengeFromVerifier(f.codeVerifier)
 }
 
 // generateState generates a random state parameter
@@ -200,6 +192,10 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 
 	// Ensure server cleanup
 	defer func() {
+		// Use Background context for server shutdown. This cleanup operation runs after
+		// the OAuth flow completes (or fails). The parent context may already be cancelled,
+		// so we need a fresh context with its own timeout to ensure the server shuts down
+		// gracefully regardless of the parent context state.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := f.server.Shutdown(shutdownCtx); err != nil {
@@ -231,7 +227,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 	select {
 	case token := <-tokenChan:
 		logger.Info("OAuth flow completed successfully")
-		return f.processToken(token), nil
+		return f.processToken(ctx, token), nil
 	case err := <-errorChan:
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
 	case <-ctx.Done():
@@ -261,7 +257,7 @@ func (f *Flow) buildAuthURL() string {
 	if f.config.UsePKCE {
 		opts = append(opts,
 			oauth2.SetAuthURLParam("code_challenge", f.codeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+			oauth2.SetAuthURLParam("code_challenge_method", oauthproto.PKCEMethodS256),
 		)
 	}
 
@@ -301,8 +297,8 @@ func (f *Flow) handleCallback(tokenChan chan<- *oauth2.Token, errorChan chan<- e
 			return
 		}
 
-		// Exchange code for token
-		ctx := context.Background()
+		// Exchange code for token using the request context to respect cancellation
+		ctx := r.Context()
 		opts := []oauth2.AuthCodeOption{}
 
 		// Add PKCE verifier if enabled
@@ -450,7 +446,7 @@ func (*Flow) writeErrorPage(w http.ResponseWriter, err error) {
 }
 
 // processToken processes the received token and extracts claims
-func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
+func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResult {
 	result := &TokenResult{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
@@ -458,8 +454,8 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 		Expiry:       token.Expiry,
 	}
 
-	// Create a base token source using the original token
-	base := f.oauth2Config.TokenSource(context.Background(), token)
+	// Create a base token source using the original token with the provided context
+	base := f.oauth2Config.TokenSource(ctx, token)
 
 	// ReuseTokenSource ensures that refresh happens only when needed
 	f.tokenSource = oauth2.ReuseTokenSource(token, base)

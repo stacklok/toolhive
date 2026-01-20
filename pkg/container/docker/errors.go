@@ -1,26 +1,31 @@
 package docker
 
-import "fmt"
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/errors"
+)
 
 // Error types for container operations
 var (
 	// ErrContainerNotFound is returned when a container is not found
-	ErrContainerNotFound = fmt.Errorf("container not found")
+	ErrContainerNotFound = errors.WithCode(fmt.Errorf("container not found"), http.StatusNotFound)
 
 	// ErrMultipleContainersFound is returned when multiple containers are found
-	ErrMultipleContainersFound = fmt.Errorf("multiple containers found with same name")
+	ErrMultipleContainersFound = errors.WithCode(fmt.Errorf("multiple containers found with same name"), http.StatusBadRequest)
 
 	// ErrContainerNotRunning is returned when a container is not running
-	ErrContainerNotRunning = fmt.Errorf("container not running")
+	ErrContainerNotRunning = errors.WithCode(fmt.Errorf("container not running"), http.StatusBadRequest)
 
 	// ErrAttachFailed is returned when attaching to a container fails
-	ErrAttachFailed = fmt.Errorf("failed to attach to container")
+	ErrAttachFailed = errors.WithCode(fmt.Errorf("failed to attach to container"), http.StatusBadRequest)
 
 	// ErrContainerExited is returned when a container has exited unexpectedly
-	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
+	ErrContainerExited = errors.WithCode(fmt.Errorf("container exited unexpectedly"), http.StatusBadRequest)
 
 	// ErrContainerRemoved is returned when a container has been removed
-	ErrContainerRemoved = fmt.Errorf("container removed")
+	ErrContainerRemoved = errors.WithCode(fmt.Errorf("container removed"), http.StatusBadRequest)
 )
 
 // ContainerError represents an error related to container operations

@@ -13,6 +13,10 @@ import (
 )
 
 // EnsureRBACResource is a generic helper function to ensure a Kubernetes RBAC resource exists
+// LIMITATION: This only creates resources if they don't exist - it does NOT update them.
+// If RBAC rules change in an operator upgrade, existing resources won't be updated.
+// For a better pattern that supports updates, see pkg/registryapi/rbac.go which uses
+// CreateOrUpdate + RetryOnConflict.
 func EnsureRBACResource(
 	ctx context.Context,
 	c client.Client,

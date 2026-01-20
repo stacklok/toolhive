@@ -9,7 +9,7 @@ const docTemplate = `{
     "components": {
         "schemas": {
             "audit.Config": {
-                "description": "AuditConfig contains the audit logging configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
                 "properties": {
                     "component": {
                         "description": "Component is the component name to use in audit events.\n+optional",
@@ -55,7 +55,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "auth.TokenValidatorConfig": {
-                "description": "OIDCConfig contains OIDC configuration",
+                "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
                     "allowPrivateIP": {
                         "description": "AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses",
@@ -112,7 +112,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authz.Config": {
-                "description": "AuthzConfig contains the authorization configuration",
+                "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
                     "type": {
                         "description": "Type is the type of authorization configuration (e.g., \"cedarv1\").",
@@ -242,6 +242,10 @@ const docTemplate = `{
                     "remote": {
                         "description": "Remote indicates whether this is a remote workload (true) or a container workload (false).",
                         "type": "boolean"
+                    },
+                    "started_at": {
+                        "description": "StartedAt is when the container was last started (changes on restart)",
+                        "type": "string"
                     },
                     "status": {
                         "$ref": "#/components/schemas/runtime.WorkloadStatus"
@@ -482,6 +486,15 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "custom_metadata": {
+                        "additionalProperties": {},
+                        "description": "CustomMetadata allows for additional user-defined metadata",
+                        "type": "object"
+                    },
+                    "description": {
+                        "description": "Description is a human-readable description of the server's purpose and functionality",
+                        "type": "string"
+                    },
                     "docker_tags": {
                         "description": "DockerTags lists the available Docker tags for this server image",
                         "items": {
@@ -502,14 +515,75 @@ const docTemplate = `{
                         "description": "Image is the Docker image reference for the MCP server",
                         "type": "string"
                     },
+                    "metadata": {
+                        "$ref": "#/components/schemas/registry.Metadata"
+                    },
+                    "name": {
+                        "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
+                        "type": "string"
+                    },
                     "permissions": {
                         "$ref": "#/components/schemas/permissions.Profile"
                     },
                     "provenance": {
                         "$ref": "#/components/schemas/registry.Provenance"
                     },
+                    "proxy_port": {
+                        "description": "ProxyPort is the port for the HTTP proxy to listen on (host port)\nIf not specified, a random available port will be assigned",
+                        "type": "integer"
+                    },
+                    "repository_url": {
+                        "description": "RepositoryURL is the URL to the source code repository for the server",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "Status indicates whether the server is currently active or deprecated",
+                        "type": "string"
+                    },
+                    "tags": {
+                        "description": "Tags are categorization labels for the server to aid in discovery and filtering",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "target_port": {
                         "description": "TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)",
+                        "type": "integer"
+                    },
+                    "tier": {
+                        "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "tools": {
+                        "description": "Tools is a list of tool names provided by this MCP server",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "transport": {
+                        "description": "Transport defines the communication protocol for the server\nFor containers: stdio, sse, or streamable-http\nFor remote servers: sse or streamable-http (stdio not supported)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.Metadata": {
+                "description": "Metadata contains additional information about the server such as popularity metrics",
+                "properties": {
+                    "last_updated": {
+                        "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
+                        "type": "string"
+                    },
+                    "pulls": {
+                        "description": "Pulls indicates how many times the server image has been downloaded",
+                        "type": "integer"
+                    },
+                    "stars": {
+                        "description": "Stars represents the popularity rating or number of stars for the server",
                         "type": "integer"
                     }
                 },
@@ -630,6 +704,15 @@ const docTemplate = `{
             "registry.RemoteServerMetadata": {
                 "description": "Remote server details (if it's a remote server)",
                 "properties": {
+                    "custom_metadata": {
+                        "additionalProperties": {},
+                        "description": "CustomMetadata allows for additional user-defined metadata",
+                        "type": "object"
+                    },
+                    "description": {
+                        "description": "Description is a human-readable description of the server's purpose and functionality",
+                        "type": "string"
+                    },
                     "env_vars": {
                         "description": "EnvVars defines environment variables that can be passed to configure the client\nThese might be needed for client-side configuration when connecting to the remote server",
                         "items": {
@@ -646,8 +729,47 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "metadata": {
+                        "$ref": "#/components/schemas/registry.Metadata"
+                    },
+                    "name": {
+                        "description": "Name is the identifier for the MCP server, used when referencing the server in commands\nIf not provided, it will be auto-generated from the registry key",
+                        "type": "string"
+                    },
                     "oauth_config": {
                         "$ref": "#/components/schemas/registry.OAuthConfig"
+                    },
+                    "repository_url": {
+                        "description": "RepositoryURL is the URL to the source code repository for the server",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "Status indicates whether the server is currently active or deprecated",
+                        "type": "string"
+                    },
+                    "tags": {
+                        "description": "Tags are categorization labels for the server to aid in discovery and filtering",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "tier": {
+                        "description": "Tier represents the tier classification level of the server, e.g., \"Official\" or \"Community\"",
+                        "type": "string"
+                    },
+                    "tools": {
+                        "description": "Tools is a list of tool names provided by this MCP server",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "transport": {
+                        "description": "Transport defines the communication protocol for the server\nFor containers: stdio, sse, or streamable-http\nFor remote servers: sse or streamable-http (stdio not supported)",
+                        "type": "string"
                     },
                     "url": {
                         "description": "URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)",
@@ -750,14 +872,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/audit.Config"
                     },
                     "audit_config_path": {
-                        "description": "AuditConfigPath is the path to the audit configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuditConfigPath is the path to the audit configuration file",
                         "type": "string"
                     },
                     "authz_config": {
                         "$ref": "#/components/schemas/authz.Config"
                     },
                     "authz_config_path": {
-                        "description": "AuthzConfigPath is the path to the authorization configuration file",
+                        "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
                         "type": "string"
                     },
                     "base_name": {
@@ -792,7 +914,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "env_file_dir": {
-                        "description": "EnvFileDir is the directory path to load environment files from",
+                        "description": "DEPRECATED: No longer appears to be used.\nEnvFileDir is the directory path to load environment files from",
                         "type": "string"
                     },
                     "env_vars": {
@@ -822,7 +944,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "jwks_auth_token_file": {
-                        "description": "JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
+                        "description": "DEPRECATED: No longer appears to be used.\nJWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests",
                         "type": "string"
                     },
                     "k8s_pod_template_patch": {
@@ -889,14 +1011,14 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/telemetry.Config"
                     },
                     "thv_ca_bundle": {
-                        "description": "ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
+                        "description": "DEPRECATED: No longer appears to be used.\nThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations",
                         "type": "string"
                     },
                     "token_exchange_config": {
                         "$ref": "#/components/schemas/tokenexchange.Config"
                     },
                     "tools_filter": {
-                        "description": "ToolsFilter is the list of tools to filter",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
                         "items": {
                             "type": "string"
                         },
@@ -907,7 +1029,7 @@ const docTemplate = `{
                         "additionalProperties": {
                             "$ref": "#/components/schemas/runner.ToolOverride"
                         },
-                        "description": "ToolsOverride is a map from an actual tool to its overridden name and/or description",
+                        "description": "DEPRECATED: Middleware configuration.\nToolsOverride is a map from an actual tool to its overridden name and/or description",
                         "type": "object"
                     },
                     "transport": {
@@ -980,25 +1102,25 @@ const docTemplate = `{
                 "type": "object"
             },
             "telemetry.Config": {
-                "description": "TelemetryConfig contains the OpenTelemetry configuration",
+                "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
                     "customAttributes": {
                         "additionalProperties": {
                             "type": "string"
                         },
-                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\nWe use map[string]string for proper JSON serialization instead of []attribute.KeyValue\nwhich doesn't marshal/unmarshal correctly.",
+                        "description": "CustomAttributes contains custom resource attributes to be added to all telemetry signals.\nThese are parsed from CLI flags (--otel-custom-attributes) or environment variables\n(OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.\n+optional",
                         "type": "object"
                     },
                     "enablePrometheusMetricsPath": {
-                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint\nThe metrics are served on the main transport port at /metrics\nThis is separate from OTLP metrics which are sent to the Endpoint",
+                        "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "endpoint": {
-                        "description": "Endpoint is the OTLP endpoint URL",
+                        "description": "Endpoint is the OTLP endpoint URL\n+optional",
                         "type": "string"
                     },
                     "environmentVariables": {
-                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: []string{\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"}",
+                        "description": "EnvironmentVariables is a list of environment variable names that should be\nincluded in telemetry spans as attributes. Only variables in this list will\nbe read from the host machine and included in spans for observability.\nExample: [\"NODE_ENV\", \"DEPLOYMENT_ENV\", \"SERVICE_VERSION\"]\n+optional",
                         "items": {
                             "type": "string"
                         },
@@ -1009,31 +1131,31 @@ const docTemplate = `{
                         "additionalProperties": {
                             "type": "string"
                         },
-                        "description": "Headers contains authentication headers for the OTLP endpoint",
+                        "description": "Headers contains authentication headers for the OTLP endpoint.\n+optional",
                         "type": "object"
                     },
                     "insecure": {
-                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint",
+                        "description": "Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "metricsEnabled": {
-                        "description": "MetricsEnabled controls whether OTLP metrics are enabled\nWhen false, OTLP metrics are not sent even if an endpoint is configured\nThis is independent of EnablePrometheusMetricsPath",
+                        "description": "MetricsEnabled controls whether OTLP metrics are enabled.\nWhen false, OTLP metrics are not sent even if an endpoint is configured.\nThis is independent of EnablePrometheusMetricsPath.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
                     "samplingRate": {
-                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.",
+                        "description": "SamplingRate is the trace sampling rate (0.0-1.0) as a string.\nOnly used when TracingEnabled is true.\nExample: \"0.05\" for 5% sampling.\n+kubebuilder:default=\"0.05\"\n+optional",
                         "type": "string"
                     },
                     "serviceName": {
-                        "description": "ServiceName is the service name for telemetry",
+                        "description": "ServiceName is the service name for telemetry.\nWhen omitted, defaults to the server name (e.g., VirtualMCPServer name).\n+optional",
                         "type": "string"
                     },
                     "serviceVersion": {
-                        "description": "ServiceVersion is the service version for telemetry",
+                        "description": "ServiceVersion is the service version for telemetry.\nWhen omitted, defaults to the ToolHive version.\n+optional",
                         "type": "string"
                     },
                     "tracingEnabled": {
-                        "description": "TracingEnabled controls whether distributed tracing is enabled\nWhen false, no tracer provider is created even if an endpoint is configured",
+                        "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     }
                 },
@@ -3637,7 +3759,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/logs": {
             "get": {
-                "description": "Retrieve at most 100 lines of logs for a specific workload by name.",
+                "description": "Retrieve at most 1000 lines of logs for a specific workload by name.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3689,7 +3811,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}/proxy-logs": {
             "get": {
-                "description": "Retrieve proxy logs for a specific workload by name from the file system.",
+                "description": "Retrieve at most 1000 lines of proxy logs for a specific workload by name from the file system.",
                 "parameters": [
                     {
                         "description": "Workload name",

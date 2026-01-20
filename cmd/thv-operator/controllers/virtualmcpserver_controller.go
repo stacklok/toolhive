@@ -297,7 +297,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	ctxLogger := log.FromContext(ctx)
 
 	// If no composite tool refs, nothing to validate
-	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+	if len(vmcp.Spec.Config.CompositeToolRefs) == 0 {
 		// Set condition to indicate validation passed (no refs to validate)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		statusManager.SetCompositeToolRefsValidatedCondition(
@@ -309,7 +309,8 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	}
 
 	// Validate each referenced composite tool definition exists
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
 		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
 		err := r.Get(ctx, types.NamespacedName{
 			Name:      ref.Name,
@@ -361,7 +362,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	statusManager.SetObservedGeneration(vmcp.Generation)
 	statusManager.SetCompositeToolRefsValidatedCondition(
 		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
-		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.Config.CompositeToolRefs)),
 		metav1.ConditionTrue,
 	)
 
@@ -495,14 +496,31 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer
+// ensureRBACResources ensures RBAC resources for VirtualMCPServer in dynamic mode.
+// In static mode, RBAC creation is skipped. When switching dynamic→static, existing RBAC
+// resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
+// This follows standard Kubernetes garbage collection patterns.
+//
+// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
+// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
+// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
+	// Determine the outgoing auth source mode
+	source := outgoingAuthSource(vmcp)
+
+	// Static mode (inline): Skip RBAC creation/deletion
+	// Existing resources from dynamic mode persist until VirtualMCPServer deletion
+	if source == OutgoingAuthSourceInline {
+		return nil
+	}
+
+	// Dynamic mode (discovered): Ensure RBAC resources exist
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
-	// Ensure Role with minimal permissions
+	// Ensure Role with permissions to discover backends and update status
 	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
@@ -847,13 +865,9 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if service account has changed
-	expectedServiceAccountName := vmcpServiceAccountName(vmcp.Name)
+	expectedServiceAccountName := r.serviceAccountNameForVmcp(vmcp)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
-	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
-		return true
-	}
-
-	return false
+	return currentServiceAccountName != expectedServiceAccountName
 }
 
 // deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed
@@ -1248,6 +1262,31 @@ func vmcpServiceAccountName(vmcpName string) string {
 	return fmt.Sprintf("%s-vmcp", vmcpName)
 }
 
+// outgoingAuthSource returns the outgoing auth source mode with default fallback.
+// Returns OutgoingAuthSourceDiscovered if not specified.
+func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		return vmcp.Spec.OutgoingAuth.Source
+	}
+	return OutgoingAuthSourceDiscovered
+}
+
+// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer
+// based on its outgoing auth source mode.
+// - Dynamic mode (discovered): Returns the dedicated service account name
+// - Static mode (inline): Returns empty string (uses default service account)
+func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	source := outgoingAuthSource(vmcp)
+
+	// Static mode: Use default service account (no RBAC resources)
+	if source == OutgoingAuthSourceInline {
+		return ""
+	}
+
+	// Dynamic mode: Use dedicated service account with K8s API permissions
+	return vmcpServiceAccountName(vmcp.Name)
+}
+
 // vmcpServiceName generates the service name for a VirtualMCPServer
 // Uses "vmcp-" prefix to distinguish from MCPServer's "mcp-{name}-proxy" pattern.
 // This allows VirtualMCPServer and MCPServer to coexist with the same base name.
@@ -1471,10 +1510,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	typedWorkloads []workloads.TypedWorkload,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	// Determine source - default to "discovered" if not specified
-	source := OutgoingAuthSourceDiscovered
-	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
-		source = vmcp.Spec.OutgoingAuth.Source
-	}
+	source := outgoingAuthSource(vmcp)
 
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   source,
@@ -1490,10 +1526,11 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		outgoing.Default = defaultStrategy
 	}
 
-	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
-	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
-	}
+	// Discover ExternalAuthConfig from MCPServers to populate backend auth configs.
+	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
+	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
+	// this function is not called, keeping the ConfigMap minimal.
+	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -1509,9 +1546,42 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	return outgoing, nil
 }
 
+// convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
+// Preserves metadata and uses transport types from workload Specs.
+// Logs warnings when backends are skipped due to missing URL or transport information.
+func convertBackendsToStaticBackends(
+	ctx context.Context,
+	backends []vmcptypes.Backend,
+	transportMap map[string]string,
+) []vmcpconfig.StaticBackendConfig {
+	logger := log.FromContext(ctx)
+	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
+	for _, backend := range backends {
+		if backend.BaseURL == "" {
+			logger.V(1).Info("Skipping backend without URL in static mode",
+				"backend", backend.Name)
+			continue
+		}
+
+		transport := transportMap[backend.Name]
+		if transport == "" {
+			logger.V(1).Info("Skipping backend without transport information in static mode",
+				"backend", backend.Name)
+			continue
+		}
+
+		static = append(static, vmcpconfig.StaticBackendConfig{
+			Name:      backend.Name,
+			URL:       backend.BaseURL,
+			Transport: transport,
+			Metadata:  backend.Metadata,
+		})
+	}
+	return static
+}
+
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
 // a list of DiscoveredBackend objects with their current status.
-// This reuses the existing workload discovery code from pkg/vmcp/workloads.
 //
 //nolint:gocyclo
 func (r *VirtualMCPServerReconciler) discoverBackends(
@@ -1520,13 +1590,9 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 ) ([]mcpv1alpha1.DiscoveredBackend, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Create groups manager using the controller's client and VirtualMCPServer's namespace
 	groupsManager := groups.NewCRDManager(r.Client, vmcp.Namespace)
-
-	// Create K8S workload discoverer for the VirtualMCPServer's namespace
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
 
-	// Get all workloads in the group
 	typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
@@ -1934,11 +2000,11 @@ func (r *VirtualMCPServerReconciler) mapToolConfigToVirtualMCPServer(ctx context
 
 // vmcpReferencesToolConfig checks if a VirtualMCPServer references the given MCPToolConfig
 func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.VirtualMCPServer, toolConfigName string) bool {
-	if vmcp.Spec.Aggregation == nil || len(vmcp.Spec.Aggregation.Tools) == 0 {
+	if vmcp.Spec.Config.Aggregation == nil || len(vmcp.Spec.Config.Aggregation.Tools) == 0 {
 		return false
 	}
 
-	for _, tc := range vmcp.Spec.Aggregation.Tools {
+	for _, tc := range vmcp.Spec.Config.Aggregation.Tools {
 		if tc.ToolConfigRef != nil && tc.ToolConfigRef.Name == toolConfigName {
 			return true
 		}
@@ -2088,12 +2154,12 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	compositeToolDefName string,
 ) bool {
-	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+	if len(vmcp.Spec.Config.CompositeToolRefs) == 0 {
 		return false
 	}
 
-	for _, ref := range vmcp.Spec.CompositeToolRefs {
-		if ref.Name == compositeToolDefName {
+	for i := range vmcp.Spec.Config.CompositeToolRefs {
+		if vmcp.Spec.Config.CompositeToolRefs[i].Name == compositeToolDefName {
 			return true
 		}
 	}

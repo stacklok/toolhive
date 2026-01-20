@@ -1421,9 +1421,11 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
+					Config: vmcpconfig.Config{
+						Group: testGroupName,
+						Operational: &vmcpconfig.OperationalConfig{
+							LogLevel: "debug",
+						},
 					},
 				},
 			},

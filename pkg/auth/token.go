@@ -529,6 +529,46 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 	return registry, nil
 }
 
+// resolveJWKSURL resolves the JWKS URL from config or via OIDC discovery.
+// It returns an error if neither JWKS URL nor issuer is provided.
+func resolveJWKSURL(ctx context.Context, config TokenValidatorConfig) (string, error) {
+	jwksURL := config.JWKSURL
+
+	// Check if OIDC discovery should be skipped (for testing only)
+	skipDiscovery := os.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
+
+	// If JWKS URL is not provided but issuer is, try to discover it
+	// Skip discovery if explicitly requested via environment variable (for testing only)
+	if skipDiscovery && config.Issuer != "" {
+		if jwksURL == "" {
+			return "", fmt.Errorf(
+				"TOOLHIVE_SKIP_OIDC_DISCOVERY=true requires explicit JWKSURL in config. " +
+					"This env var is for testing only and cannot guess provider-specific JWKS URLs",
+			)
+		}
+		logger.Warnf(
+			"OIDC discovery skipped for issuer '%s' (TOOLHIVE_SKIP_OIDC_DISCOVERY=true)",
+			config.Issuer,
+		)
+	} else if jwksURL == "" && config.Issuer != "" {
+		doc, err := discoverOIDCConfiguration(
+			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
+			config.AllowPrivateIP, config.InsecureAllowHTTP,
+		)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
+		}
+		jwksURL = doc.JWKSURI
+	}
+
+	// Ensure we have a JWKS URL either provided or discovered
+	if jwksURL == "" {
+		return "", ErrMissingIssuerAndJWKSURL
+	}
+
+	return jwksURL, nil
+}
+
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
 	// Log warning if insecure HTTP is enabled
@@ -540,31 +580,10 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		)
 	}
 
-	jwksURL := config.JWKSURL
-
-	// If JWKS URL is not provided but issuer is, try to discover it
-	// Skip discovery if VMCP_SKIP_OIDC_DISCOVERY is set (for testing only)
-	skipDiscovery := os.Getenv("VMCP_SKIP_OIDC_DISCOVERY") == "true"
-	if skipDiscovery {
-		logger.Warnf("VMCP_SKIP_OIDC_DISCOVERY is enabled - OIDC discovery skipped (testing only!)")
-		// Use a dummy JWKS URL when discovery is skipped
-		if jwksURL == "" && config.Issuer != "" {
-			jwksURL = config.Issuer + "/.well-known/jwks.json"
-		}
-	} else if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(
-			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
-			config.AllowPrivateIP, config.InsecureAllowHTTP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
-		}
-		jwksURL = doc.JWKSURI
-	}
-
-	// Ensure we have a JWKS URL either provided or discovered
-	if jwksURL == "" {
-		return nil, ErrMissingIssuerAndJWKSURL
+	// Resolve JWKS URL from config or discovery
+	jwksURL, err := resolveJWKSURL(ctx, config)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS

@@ -723,7 +723,10 @@ func TestCompositeToolWithOutputConfig_ErrorHandlingWithRetry(t *testing.T) {
 		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any()).
 			Return(nil, errors.New("temporary failure")),
 		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any()).
-			Return(map[string]any{"data": "success_after_retry"}, nil),
+			Return(&vmcp.ToolCallResult{
+				StructuredContent: map[string]any{"data": "success_after_retry"},
+				Content:           []vmcp.Content{},
+			}, nil),
 	)
 
 	// Execute workflow

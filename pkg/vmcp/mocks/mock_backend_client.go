@@ -81,10 +81,10 @@ func (m *MockBackendClient) EXPECT() *MockBackendClientMockRecorder {
 }
 
 // CallTool mocks base method.
-func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any) (map[string]any, error) {
+func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any) (*vmcp.ToolCallResult, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments)
-	ret0, _ := ret[0].(map[string]any)
+	ret0, _ := ret[0].(*vmcp.ToolCallResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -96,10 +96,10 @@ func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, argumen
 }
 
 // GetPrompt mocks base method.
-func (m *MockBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (string, error) {
+func (m *MockBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (*vmcp.PromptGetResult, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetPrompt", ctx, target, name, arguments)
-	ret0, _ := ret[0].(string)
+	ret0, _ := ret[0].(*vmcp.PromptGetResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -126,10 +126,10 @@ func (mr *MockBackendClientMockRecorder) ListCapabilities(ctx, target any) *gomo
 }
 
 // ReadResource mocks base method.
-func (m *MockBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) ([]byte, error) {
+func (m *MockBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (*vmcp.ResourceReadResult, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReadResource", ctx, target, uri)
-	ret0, _ := ret[0].([]byte)
+	ret0, _ := ret[0].(*vmcp.ResourceReadResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

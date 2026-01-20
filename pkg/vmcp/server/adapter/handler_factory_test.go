@@ -70,7 +70,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 						"input": "test",
 						"count": 42,
 					}).
-					Return(expectedResult, nil)
+					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
@@ -267,7 +267,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 				// Backend client handles translation to original name (fetch)
 				mockClient.EXPECT().
 					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}).
-					Return(expectedResult, nil)
+					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
@@ -342,7 +342,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///path/to/resource.json").
-					Return(resourceData, nil)
+					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
 				caps := &aggregator.AggregatedCapabilities{
@@ -561,7 +561,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///test.json").
-					Return(resourceData, nil)
+					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
 				caps := &aggregator.AggregatedCapabilities{
@@ -609,7 +609,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///test.bin").
-					Return(resourceData, nil)
+					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: ""}, nil)
 			},
 			setupCtx: func() context.Context {
 				caps := &aggregator.AggregatedCapabilities{
@@ -658,7 +658,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///resource").
-					Return(resourceData, nil)
+					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
 			},
 			setupCtx: func() context.Context {
 				caps := &aggregator.AggregatedCapabilities{
@@ -751,7 +751,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
-					Return(promptText, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -834,7 +834,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
-					Return("", vmcp.ErrBackendUnavailable)
+					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -866,7 +866,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
-					Return("", errors.New("prompt rendering failed"))
+					Return(nil, errors.New("prompt rendering failed"))
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -900,7 +900,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "summarize", expectedArgs).
-					Return(promptText, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -933,7 +933,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "simple_prompt", emptyArgs).
-					Return(promptText, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{

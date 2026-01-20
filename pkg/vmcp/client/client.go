@@ -372,6 +372,55 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
+// extractMeta converts mcp.Meta to map[string]any for vmcp wrapper types.
+// This preserves the _meta field from backend MCP server responses.
+// Returns nil if meta is nil or empty.
+func extractMeta(meta *mcp.Meta) map[string]any {
+	if meta == nil {
+		return nil
+	}
+
+	result := make(map[string]any)
+
+	// Add progressToken if present
+	if meta.ProgressToken != nil {
+		result["progressToken"] = meta.ProgressToken
+	}
+
+	// Merge additional fields (custom metadata like trace context)
+	for k, v := range meta.AdditionalFields {
+		result[k] = v
+	}
+
+	// Return nil if the map is empty (no metadata to preserve)
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+// convertContent converts mcp.Content to vmcp.Content.
+// This preserves the full content structure from backend responses.
+func convertContent(content mcp.Content) vmcp.Content {
+	if textContent, ok := mcp.AsTextContent(content); ok {
+		return vmcp.Content{
+			Type: "text",
+			Text: textContent.Text,
+		}
+	}
+	if imageContent, ok := mcp.AsImageContent(content); ok {
+		return vmcp.Content{
+			Type:     "image",
+			Data:     imageContent.Data,
+			MimeType: imageContent.MIMEType,
+		}
+	}
+	// Handle embedded resources if needed
+	// For now, unknown types return text with empty content
+	return vmcp.Content{Type: "unknown"}
+}
+
 // ListCapabilities queries a backend for its MCP capabilities.
 // Returns tools, resources, and prompts exposed by the backend.
 // Only queries capabilities that the server advertises during initialization.
@@ -487,6 +536,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+// Returns the complete tool result including _meta field.
 //
 //nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
@@ -494,7 +544,7 @@ func (h *httpBackendClient) CallTool(
 	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
-) (map[string]any, error) {
+) (*vmcp.ToolCallResult, error) {
 	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
 
 	// Create a client for this backend
@@ -549,53 +599,74 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
 	}
 
+	// Convert MCP content to vmcp.Content array
+	contentArray := make([]vmcp.Content, len(result.Content))
+	for i, content := range result.Content {
+		contentArray[i] = convertContent(content)
+	}
+
+	// Extract _meta field from backend response
+	meta := extractMeta(result.Meta)
+
 	// Check for structured content first (preferred for composite tool step chaining).
 	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
 	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
 			logger.Debugf("Using structured content from tool %s on backend %s", toolName, target.WorkloadID)
-			return structuredMap, nil
+			structuredContent = structuredMap
+		} else {
+			// StructuredContent is not an object - fall through to Content processing
+			logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
+				toolName, target.WorkloadID)
 		}
-		// StructuredContent is not an object - fall through to Content processing
-		logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
-			toolName, target.WorkloadID)
 	}
 
-	// Fallback: Convert result contents to a map.
+	// If no structured content, convert result contents to a map for backward compatibility.
 	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
 	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
-	resultMap := make(map[string]any)
-	if len(result.Content) > 0 {
-		textIndex := 0
-		imageIndex := 0
-		for i, content := range result.Content {
-			// Try to convert to TextContent
-			if textContent, ok := mcp.AsTextContent(content); ok {
-				key := "text"
-				if textIndex > 0 {
-					key = fmt.Sprintf("text_%d", textIndex)
+	if structuredContent == nil {
+		structuredContent = make(map[string]any)
+		if len(result.Content) > 0 {
+			textIndex := 0
+			imageIndex := 0
+			for i, content := range result.Content {
+				// Try to convert to TextContent
+				if textContent, ok := mcp.AsTextContent(content); ok {
+					key := "text"
+					if textIndex > 0 {
+						key = fmt.Sprintf("text_%d", textIndex)
+					}
+					structuredContent[key] = textContent.Text
+					textIndex++
+				} else if imageContent, ok := mcp.AsImageContent(content); ok {
+					// Convert to ImageContent
+					key := fmt.Sprintf("image_%d", imageIndex)
+					structuredContent[key] = imageContent.Data
+					imageIndex++
+				} else {
+					// Log unsupported content types for tracking
+					logger.Debugf("Unsupported content type at index %d from tool %s on backend %s: %T",
+						i, toolName, target.WorkloadID, content)
 				}
-				resultMap[key] = textContent.Text
-				textIndex++
-			} else if imageContent, ok := mcp.AsImageContent(content); ok {
-				// Convert to ImageContent
-				key := fmt.Sprintf("image_%d", imageIndex)
-				resultMap[key] = imageContent.Data
-				imageIndex++
-			} else {
-				// Log unsupported content types for tracking
-				logger.Debugf("Unsupported content type at index %d from tool %s on backend %s: %T",
-					i, toolName, target.WorkloadID, content)
 			}
 		}
 	}
 
-	return resultMap, nil
+	return &vmcp.ToolCallResult{
+		Content:           contentArray,
+		StructuredContent: structuredContent,
+		IsError:           result.IsError,
+		Meta:              meta,
+	}, nil
 }
 
 // ReadResource retrieves a resource from the backend MCP server.
-func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) ([]byte, error) {
+// Returns the complete resource result including _meta field.
+func (h *httpBackendClient) ReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
 	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
 
 	// Create a client for this backend
@@ -633,10 +704,14 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 	// Concatenate all resource contents
 	// MCP resources can have multiple contents (text or blob)
 	var data []byte
-	for _, content := range result.Contents {
+	var mimeType string
+	for i, content := range result.Contents {
 		// Try to convert to TextResourceContents
 		if textContent, ok := mcp.AsTextResourceContents(content); ok {
 			data = append(data, []byte(textContent.Text)...)
+			if i == 0 && textContent.MIMEType != "" {
+				mimeType = textContent.MIMEType
+			}
 		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
 			// Blob is base64-encoded per MCP spec, decode it to bytes
 			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
@@ -648,25 +723,38 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 			} else {
 				data = append(data, decoded...)
 			}
+			if i == 0 && blobContent.MIMEType != "" {
+				mimeType = blobContent.MIMEType
+			}
 		}
 	}
 
-	return data, nil
+	// Extract _meta field from backend response
+	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
+	// This preserves it for future SDK improvements.
+	meta := extractMeta(result.Meta)
+
+	return &vmcp.ResourceReadResult{
+		Contents: data,
+		MimeType: mimeType,
+		Meta:     meta,
+	}, nil
 }
 
 // GetPrompt retrieves a prompt from the backend MCP server.
+// Returns the complete prompt result including _meta field.
 func (h *httpBackendClient) GetPrompt(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	name string,
 	arguments map[string]any,
-) (string, error) {
+) (*vmcp.PromptGetResult, error) {
 	logger.Debugf("Getting prompt %s from backend %s", name, target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
-		return "", wrapBackendError(err, target.WorkloadID, "create client")
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
 	defer func() {
 		if err := c.Close(); err != nil {
@@ -676,7 +764,7 @@ func (h *httpBackendClient) GetPrompt(
 
 	// Initialize the client
 	if _, err := initializeClient(ctx, c); err != nil {
-		return "", wrapBackendError(err, target.WorkloadID, "initialize client")
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
 	// Get the prompt using the original prompt name from the backend's perspective.
@@ -699,7 +787,7 @@ func (h *httpBackendClient) GetPrompt(
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
+		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
 	}
 
 	// Concatenate all prompt messages into a single string
@@ -716,5 +804,12 @@ func (h *httpBackendClient) GetPrompt(
 		// TODO: Handle other content types (image, audio, resource)
 	}
 
-	return prompt, nil
+	// Extract _meta field from backend response
+	meta := extractMeta(result.Meta)
+
+	return &vmcp.PromptGetResult{
+		Messages:    prompt,
+		Description: result.Description,
+		Meta:        meta,
+	}, nil
 }

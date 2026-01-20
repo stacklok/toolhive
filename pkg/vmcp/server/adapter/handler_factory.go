@@ -71,6 +71,45 @@ func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient
 	}
 }
 
+// convertToMCPMeta converts vmcp Meta (map[string]any) to mcp.Meta.
+// This forwards the _meta field from backend responses to MCP clients.
+func convertToMCPMeta(meta map[string]any) *mcp.Meta {
+	if len(meta) == 0 {
+		return nil
+	}
+
+	result := &mcp.Meta{
+		AdditionalFields: make(map[string]any),
+	}
+
+	for k, v := range meta {
+		if k == "progressToken" {
+			result.ProgressToken = v
+		} else {
+			result.AdditionalFields[k] = v
+		}
+	}
+
+	return result
+}
+
+// convertToMCPContent converts vmcp.Content to mcp.Content.
+// This reconstructs MCP content from the vmcp wrapper type.
+func convertToMCPContent(content vmcp.Content) mcp.Content {
+	switch content.Type {
+	case "text":
+		return mcp.NewTextContent(content.Text)
+	case "image":
+		return mcp.NewImageContent(content.Data, content.MimeType)
+	case "resource":
+		// Handle embedded resources if needed
+		// For now, convert to text
+		return mcp.NewTextContent("")
+	default:
+		return mcp.NewTextContent("")
+	}
+}
+
 // CreateToolHandler creates a tool handler that routes to the appropriate backend.
 func (f *DefaultHandlerFactory) CreateToolHandler(
 	toolName string,
@@ -111,7 +150,23 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			return mcp.NewToolResultError(fmt.Sprintf("Tool call failed: %v", err)), nil
 		}
 
-		return mcp.NewToolResultStructuredOnly(result), nil
+		// Convert vmcp.Content array to MCP content array
+		mcpContent := make([]mcp.Content, len(result.Content))
+		for i, content := range result.Content {
+			mcpContent[i] = convertToMCPContent(content)
+		}
+
+		// Create MCP tool result with _meta field preserved
+		mcpResult := &mcp.CallToolResult{
+			Result: mcp.Result{
+				Meta: convertToMCPMeta(result.Meta),
+			},
+			Content:           mcpContent,
+			StructuredContent: result.StructuredContent,
+			IsError:           result.IsError,
+		}
+
+		return mcpResult, nil
 	}
 }
 
@@ -141,7 +196,7 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 
 		backendURI := target.GetBackendCapabilityName(uri)
 
-		data, err := f.backendClient.ReadResource(ctx, target, backendURI)
+		result, err := f.backendClient.ReadResource(ctx, target, backendURI)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				logger.Warnf("Backend unavailable for resource %s: %v", uri, err)
@@ -151,19 +206,27 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 			return nil, fmt.Errorf("resource read failed: %w", err)
 		}
 
-		mimeType := "application/octet-stream" // Default for unknown resources
-		for _, res := range caps.Resources {
-			if res.URI == uri && res.MimeType != "" {
-				mimeType = res.MimeType
-				break
+		// Use the MimeType from the result if available, otherwise fall back to discovery
+		mimeType := result.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream" // Default for unknown resources
+			for _, res := range caps.Resources {
+				if res.URI == uri && res.MimeType != "" {
+					mimeType = res.MimeType
+					break
+				}
 			}
 		}
 
+		// Note: MCP SDK limitation - resources/read handlers return []ResourceContents directly,
+		// not a result wrapper with _meta field. The SDK handler signature does not support
+		// forwarding _meta for resources. result.Meta is preserved in the vmcp layer but
+		// cannot be forwarded to clients due to SDK constraints.
 		contents := []mcp.ResourceContents{
 			mcp.TextResourceContents{
 				URI:      uri,
 				MIMEType: mimeType,
-				Text:     string(data),
+				Text:     string(result.Contents),
 			},
 		}
 
@@ -199,7 +262,7 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 		backendPromptName := target.GetBackendCapabilityName(promptName)
 
 		// Forward request to backend
-		promptText, err := f.backendClient.GetPrompt(ctx, target, backendPromptName, args)
+		result, err := f.backendClient.GetPrompt(ctx, target, backendPromptName, args)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				logger.Warnf("Backend unavailable for prompt %s: %v", promptName, err)
@@ -209,17 +272,27 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 			return nil, fmt.Errorf("prompt request failed: %w", err)
 		}
 
-		result := &mcp.GetPromptResult{
-			Description: fmt.Sprintf("Prompt: %s", promptName),
+		// Use description from backend result if available
+		description := result.Description
+		if description == "" {
+			description = fmt.Sprintf("Prompt: %s", promptName)
+		}
+
+		// Create MCP prompt result with _meta field preserved
+		mcpResult := &mcp.GetPromptResult{
+			Result: mcp.Result{
+				Meta: convertToMCPMeta(result.Meta),
+			},
+			Description: description,
 			Messages: []mcp.PromptMessage{
 				{
 					Role:    "assistant",
-					Content: mcp.NewTextContent(promptText),
+					Content: mcp.NewTextContent(result.Messages),
 				},
 			},
 		}
 
-		return result, nil
+		return mcpResult, nil
 	}
 }
 

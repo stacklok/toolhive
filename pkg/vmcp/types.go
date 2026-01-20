@@ -321,6 +321,77 @@ type PromptArgument struct {
 	Required bool
 }
 
+// Content represents MCP content (text, image, audio, embedded resource).
+// This is used by ToolCallResult to preserve the full content structure from backends.
+type Content struct {
+	// Type indicates the content type: "text", "image", "audio", "resource"
+	Type string
+
+	// Text is the content text (for TextContent)
+	Text string
+
+	// Data is the base64-encoded data (for ImageContent/AudioContent)
+	Data string
+
+	// MimeType is the MIME type (for ImageContent/AudioContent)
+	MimeType string
+
+	// URI is the resource URI (for EmbeddedResource)
+	URI string
+}
+
+// ToolCallResult wraps a tool call response with metadata.
+// This preserves both the tool output AND the _meta field from the backend MCP server.
+type ToolCallResult struct {
+	// Content is the tool output (text, image, etc.)
+	// This is the array of content items returned by the backend.
+	Content []Content
+
+	// StructuredContent is structured JSON output (preferred for composite tools and workflows).
+	// When the backend returns a single text content with JSON, this field contains the parsed JSON.
+	StructuredContent map[string]any
+
+	// IsError indicates if the tool call failed.
+	IsError bool
+
+	// Meta contains protocol-level metadata from the backend (_meta field).
+	// This includes progressToken, trace context, and custom backend metadata.
+	// Per MCP specification, this field is optional and may be nil.
+	Meta map[string]any
+}
+
+// ResourceReadResult wraps a resource read response with metadata.
+// This preserves both the resource data AND the _meta field from the backend MCP server.
+type ResourceReadResult struct {
+	// Contents is the concatenated resource data.
+	// Multiple resource contents are concatenated with newlines.
+	Contents []byte
+
+	// MimeType is the content type of the resource.
+	MimeType string
+
+	// Meta contains protocol-level metadata from the backend (_meta field).
+	// NOTE: Due to MCP SDK limitations, resources/read handlers cannot forward _meta
+	// because they return []ResourceContents directly, not a result wrapper.
+	// This field is preserved for future SDK improvements but may be nil.
+	Meta map[string]any
+}
+
+// PromptGetResult wraps a prompt response with metadata.
+// This preserves both the prompt messages AND the _meta field from the backend MCP server.
+type PromptGetResult struct {
+	// Messages is the concatenated prompt text from all messages.
+	Messages string
+
+	// Description is an optional description of the prompt.
+	Description string
+
+	// Meta contains protocol-level metadata from the backend (_meta field).
+	// This includes progressToken, trace context, and custom backend metadata.
+	// Per MCP specification, this field is optional and may be nil.
+	Meta map[string]any
+}
+
 // RoutingTable contains the mappings from capability names to backend targets.
 // This is the output of the aggregation phase and input to the router.
 // Placed in vmcp root package to avoid circular dependencies between
@@ -366,19 +437,23 @@ type HealthChecker interface {
 // This interface handles the protocol-level details of calling backend MCP servers,
 // supporting multiple transport types (HTTP, SSE, stdio, streamable-http).
 //
+// All methods now return wrapper types that preserve the _meta field from backend
+// MCP server responses, ensuring protocol-level metadata (progress tokens, trace context,
+// custom metadata) is forwarded to clients.
+//
 //go:generate mockgen -destination=mocks/mock_backend_client.go -package=mocks -source=types.go BackendClient HealthChecker
 type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
-	// Returns the tool output or an error.
-	CallTool(ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any) (map[string]any, error)
+	// Returns the complete tool result including _meta field.
+	CallTool(ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
-	// Returns the resource content or an error.
-	ReadResource(ctx context.Context, target *BackendTarget, uri string) ([]byte, error)
+	// Returns the complete resource result including _meta field.
+	ReadResource(ctx context.Context, target *BackendTarget, uri string) (*ResourceReadResult, error)
 
 	// GetPrompt retrieves a prompt from the backend MCP server.
-	// Returns the rendered prompt text or an error.
-	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (string, error)
+	// Returns the complete prompt result including _meta field.
+	GetPrompt(ctx context.Context, target *BackendTarget, name string, arguments map[string]any) (*PromptGetResult, error)
 
 	// ListCapabilities queries a backend for its capabilities.
 	// Returns tools, resources, and prompts exposed by the backend.

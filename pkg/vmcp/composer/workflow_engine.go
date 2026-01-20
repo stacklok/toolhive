@@ -451,11 +451,40 @@ func (e *workflowEngine) callToolWithRetry(
 	attemptCount := 0
 	operation := func() (map[string]any, error) {
 		attemptCount++
-		output, err := e.backendClient.CallTool(ctx, target, step.Tool, args)
+		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args)
 		if err != nil {
 			logger.Warnf("Tool call failed for step %s (attempt %d/%d): %v",
 				step.ID, attemptCount, maxRetries+1, err)
 			return nil, err
+		}
+
+		// Safety check: result should never be nil if err is nil, but check defensively
+		if result == nil {
+			logger.Errorf("Tool call for step %s returned nil result without error", step.ID)
+			return nil, fmt.Errorf("nil tool result for step %s", step.ID)
+		}
+
+		// Extract output map from result.
+		// Workflow logic uses map[string]any for template variable substitution.
+		// Prefer StructuredContent (already a map), fall back to Content array conversion.
+		// The _meta field is not needed for workflow execution, so we don't extract it.
+		if result.StructuredContent != nil {
+			return result.StructuredContent, nil
+		}
+
+		// Fallback: convert Content array to map for backward compatibility.
+		// This happens when backends return only Content without StructuredContent.
+		output := make(map[string]any)
+		textIndex := 0
+		for _, content := range result.Content {
+			if content.Type == "text" {
+				key := "text"
+				if textIndex > 0 {
+					key = "text_" + string(rune(textIndex+'0'))
+				}
+				output[key] = content.Text
+				textIndex++
+			}
 		}
 		return output, nil
 	}

@@ -292,7 +292,10 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	// Mock CallTool for tool execution
 	mockBackendClient.EXPECT().
 		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any()).
-		Return(map[string]any{"result": "success"}, nil).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{"result": "success"},
+			Content:           []vmcp.Content{},
+		}, nil).
 		AnyTimes()
 
 	// Create real components
@@ -623,14 +626,20 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 	mockBackendClient.EXPECT().
 		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(map[string]any{
-			"result": "Sunny, 72°F",
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{
+				"result": "Sunny, 72°F",
+			},
+			Content: []vmcp.Content{},
 		}, nil).
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
 		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
-		Return([]byte(`{"temp": 72, "condition": "sunny"}`), nil).
+		Return(&vmcp.ResourceReadResult{
+			Contents: []byte(`{"temp": 72, "condition": "sunny"}`),
+			MimeType: "application/json",
+		}, nil).
 		AnyTimes()
 
 	// Create backends

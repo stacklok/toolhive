@@ -248,7 +248,10 @@ func TestWorkflowEngine_WithAuditor_RetryStep(t *testing.T) {
 		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any()).
 			Return(nil, errors.New("temp failure")),
 		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any()).
-			Return(map[string]any{"success": true}, nil),
+			Return(&vmcp.ToolCallResult{
+				StructuredContent: map[string]any{"success": true},
+				Content:           []vmcp.Content{},
+			}, nil),
 	)
 
 	ctx := context.Background()

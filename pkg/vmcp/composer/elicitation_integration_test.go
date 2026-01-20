@@ -73,9 +73,15 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 		WorkloadID: "deploy-backend",
 		BaseURL:    "http://deploy:8080",
 	}, nil)
+	deployResult := &vmcp.ToolCallResult{
+		StructuredContent: map[string]any{"status": "deployed"},
+		Content:           []vmcp.Content{},
+		IsError:           false,
+		Meta:              nil,
+	}
 	te.Backend.EXPECT().CallTool(gomock.Any(), gomock.Any(), "deploy_tool", map[string]any{
 		"env": "production",
-	}).Return(map[string]any{"status": "deployed"}, nil)
+	}).Return(deployResult, nil)
 
 	result, err := engine.ExecuteWorkflow(context.Background(), workflow, nil)
 	require.NoError(t, err)

@@ -16,9 +16,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/optimizer/db"
@@ -60,6 +65,7 @@ type OptimizerIntegration struct {
 	backendClient     vmcp.BackendClient // For querying backends at startup
 	sessionManager    *transportsession.Manager
 	processedSessions sync.Map // Track sessions that have already been processed
+	tracer            trace.Tracer
 }
 
 // NewIntegration creates a new optimizer integration.
@@ -94,6 +100,7 @@ func NewIntegration(
 		mcpServer:        mcpServer,
 		backendClient:    backendClient,
 		sessionManager:   sessionManager,
+		tracer:           otel.Tracer("github.com/stacklok/toolhive/pkg/vmcp/optimizer"),
 	}, nil
 }
 
@@ -400,6 +407,9 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 			"savings_percentage": savingsPercentage,
 		}
 
+		// Record OpenTelemetry metrics for token savings
+		o.recordTokenMetrics(ctx, baselineTokens, totalReturnedTokens, tokensSaved, savingsPercentage)
+
 		// Build response
 		response := map[string]any{
 			"tools":         responseTools,
@@ -421,6 +431,72 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 
 		return mcp.NewToolResultText(string(responseJSON)), nil
 	}
+}
+
+// recordTokenMetrics records OpenTelemetry metrics for token savings
+func (*OptimizerIntegration) recordTokenMetrics(
+	ctx context.Context,
+	baselineTokens int,
+	returnedTokens int,
+	tokensSaved int,
+	savingsPercentage float64,
+) {
+	// Get meter from global OpenTelemetry provider
+	meter := otel.Meter("github.com/stacklok/toolhive/pkg/vmcp/optimizer")
+
+	// Create metrics if they don't exist (they'll be cached by the meter)
+	baselineCounter, err := meter.Int64Counter(
+		"toolhive_vmcp_optimizer_baseline_tokens",
+		metric.WithDescription("Total tokens for all tools in the optimizer database (baseline)"),
+	)
+	if err != nil {
+		logger.Debugw("Failed to create baseline_tokens counter", "error", err)
+		return
+	}
+
+	returnedCounter, err := meter.Int64Counter(
+		"toolhive_vmcp_optimizer_returned_tokens",
+		metric.WithDescription("Total tokens for tools returned by optim.find_tool"),
+	)
+	if err != nil {
+		logger.Debugw("Failed to create returned_tokens counter", "error", err)
+		return
+	}
+
+	savedCounter, err := meter.Int64Counter(
+		"toolhive_vmcp_optimizer_tokens_saved",
+		metric.WithDescription("Number of tokens saved by filtering tools with optim.find_tool"),
+	)
+	if err != nil {
+		logger.Debugw("Failed to create tokens_saved counter", "error", err)
+		return
+	}
+
+	savingsGauge, err := meter.Float64Gauge(
+		"toolhive_vmcp_optimizer_savings_percentage",
+		metric.WithDescription("Percentage of tokens saved by filtering tools (0-100)"),
+		metric.WithUnit("%"),
+	)
+	if err != nil {
+		logger.Debugw("Failed to create savings_percentage gauge", "error", err)
+		return
+	}
+
+	// Record metrics with attributes
+	attrs := metric.WithAttributes(
+		attribute.String("operation", "find_tool"),
+	)
+
+	baselineCounter.Add(ctx, int64(baselineTokens), attrs)
+	returnedCounter.Add(ctx, int64(returnedTokens), attrs)
+	savedCounter.Add(ctx, int64(tokensSaved), attrs)
+	savingsGauge.Record(ctx, savingsPercentage, attrs)
+
+	logger.Debugw("Token metrics recorded",
+		"baseline_tokens", baselineTokens,
+		"returned_tokens", returnedTokens,
+		"tokens_saved", tokensSaved,
+		"savings_percentage", savingsPercentage)
 }
 
 // CreateCallToolHandler creates the handler for optim.call_tool
@@ -523,11 +599,26 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 // This should be called after backends are discovered during server initialization.
 func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
 	if o == nil || o.ingestionService == nil {
-		return nil // Optimizer disabled
+		// Optimizer disabled - log that embedding time is 0
+		logger.Infow("Optimizer disabled, embedding time: 0ms")
+		return nil
 	}
 
+	// Reset embedding time before starting ingestion
+	o.ingestionService.ResetEmbeddingTime()
+
+	// Create a span for the entire ingestion process
+	ctx, span := o.tracer.Start(ctx, "optimizer.ingestion.ingest_initial_backends",
+		trace.WithAttributes(
+			attribute.Int("backends.count", len(backends)),
+		))
+	defer span.End()
+
+	start := time.Now()
 	logger.Infof("Ingesting %d discovered backends into optimizer", len(backends))
 
+	ingestedCount := 0
+	totalToolsIngested := 0
 	for _, backend := range backends {
 		// Convert Backend to BackendTarget for client API
 		target := vmcp.BackendToTarget(&backend)
@@ -574,9 +665,28 @@ func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backen
 			logger.Warnf("Failed to ingest backend %s: %v", backend.Name, err)
 			continue // Log but don't fail startup
 		}
+		ingestedCount++
+		totalToolsIngested += len(tools)
 	}
 
-	logger.Info("Initial backend ingestion completed")
+	// Get total embedding time
+	totalEmbeddingTime := o.ingestionService.GetTotalEmbeddingTime()
+	totalDuration := time.Since(start)
+
+	span.SetAttributes(
+		attribute.Int64("ingestion.duration_ms", totalDuration.Milliseconds()),
+		attribute.Int64("embedding.duration_ms", totalEmbeddingTime.Milliseconds()),
+		attribute.Int("backends.ingested", ingestedCount),
+		attribute.Int("tools.ingested", totalToolsIngested),
+	)
+
+	logger.Infow("Initial backend ingestion completed",
+		"servers_ingested", ingestedCount,
+		"tools_ingested", totalToolsIngested,
+		"total_duration_ms", totalDuration.Milliseconds(),
+		"total_embedding_time_ms", totalEmbeddingTime.Milliseconds(),
+		"embedding_time_percentage", fmt.Sprintf("%.2f%%", float64(totalEmbeddingTime)/float64(totalDuration)*100))
+
 	return nil
 }
 

@@ -21,9 +21,23 @@ var telemetryMigrationOnce sync.Once
 // It handles both deprecated top-level telemetry_config and middleware-based telemetry configs.
 func CheckAndPerformTelemetryConfigMigration() {
 	telemetryMigrationOnce.Do(func() {
+		// Check if migration was already performed
+		appConfig := config.NewDefaultProvider().GetConfig()
+		if appConfig.TelemetryConfigMigration {
+			logger.Debugf("Telemetry config migration already completed, skipping")
+			return
+		}
+
 		if err := performTelemetryConfigMigration(); err != nil {
 			logger.Errorf("Failed to perform telemetry config migration: %v", err)
 			return
+		}
+
+		// Mark migration as completed
+		if err := config.UpdateConfig(func(c *config.Config) {
+			c.TelemetryConfigMigration = true
+		}); err != nil {
+			logger.Errorf("Failed to update config after telemetry config migration: %v", err)
 		}
 	})
 }
@@ -31,13 +45,6 @@ func CheckAndPerformTelemetryConfigMigration() {
 // performTelemetryConfigMigration migrates all run configs with float64 samplingRate to string.
 // It handles both deprecated top-level telemetry_config and middleware-based telemetry configs.
 func performTelemetryConfigMigration() error {
-	// Check if migration was already performed
-	appConfig := config.NewDefaultProvider().GetConfig()
-	if appConfig.TelemetryConfigMigration {
-		logger.Debugf("Telemetry config migration already completed, skipping")
-		return nil
-	}
-
 	ctx := context.Background()
 
 	// Get all run config names
@@ -65,14 +72,6 @@ func performTelemetryConfigMigration() error {
 
 	if migratedCount > 0 {
 		logger.Infof("Successfully migrated telemetry config for %d workload(s)", migratedCount)
-	}
-
-	// Mark migration as completed
-	err = config.UpdateConfig(func(c *config.Config) {
-		c.TelemetryConfigMigration = true
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update config after migration: %w", err)
 	}
 
 	return nil

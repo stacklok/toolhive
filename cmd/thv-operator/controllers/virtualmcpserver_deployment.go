@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -238,14 +237,6 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 	}
 
 	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-
-	// For testing: Skip OIDC discovery for example/test issuers
-	if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
-		env = append(env, corev1.EnvVar{
-			Name:  "VMCP_SKIP_OIDC_DISCOVERY",
-			Value: "true",
-		})
-	}
 
 	if inline.ClientSecretRef != nil {
 		env = append(env, corev1.EnvVar{

@@ -231,6 +231,10 @@ components:
           description: Remote indicates whether this is a remote workload (true) or
             a container workload (false).
           type: boolean
+        started_at:
+          description: StartedAt is when the container was last started (changes on
+            restart)
+          type: string
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
@@ -437,6 +441,14 @@ components:
             type: string
           type: array
           uniqueItems: false
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
         docker_tags:
           description: DockerTags lists the available Docker tags for this server
             image
@@ -454,6 +466,13 @@ components:
         image:
           description: Image is the Docker image reference for the MCP server
           type: string
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
         permissions:
           $ref: '#/components/schemas/permissions.Profile'
         provenance:
@@ -463,9 +482,56 @@ components:
             ProxyPort is the port for the HTTP proxy to listen on (host port)
             If not specified, a random available port will be assigned
           type: integer
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         target_port:
           description: TargetPort is the port for the container to expose (only applicable
             to SSE and Streamable HTTP transports)
+          type: integer
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+      type: object
+    registry.Metadata:
+      description: Metadata contains additional information about the server such
+        as popularity metrics
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the server was last updated,
+            in RFC3339 format
+          type: string
+        pulls:
+          description: Pulls indicates how many times the server image has been downloaded
+          type: integer
+        stars:
+          description: Stars represents the popularity rating or number of stars for
+            the server
           type: integer
       type: object
     registry.OAuthConfig:
@@ -572,6 +638,14 @@ components:
     registry.RemoteServerMetadata:
       description: Remote server details (if it's a remote server)
       properties:
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
         env_vars:
           description: |-
             EnvVars defines environment variables that can be passed to configure the client
@@ -588,8 +662,46 @@ components:
             $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
         oauth_config:
           $ref: '#/components/schemas/registry.OAuthConfig'
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
         url:
           description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
           type: string
@@ -2562,7 +2674,8 @@ paths:
       - workloads
   /api/v1beta/workloads/{name}/logs:
     get:
-      description: Retrieve at most 100 lines of logs for a specific workload by name.
+      description: Retrieve at most 1000 lines of logs for a specific workload by
+        name.
       parameters:
       - description: Workload name
         in: path
@@ -2594,8 +2707,8 @@ paths:
       - logs
   /api/v1beta/workloads/{name}/proxy-logs:
     get:
-      description: Retrieve proxy logs for a specific workload by name from the file
-        system.
+      description: Retrieve at most 1000 lines of proxy logs for a specific workload
+        by name from the file system.
       parameters:
       - description: Workload name
         in: path

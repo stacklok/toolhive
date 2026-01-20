@@ -720,7 +720,7 @@ func init() {
 
 	// Add --with-workloads flag to group rm command
 	groupRmCmd.Flags().BoolVar(&withWorkloadsFlag, "with-workloads", false,
-		"Delete all workloads in the group along with the group")
+		"Delete all workloads in the group along with the group (default false)")
 
 	// Add flags to group run command
 	groupRunCmd.Flags().StringArrayVar(&groupSecrets, "secret", []string{},

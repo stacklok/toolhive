@@ -19,7 +19,7 @@ import (
 type minimalRunConfig struct {
 	Group     string              `json:"group,omitempty" yaml:"group,omitempty"`
 	ProxyMode string              `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
-	Transport types.TransportType `json:"transport" yaml:"transport"`
+	Transport types.TransportType `json:"transport,omitempty" yaml:"transport,omitempty"`
 }
 
 // loadRunConfigFields attempts to load specific fields from the runconfig
@@ -65,10 +65,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		port = 0
 	}
 
-	// check if we have the label for transport type (toolhive-transport)
-	transportType := labels.GetTransportType(container.Labels)
+	transportTypeLabel := labels.GetTransportType(container.Labels)
 
-	tType, err := types.ParseTransportType(transportType)
+	tType, err := types.ParseTransportType(transportTypeLabel)
 	if err != nil {
 		// If we can't parse the transport type, default to SSE.
 		tType = types.TransportTypeSSE

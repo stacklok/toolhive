@@ -13,7 +13,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -501,9 +500,9 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 // resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
 // This follows standard Kubernetes garbage collection patterns.
 //
-// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
-// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
-// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
+// This implementation follows the MCPRegistry pattern using CreateOrUpdate with RetryOnConflict,
+// which automatically updates RBAC rules during operator upgrades. See virtualmcpserver_rbac.go
+// for the implementation details.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -517,55 +516,8 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		return nil
 	}
 
-	// Dynamic mode (discovered): Ensure RBAC resources exist
-	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
-
-	// Ensure Role with permissions to discover backends and update status
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-			Rules: vmcpRBACRules,
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     serviceAccountName,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: vmcp.Namespace,
-				},
-			},
-		}
-	})
+	// Dynamic mode (discovered): Ensure RBAC resources exist using the improved pattern
+	return r.ensureRBACResourcesForVirtualMCPServer(ctx, vmcp)
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.

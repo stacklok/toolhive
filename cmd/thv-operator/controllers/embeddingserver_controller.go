@@ -52,9 +52,10 @@ const (
 //+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/finalizers,verbs=update
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -89,16 +90,8 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return result, err
 	}
 
-	// Ensure PVC for model caching if enabled
-	if embedding.IsModelCacheEnabled() {
-		if err := r.ensurePVC(ctx, embedding); err != nil {
-			ctxLogger.Error(err, "Failed to ensure PVC")
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Ensure deployment exists and is up to date
-	if result, done, err := r.ensureDeployment(ctx, embedding); done {
+	// Ensure statefulset exists and is up to date
+	if result, done, err := r.ensureStatefulSet(ctx, embedding); done {
 		return result, err
 	}
 
@@ -107,12 +100,7 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return result, err
 	}
 
-	// Update status with the service URL
-	if result, done, err := r.updateServiceURL(ctx, embedding); done {
-		return result, err
-	}
-
-	// Update the EmbeddingServer status
+	// Update the EmbeddingServer status (includes URL, phase, and readyReplicas)
 	if err := r.updateEmbeddingServerStatus(ctx, embedding); err != nil {
 		ctxLogger.Error(err, "Failed to update EmbeddingServer status")
 		return ctrl.Result{}, err
@@ -135,6 +123,12 @@ func (r *EmbeddingServerReconciler) performValidations(
 
 	// Validate image
 	if err := r.validateImage(ctx, embedding); err != nil {
+		// Error is ignored here because validateImage already updates status with error details
+		// and records events. We requeue to retry validation after image issues are resolved.
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Image validation failed, will retry",
+			"image", embedding.Spec.Image,
+			"requeueAfter", 5*time.Minute)
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
@@ -183,55 +177,55 @@ func (r *EmbeddingServerReconciler) ensureFinalizer(
 	return ctrl.Result{}, false, nil
 }
 
-// ensureDeployment ensures the deployment exists and is up to date
-func (r *EmbeddingServerReconciler) ensureDeployment(
+// ensureStatefulSet ensures the statefulset exists and is up to date
+func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) (ctrl.Result, bool, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	deployment := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, deployment)
+	statefulSet := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, statefulSet)
 	if err != nil && errors.IsNotFound(err) {
-		dep := r.deploymentForEmbedding(ctx, embedding)
-		if dep == nil {
-			ctxLogger.Error(nil, "Failed to create Deployment object")
-			return ctrl.Result{}, true, fmt.Errorf("failed to create Deployment object")
+		sts := r.statefulSetForEmbedding(ctx, embedding)
+		if sts == nil {
+			ctxLogger.Error(nil, "Failed to create StatefulSet object")
+			return ctrl.Result{}, true, fmt.Errorf("failed to create StatefulSet object")
 		}
-		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-		err = r.Create(ctx, dep)
+		ctxLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", sts.Namespace, "StatefulSet.Name", sts.Name)
+		err = r.Create(ctx, sts)
 		if err != nil {
-			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			ctxLogger.Error(err, "Failed to create new StatefulSet", "StatefulSet.Namespace", sts.Namespace, "StatefulSet.Name", sts.Name)
 			return ctrl.Result{}, true, err
 		}
 		// Continue to create service instead of returning early
 		return ctrl.Result{}, false, nil
 	} else if err != nil {
-		ctxLogger.Error(err, "Failed to get Deployment")
+		ctxLogger.Error(err, "Failed to get StatefulSet")
 		return ctrl.Result{}, true, err
 	}
 
-	// Ensure the deployment size matches the spec
+	// Ensure the statefulset size matches the spec
 	desiredReplicas := embedding.GetReplicas()
-	if *deployment.Spec.Replicas != desiredReplicas {
-		deployment.Spec.Replicas = &desiredReplicas
-		if err := r.updateDeploymentWithRetry(ctx, deployment); err != nil {
-			ctxLogger.Error(err, "Failed to update Deployment replicas",
-				"Deployment.Namespace", deployment.Namespace,
-				"Deployment.Name", deployment.Name)
+	if *statefulSet.Spec.Replicas != desiredReplicas {
+		statefulSet.Spec.Replicas = &desiredReplicas
+		if err := r.updateStatefulSetWithRetry(ctx, statefulSet); err != nil {
+			ctxLogger.Error(err, "Failed to update StatefulSet replicas",
+				"StatefulSet.Namespace", statefulSet.Namespace,
+				"StatefulSet.Name", statefulSet.Name)
 			return ctrl.Result{}, true, err
 		}
 		return ctrl.Result{Requeue: true}, true, nil
 	}
 
-	// Check if the deployment spec changed
-	if r.deploymentNeedsUpdate(ctx, deployment, embedding) {
-		newDeployment := r.deploymentForEmbedding(ctx, embedding)
-		deployment.Spec = newDeployment.Spec
-		if err := r.updateDeploymentWithRetry(ctx, deployment); err != nil {
-			ctxLogger.Error(err, "Failed to update Deployment",
-				"Deployment.Namespace", deployment.Namespace,
-				"Deployment.Name", deployment.Name)
+	// Check if the statefulset spec changed
+	if r.statefulSetNeedsUpdate(ctx, statefulSet, embedding) {
+		newStatefulSet := r.statefulSetForEmbedding(ctx, embedding)
+		statefulSet.Spec = newStatefulSet.Spec
+		if err := r.updateStatefulSetWithRetry(ctx, statefulSet); err != nil {
+			ctxLogger.Error(err, "Failed to update StatefulSet",
+				"StatefulSet.Namespace", statefulSet.Namespace,
+				"StatefulSet.Name", statefulSet.Name)
 			return ctrl.Result{}, true, err
 		}
 		return ctrl.Result{Requeue: true}, true, nil
@@ -240,42 +234,13 @@ func (r *EmbeddingServerReconciler) ensureDeployment(
 	return ctrl.Result{}, false, nil
 }
 
-// updateDeploymentWithRetry updates the deployment with retry logic for conflict errors
-func (r *EmbeddingServerReconciler) updateDeploymentWithRetry(
+// updateStatefulSetWithRetry updates the statefulset
+// The reconciler loop will automatically retry on conflicts
+func (r *EmbeddingServerReconciler) updateStatefulSetWithRetry(
 	ctx context.Context,
-	deployment *appsv1.Deployment,
+	statefulSet *appsv1.StatefulSet,
 ) error {
-	ctxLogger := log.FromContext(ctx)
-
-	// Try to update the deployment
-	err := r.Update(ctx, deployment)
-	if err == nil {
-		return nil
-	}
-
-	// If it's a conflict error, fetch the latest version and try again
-	if errors.IsConflict(err) {
-		ctxLogger.Info("Conflict detected, retrying with latest version",
-			"Deployment.Namespace", deployment.Namespace,
-			"Deployment.Name", deployment.Name)
-
-		// Get the latest version of the deployment
-		latestDeployment := &appsv1.Deployment{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      deployment.Name,
-			Namespace: deployment.Namespace,
-		}, latestDeployment); err != nil {
-			return err
-		}
-
-		// Apply the spec changes to the latest version
-		latestDeployment.Spec = deployment.Spec
-
-		// Try updating again with the latest version
-		return r.Update(ctx, latestDeployment)
-	}
-
-	return err
+	return r.Update(ctx, statefulSet)
 }
 
 // ensureService ensures the service exists
@@ -305,30 +270,6 @@ func (r *EmbeddingServerReconciler) ensureService(
 		return ctrl.Result{}, false, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
-		return ctrl.Result{}, true, err
-	}
-
-	return ctrl.Result{}, false, nil
-}
-
-// updateServiceURL updates the status with the service URL
-//
-//nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
-func (r *EmbeddingServerReconciler) updateServiceURL(
-	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
-) (ctrl.Result, bool, error) {
-	ctxLogger := log.FromContext(ctx)
-
-	if embedding.Status.URL != "" {
-		return ctrl.Result{}, false, nil
-	}
-
-	embedding.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
-		embedding.Name, embedding.Namespace, embedding.GetPort())
-	err := r.Status().Update(ctx, embedding)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to update EmbeddingServer status")
 		return ctrl.Result{}, true, err
 	}
 
@@ -445,72 +386,55 @@ func (r *EmbeddingServerReconciler) validateImage(ctx context.Context, embedding
 	return nil
 }
 
-// ensurePVC ensures the PVC for model caching exists
-func (r *EmbeddingServerReconciler) ensurePVC(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) error {
-	ctxLogger := log.FromContext(ctx)
+// statefulSetForEmbedding creates a StatefulSet for the embedding server
+func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
+	_ context.Context,
+	embedding *mcpv1alpha1.EmbeddingServer,
+) *appsv1.StatefulSet {
+	replicas := embedding.GetReplicas()
+	labels := r.labelsForEmbedding(embedding)
 
-	pvcName := fmt.Sprintf("%s-model-cache", embedding.Name)
-	pvc := &corev1.PersistentVolumeClaim{}
+	// Build container
+	container := r.buildEmbeddingContainer(embedding)
 
-	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: embedding.Namespace}, pvc)
-	if err != nil && errors.IsNotFound(err) {
-		pvc = r.pvcForEmbedding(embedding)
-		ctxLogger.Info("Creating a new PVC", "PVC.Namespace", pvc.Namespace, "PVC.Name", pvc.Name)
+	// Build pod template
+	podTemplate := r.buildPodTemplate(embedding, labels, container)
 
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionVolumeReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonVolumeCreating,
-			Message:            "Creating PersistentVolumeClaim for model cache",
-			ObservedGeneration: embedding.Generation,
-		})
+	// Apply deployment overrides (reuse for StatefulSet pod template)
+	annotations := r.applyDeploymentOverrides(embedding, &podTemplate)
 
-		err = r.Create(ctx, pvc)
-		if err != nil {
-			ctxLogger.Error(err, "Failed to create new PVC", "PVC.Namespace", pvc.Namespace, "PVC.Name", pvc.Name)
-			meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionVolumeReady,
-				Status:             metav1.ConditionFalse,
-				Reason:             mcpv1alpha1.ConditionReasonVolumeFailed,
-				Message:            fmt.Sprintf("Failed to create PVC: %v", err),
-				ObservedGeneration: embedding.Generation,
-			})
-			return err
-		}
+	statefulSet := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        embedding.Name,
+			Namespace:   embedding.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: embedding.Name, // Required for StatefulSet
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: podTemplate,
+		},
+	}
 
-		r.Recorder.Event(embedding, corev1.EventTypeNormal, "PVCCreated", fmt.Sprintf("Created PVC %s for model caching", pvcName))
+	// Add volumeClaimTemplates if model caching is enabled
+	if embedding.IsModelCacheEnabled() {
+		statefulSet.Spec.VolumeClaimTemplates = r.buildVolumeClaimTemplates(embedding)
+	}
+
+	if err := ctrl.SetControllerReference(embedding, statefulSet, r.Scheme); err != nil {
 		return nil
-	} else if err != nil {
-		ctxLogger.Error(err, "Failed to get PVC")
-		return err
 	}
-
-	// PVC exists, check if it's bound
-	if pvc.Status.Phase == corev1.ClaimBound {
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionVolumeReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonVolumeReady,
-			Message:            "PersistentVolumeClaim is bound and ready",
-			ObservedGeneration: embedding.Generation,
-		})
-	} else {
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionVolumeReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonVolumeCreating,
-			Message:            fmt.Sprintf("PersistentVolumeClaim is in phase: %s", pvc.Status.Phase),
-			ObservedGeneration: embedding.Generation,
-		})
-	}
-
-	return nil
+	return statefulSet
 }
 
-// pvcForEmbedding creates a PVC for the embedding model cache
-func (r *EmbeddingServerReconciler) pvcForEmbedding(embedding *mcpv1alpha1.EmbeddingServer) *corev1.PersistentVolumeClaim {
-	pvcName := fmt.Sprintf("%s-model-cache", embedding.Name)
-
+// buildVolumeClaimTemplates builds the volumeClaimTemplates for the StatefulSet
+func (r *EmbeddingServerReconciler) buildVolumeClaimTemplates(
+	embedding *mcpv1alpha1.EmbeddingServer,
+) []corev1.PersistentVolumeClaim {
 	size := "10Gi"
 	if embedding.Spec.ModelCache.Size != "" {
 		size = embedding.Spec.ModelCache.Size
@@ -521,11 +445,10 @@ func (r *EmbeddingServerReconciler) pvcForEmbedding(embedding *mcpv1alpha1.Embed
 		accessMode = corev1.PersistentVolumeAccessMode(embedding.Spec.ModelCache.AccessMode)
 	}
 
-	pvc := &corev1.PersistentVolumeClaim{
+	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      pvcName,
-			Namespace: embedding.Namespace,
-			Labels:    r.labelsForEmbedding(embedding),
+			Name:   "model-cache",
+			Labels: r.labelsForEmbedding(embedding),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
@@ -543,57 +466,18 @@ func (r *EmbeddingServerReconciler) pvcForEmbedding(embedding *mcpv1alpha1.Embed
 
 	// Apply resource overrides if specified
 	if embedding.Spec.ResourceOverrides != nil && embedding.Spec.ResourceOverrides.PersistentVolumeClaim != nil {
+		if pvc.Annotations == nil && embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Annotations != nil {
+			pvc.Annotations = make(map[string]string)
+		}
 		if embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Annotations != nil {
-			pvc.Annotations = embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Annotations
+			maps.Copy(pvc.Annotations, embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Annotations)
 		}
 		if embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Labels != nil {
 			maps.Copy(pvc.Labels, embedding.Spec.ResourceOverrides.PersistentVolumeClaim.Labels)
 		}
 	}
 
-	if err := ctrl.SetControllerReference(embedding, pvc, r.Scheme); err != nil {
-		return nil
-	}
-	return pvc
-}
-
-// deploymentForEmbedding creates a Deployment for the embedding server
-func (r *EmbeddingServerReconciler) deploymentForEmbedding(
-	_ context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
-) *appsv1.Deployment {
-	replicas := embedding.GetReplicas()
-	labels := r.labelsForEmbedding(embedding)
-
-	// Build container
-	container := r.buildEmbeddingContainer(embedding)
-
-	// Build pod template
-	podTemplate := r.buildPodTemplate(embedding, labels, container)
-
-	// Apply deployment overrides
-	annotations := r.applyDeploymentOverrides(embedding, &podTemplate)
-
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        embedding.Name,
-			Namespace:   embedding.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Template: podTemplate,
-		},
-	}
-
-	if err := ctrl.SetControllerReference(embedding, deployment, r.Scheme); err != nil {
-		return nil
-	}
-	return deployment
+	return []corev1.PersistentVolumeClaim{pvc}
 }
 
 // buildEmbeddingContainer builds the container spec for the embedding server
@@ -654,6 +538,22 @@ func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingS
 			Value: embedding.Spec.Model,
 		},
 	}
+
+	// Add HuggingFace token from secret if provided
+	if embedding.Spec.HFTokenSecretRef != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "HF_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: embedding.Spec.HFTokenSecretRef.Name,
+					},
+					Key: embedding.Spec.HFTokenSecretRef.Key,
+				},
+			},
+		})
+	}
+
 	for _, env := range embedding.Spec.Env {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  env.Name,
@@ -721,7 +621,7 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1alph
 	}
 }
 
-// buildPodTemplate builds the pod template for the deployment
+// buildPodTemplate builds the pod template for the statefulset
 func (r *EmbeddingServerReconciler) buildPodTemplate(
 	embedding *mcpv1alpha1.EmbeddingServer,
 	labels map[string]string,
@@ -736,20 +636,8 @@ func (r *EmbeddingServerReconciler) buildPodTemplate(
 		},
 	}
 
-	// Add volume for model cache if enabled
-	if embedding.IsModelCacheEnabled() {
-		pvcName := fmt.Sprintf("%s-model-cache", embedding.Name)
-		podTemplate.Spec.Volumes = []corev1.Volume{
-			{
-				Name: "model-cache",
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: pvcName,
-					},
-				},
-			},
-		}
-	}
+	// Note: Volumes for model cache are managed by StatefulSet volumeClaimTemplates
+	// and will be automatically mounted with the name "model-cache"
 
 	// Merge with user-provided PodTemplateSpec if specified
 	r.mergePodTemplateSpec(embedding, &podTemplate)
@@ -897,24 +785,26 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 	}
 }
 
-// deploymentNeedsUpdate checks if the deployment needs to be updated
-func (*EmbeddingServerReconciler) deploymentNeedsUpdate(
+// statefulSetNeedsUpdate checks if the statefulset needs to be updated
+//
+//nolint:gocyclo // Complexity unavoidable due to many field comparisons
+func (*EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	_ context.Context,
-	deployment *appsv1.Deployment,
+	statefulSet *appsv1.StatefulSet,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {
 	// Check if the number of replicas changed
 	desiredReplicas := embedding.GetReplicas()
-	if *deployment.Spec.Replicas != desiredReplicas {
+	if *statefulSet.Spec.Replicas != desiredReplicas {
 		return true
 	}
 
 	// Compare containers by checking specific important fields
-	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+	if len(statefulSet.Spec.Template.Spec.Containers) != 1 {
 		return true
 	}
 
-	existingContainer := deployment.Spec.Template.Spec.Containers[0]
+	existingContainer := statefulSet.Spec.Template.Spec.Containers[0]
 
 	// Check image
 	if existingContainer.Image != embedding.Spec.Image {
@@ -952,6 +842,29 @@ func (*EmbeddingServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	// Check HF_TOKEN secret reference
+	expectedHFTokenRef := embedding.Spec.HFTokenSecretRef
+	var existingHFTokenRef *corev1.SecretKeySelector
+	for _, env := range existingContainer.Env {
+		if env.Name == "HF_TOKEN" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+			existingHFTokenRef = env.ValueFrom.SecretKeyRef
+			break
+		}
+	}
+
+	// Compare HF token secret references
+	if expectedHFTokenRef != nil && existingHFTokenRef == nil {
+		return true
+	}
+	if expectedHFTokenRef == nil && existingHFTokenRef != nil {
+		return true
+	}
+	if expectedHFTokenRef != nil && existingHFTokenRef != nil {
+		if expectedHFTokenRef.Name != existingHFTokenRef.Name || expectedHFTokenRef.Key != existingHFTokenRef.Key {
+			return true
+		}
+	}
+
 	// Check ports
 	if len(existingContainer.Ports) != 1 || existingContainer.Ports[0].ContainerPort != embedding.GetPort() {
 		return true
@@ -960,15 +873,21 @@ func (*EmbeddingServerReconciler) deploymentNeedsUpdate(
 	return false
 }
 
-// updateEmbeddingServerStatus updates the status based on deployment state
+// updateEmbeddingServerStatus updates the status based on statefulset state
 func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	ctx context.Context,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
-	deployment := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, deployment)
+	// Set the service URL if not already set
+	if embedding.Status.URL == "" {
+		embedding.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
+			embedding.Name, embedding.Namespace, embedding.GetPort())
+	}
+
+	statefulSet := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, statefulSet)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhasePending
@@ -977,20 +896,20 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 			return err
 		}
 	} else {
-		embedding.Status.ReadyReplicas = deployment.Status.ReadyReplicas
+		embedding.Status.ReadyReplicas = statefulSet.Status.ReadyReplicas
 		embedding.Status.ObservedGeneration = embedding.Generation
 
-		// Determine phase based on deployment status
-		if deployment.Status.ReadyReplicas > 0 {
+		// Determine phase based on statefulset status
+		if statefulSet.Status.ReadyReplicas > 0 {
 			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseRunning
 			embedding.Status.Message = "Embedding server is running"
-		} else if deployment.Status.Replicas > 0 && deployment.Status.ReadyReplicas == 0 {
+		} else if statefulSet.Status.Replicas > 0 && statefulSet.Status.ReadyReplicas == 0 {
 			// Check if pods are downloading the model
 			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseDownloading
 			embedding.Status.Message = "Downloading embedding model"
 		} else {
 			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhasePending
-			embedding.Status.Message = "Waiting for deployment"
+			embedding.Status.Message = "Waiting for statefulset"
 		}
 	}
 
@@ -1024,7 +943,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 func (r *EmbeddingServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.EmbeddingServer{}).
-		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Complete(r)

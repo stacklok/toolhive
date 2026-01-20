@@ -32,47 +32,82 @@ spec:
         file: assert-deployment-running.yaml
     - assert:
         file: assert-service-created.yaml
-    - assert:
-        file: assert-pvc-created.yaml
 
   - name: verify-model-cache-volume
-    description: Verify that the PVC is mounted in the deployment
+    description: Verify that the PVC is mounted in the statefulset
     try:
     - script:
         env:
           - name: embeddingServerName
             value: ($testPrefix)
         content: |
-          # Get the deployment name
+          # Get the statefulset name
           echo "Verifying model cache for embedding server: $embeddingServerName"
 
-          DEPLOYMENT_NAME="$embeddingServerName"
-          PVC_NAME="$embeddingServerName-model-cache"
+          STATEFULSET_NAME="$embeddingServerName"
+          # StatefulSet PVCs follow the pattern: volumeClaimTemplate-statefulsetName-ordinal
+          PVC_NAME="model-cache-$embeddingServerName-0"
 
           # Check if PVC exists and is bound
           PVC_STATUS=$(kubectl get pvc $PVC_NAME -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
 
           if [ "$PVC_STATUS" != "Bound" ]; then
             echo "PVC is not bound. Current status: $PVC_STATUS"
-            kubectl describe pvc $PVC_NAME -n toolhive-system
+            echo "Available PVCs:"
+            kubectl get pvc -n toolhive-system
             exit 1
           fi
 
           echo "✓ PVC is bound"
 
-          # Verify the volume is mounted in the deployment
-          VOLUME_MOUNTED=$(kubectl get deployment $DEPLOYMENT_NAME -n toolhive-system -o jsonpath='{.spec.template.spec.volumes[?(@.persistentVolumeClaim.claimName=="'$PVC_NAME'")].name}' 2>/dev/null || echo "")
+          # Check that the statefulset is ready
+          kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 --timeout=120s statefulset/$STATEFULSET_NAME -n toolhive-system
 
-          if [ -z "$VOLUME_MOUNTED" ]; then
-            echo "Volume is not mounted in deployment"
-            kubectl describe deployment $DEPLOYMENT_NAME -n toolhive-system
+          echo "✓ StatefulSet is ready"
+
+          # Verify that model files are written to the cache volume
+          echo "Checking for model files in cache volume..."
+          POD_NAME=$(kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=$STATEFULSET_NAME --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+          if [ -z "$POD_NAME" ]; then
+            echo "No running pod found for statefulset"
             exit 1
           fi
 
-          echo "✓ Volume is mounted in deployment: $VOLUME_MOUNTED"
+          echo "Checking cache contents in pod: $POD_NAME"
 
-          # Check that the pod is running
-          kubectl wait --for=condition=available --timeout=120s deployment/$DEPLOYMENT_NAME -n toolhive-system
+          # Wait for model to be downloaded (check logs for model loading)
+          echo "Waiting for model to be downloaded..."
+          MAX_WAIT=60
+          COUNTER=0
+          MODEL_LOADED=false
+
+          while [ $COUNTER -lt $MAX_WAIT ]; do
+            # Check if model files exist in /data
+            CACHE_CONTENTS=$(kubectl exec -n toolhive-system $POD_NAME -- sh -c 'find /data -type f 2>/dev/null | wc -l' || echo "0")
+
+            if [ "$CACHE_CONTENTS" -gt 0 ]; then
+              MODEL_LOADED=true
+              break
+            fi
+
+            echo "Waiting for model files to appear... ($COUNTER/$MAX_WAIT seconds)"
+            sleep 2
+            COUNTER=$((COUNTER + 2))
+          done
+
+          if [ "$MODEL_LOADED" = false ]; then
+            echo "No model files found in /data after $MAX_WAIT seconds. Cache appears empty."
+            echo "Listing /data contents:"
+            kubectl exec -n toolhive-system $POD_NAME -- ls -laR /data || true
+            echo "Pod logs:"
+            kubectl logs -n toolhive-system $POD_NAME --tail=50 || true
+            exit 1
+          fi
+
+          echo "✓ Model files found in cache volume"
+          echo "Cache directory contents:"
+          kubectl exec -n toolhive-system $POD_NAME -- sh -c 'du -sh /data/* 2>/dev/null' || true
 
           echo "✅ Model cache verification passed!"
           exit 0

@@ -6,7 +6,7 @@ metadata:
 spec:
   # Use a lightweight model for testing
   model: "sentence-transformers/all-MiniLM-L6-v2"
-  image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"
+  image: "text-embeddings-inference"
   imagePullPolicy: IfNotPresent
   port: 8080
   replicas: 1

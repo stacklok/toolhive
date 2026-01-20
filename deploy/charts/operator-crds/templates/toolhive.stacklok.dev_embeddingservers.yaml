@@ -80,6 +80,21 @@ spec:
                   - value
                   type: object
                 type: array
+              hfTokenSecretRef:
+                description: |-
+                  HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.
+                  If provided, the secret value will be provided to the embedding server for authentication with huggingface.
+                properties:
+                  key:
+                    description: Key is the key within the secret
+                    type: string
+                  name:
+                    description: Name is the name of the secret
+                    type: string
+                required:
+                - key
+                - name
+                type: object
               image:
                 default: ghcr.io/huggingface/text-embeddings-inference:latest
                 description: Image is the container image for huggingface-embedding-inference
@@ -159,24 +174,6 @@ spec:
                           type: string
                         description: Annotations to add or override on the resource
                         type: object
-                      env:
-                        description: Env are environment variables to set in the embedding
-                          container
-                        items:
-                          description: EnvVar represents an environment variable in
-                            a container
-                          properties:
-                            name:
-                              description: Name of the environment variable
-                              type: string
-                            value:
-                              description: Value of the environment variable
-                              type: string
-                          required:
-                          - name
-                          - value
-                          type: object
-                        type: array
                       labels:
                         additionalProperties:
                           type: string

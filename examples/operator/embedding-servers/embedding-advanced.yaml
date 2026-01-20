@@ -11,6 +11,13 @@ spec:
   port: 8080
   replicas: 2
 
+  # HuggingFace authentication token (optional)
+  # Reference a Kubernetes Secret containing the HuggingFace token for accessing private models
+  # Create the secret with: kubectl create secret generic hf-token --from-literal=token=hf_xxxxx
+  hfTokenSecretRef:
+    name: hf-token
+    key: token
+
   # Additional arguments to pass to the embedding server
   args:
     - "--max-concurrent-requests"

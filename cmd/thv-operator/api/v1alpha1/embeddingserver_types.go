@@ -41,6 +41,11 @@ type EmbeddingServerSpec struct {
 	// +kubebuilder:validation:Required
 	Model string `json:"model"`
 
+	// HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.
+	// If provided, the secret value will be provided to the embedding server for authentication with huggingface.
+	// +optional
+	HFTokenSecretRef *SecretKeyRef `json:"hfTokenSecretRef,omitempty"`
+
 	// Image is the container image for huggingface-embedding-inference
 	// +kubebuilder:validation:Required
 	// +kubebuilder:default="ghcr.io/huggingface/text-embeddings-inference:latest"
@@ -142,10 +147,6 @@ type EmbeddingDeploymentOverrides struct {
 	// PodTemplateMetadataOverrides defines metadata overrides for the pod template
 	// +optional
 	PodTemplateMetadataOverrides *ResourceMetadataOverrides `json:"podTemplateMetadataOverrides,omitempty"`
-
-	// Env are environment variables to set in the embedding container
-	// +optional
-	Env []EnvVar `json:"env,omitempty"`
 }
 
 // EmbeddingServerStatus defines the observed state of EmbeddingServer

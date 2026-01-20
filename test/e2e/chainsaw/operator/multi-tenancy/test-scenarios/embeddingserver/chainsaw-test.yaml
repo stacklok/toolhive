@@ -92,23 +92,23 @@ spec:
           fi
           echo "✓ EmbeddingServer found in namespace 2"
 
-          # Verify deployments are in separate namespaces
-          DEPLOYMENT_NAME="$embeddingServerName"
+          # Verify statefulsets are in separate namespaces
+          STATEFULSET_NAME="$embeddingServerName"
 
-          NS1_DEPLOYMENT=$(kubectl get deployment $DEPLOYMENT_NAME -n $ns1 -o name 2>/dev/null || echo "")
-          NS2_DEPLOYMENT=$(kubectl get deployment $DEPLOYMENT_NAME -n $ns2 -o name 2>/dev/null || echo "")
+          NS1_STATEFULSET=$(kubectl get statefulset $STATEFULSET_NAME -n $ns1 -o name 2>/dev/null || echo "")
+          NS2_STATEFULSET=$(kubectl get statefulset $STATEFULSET_NAME -n $ns2 -o name 2>/dev/null || echo "")
 
-          if [ -z "$NS1_DEPLOYMENT" ]; then
-            echo "Deployment not found in namespace 1"
+          if [ -z "$NS1_STATEFULSET" ]; then
+            echo "StatefulSet not found in namespace 1"
             exit 1
           fi
-          echo "✓ Deployment found in namespace 1"
+          echo "✓ StatefulSet found in namespace 1"
 
-          if [ -z "$NS2_DEPLOYMENT" ]; then
-            echo "Deployment not found in namespace 2"
+          if [ -z "$NS2_STATEFULSET" ]; then
+            echo "StatefulSet not found in namespace 2"
             exit 1
           fi
-          echo "✓ Deployment found in namespace 2"
+          echo "✓ StatefulSet found in namespace 2"
 
           # Verify services are in separate namespaces
           SERVICE_NAME="$embeddingServerName"

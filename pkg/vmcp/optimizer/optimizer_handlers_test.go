@@ -110,7 +110,7 @@ func TestCreateFindToolHandler_InvalidArguments(t *testing.T) {
 	// Test with invalid arguments type
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      "optim.find_tool",
+			Name:      "optim_find_tool",
 			Arguments: "not a map",
 		},
 	}
@@ -122,7 +122,7 @@ func TestCreateFindToolHandler_InvalidArguments(t *testing.T) {
 	// Test with missing tool_description
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"limit": 10,
 			},
@@ -136,7 +136,7 @@ func TestCreateFindToolHandler_InvalidArguments(t *testing.T) {
 	// Test with empty tool_description
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "",
 			},
@@ -150,7 +150,7 @@ func TestCreateFindToolHandler_InvalidArguments(t *testing.T) {
 	// Test with non-string tool_description
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": 123,
 			},
@@ -217,7 +217,7 @@ func TestCreateFindToolHandler_WithKeywords(t *testing.T) {
 	// Test with keywords
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "search tool",
 				"tool_keywords":    "test search",
@@ -289,7 +289,7 @@ func TestCreateFindToolHandler_Limit(t *testing.T) {
 	// Test with custom limit
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "test",
 				"limit":            5,
@@ -304,7 +304,7 @@ func TestCreateFindToolHandler_Limit(t *testing.T) {
 	// Test with float64 limit (from JSON)
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "test",
 				"limit":            float64(3),
@@ -332,7 +332,7 @@ func TestCreateFindToolHandler_BackendToolOpsNil(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "test",
 			},
@@ -389,7 +389,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with invalid arguments type
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      "optim.call_tool",
+			Name:      "optim_call_tool",
 			Arguments: "not a map",
 		},
 	}
@@ -401,7 +401,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with missing backend_id
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"tool_name":  "test_tool",
 				"parameters": map[string]any{},
@@ -416,7 +416,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with empty backend_id
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "",
 				"tool_name":  "test_tool",
@@ -432,7 +432,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with missing tool_name
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"parameters": map[string]any{},
@@ -447,7 +447,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with missing parameters
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "test_tool",
@@ -462,7 +462,7 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	// Test with invalid parameters type
 	request = mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "test_tool",
@@ -521,7 +521,7 @@ func TestCreateCallToolHandler_NoRoutingTable(t *testing.T) {
 	// Test without routing table in context
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "test_tool",
@@ -590,7 +590,7 @@ func TestCreateCallToolHandler_ToolNotFound(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "nonexistent_tool",
@@ -664,7 +664,7 @@ func TestCreateCallToolHandler_BackendMismatch(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1", // Requesting backend-1
 				"tool_name":  "test_tool", // But tool belongs to backend-2
@@ -745,7 +745,7 @@ func TestCreateCallToolHandler_Success(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "test_tool",
@@ -834,7 +834,7 @@ func TestCreateCallToolHandler_CallToolError(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.call_tool",
+			Name: "optim_call_tool",
 			Arguments: map[string]any{
 				"backend_id": "backend-1",
 				"tool_name":  "test_tool",
@@ -891,7 +891,7 @@ func TestCreateFindToolHandler_InputSchemaUnmarshalError(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "test",
 			},

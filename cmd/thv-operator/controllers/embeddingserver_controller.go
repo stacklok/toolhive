@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the EmbeddingServer custom resource.
 // It handles the creation, update, and deletion of HuggingFace embedding inference servers in Kubernetes.
 package controllers

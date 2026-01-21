@@ -244,6 +244,8 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	if r.statefulSetNeedsUpdate(ctx, statefulSet, embedding) {
 		newStatefulSet := r.statefulSetForEmbedding(ctx, embedding)
 		statefulSet.Spec = newStatefulSet.Spec
+		statefulSet.Annotations = newStatefulSet.Annotations
+		statefulSet.Labels = newStatefulSet.Labels
 		if err := r.updateStatefulSetWithRetry(ctx, statefulSet); err != nil {
 			ctxLogger.Error(err, "Failed to update StatefulSet",
 				"StatefulSet.Namespace", statefulSet.Namespace,
@@ -299,6 +301,8 @@ func (r *EmbeddingServerReconciler) ensureService(
 	if r.serviceNeedsUpdate(service, embedding) {
 		desiredService := r.serviceForEmbedding(ctx, embedding)
 		service.Spec.Ports = desiredService.Spec.Ports
+		service.Labels = desiredService.Labels
+		service.Annotations = desiredService.Annotations
 		// Preserve ClusterIP as it's immutable
 		if err := r.Update(ctx, service); err != nil {
 			ctxLogger.Error(err, "Failed to update Service",
@@ -323,6 +327,33 @@ func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 	// Check if any port has changed
 	for _, port := range service.Spec.Ports {
 		if port.Name == "http" && port.Port != desiredPort {
+			return true
+		}
+	}
+
+	// Check ResourceOverrides (annotations and labels)
+	expectedAnnotations := make(map[string]string)
+	expectedLabels := make(map[string]string)
+
+	if embedding.Spec.ResourceOverrides != nil && embedding.Spec.ResourceOverrides.Service != nil {
+		if embedding.Spec.ResourceOverrides.Service.Annotations != nil {
+			maps.Copy(expectedAnnotations, embedding.Spec.ResourceOverrides.Service.Annotations)
+		}
+		if embedding.Spec.ResourceOverrides.Service.Labels != nil {
+			maps.Copy(expectedLabels, embedding.Spec.ResourceOverrides.Service.Labels)
+		}
+	}
+
+	// Check if expected annotations are present in service
+	for key, value := range expectedAnnotations {
+		if service.Annotations[key] != value {
+			return true
+		}
+	}
+
+	// Check if expected labels are present in service
+	for key, value := range expectedLabels {
+		if service.Labels[key] != value {
 			return true
 		}
 	}
@@ -442,14 +473,19 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	podTemplate := r.buildPodTemplate(embedding, labels, container)
 
 	// Apply deployment overrides (reuse for StatefulSet pod template)
-	annotations := r.applyDeploymentOverrides(embedding, &podTemplate)
+	stsAnnotations, stsLabels := r.applyDeploymentOverrides(embedding, &podTemplate)
+
+	// Merge ResourceOverrides labels into base labels
+	finalLabels := make(map[string]string)
+	maps.Copy(finalLabels, labels)
+	maps.Copy(finalLabels, stsLabels)
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        embedding.Name,
 			Namespace:   embedding.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
+			Labels:      finalLabels,
+			Annotations: stsAnnotations,
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas:    &replicas,
@@ -718,6 +754,9 @@ func (r *EmbeddingServerReconciler) mergePodTemplateSpec(
 	if userTemplate.Spec.SecurityContext != nil {
 		podTemplate.Spec.SecurityContext = userTemplate.Spec.SecurityContext
 	}
+	if userTemplate.Spec.ServiceAccountName != "" {
+		podTemplate.Spec.ServiceAccountName = userTemplate.Spec.ServiceAccountName
+	}
 
 	// Merge container-level customizations
 	r.mergeContainerSecurityContext(podTemplate, userTemplate)
@@ -742,19 +781,24 @@ func (*EmbeddingServerReconciler) mergeContainerSecurityContext(
 	}
 }
 
-// applyDeploymentOverrides applies deployment-level overrides and returns annotations
+// applyDeploymentOverrides applies deployment-level overrides and returns annotations and labels
 func (*EmbeddingServerReconciler) applyDeploymentOverrides(
 	embedding *mcpv1alpha1.EmbeddingServer,
 	podTemplate *corev1.PodTemplateSpec,
-) map[string]string {
+) (map[string]string, map[string]string) {
 	annotations := make(map[string]string)
+	labels := make(map[string]string)
 
 	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.Deployment == nil {
-		return annotations
+		return annotations, labels
 	}
 
 	if embedding.Spec.ResourceOverrides.Deployment.Annotations != nil {
 		maps.Copy(annotations, embedding.Spec.ResourceOverrides.Deployment.Annotations)
+	}
+
+	if embedding.Spec.ResourceOverrides.Deployment.Labels != nil {
+		maps.Copy(labels, embedding.Spec.ResourceOverrides.Deployment.Labels)
 	}
 
 	if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides != nil {
@@ -772,7 +816,7 @@ func (*EmbeddingServerReconciler) applyDeploymentOverrides(
 		}
 	}
 
-	return annotations
+	return annotations, labels
 }
 
 // serviceForEmbedding creates a Service for the embedding server
@@ -784,9 +828,15 @@ func (r *EmbeddingServerReconciler) serviceForEmbedding(
 	annotations := make(map[string]string)
 
 	// Apply service overrides if specified
+	finalLabels := make(map[string]string)
+	maps.Copy(finalLabels, labels)
+
 	if embedding.Spec.ResourceOverrides != nil && embedding.Spec.ResourceOverrides.Service != nil {
 		if embedding.Spec.ResourceOverrides.Service.Annotations != nil {
 			maps.Copy(annotations, embedding.Spec.ResourceOverrides.Service.Annotations)
+		}
+		if embedding.Spec.ResourceOverrides.Service.Labels != nil {
+			maps.Copy(finalLabels, embedding.Spec.ResourceOverrides.Service.Labels)
 		}
 	}
 
@@ -794,7 +844,7 @@ func (r *EmbeddingServerReconciler) serviceForEmbedding(
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        embedding.Name,
 			Namespace:   embedding.Namespace,
-			Labels:      labels,
+			Labels:      finalLabels,
 			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
@@ -829,7 +879,7 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 // statefulSetNeedsUpdate checks if the statefulset needs to be updated
 //
 //nolint:gocyclo // Complexity unavoidable due to many field comparisons
-func (*EmbeddingServerReconciler) statefulSetNeedsUpdate(
+func (r *EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	_ context.Context,
 	statefulSet *appsv1.StatefulSet,
 	embedding *mcpv1alpha1.EmbeddingServer,
@@ -909,6 +959,113 @@ func (*EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	// Check ports
 	if len(existingContainer.Ports) != 1 || existingContainer.Ports[0].ContainerPort != embedding.GetPort() {
 		return true
+	}
+
+	// Check image pull policy
+	if existingContainer.ImagePullPolicy != corev1.PullPolicy(embedding.GetImagePullPolicy()) {
+		return true
+	}
+
+	// Check resources
+	if !reflect.DeepEqual(existingContainer.Resources, r.buildExpectedResources(embedding)) {
+		return true
+	}
+
+	// Check ResourceOverrides (annotations and labels)
+	if r.resourceOverridesChanged(statefulSet, embedding) {
+		return true
+	}
+
+	return false
+}
+
+// buildExpectedResources builds the expected resource requirements based on the embedding spec
+func (*EmbeddingServerReconciler) buildExpectedResources(embedding *mcpv1alpha1.EmbeddingServer) corev1.ResourceRequirements {
+	if embedding.Spec.Resources.Limits.CPU == "" && embedding.Spec.Resources.Limits.Memory == "" &&
+		embedding.Spec.Resources.Requests.CPU == "" && embedding.Spec.Resources.Requests.Memory == "" {
+		return corev1.ResourceRequirements{}
+	}
+
+	resources := corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{},
+		Requests: corev1.ResourceList{},
+	}
+
+	if embedding.Spec.Resources.Limits.CPU != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(embedding.Spec.Resources.Limits.CPU)
+	}
+	if embedding.Spec.Resources.Limits.Memory != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(embedding.Spec.Resources.Limits.Memory)
+	}
+	if embedding.Spec.Resources.Requests.CPU != "" {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse(embedding.Spec.Resources.Requests.CPU)
+	}
+	if embedding.Spec.Resources.Requests.Memory != "" {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse(embedding.Spec.Resources.Requests.Memory)
+	}
+
+	return resources
+}
+
+// resourceOverridesChanged checks if ResourceOverrides have changed
+func (*EmbeddingServerReconciler) resourceOverridesChanged(
+	statefulSet *appsv1.StatefulSet,
+	embedding *mcpv1alpha1.EmbeddingServer,
+) bool {
+	// Check StatefulSet annotations
+	expectedAnnotations := make(map[string]string)
+	expectedLabels := make(map[string]string)
+
+	if embedding.Spec.ResourceOverrides != nil && embedding.Spec.ResourceOverrides.Deployment != nil {
+		if embedding.Spec.ResourceOverrides.Deployment.Annotations != nil {
+			maps.Copy(expectedAnnotations, embedding.Spec.ResourceOverrides.Deployment.Annotations)
+		}
+		if embedding.Spec.ResourceOverrides.Deployment.Labels != nil {
+			maps.Copy(expectedLabels, embedding.Spec.ResourceOverrides.Deployment.Labels)
+		}
+	}
+
+	// Check if expected annotations are present in statefulset
+	for key, value := range expectedAnnotations {
+		if statefulSet.Annotations[key] != value {
+			return true
+		}
+	}
+
+	// Check if expected labels are present in statefulset
+	for key, value := range expectedLabels {
+		if statefulSet.Labels[key] != value {
+			return true
+		}
+	}
+
+	// Check pod template annotations and labels
+	expectedPodAnnotations := make(map[string]string)
+	expectedPodLabels := make(map[string]string)
+
+	if embedding.Spec.ResourceOverrides != nil &&
+		embedding.Spec.ResourceOverrides.Deployment != nil &&
+		embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides != nil {
+		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations != nil {
+			maps.Copy(expectedPodAnnotations, embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations)
+		}
+		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels != nil {
+			maps.Copy(expectedPodLabels, embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels)
+		}
+	}
+
+	// Check if expected pod template annotations are present
+	for key, value := range expectedPodAnnotations {
+		if statefulSet.Spec.Template.Annotations[key] != value {
+			return true
+		}
+	}
+
+	// Check if expected pod template labels are present
+	for key, value := range expectedPodLabels {
+		if statefulSet.Spec.Template.Labels[key] != value {
+			return true
+		}
 	}
 
 	return false

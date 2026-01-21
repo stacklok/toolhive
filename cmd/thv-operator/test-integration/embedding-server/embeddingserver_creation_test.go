@@ -749,8 +749,6 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 		},
-		// TODO(embeddingserver): Update assertion when serviceAccountName via PodTemplateSpec is implemented.
-		// Expected: ServiceAccountName: "custom-sa" in StatefulSet.Spec.Template.Spec
 		{
 			Name: "When creating an EmbeddingServer with PodTemplateSpec serviceAccountName",
 			InitialState: InitialState{
@@ -769,16 +767,18 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 			FinalState: FinalState{
-				// TODO(embeddingserver): Expect ServiceAccountName: "custom-sa" when implemented
 				StatefulSet: &appsv1.StatefulSet{
 					Spec: appsv1.StatefulSetSpec{
 						Replicas: ptr.To(int32(1)),
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								ServiceAccountName: "custom-sa",
+							},
+						},
 					},
 				},
 			},
 		},
-		// TODO(embeddingserver): Update assertion when ResourceOverrides on StatefulSet is implemented.
-		// Expected: Annotations: {"custom-annotation": "sts-value"}, Labels: {"custom-label": "sts-value"}
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on StatefulSet",
 			InitialState: InitialState{
@@ -802,7 +802,6 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 			FinalState: FinalState{
-				// TODO(embeddingserver): Expect custom annotations/labels when ResourceOverrides is implemented
 				StatefulSet: &appsv1.StatefulSet{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
@@ -810,13 +809,15 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 							"app.kubernetes.io/instance":   "test-resource-overrides-sts",
 							"app.kubernetes.io/component":  "embedding-server",
 							"app.kubernetes.io/managed-by": "toolhive-operator",
+							"custom-label":                 "sts-value",
+						},
+						Annotations: map[string]string{
+							"custom-annotation": "sts-value",
 						},
 					},
 				},
 			},
 		},
-		// TODO(embeddingserver): Update assertion when ResourceOverrides on Service is implemented.
-		// Expected: Annotations: {"service-annotation": "svc-value"}, Labels: {"service-label": "svc-value"}
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on Service",
 			InitialState: InitialState{
@@ -838,7 +839,6 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 			FinalState: FinalState{
-				// TODO(embeddingserver): Expect custom annotations/labels when ResourceOverrides is implemented
 				Service: &corev1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
@@ -846,6 +846,10 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 							"app.kubernetes.io/instance":   "test-resource-overrides-svc",
 							"app.kubernetes.io/component":  "embedding-server",
 							"app.kubernetes.io/managed-by": "toolhive-operator",
+							"service-label":                "svc-value",
+						},
+						Annotations: map[string]string{
+							"service-annotation": "svc-value",
 						},
 					},
 					Spec: corev1.ServiceSpec{
@@ -879,7 +883,6 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 			FinalState: FinalState{
-				// TODO(embeddingserver): Expect custom annotations/labels on pod template when implemented
 				StatefulSet: &appsv1.StatefulSet{
 					Spec: appsv1.StatefulSetSpec{
 						Replicas: ptr.To(int32(1)),
@@ -888,6 +891,10 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 								Labels: map[string]string{
 									"app.kubernetes.io/name":     "embeddingserver",
 									"app.kubernetes.io/instance": "test-resource-overrides-pod",
+									"pod-label":                  "pod-value",
+								},
+								Annotations: map[string]string{
+									"pod-annotation": "pod-value",
 								},
 							},
 						},

@@ -54,7 +54,7 @@ var _ = BeforeSuite(func() {
 
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	ctx, cancel = context.WithCancel(context.Background())
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{

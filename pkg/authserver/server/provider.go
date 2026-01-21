@@ -169,7 +169,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizeCodeLifespan:          cfg.AuthCodeLifespan,
 		GlobalSecret:                   cfg.HMACSecrets.Current,
 		RotatedGlobalSecrets:           cfg.HMACSecrets.Rotated,
-		TokenURL:                       cfg.Issuer + "/oauth2/token",
+		TokenURL:                       cfg.Issuer + "/oauth/token",
 		EnforcePKCE:                    true,
 		EnablePKCEPlainChallengeMethod: false, // Only allow S256 per MCP specification
 	}

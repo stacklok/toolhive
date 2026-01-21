@@ -320,6 +320,10 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
+	// UpdateWorkloadFromRequest uses the request context for synchronous operations
+	// (validation, building config). The manager's UpdateWorkload method creates its own
+	// background context with timeout for the async operation, so we don't need to create
+	// one here.
 	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes

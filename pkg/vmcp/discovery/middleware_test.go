@@ -28,6 +28,50 @@ func createTestSessionManager(t *testing.T) *transportsession.Manager {
 	return sessionMgr
 }
 
+// unorderedBackendsMatcher is a gomock matcher that compares backend slices without caring about order.
+// This is needed because ImmutableRegistry.List() iterates over a map which doesn't guarantee order.
+type unorderedBackendsMatcher struct {
+	expected []vmcp.Backend
+}
+
+func (m unorderedBackendsMatcher) Matches(x any) bool {
+	actual, ok := x.([]vmcp.Backend)
+	if !ok {
+		return false
+	}
+	if len(actual) != len(m.expected) {
+		return false
+	}
+
+	// Create maps for comparison
+	expectedMap := make(map[string]vmcp.Backend)
+	for _, b := range m.expected {
+		expectedMap[b.ID] = b
+	}
+
+	actualMap := make(map[string]vmcp.Backend)
+	for _, b := range actual {
+		actualMap[b.ID] = b
+	}
+
+	// Check all expected backends are present
+	for id, expectedBackend := range expectedMap {
+		actualBackend, found := actualMap[id]
+		if !found {
+			return false
+		}
+		if expectedBackend.ID != actualBackend.ID || expectedBackend.Name != actualBackend.Name {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (unorderedBackendsMatcher) String() string {
+	return "matches backends regardless of order"
+}
+
 func TestMiddleware_InitializeRequest(t *testing.T) {
 	t.Parallel()
 
@@ -67,7 +111,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 
 	// Expect discovery to be called for initialize request (no session ID)
 	mockMgr.EXPECT().
-		Discover(gomock.Any(), backends).
+		Discover(gomock.Any(), unorderedBackendsMatcher{backends}).
 		Return(expectedCaps, nil)
 
 	// Create a test handler that verifies capabilities are in context
@@ -302,7 +346,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 	}
 
 	mockMgr.EXPECT().
-		Discover(gomock.Any(), backends).
+		Discover(gomock.Any(), unorderedBackendsMatcher{backends}).
 		Return(expectedCaps, nil)
 
 	// Create handler that inspects context in detail

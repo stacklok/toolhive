@@ -218,6 +218,51 @@ spec:
                           data included in audit logs (in bytes).
                         type: integer
                     type: object
+                  backends:
+                    description: |-
+                      Backends defines pre-configured backend servers for static mode.
+                      When OutgoingAuth.Source is "inline", this field contains the full list of backend
+                      servers with their URLs and transport types, eliminating the need for K8s API access.
+                      When OutgoingAuth.Source is "discovered", this field is empty and backends are
+                      discovered at runtime via Kubernetes API.
+                    items:
+                      description: |-
+                        StaticBackendConfig defines a pre-configured backend server for static mode.
+                        This allows vMCP to operate without Kubernetes API access by embedding all backend
+                        information directly in the configuration.
+                      properties:
+                        metadata:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Metadata is a custom key-value map for storing additional backend information
+                            such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
+                            This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
+                            Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
+                          type: object
+                        name:
+                          description: |-
+                            Name is the backend identifier.
+                            Must match the backend name from the MCPGroup for auth config resolution.
+                          type: string
+                        transport:
+                          description: |-
+                            Transport is the MCP transport protocol: "sse" or "streamable-http"
+                            Only network transports supported by vMCP client are allowed.
+                          enum:
+                          - sse
+                          - streamable-http
+                          type: string
+                        url:
+                          description: URL is the backend's MCP server base URL.
+                          pattern: ^https?://
+                          type: string
+                      required:
+                      - name
+                      - transport
+                      - url
+                      type: object
+                    type: array
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -520,6 +565,7 @@ spec:
                             type: boolean
                           issuer:
                             description: Issuer is the OIDC issuer URL.
+                            pattern: ^https?://
                             type: string
                           protectedResourceAllowPrivateIp:
                             description: |-
@@ -630,6 +676,21 @@ spec:
                               overrides.
                             type: object
                         type: object
+                    type: object
+                  optimizer:
+                    description: |-
+                      Optimizer configures the MCP optimizer for context optimization on large toolsets.
+                      When enabled, vMCP exposes only find_tool and call_tool operations to clients
+                      instead of all backend tools directly. This reduces token usage by allowing
+                      LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+                    properties:
+                      embeddingService:
+                        description: |-
+                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
+                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                        type: string
+                    required:
+                    - embeddingService
                     type: object
                   outgoingAuth:
                     description: |-

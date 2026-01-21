@@ -56,15 +56,23 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 	}, nil
 }
 
-// Convert converts VirtualMCPServer CRD spec to vmcp Config
+// Convert converts VirtualMCPServer CRD spec to vmcp Config.
+//
+// The conversion starts with a DeepCopy of the embedded config.Config from the CRD spec.
+// This ensures that simple fields (like Optimizer, Metadata, etc.) are automatically
+// passed through without explicit mapping. Only fields that require special handling
+// (auth, aggregation, composite tools, telemetry) are explicitly converted below.
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) (*vmcpconfig.Config, error) {
-	config := &vmcpconfig.Config{
-		Name:  vmcp.Name,
-		Group: vmcp.Spec.Config.Group,
-	}
+	// Start with a deep copy of the embedded config for automatic field passthrough.
+	// This ensures new fields added to config.Config are automatically included
+	// without requiring explicit mapping in this converter.
+	config := vmcp.Spec.Config.DeepCopy()
+
+	// Override name with the CR name (authoritative source)
+	config.Name = vmcp.Name
 
 	// Convert IncomingAuth - required field, no defaults
 	if vmcp.Spec.IncomingAuth != nil {

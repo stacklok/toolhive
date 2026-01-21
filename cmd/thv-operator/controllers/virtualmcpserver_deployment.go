@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -50,7 +49,8 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account
+// RBAC rules for VirtualMCPServer service account in dynamic mode
+// These rules allow vMCP to discover backends and configurations at runtime
 var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
@@ -59,8 +59,13 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"update", "patch"},
 	},
 }
 
@@ -81,6 +86,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
+	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -100,7 +106,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+					ServiceAccountName: serviceAccountName,
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -238,14 +244,6 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 	}
 
 	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-
-	// For testing: Skip OIDC discovery for example/test issuers
-	if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
-		env = append(env, corev1.EnvVar{
-			Name:  "VMCP_SKIP_OIDC_DISCOVERY",
-			Value: "true",
-		})
-	}
 
 	if inline.ClientSecretRef != nil {
 		env = append(env, corev1.EnvVar{

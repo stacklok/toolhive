@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package kubernetes provides utilities for working with Kubernetes resources.
 //
 // This package provides a unified Client that composes domain-specific clients

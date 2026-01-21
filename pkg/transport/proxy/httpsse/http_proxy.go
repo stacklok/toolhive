@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package httpsse provides an HTTP proxy implementation for Server-Sent Events (SSE)
 // used in communication between the client and MCP server.
 package httpsse

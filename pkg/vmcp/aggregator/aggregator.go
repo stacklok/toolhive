@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aggregator provides capability aggregation for Virtual MCP Server.
 //
 // This package discovers backend MCP servers, queries their capabilities,

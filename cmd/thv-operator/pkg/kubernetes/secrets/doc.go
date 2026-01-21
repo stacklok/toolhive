@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package secrets provides utilities for working with Kubernetes Secrets.
 //
 // This package offers a Client that wraps the controller-runtime client

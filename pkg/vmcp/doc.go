@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package vmcp provides the Virtual MCP Server implementation.
 //
 // Virtual MCP Server aggregates multiple MCP servers from a ToolHive group into a

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllerutil provides shared utility functions for ToolHive Kubernetes controllers.
 //
 // This package contains helper functions extracted from the controllers package to improve

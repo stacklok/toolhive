@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package discovery provides authentication discovery utilities for detecting
 // authentication requirements from remote servers.
 //

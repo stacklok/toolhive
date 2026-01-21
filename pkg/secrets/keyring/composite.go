@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package keyring provides a composite keyring provider that supports multiple backends.
 // It supports macOS Keychain, Windows Credential Manager, and Linux D-Bus Secret Service,
 // with keyctl as a fallback on Linux systems.

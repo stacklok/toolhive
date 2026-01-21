@@ -212,69 +212,16 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("container deployer not set")
 	}
 
-	// Determine target URI
-	var targetURI string
-
-	if t.remoteURL != "" {
-		// For remote MCP servers, construct target URI from remote URL
-		remoteURL, err := url.Parse(t.remoteURL)
-		if err != nil {
-			return fmt.Errorf("failed to parse remote URL: %w", err)
-		}
-		targetURI = (&url.URL{
-			Scheme: remoteURL.Scheme,
-			Host:   remoteURL.Host,
-		}).String()
-		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
-			t.proxyPort, targetURI)
-	} else {
-		if t.containerName == "" {
-			return transporterrors.ErrContainerNameNotSet
-		}
-
-		// For local containers, use the configured target URI
-		if t.targetURI == "" {
-			return fmt.Errorf("target URI not set for HTTP transport")
-		}
-		targetURI = t.targetURI
-		logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-			t.proxyPort, targetURI)
-	}
-
-	// Create middlewares slice
-	var middlewares []types.NamedMiddleware
-
-	// Add the transport's existing middlewares
-	middlewares = append(middlewares, t.middlewares...)
-
 	isRemote := t.remoteURL != ""
 
-	// Add OAuth token injection middleware for remote authentication if we have a token source
-	if isRemote && t.tokenSource != nil {
-		tokenMiddleware := t.createTokenInjectionMiddleware()
-		middlewares = append(middlewares, types.NamedMiddleware{
-			Name:     "oauth-token-injection",
-			Function: tokenMiddleware,
-		})
+	targetURI, err := t.determineTargetURI(isRemote)
+	if err != nil {
+		return err
 	}
 
-	// Determine MCP server base path
-	var mcpServerBasePath string
-	if isRemote {
-		// For remote MCP servers, extract path from remoteURL
-		remoteURL, err := url.Parse(t.remoteURL)
-		if err == nil {
-			mcpServerBasePath = remoteURL.Path
-			if mcpServerBasePath == "" {
-				mcpServerBasePath = "/"
-			}
-		} else {
-			mcpServerBasePath = "/"
-		}
-	} else {
-		// For local containers, use GetMCPServerBasePath
-		mcpServerBasePath = GetMCPServerBasePath(t.transportType)
-	}
+	middlewares := t.setupMiddlewares(isRemote)
+
+	mcpServerBasePath := t.determineMCPServerBasePath(isRemote)
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
@@ -303,7 +250,78 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return nil
 	}
 
-	// Create a container monitor
+	return t.setupContainerMonitoring(ctx)
+}
+
+// determineTargetURI determines the target URI based on whether this is a remote or local server.
+func (t *HTTPTransport) determineTargetURI(isRemote bool) (string, error) {
+	if isRemote {
+		// For remote MCP servers, construct target URI from remote URL
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse remote URL: %w", err)
+		}
+		targetURI := (&url.URL{
+			Scheme: remoteURL.Scheme,
+			Host:   remoteURL.Host,
+		}).String()
+		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
+			t.proxyPort, targetURI)
+		return targetURI, nil
+	}
+
+	// For local containers
+	if t.containerName == "" {
+		return "", transporterrors.ErrContainerNameNotSet
+	}
+
+	if t.targetURI == "" {
+		return "", fmt.Errorf("target URI not set for HTTP transport")
+	}
+
+	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+		t.proxyPort, t.targetURI)
+	return t.targetURI, nil
+}
+
+// setupMiddlewares creates and returns the middleware chain for the transport.
+func (t *HTTPTransport) setupMiddlewares(isRemote bool) []types.NamedMiddleware {
+	middlewares := make([]types.NamedMiddleware, 0, len(t.middlewares)+1)
+	middlewares = append(middlewares, t.middlewares...)
+
+	// Add OAuth token injection middleware for remote authentication if we have a token source
+	if isRemote && t.tokenSource != nil {
+		tokenMiddleware := t.createTokenInjectionMiddleware()
+		middlewares = append(middlewares, types.NamedMiddleware{
+			Name:     "oauth-token-injection",
+			Function: tokenMiddleware,
+		})
+	}
+
+	return middlewares
+}
+
+// determineMCPServerBasePath determines the MCP server base path based on whether this is remote or local.
+func (t *HTTPTransport) determineMCPServerBasePath(isRemote bool) string {
+	if isRemote {
+		// For remote MCP servers, extract path from remoteURL
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err == nil {
+			mcpServerBasePath := remoteURL.Path
+			if mcpServerBasePath == "" {
+				return "/"
+			}
+			return mcpServerBasePath
+		}
+		return "/"
+	}
+
+	// For local containers, use GetMCPServerBasePath
+	return GetMCPServerBasePath(t.transportType)
+}
+
+// setupContainerMonitoring sets up container monitoring for local containers.
+func (t *HTTPTransport) setupContainerMonitoring(ctx context.Context) error {
 	monitorRuntime, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container monitor: %w", err)

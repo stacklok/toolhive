@@ -47,9 +47,9 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 		expectedCode int
 	}{
 		{
-			name: "valid none provider setup",
+			name: "valid environment provider setup",
 			requestBody: setupSecretsRequest{
-				ProviderType: string(secrets.NoneType),
+				ProviderType: string(secrets.EnvironmentType),
 			},
 			expectedCode: http.StatusCreated,
 		},
@@ -111,7 +111,7 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 				ProviderType: "invalid",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "invalid secrets provider type: invalid (valid types: encrypted, 1password, none)",
+			errorMessage: "invalid secrets provider type: invalid (valid types: encrypted, 1password, environment)",
 		},
 		{
 			name:         "invalid json body",
@@ -419,13 +419,13 @@ func TestRequestResponseTypes(t *testing.T) {
 		t.Parallel()
 		resp := getSecretsProviderResponse{
 			Name:         "test-provider",
-			ProviderType: "none",
+			ProviderType: "environment",
 			Capabilities: providerCapabilitiesResponse{
-				CanRead:    false,
+				CanRead:    true,
 				CanWrite:   false,
 				CanDelete:  false,
-				CanList:    true,
-				CanCleanup: true,
+				CanList:    false,
+				CanCleanup: false,
 			},
 		}
 		data, err := json.Marshal(resp)
@@ -533,7 +533,7 @@ func TestErrorHandling(t *testing.T) {
 		// Create a test config provider
 		configProvider := config.NewPathProvider(configPath)
 
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"provider_type": "none"}`))
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"provider_type": "environment"}`))
 		// Deliberately not setting Content-Type header
 		w := httptest.NewRecorder()
 
@@ -568,7 +568,7 @@ func TestRouterIntegration(t *testing.T) {
 
 		// Test POST / endpoint
 		setupReq := setupSecretsRequest{
-			ProviderType: string(secrets.NoneType),
+			ProviderType: string(secrets.EnvironmentType),
 		}
 		body, err := json.Marshal(setupReq)
 		require.NoError(t, err)

@@ -169,6 +169,297 @@ func Test_migrateTelemetryConfigJSON(t *testing.T) {
 			}`,
 			outputJSON: "", // no migration
 		},
+		{
+			name: "migrates middleware telemetry config with float64 samplingRate",
+			inputJSON: `{
+				"name": "test-workload",
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"endpoint": "http://localhost:4318",
+								"samplingRate": 0.1,
+								"tracingEnabled": true
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: `{
+				"name": "test-workload",
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"endpoint": "http://localhost:4318",
+								"samplingRate": "0.1",
+								"tracingEnabled": true
+							}
+						}
+					}
+				]
+			}`,
+		},
+		{
+			name: "migrates middleware telemetry config with integer samplingRate",
+			inputJSON: `{
+				"name": "mermaid",
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": 1,
+								"serviceName": "toolhive-mcp-proxy"
+							},
+							"server_name": "mermaid",
+							"transport": "streamable-http"
+						}
+					}
+				]
+			}`,
+			outputJSON: `{
+				"name": "mermaid",
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": "1",
+								"serviceName": "toolhive-mcp-proxy"
+							},
+							"server_name": "mermaid",
+							"transport": "streamable-http"
+						}
+					}
+				]
+			}`,
+		},
+		{
+			name: "does not migrate middleware telemetry config with string samplingRate",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": "0.5"
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "migrates both top-level telemetry_config and middleware configs",
+			inputJSON: `{
+				"name": "test-workload",
+				"telemetry_config": {
+					"samplingRate": 0.2
+				},
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": 0.1
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: `{
+				"name": "test-workload",
+				"telemetry_config": {
+					"samplingRate": "0.2"
+				},
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": "0.1"
+							}
+						}
+					}
+				]
+			}`,
+		},
+		{
+			name: "migrates multiple telemetry middleware configs",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "auth",
+						"parameters": {}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": 0.05
+							}
+						}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": 1
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "auth",
+						"parameters": {}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": "0.05"
+							}
+						}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"samplingRate": "1"
+							}
+						}
+					}
+				]
+			}`,
+		},
+		{
+			name: "does not migrate non-telemetry middleware configs",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "auth",
+						"parameters": {
+							"config": {
+								"samplingRate": 0.1
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "does not migrate when middleware configs is not an array",
+			inputJSON: `{
+				"middleware_configs": "invalid"
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "does not migrate when middleware has no parameters",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "telemetry"
+					}
+				]
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "does not migrate when middleware parameters has no config",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {}
+					}
+				]
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "does not migrate when middleware config has no samplingRate",
+			inputJSON: `{
+				"middleware_configs": [
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"endpoint": "http://localhost:4318"
+							}
+						}
+					}
+				]
+			}`,
+			outputJSON: "", // no migration
+		},
+		{
+			name: "preserves complex middleware config structure",
+			inputJSON: `{
+				"name": "mermaid",
+				"middleware_configs": [
+					{
+						"type": "auth",
+						"parameters": {}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"endpoint": "",
+								"serviceName": "toolhive-mcp-proxy",
+								"serviceVersion": "v0.6.13",
+								"tracingEnabled": true,
+								"metricsEnabled": true,
+								"samplingRate": 1,
+								"headers": {},
+								"insecure": true,
+								"enablePrometheusMetricsPath": true,
+								"environmentVariables": ["USER", "HOST"]
+							},
+							"server_name": "mermaid",
+							"transport": "streamable-http"
+						}
+					}
+				]
+			}`,
+			outputJSON: `{
+				"name": "mermaid",
+				"middleware_configs": [
+					{
+						"type": "auth",
+						"parameters": {}
+					},
+					{
+						"type": "telemetry",
+						"parameters": {
+							"config": {
+								"endpoint": "",
+								"serviceName": "toolhive-mcp-proxy",
+								"serviceVersion": "v0.6.13",
+								"tracingEnabled": true,
+								"metricsEnabled": true,
+								"samplingRate": "1",
+								"headers": {},
+								"insecure": true,
+								"enablePrometheusMetricsPath": true,
+								"environmentVariables": ["USER", "HOST"]
+							},
+							"server_name": "mermaid",
+							"transport": "streamable-http"
+						}
+					}
+				]
+			}`,
+		},
 	}
 
 	for _, tt := range tests {

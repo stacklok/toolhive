@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package optimizer provides vMCP integration for semantic tool discovery.
 //
 // This package implements the RFC-0022 optimizer integration, exposing:

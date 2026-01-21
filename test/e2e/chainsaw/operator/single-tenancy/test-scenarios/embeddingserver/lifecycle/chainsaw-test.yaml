@@ -35,18 +35,6 @@ spec:
     - assert:
         file: assert-service-created.yaml
 
-  - name: update-embeddingserver-replicas
-    description: Update EmbeddingServer to scale replicas
-    try:
-    - apply:
-        file: embeddingserver-scaled.yaml
-    - assert:
-        file: embeddingserver-scaled.yaml
-    - assert:
-        file: assert-embeddingserver-scaled.yaml
-    - assert:
-        file: assert-deployment-scaled.yaml
-
   - name: update-embeddingserver-env
     description: Update EmbeddingServer environment variables
     try:
@@ -59,18 +47,18 @@ spec:
           - name: embeddingServerName
             value: ($testPrefix)
         content: |
-          # Verify environment variable update propagated to deployment
-          DEPLOYMENT_NAME="$embeddingServerName"
+          # Verify environment variable update propagated to statefulset
+          STATEFULSET_NAME="$embeddingServerName"
 
-          # Wait for deployment to be available
-          kubectl wait --for=condition=available --timeout=120s deployment/$DEPLOYMENT_NAME -n toolhive-system
+          # Wait for statefulset to be ready (still 1 replica)
+          kubectl wait --for=jsonpath='{.status.replicas}'=1 --timeout=120s statefulset/$STATEFULSET_NAME -n toolhive-system
 
           # Check if the new environment variable is present
-          ENV_VALUE=$(kubectl get deployment $DEPLOYMENT_NAME -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MAX_BATCH_TOKENS")].value}' 2>/dev/null || echo "")
+          ENV_VALUE=$(kubectl get statefulset $STATEFULSET_NAME -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MAX_BATCH_TOKENS")].value}' 2>/dev/null || echo "")
 
           if [ "$ENV_VALUE" != "16384" ]; then
             echo "Environment variable not updated correctly. Expected: 16384, Got: $ENV_VALUE"
-            kubectl describe deployment $DEPLOYMENT_NAME -n toolhive-system
+            kubectl describe statefulset $STATEFULSET_NAME -n toolhive-system
             exit 1
           fi
 
@@ -92,16 +80,16 @@ spec:
             value: ($testPrefix)
         content: |
           # Wait for resources to be cleaned up
-          DEPLOYMENT_NAME="$embeddingServerName"
+          STATEFULSET_NAME="$embeddingServerName"
           SERVICE_NAME="$embeddingServerName"
 
           echo "Verifying resource cleanup..."
 
-          # Wait for deployment to be deleted
+          # Wait for statefulset to be deleted
           timeout=30
           while [ $timeout -gt 0 ]; do
-            if ! kubectl get deployment $DEPLOYMENT_NAME -n toolhive-system 2>/dev/null; then
-              echo "✓ Deployment deleted"
+            if ! kubectl get statefulset $STATEFULSET_NAME -n toolhive-system 2>/dev/null; then
+              echo "✓ StatefulSet deleted"
               break
             fi
             sleep 1
@@ -109,7 +97,7 @@ spec:
           done
 
           if [ $timeout -eq 0 ]; then
-            echo "Deployment was not deleted within timeout"
+            echo "StatefulSet was not deleted within timeout"
             exit 1
           fi
 

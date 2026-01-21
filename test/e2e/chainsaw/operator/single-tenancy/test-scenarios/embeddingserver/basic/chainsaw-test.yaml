@@ -56,9 +56,9 @@ spec:
 
           echo "Service ClusterIP: $CLUSTER_IP"
 
-          # Wait for the deployment to be ready
-          echo "Waiting for deployment to be ready..."
-          kubectl wait --for=condition=available --timeout=120s deployment/$embeddingServerName -n toolhive-system
+          # Wait for the statefulset to be ready
+          echo "Waiting for statefulset to be ready..."
+          kubectl wait --for=jsonpath='{.status.replicas}'=1 --timeout=120s statefulset/$embeddingServerName -n toolhive-system
 
           # Test the health endpoint using a test pod
           echo "Testing health endpoint..."

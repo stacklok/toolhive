@@ -314,7 +314,7 @@ func (r *EmbeddingServerReconciler) ensureService(
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated based on the embedding spec
-func (r *EmbeddingServerReconciler) serviceNeedsUpdate(
+func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 	service *corev1.Service,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {

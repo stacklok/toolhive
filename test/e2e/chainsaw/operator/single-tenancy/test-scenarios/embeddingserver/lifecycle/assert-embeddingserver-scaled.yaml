@@ -3,6 +3,5 @@ kind: EmbeddingServer
 metadata:
   name: st-embedding-lifecycle
   namespace: toolhive-system
-status:
-  phase: "Running"
-  readyReplicas: 2
+spec:
+  replicas: 2

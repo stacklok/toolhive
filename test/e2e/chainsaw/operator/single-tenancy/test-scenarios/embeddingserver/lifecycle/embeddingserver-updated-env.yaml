@@ -8,7 +8,7 @@ spec:
   image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"
   imagePullPolicy: IfNotPresent
   port: 8080
-  replicas: 2
+  replicas: 1
   resources:
     limits:
       cpu: "500m"

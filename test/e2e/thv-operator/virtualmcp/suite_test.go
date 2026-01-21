@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package virtualmcp contains e2e tests for VirtualMCPServer against a real Kubernetes cluster
 package virtualmcp
 

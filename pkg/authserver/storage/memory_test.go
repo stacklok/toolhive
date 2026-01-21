@@ -432,7 +432,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			tokens := &UpstreamTokens{
 				AccessToken: "upstream-access", RefreshToken: "upstream-refresh", IDToken: "upstream-id",
-				ExpiresAt: time.Now().Add(time.Hour), Subject: "user@example.com", ClientID: "test-client-id",
+				ExpiresAt: time.Now().Add(time.Hour), UserID: "user-123", ClientID: "test-client-id",
 			}
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-123", tokens))
 
@@ -440,7 +440,7 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 			assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
-			assert.Equal(t, tokens.Subject, retrieved.Subject)
+			assert.Equal(t, tokens.UserID, retrieved.UserID)
 			assert.Equal(t, tokens.ClientID, retrieved.ClientID)
 		})
 	})
@@ -463,13 +463,13 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 
 	t.Run("overwrite existing tokens", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-1", Subject: "user1"}))
-			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-2", Subject: "user2"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-1", UserID: "user1"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session", &UpstreamTokens{AccessToken: "token-2", UserID: "user2"}))
 
 			retrieved, err := s.GetUpstreamTokens(ctx, "session")
 			require.NoError(t, err)
 			assert.Equal(t, "token-2", retrieved.AccessToken)
-			assert.Equal(t, "user2", retrieved.Subject)
+			assert.Equal(t, "user2", retrieved.UserID)
 		})
 	})
 
@@ -753,6 +753,8 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		assert.Equal(t, 0, stats.UpstreamTokens)
 		assert.Equal(t, 0, stats.InvalidatedCodes)
 		assert.Equal(t, 0, stats.ClientAssertionJWTs)
+		assert.Equal(t, 0, stats.Users)
+		assert.Equal(t, 0, stats.ProviderIdentities)
 
 		client := testClient()
 		_ = s.RegisterClient(ctx, client)
@@ -765,6 +767,12 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		_ = s.InvalidateAuthorizeCodeSession(ctx, "code-1")
 		_ = s.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Hour))
 
+		now := time.Now()
+		_ = s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now})
+		_ = s.CreateProviderIdentity(ctx, &ProviderIdentity{
+			UserID: "user-1", ProviderID: "google", ProviderSubject: "google-sub-1", LinkedAt: now,
+		})
+
 		stats = s.Stats()
 		assert.Equal(t, 1, stats.Clients)
 		assert.Equal(t, 1, stats.AuthCodes)
@@ -774,6 +782,8 @@ func TestMemoryStorage_Stats(t *testing.T) {
 		assert.Equal(t, 1, stats.UpstreamTokens)
 		assert.Equal(t, 1, stats.InvalidatedCodes)
 		assert.Equal(t, 1, stats.ClientAssertionJWTs)
+		assert.Equal(t, 1, stats.Users)
+		assert.Equal(t, 1, stats.ProviderIdentities)
 	})
 }
 
@@ -879,6 +889,351 @@ func TestMemoryStorage_InputValidation(t *testing.T) {
 			assert.Nil(t, retrieved)
 		})
 	})
+}
+
+// --- User Storage Tests ---
+
+func TestMemoryStorage_User(t *testing.T) {
+	t.Parallel()
+
+	makeUser := func(id string) *User {
+		now := time.Now()
+		return &User{ID: id, CreatedAt: now, UpdatedAt: now}
+	}
+
+	t.Run("create and get", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			user := makeUser("user-123")
+			require.NoError(t, s.CreateUser(ctx, user))
+
+			retrieved, err := s.GetUser(ctx, "user-123")
+			require.NoError(t, err)
+			assert.Equal(t, user.ID, retrieved.ID)
+			assert.Equal(t, user.CreatedAt.Unix(), retrieved.CreatedAt.Unix())
+		})
+	})
+
+	t.Run("get non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetUser(ctx, "non-existent")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("create duplicate", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			user := makeUser("user-123")
+			require.NoError(t, s.CreateUser(ctx, user))
+			err := s.CreateUser(ctx, user)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.CreateUser(ctx, makeUser("to-delete")))
+			require.NoError(t, s.DeleteUser(ctx, "to-delete"))
+			_, err := s.GetUser(ctx, "to-delete")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("delete non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.DeleteUser(ctx, "non-existent")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+}
+
+func TestMemoryStorage_ProviderIdentity(t *testing.T) {
+	t.Parallel()
+
+	makeIdentity := func(providerID, providerSubject, userID string) *ProviderIdentity {
+		now := time.Now()
+		return &ProviderIdentity{
+			UserID:          userID,
+			ProviderID:      providerID,
+			ProviderSubject: providerSubject,
+			LinkedAt:        now,
+			LastUsedAt:      now,
+		}
+	}
+
+	t.Run("create and get", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// First create the user
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-123", CreatedAt: now, UpdatedAt: now}))
+
+			identity := makeIdentity("google", "google-sub-123", "user-123")
+			require.NoError(t, s.CreateProviderIdentity(ctx, identity))
+
+			retrieved, err := s.GetProviderIdentity(ctx, "google", "google-sub-123")
+			require.NoError(t, err)
+			assert.Equal(t, identity.UserID, retrieved.UserID)
+			assert.Equal(t, identity.ProviderID, retrieved.ProviderID)
+			assert.Equal(t, identity.ProviderSubject, retrieved.ProviderSubject)
+		})
+	})
+
+	t.Run("get non-existent", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetProviderIdentity(ctx, "github", "non-existent")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("create for non-existent user", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			identity := makeIdentity("google", "google-sub-123", "non-existent-user")
+			err := s.CreateProviderIdentity(ctx, identity)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("create duplicate", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// First create the user
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-123", CreatedAt: now, UpdatedAt: now}))
+
+			identity := makeIdentity("google", "google-sub-123", "user-123")
+			require.NoError(t, s.CreateProviderIdentity(ctx, identity))
+			err := s.CreateProviderIdentity(ctx, identity)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrAlreadyExists)
+		})
+	})
+
+	t.Run("update last used at", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Create user and identity
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-update", CreatedAt: now, UpdatedAt: now}))
+			identity := makeIdentity("google", "google-sub-update", "user-update")
+			require.NoError(t, s.CreateProviderIdentity(ctx, identity))
+
+			// Update last used at
+			newLastUsed := now.Add(time.Hour)
+			require.NoError(t, s.UpdateProviderIdentityLastUsed(ctx, "google", "google-sub-update", newLastUsed))
+
+			// Verify the update
+			retrieved, err := s.GetProviderIdentity(ctx, "google", "google-sub-update")
+			require.NoError(t, err)
+			assert.WithinDuration(t, newLastUsed, retrieved.LastUsedAt, time.Second)
+		})
+	})
+
+	t.Run("update last used at for non-existent identity", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.UpdateProviderIdentityLastUsed(ctx, "github", "non-existent", time.Now())
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+}
+
+func TestMemoryStorage_GetUserProviderIdentities(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns all identities for user", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+
+			// Create multiple identities for the user
+			id1 := &ProviderIdentity{UserID: "user-1", ProviderID: "google", ProviderSubject: "google-sub", LinkedAt: now}
+			id2 := &ProviderIdentity{UserID: "user-1", ProviderID: "github", ProviderSubject: "github-sub", LinkedAt: now}
+			require.NoError(t, s.CreateProviderIdentity(ctx, id1))
+			require.NoError(t, s.CreateProviderIdentity(ctx, id2))
+
+			identities, err := s.GetUserProviderIdentities(ctx, "user-1")
+			require.NoError(t, err)
+			assert.Len(t, identities, 2)
+
+			// Verify both providers are present
+			providers := make(map[string]bool)
+			for _, id := range identities {
+				providers[id.ProviderID] = true
+				assert.Equal(t, "user-1", id.UserID)
+			}
+			assert.True(t, providers["google"])
+			assert.True(t, providers["github"])
+		})
+	})
+
+	t.Run("returns empty slice for user with no identities", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "lonely-user", CreatedAt: now, UpdatedAt: now}))
+
+			identities, err := s.GetUserProviderIdentities(ctx, "lonely-user")
+			require.NoError(t, err)
+			assert.Empty(t, identities)
+		})
+	})
+
+	t.Run("returns error for non-existent user", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetUserProviderIdentities(ctx, "non-existent")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("does not return other users identities", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-a", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-b", CreatedAt: now, UpdatedAt: now}))
+
+			// Create identities for both users
+			require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+				UserID: "user-a", ProviderID: "google", ProviderSubject: "sub-a", LinkedAt: now,
+			}))
+			require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+				UserID: "user-b", ProviderID: "google", ProviderSubject: "sub-b", LinkedAt: now,
+			}))
+
+			// Get only user-a's identities
+			identities, err := s.GetUserProviderIdentities(ctx, "user-a")
+			require.NoError(t, err)
+			assert.Len(t, identities, 1)
+			assert.Equal(t, "sub-a", identities[0].ProviderSubject)
+		})
+	})
+
+	t.Run("returns defensive copies", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.CreateUser(ctx, &User{ID: "user-copy", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, s.CreateProviderIdentity(ctx, &ProviderIdentity{
+				UserID: "user-copy", ProviderID: "google", ProviderSubject: "sub-copy", LinkedAt: now,
+			}))
+
+			identities, err := s.GetUserProviderIdentities(ctx, "user-copy")
+			require.NoError(t, err)
+			require.Len(t, identities, 1)
+
+			// Modify the returned identity
+			identities[0].ProviderSubject = "modified"
+
+			// Fetch again and verify original is unchanged
+			identities2, err := s.GetUserProviderIdentities(ctx, "user-copy")
+			require.NoError(t, err)
+			assert.Equal(t, "sub-copy", identities2[0].ProviderSubject)
+		})
+	})
+}
+
+func TestMemoryStorage_DeleteUser_CascadesAssociatedData(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		now := time.Now()
+		user := &User{ID: "user-cascade", CreatedAt: now, UpdatedAt: now}
+		require.NoError(t, s.CreateUser(ctx, user))
+
+		// Create another user for comparison
+		otherUser := &User{ID: "other-user", CreatedAt: now, UpdatedAt: now}
+		require.NoError(t, s.CreateUser(ctx, otherUser))
+
+		// Link multiple provider identities to the user
+		identity1 := &ProviderIdentity{UserID: "user-cascade", ProviderID: "google", ProviderSubject: "google-sub", LinkedAt: now}
+		identity2 := &ProviderIdentity{UserID: "user-cascade", ProviderID: "github", ProviderSubject: "github-sub", LinkedAt: now}
+		require.NoError(t, s.CreateProviderIdentity(ctx, identity1))
+		require.NoError(t, s.CreateProviderIdentity(ctx, identity2))
+
+		// Also create an identity for a different user to ensure it is not deleted
+		otherIdentity := &ProviderIdentity{UserID: "other-user", ProviderID: "google", ProviderSubject: "other-google-sub", LinkedAt: now}
+		require.NoError(t, s.CreateProviderIdentity(ctx, otherIdentity))
+
+		// Store upstream tokens for both users
+		userTokens := &UpstreamTokens{
+			ProviderID: "google", AccessToken: "user-token", UserID: "user-cascade",
+			UpstreamSubject: "google-sub", ClientID: "client-1",
+		}
+		otherTokens := &UpstreamTokens{
+			ProviderID: "google", AccessToken: "other-token", UserID: "other-user",
+			UpstreamSubject: "other-google-sub", ClientID: "client-1",
+		}
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-user", userTokens))
+		require.NoError(t, s.StoreUpstreamTokens(ctx, "session-other", otherTokens))
+
+		assert.Equal(t, 2, s.Stats().Users)
+		assert.Equal(t, 3, s.Stats().ProviderIdentities)
+		assert.Equal(t, 2, s.Stats().UpstreamTokens)
+
+		require.NoError(t, s.DeleteUser(ctx, "user-cascade"))
+
+		assert.Equal(t, 1, s.Stats().Users) // other-user still exists
+		assert.Equal(t, 1, s.Stats().ProviderIdentities)
+		assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+		// Verify the user's identities are gone
+		_, err := s.GetProviderIdentity(ctx, "google", "google-sub")
+		assert.ErrorIs(t, err, ErrNotFound)
+		_, err = s.GetProviderIdentity(ctx, "github", "github-sub")
+		assert.ErrorIs(t, err, ErrNotFound)
+
+		// Verify the user's upstream tokens are gone
+		_, err = s.GetUpstreamTokens(ctx, "session-user")
+		assert.ErrorIs(t, err, ErrNotFound)
+
+		// Verify the other user's identity is still there
+		retrieved, err := s.GetProviderIdentity(ctx, "google", "other-google-sub")
+		require.NoError(t, err)
+		assert.Equal(t, "other-user", retrieved.UserID)
+
+		// Verify the other user's upstream tokens are still there
+		otherRetrieved, err := s.GetUpstreamTokens(ctx, "session-other")
+		require.NoError(t, err)
+		assert.Equal(t, "other-token", otherRetrieved.AccessToken)
+	})
+}
+
+func TestMemoryStorage_UserInputValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		fn      func(context.Context, *MemoryStorage) error
+		wantErr error
+	}{
+		{"CreateUser nil user", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateUser(ctx, nil)
+		}, fosite.ErrInvalidRequest},
+		{"CreateUser empty ID", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateUser(ctx, &User{ID: ""})
+		}, fosite.ErrInvalidRequest},
+		{"CreateProviderIdentity nil identity", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateProviderIdentity(ctx, nil)
+		}, fosite.ErrInvalidRequest},
+		{"CreateProviderIdentity empty user ID", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateProviderIdentity(ctx, &ProviderIdentity{UserID: "", ProviderID: "google", ProviderSubject: "sub"})
+		}, fosite.ErrInvalidRequest},
+		{"CreateProviderIdentity empty provider ID", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateProviderIdentity(ctx, &ProviderIdentity{UserID: "user-1", ProviderID: "", ProviderSubject: "sub"})
+		}, fosite.ErrInvalidRequest},
+		{"CreateProviderIdentity empty provider subject", func(ctx context.Context, s *MemoryStorage) error {
+			return s.CreateProviderIdentity(ctx, &ProviderIdentity{UserID: "user-1", ProviderID: "google", ProviderSubject: ""})
+		}, fosite.ErrInvalidRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				err := tt.fn(ctx, s)
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+			})
+		})
+	}
 }
 
 // --- Concurrent Access Tests ---

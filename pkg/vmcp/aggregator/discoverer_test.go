@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package aggregator
 
 import (
@@ -1167,4 +1170,141 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
 		assert.Equal(t, "default-fallback-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
+}
+
+// TestStaticBackendDiscoverer_EmptyBackendList verifies that when a static discoverer
+// is created with an empty backend list, it gracefully returns an empty list instead of
+// panicking due to nil groupsManager (regression test for nil pointer dereference).
+func TestStaticBackendDiscoverer_EmptyBackendList(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// Create a static discoverer with empty backend list (not nil, but zero length)
+	// This simulates the edge case where staticBackends was set but is empty
+	discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+		[]config.StaticBackendConfig{}, // Empty slice, not nil
+		nil,                            // No auth config
+		"test-group",
+	)
+
+	// This should return empty list without panicking
+	// Previously would panic when falling through to dynamic mode with nil groupsManager
+	backends, err := discoverer.Discover(ctx, "test-group")
+
+	require.NoError(t, err)
+	assert.Empty(t, backends)
+}
+
+// TestStaticBackendDiscoverer_MetadataGroupOverride verifies that the "group" metadata key
+// is always overridden with the groupRef value, even if user provides a different value.
+func TestStaticBackendDiscoverer_MetadataGroupOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		staticBackends    []config.StaticBackendConfig
+		groupRef          string
+		expectedGroupVals []string
+	}{
+		{
+			name: "user-provided group metadata is overridden",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend1",
+					URL:       "http://backend1:8080",
+					Transport: "sse",
+					Metadata: map[string]string{
+						"group": "wrong-group", // User provided conflicting value
+						"env":   "prod",
+					},
+				},
+			},
+			groupRef:          "correct-group",
+			expectedGroupVals: []string{"correct-group"},
+		},
+		{
+			name: "group metadata added when not present",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend2",
+					URL:       "http://backend2:8080",
+					Transport: "streamable-http",
+					Metadata: map[string]string{
+						"env": "dev",
+					},
+				},
+			},
+			groupRef:          "test-group",
+			expectedGroupVals: []string{"test-group"},
+		},
+		{
+			name: "group metadata added when metadata is nil",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend3",
+					URL:       "http://backend3:8080",
+					Transport: "sse",
+					Metadata:  nil, // No metadata at all
+				},
+			},
+			groupRef:          "my-group",
+			expectedGroupVals: []string{"my-group"},
+		},
+		{
+			name: "multiple backends all get correct group",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend1",
+					URL:       "http://backend1:8080",
+					Transport: "sse",
+					Metadata:  map[string]string{"group": "wrong1"},
+				},
+				{
+					Name:      "backend2",
+					URL:       "http://backend2:8080",
+					Transport: "streamable-http",
+					Metadata:  map[string]string{"env": "prod"},
+				},
+			},
+			groupRef:          "shared-group",
+			expectedGroupVals: []string{"shared-group", "shared-group"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+				tt.staticBackends,
+				nil, // No auth config needed for this test
+				tt.groupRef,
+			)
+
+			backends, err := discoverer.Discover(ctx, tt.groupRef)
+			require.NoError(t, err)
+
+			// Verify we got the expected number of backends
+			assert.Len(t, backends, len(tt.expectedGroupVals))
+
+			// Verify each backend has the correct group metadata
+			for i, backend := range backends {
+				assert.NotNil(t, backend.Metadata, "Backend %d should have metadata", i)
+				assert.Equal(t, tt.expectedGroupVals[i], backend.Metadata["group"],
+					"Backend %d should have correct group metadata", i)
+
+				// Verify other metadata is preserved
+				if tt.staticBackends[i].Metadata != nil {
+					for k, v := range tt.staticBackends[i].Metadata {
+						if k != "group" {
+							assert.Equal(t, v, backend.Metadata[k],
+								"Backend %d should preserve non-group metadata key %s", i, k)
+						}
+					}
+				}
+			}
+		})
+	}
 }

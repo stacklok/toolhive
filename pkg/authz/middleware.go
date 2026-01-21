@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package authz provides authorization utilities for MCP servers.
 // It supports a pluggable authorizer architecture where different authorization
 // backends (e.g., Cedar, OPA) can be registered and used based on configuration.

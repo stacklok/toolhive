@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the MCPRemoteProxy custom resource.
 // It handles the creation, update, and deletion of remote MCP proxies in Kubernetes.
 package controllers
@@ -465,6 +468,9 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
+// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
+// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
+// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 

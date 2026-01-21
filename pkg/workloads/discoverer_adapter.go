@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package workloads contains high-level logic for managing the lifecycle of
 // ToolHive-managed containers.
 package workloads

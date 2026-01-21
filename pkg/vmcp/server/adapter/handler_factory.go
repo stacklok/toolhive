@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package adapter provides a layer between aggregator and SDK.
 //
 // The HandlerFactory interface and its default implementation create MCP request

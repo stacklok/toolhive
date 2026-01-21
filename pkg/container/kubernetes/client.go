@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package kubernetes provides a client for the Kubernetes runtime
 // including creating, starting, stopping, and retrieving container information.
 package kubernetes

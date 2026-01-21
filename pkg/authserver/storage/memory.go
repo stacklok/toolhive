@@ -81,6 +81,14 @@ type MemoryStorage struct {
 	// clientAssertionJWTs tracks JTIs to prevent JWT replay attacks per RFC 7523.
 	clientAssertionJWTs map[string]time.Time
 
+	// users maps user ID -> User for user account lookup.
+	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
+	users map[string]*User
+
+	// providerIdentities maps "providerID:providerSubject" -> ProviderIdentity for identity lookup.
+	// This enables O(1) lookup during authentication callbacks.
+	providerIdentities map[string]*ProviderIdentity
+
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
 
@@ -114,6 +122,8 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
 		invalidatedCodes:      make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:   make(map[string]time.Time),
+		users:                 make(map[string]*User),
+		providerIdentities:    make(map[string]*ProviderIdentity),
 		cleanupInterval:       DefaultCleanupInterval,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
@@ -690,12 +700,14 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID string,
 	var tokensCopy *UpstreamTokens
 	if tokens != nil {
 		tokensCopy = &UpstreamTokens{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			IDToken:      tokens.IDToken,
-			ExpiresAt:    tokens.ExpiresAt,
-			Subject:      tokens.Subject,
-			ClientID:     tokens.ClientID,
+			ProviderID:      tokens.ProviderID,
+			AccessToken:     tokens.AccessToken,
+			RefreshToken:    tokens.RefreshToken,
+			IDToken:         tokens.IDToken,
+			ExpiresAt:       tokens.ExpiresAt,
+			UserID:          tokens.UserID,
+			UpstreamSubject: tokens.UpstreamSubject,
+			ClientID:        tokens.ClientID,
 		}
 	}
 
@@ -731,12 +743,14 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID string) (
 		return nil, nil
 	}
 	return &UpstreamTokens{
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		IDToken:      tokens.IDToken,
-		ExpiresAt:    tokens.ExpiresAt,
-		Subject:      tokens.Subject,
-		ClientID:     tokens.ClientID,
+		ProviderID:      tokens.ProviderID,
+		AccessToken:     tokens.AccessToken,
+		RefreshToken:    tokens.RefreshToken,
+		IDToken:         tokens.IDToken,
+		ExpiresAt:       tokens.ExpiresAt,
+		UserID:          tokens.UserID,
+		UpstreamSubject: tokens.UpstreamSubject,
+		ClientID:        tokens.ClientID,
 	}, nil
 }
 
@@ -845,6 +859,203 @@ func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state stri
 }
 
 // -----------------------
+// User Storage
+// -----------------------
+
+// providerIdentityKey creates a unique key for a provider identity.
+// The key format is "len(providerID):providerID:providerSubject" for O(1) lookup.
+// The length prefix ensures collision-free keys even if providerID or providerSubject
+// contain colons (which is valid per RFC 7519 StringOrURI semantics for OIDC subjects).
+func providerIdentityKey(providerID, providerSubject string) string {
+	return fmt.Sprintf("%d:%s:%s", len(providerID), providerID, providerSubject)
+}
+
+// CreateUser creates a new user account.
+// Returns ErrAlreadyExists if a user with the same ID already exists.
+func (s *MemoryStorage) CreateUser(_ context.Context, user *User) error {
+	if user == nil {
+		return fosite.ErrInvalidRequest.WithHint("user cannot be nil")
+	}
+	if user.ID == "" {
+		return fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[user.ID]; exists {
+		return fmt.Errorf("%w: user already exists", ErrAlreadyExists)
+	}
+
+	// Make a defensive copy
+	s.users[user.ID] = &User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+	return nil
+}
+
+// GetUser retrieves a user by their internal ID.
+// Returns ErrNotFound if the user does not exist.
+func (s *MemoryStorage) GetUser(_ context.Context, id string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	user, ok := s.users[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+
+	// Return a defensive copy
+	return &User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}, nil
+}
+
+// DeleteUser removes a user account and all associated provider identities.
+// Returns ErrNotFound if the user does not exist.
+func (s *MemoryStorage) DeleteUser(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[id]; !exists {
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+
+	// Delete all associated provider identities
+	for key, identity := range s.providerIdentities {
+		if identity.UserID == id {
+			delete(s.providerIdentities, key)
+		}
+	}
+
+	// Delete all associated upstream tokens
+	for sessionID, entry := range s.upstreamTokens {
+		if entry.value != nil && entry.value.UserID == id {
+			delete(s.upstreamTokens, sessionID)
+		}
+	}
+
+	delete(s.users, id)
+	return nil
+}
+
+// CreateProviderIdentity links a provider identity to a user.
+// Returns ErrAlreadyExists if this provider identity is already linked.
+func (s *MemoryStorage) CreateProviderIdentity(_ context.Context, identity *ProviderIdentity) error {
+	if identity == nil {
+		return fosite.ErrInvalidRequest.WithHint("identity cannot be nil")
+	}
+	if identity.UserID == "" {
+		return fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if identity.ProviderID == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+	if identity.ProviderSubject == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Verify user exists before linking identity
+	if _, exists := s.users[identity.UserID]; !exists {
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+
+	key := providerIdentityKey(identity.ProviderID, identity.ProviderSubject)
+	if _, exists := s.providerIdentities[key]; exists {
+		return fmt.Errorf("%w: provider identity already linked", ErrAlreadyExists)
+	}
+
+	// Make a defensive copy
+	s.providerIdentities[key] = &ProviderIdentity{
+		UserID:          identity.UserID,
+		ProviderID:      identity.ProviderID,
+		ProviderSubject: identity.ProviderSubject,
+		LinkedAt:        identity.LinkedAt,
+		LastUsedAt:      identity.LastUsedAt,
+	}
+	return nil
+}
+
+// GetProviderIdentity retrieves a provider identity by provider ID and subject.
+// This is the primary lookup path during authentication callbacks.
+// Returns ErrNotFound if the identity does not exist.
+func (s *MemoryStorage) GetProviderIdentity(_ context.Context, providerID, providerSubject string) (*ProviderIdentity, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := providerIdentityKey(providerID, providerSubject)
+	identity, ok := s.providerIdentities[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: provider identity not found", ErrNotFound)
+	}
+
+	// Return a defensive copy
+	return &ProviderIdentity{
+		UserID:          identity.UserID,
+		ProviderID:      identity.ProviderID,
+		ProviderSubject: identity.ProviderSubject,
+		LinkedAt:        identity.LinkedAt,
+		LastUsedAt:      identity.LastUsedAt,
+	}, nil
+}
+
+// UpdateProviderIdentityLastUsed updates the LastUsedAt timestamp for a provider identity.
+// This should be called after each successful authentication via this identity.
+// Returns ErrNotFound if the identity does not exist.
+func (s *MemoryStorage) UpdateProviderIdentityLastUsed(
+	_ context.Context, providerID, providerSubject string, lastUsedAt time.Time,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := providerIdentityKey(providerID, providerSubject)
+	identity, ok := s.providerIdentities[key]
+	if !ok {
+		return fmt.Errorf("%w: provider identity not found", ErrNotFound)
+	}
+
+	identity.LastUsedAt = lastUsedAt
+	return nil
+}
+
+// GetUserProviderIdentities returns all provider identities linked to a user.
+// Returns an empty slice (not error) if the user exists but has no linked identities.
+// Returns ErrNotFound if the user does not exist.
+func (s *MemoryStorage) GetUserProviderIdentities(_ context.Context, userID string) ([]*ProviderIdentity, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Verify user exists
+	if _, exists := s.users[userID]; !exists {
+		return nil, fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+
+	// Collect all identities for this user
+	var identities []*ProviderIdentity
+	for _, identity := range s.providerIdentities {
+		if identity.UserID == userID {
+			// Return defensive copies
+			identities = append(identities, &ProviderIdentity{
+				UserID:          identity.UserID,
+				ProviderID:      identity.ProviderID,
+				ProviderSubject: identity.ProviderSubject,
+				LinkedAt:        identity.LinkedAt,
+				LastUsedAt:      identity.LastUsedAt,
+			})
+		}
+	}
+
+	return identities, nil
+}
+
+// -----------------------
 // Metrics/Stats (for testing and monitoring)
 // -----------------------
 
@@ -859,6 +1070,8 @@ type Stats struct {
 	PendingAuthorizations int
 	InvalidatedCodes      int
 	ClientAssertionJWTs   int
+	Users                 int
+	ProviderIdentities    int
 }
 
 // Stats returns current statistics about storage contents.
@@ -877,6 +1090,8 @@ func (s *MemoryStorage) Stats() Stats {
 		PendingAuthorizations: len(s.pendingAuthorizations),
 		InvalidatedCodes:      len(s.invalidatedCodes),
 		ClientAssertionJWTs:   len(s.clientAssertionJWTs),
+		Users:                 len(s.users),
+		ProviderIdentities:    len(s.providerIdentities),
 	}
 }
 
@@ -886,4 +1101,5 @@ var (
 	_ PendingAuthorizationStorage = (*MemoryStorage)(nil)
 	_ ClientRegistry              = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
+	_ UserStorage                 = (*MemoryStorage)(nil)
 )

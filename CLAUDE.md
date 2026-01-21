@@ -315,3 +315,13 @@ See `docs/error-handling.md` for comprehensive documentation.
 - **Use `errors.Is()` or `errors.As()`** - For all error inspection (they properly unwrap errors)
 - **Use `fmt.Errorf` with `%w`** - To preserve error chains; don't wrap excessively
 - **Use `recover()` sparingly** - Only at top-level API/CLI boundaries
+
+## Logging Guidelines
+
+See `docs/logging.md` for comprehensive documentation.
+
+- **Silent success** - Do not log at INFO or above for successful operations; users should only see output when something requires attention or when using `--debug`
+- **DEBUG for diagnostics** - Use for detailed troubleshooting info (runtime detection, state transitions, config values)
+- **INFO sparingly** - Only for long-running operations like image pulls that benefit from progress indication
+- **WARN for non-fatal issues** - Deprecations, fallback behavior, cleanup failures
+- **No sensitive data** - Never log credentials, tokens, API keys, or passwords

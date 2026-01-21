@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package networking provides utilities for network operations,
 // such as finding available ports and checking network connectivity.
 package networking

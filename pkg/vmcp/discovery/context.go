@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package discovery provides lazy per-user capability discovery for vMCP servers.
 //
 // This package handles context-based storage and retrieval of discovered backend

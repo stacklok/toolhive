@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package server implements the Virtual MCP Server that aggregates
 // multiple backend MCP servers into a unified interface.
 package server

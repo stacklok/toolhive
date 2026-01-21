@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package state provides functionality for storing and retrieving runner state
 // across different environments (local filesystem, Kubernetes, etc.)
 package state

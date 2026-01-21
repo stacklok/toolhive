@@ -303,7 +303,7 @@ func TestOptimizerIntegration_DisabledEmbeddingTime(t *testing.T) {
 	require.NoError(t, err, "Should handle nil integration gracefully")
 }
 
-// TestOptimizerIntegration_TokenMetrics tests that token metrics are calculated and returned in optim.find_tool
+// TestOptimizerIntegration_TokenMetrics tests that token metrics are calculated and returned in optim_find_tool
 func TestOptimizerIntegration_TokenMetrics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -381,10 +381,10 @@ func TestOptimizerIntegration_TokenMetrics(t *testing.T) {
 	handler := integration.CreateFindToolHandler()
 	require.NotNil(t, handler)
 
-	// Call optim.find_tool
+	// Call optim_find_tool
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": "create issue",
 				"limit":            5,

@@ -123,6 +123,20 @@ func (mr *MockOptimizerIntegrationMockRecorder) OnRegisterSession(ctx, session, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnRegisterSession", reflect.TypeOf((*MockOptimizerIntegration)(nil).OnRegisterSession), ctx, session, capabilities)
 }
 
+// RegisterGlobalTools mocks base method.
+func (m *MockOptimizerIntegration) RegisterGlobalTools() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterGlobalTools")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RegisterGlobalTools indicates an expected call of RegisterGlobalTools.
+func (mr *MockOptimizerIntegrationMockRecorder) RegisterGlobalTools() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterGlobalTools", reflect.TypeOf((*MockOptimizerIntegration)(nil).RegisterGlobalTools))
+}
+
 // RegisterTools mocks base method.
 func (m *MockOptimizerIntegration) RegisterTools(ctx context.Context, session server.ClientSession) error {
 	m.ctrl.T.Helper()
@@ -135,4 +149,18 @@ func (m *MockOptimizerIntegration) RegisterTools(ctx context.Context, session se
 func (mr *MockOptimizerIntegrationMockRecorder) RegisterTools(ctx, session any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterTools", reflect.TypeOf((*MockOptimizerIntegration)(nil).RegisterTools), ctx, session)
+}
+
+// GetOptimizerToolDefinitions mocks base method.
+func (m *MockOptimizerIntegration) GetOptimizerToolDefinitions() []mcp.Tool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetOptimizerToolDefinitions")
+	ret0, _ := ret[0].([]mcp.Tool)
+	return ret0
+}
+
+// GetOptimizerToolDefinitions indicates an expected call of GetOptimizerToolDefinitions.
+func (mr *MockOptimizerIntegrationMockRecorder) GetOptimizerToolDefinitions() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOptimizerToolDefinitions", reflect.TypeOf((*MockOptimizerIntegration)(nil).GetOptimizerToolDefinitions))
 }

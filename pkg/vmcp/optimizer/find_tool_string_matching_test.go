@@ -286,7 +286,7 @@ func TestFindTool_StringMatching(t *testing.T) {
 			// Create the tool call request
 			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
-					Name: "optim.find_tool",
+					Name: "optim_find_tool",
 					Arguments: map[string]any{
 						"tool_description": tc.query,
 						"tool_keywords":    tc.keywords,
@@ -506,7 +506,7 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 
 			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
-					Name: "optim.find_tool",
+					Name: "optim_find_tool",
 					Arguments: map[string]any{
 						"tool_description": tc.query,
 						"tool_keywords":    tc.keywords,
@@ -651,7 +651,7 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 
 			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
-					Name: "optim.find_tool",
+					Name: "optim_find_tool",
 					Arguments: map[string]any{
 						"tool_description": query,
 						"tool_keywords":    strings.ToLower(query),

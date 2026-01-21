@@ -78,15 +78,15 @@ func routeCapability(
 // instead of using a cached routing table.
 //
 // Special handling for optimizer tools:
-// - Tools with "optim." prefix (optim.find_tool, optim.call_tool) are handled by vMCP itself
+// - Tools with "optim_" prefix (optim_find_tool, optim_call_tool) are handled by vMCP itself
 // - These tools are registered during session initialization and don't route to backends
 // - The SDK handles these tools directly via registered handlers
 func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error) {
-	// Optimizer tools (optim.*) are handled by vMCP itself, not routed to backends.
+	// Optimizer tools (optim_*) are handled by vMCP itself, not routed to backends.
 	// The SDK will invoke the registered handler directly.
 	// We return ErrToolNotFound here so the handler factory doesn't try to create
 	// a backend routing handler for these tools.
-	if strings.HasPrefix(toolName, "optim.") {
+	if strings.HasPrefix(toolName, "optim_") {
 		logger.Debugf("Optimizer tool %s is handled by vMCP, not routed to backend", toolName)
 		return nil, fmt.Errorf("%w: optimizer tool %s is handled by vMCP", ErrToolNotFound, toolName)
 	}

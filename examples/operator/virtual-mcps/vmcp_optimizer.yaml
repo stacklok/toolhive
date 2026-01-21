@@ -1,0 +1,130 @@
+# Example: VirtualMCPServer with Optimizer Enabled
+#
+# This example demonstrates a VirtualMCPServer with the optimizer enabled for
+# semantic tool discovery. The optimizer reduces token usage by exposing
+# optim.find_tool and optim.call_tool instead of all backend tools directly.
+#
+# Prerequisites:
+# 1. An MCPGroup named "default" or "optimized" containing backend MCPServers
+# 2. Ollama running locally (for embeddings) or an embedding service in-cluster
+#
+# Usage:
+#   kubectl apply -f vmcp_optimizer.yaml
+#
+# For local testing with Ollama:
+#   1. Start Ollama: ollama serve
+#   2. Pull embedding model: ollama pull nomic-embed-text
+#   3. Apply this resource
+#   4. Port-forward: kubectl port-forward svc/vmcp-optimizer 4483:4483
+#
+# For in-cluster embedding service:
+#   Set config.optimizer.embeddingService instead of embeddingURL
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-optimizer
+  namespace: toolhive-system
+spec:
+  # Reference to the MCPGroup containing backend MCPServers
+  config:
+    groupRef: optimized  # Change to "default" if using default group
+    
+    # Aggregation configuration
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    
+    # Operational settings
+    operational:
+      timeouts:
+        default: 30s
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
+    
+    # =============================================================================
+    # OPTIMIZER CONFIGURATION
+    # =============================================================================
+    optimizer:
+      # Enable the optimizer
+      enabled: true
+      
+      # Embedding backend: "ollama", "openai-compatible", or "placeholder"
+      embeddingBackend: ollama
+      
+      # Embedding dimension (384 for nomic-embed-text/all-MiniLM-L6-v2)
+      embeddingDimension: 384
+      
+      # Embedding model name
+      embeddingModel: nomic-embed-text
+      
+      # Embedding URL (for local Ollama or external service)
+      # For in-cluster service, use embeddingService instead
+      embeddingURL: http://host.docker.internal:11434
+      
+      # Using in-memory mode (no persistence) - recommended for production
+      # The optimizer database is rebuilt from scratch on each startup by ingesting MCP backends.
+      # To enable persistence, uncomment persistPath and ftsDBPath below and add a podTemplateSpec
+      # with an emptyDir volume mounted to a writable location (e.g., /var/run).
+      # persistPath: /var/run/vmcp-optimizer.db
+      # ftsDBPath: /var/run/vmcp-optimizer-fts.db
+      
+      # Optional: Hybrid search ratio (0.0 = all BM25, 1.0 = all semantic)
+      # Default: 0.7 (70% semantic, 30% BM25)
+      hybridSearchRatio: 0.7
+    
+    # =============================================================================
+    # TELEMETRY CONFIGURATION
+    # =============================================================================
+    telemetry:
+      endpoint: localhost:4318  # OTLP HTTP endpoint (Jaeger collector)
+      serviceName: vmcp-optimizer
+      serviceVersion: "1.0.0"
+      tracingEnabled: true
+      metricsEnabled: false
+      samplingRate: "1.0"  # 100% sampling for development
+      insecure: true  # Use HTTP instead of HTTPS
+
+  # Incoming authentication (client -> vMCP)
+  # Anonymous for local development/testing
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends)
+  # Discovered mode automatically finds auth configs from backend MCPServers
+  outgoingAuth:
+    source: discovered
+
+  # PodTemplateSpec for customizing the pod (e.g., container image)
+  # Uncomment and customize as needed:
+  #
+  # podTemplateSpec:
+  #   spec:
+  #     containers:
+  #       - name: vmcp
+  #         image: kind.local/vmcp:latest  # Use local image instead of default
+  #
+  # Note: For kind.local images, you must build and load the image first:
+  #   1. Build: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp
+  #   2. Load: kind load docker-image kind.local/vmcp:<tag> --name toolhive
+  #
+  # For persistence: If you enable persistPath above, add volume mounts here:
+  #         volumeMounts:
+  #           - name: optimizer-data
+  #             mountPath: /var/run
+  #     volumes:
+  #       - name: optimizer-data
+  #         emptyDir: {}
+
+  # Service configuration
+  # Use NodePort for easy access in kind clusters
+  serviceType: NodePort

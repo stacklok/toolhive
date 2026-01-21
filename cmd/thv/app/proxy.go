@@ -268,6 +268,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		nil,   // onUnauthorizedResponse - not needed for local proxies
 		"",    // endpointPrefix - not configured for proxy command
 		false, // trustProxyHeaders - not configured for proxy command
+		"",    // mcpServerBasePath - not configured for proxy command
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)

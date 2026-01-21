@@ -258,6 +258,24 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		})
 	}
 
+	// Determine MCP server base path
+	var mcpServerBasePath string
+	if isRemote {
+		// For remote MCP servers, extract path from remoteURL
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err == nil {
+			mcpServerBasePath = remoteURL.Path
+			if mcpServerBasePath == "" {
+				mcpServerBasePath = "/"
+			}
+		} else {
+			mcpServerBasePath = "/"
+		}
+	} else {
+		// For local containers, use GetMCPServerBasePath (single source of truth)
+		mcpServerBasePath = GetMCPServerBasePath(t.transportType)
+	}
+
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
 		t.host,
@@ -272,6 +290,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.onUnauthorizedResponse,
 		t.endpointPrefix,
 		t.trustProxyHeaders,
+		mcpServerBasePath,
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

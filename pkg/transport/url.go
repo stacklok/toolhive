@@ -14,6 +14,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// GetMCPServerBasePath returns the base path for a local MCP server based on transport type.
+// This is the single source of truth for determining the MCP server endpoint path.
+// Returns "/sse" for SSE transport, "/mcp" for StreamableHTTP transport, "/" for unknown.
+func GetMCPServerBasePath(transportType types.TransportType) string {
+	switch transportType {
+	case types.TransportTypeSSE:
+		return ssecommon.HTTPSSEEndpoint // "/sse"
+	case types.TransportTypeStreamableHTTP:
+		return "/" + streamable.HTTPStreamableHTTPEndpoint // "/mcp"
+	default:
+		return "/"
+	}
+}
+
 // GenerateMCPServerURL generates the URL for an MCP server.
 // If remoteURL is provided, the remote server's path will be used as the path of the proxy.
 // For SSE/STDIO transports, a "#<containerName>" fragment is appended.
@@ -71,13 +85,15 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 
 	// ---- Local path case (use constants as-is) ----
 	if isSSE {
-		// ssecommon.HTTPSSEEndpoint already includes "/sse"
-		return fmt.Sprintf("%s%s#%s", base, ssecommon.HTTPSSEEndpoint, url.PathEscape(containerName))
+		// Use GetMCPServerBasePath to get the path (single source of truth)
+		path := GetMCPServerBasePath(types.TransportTypeSSE)
+		return fmt.Sprintf("%s%s#%s", base, path, url.PathEscape(containerName))
 	}
 
 	if isStreamable {
-		// streamable.HTTPStreamableHTTPEndpoint is "mcp"
-		return fmt.Sprintf("%s/%s", base, streamable.HTTPStreamableHTTPEndpoint)
+		// Use GetMCPServerBasePath to get the path (single source of truth)
+		path := GetMCPServerBasePath(types.TransportTypeStreamableHTTP)
+		return fmt.Sprintf("%s%s", base, path)
 	}
 
 	return ""

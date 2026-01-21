@@ -98,6 +98,10 @@ type TransparentProxy struct {
 	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
 	trustProxyHeaders bool
 
+	// mcpServerBasePath is the base path of the actual MCP server (extracted from remoteURL or generated for local)
+	// This is used to determine if the endpointPrefix matches the server's path
+	mcpServerBasePath string
+
 	// Health check interval (default: 10 seconds)
 	healthCheckInterval time.Duration
 
@@ -157,6 +161,7 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
+// The mcpServerBasePath parameter is the base path of the actual MCP server (from remoteURL or generated for local).
 func NewTransparentProxy(
 	host string,
 	port int,
@@ -170,6 +175,7 @@ func NewTransparentProxy(
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	mcpServerBasePath string,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	return newTransparentProxyWithOptions(
@@ -185,6 +191,7 @@ func NewTransparentProxy(
 		onUnauthorizedResponse,
 		endpointPrefix,
 		trustProxyHeaders,
+		mcpServerBasePath,
 		middlewares,
 	)
 }
@@ -203,6 +210,7 @@ func newTransparentProxyWithOptions(
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	mcpServerBasePath string,
 	middlewares []types.NamedMiddleware,
 	options ...Option,
 ) *TransparentProxy {
@@ -221,6 +229,7 @@ func newTransparentProxyWithOptions(
 		onUnauthorizedResponse: onUnauthorizedResponse,
 		endpointPrefix:         endpointPrefix,
 		trustProxyHeaders:      trustProxyHeaders,
+		mcpServerBasePath:      mcpServerBasePath,
 		healthCheckInterval:    DefaultHealthCheckInterval,
 		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
 		healthCheckPingTimeout: DefaultPingerTimeout,
@@ -371,6 +380,23 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 	return false
 }
 
+// normalizePath normalizes a path for comparison by ensuring it starts with "/"
+// and removing trailing slashes (except for root "/").
+func normalizePath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	// Ensure it starts with "/"
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	// Remove trailing slash, but keep "/" as "/"
+	if path != "/" {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
 // modifyResponse modifies HTTP responses based on transport-specific requirements.
 // Delegates to the appropriate ResponseProcessor based on transport type.
 func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
@@ -386,61 +412,49 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 // If the prefix appears later in the path (e.g., /abc/abc/sse with prefix /abc),
 // only the leading occurrence is stripped, preserving the rest.
 //
-// Detection of already-stripped prefix:
-// - If X-Forwarded-Prefix header matches endpointPrefix, ingress already stripped it
-// - In this case, we don't strip again to avoid double-stripping
+// Special handling when prefix matches server path:
+// - If endpointPrefix matches mcpServerBasePath, the prefix is part of the server's actual path
+// - In this case, we only strip if the path starts with the prefix twice (e.g., /sse/sse/... → /sse/...)
+// - Otherwise, we don't strip to avoid breaking the server's expected path structure
 //
 // Examples:
-//   - prefix="/abc", path="/abc/sse", forwardedPrefix="" → "/sse" (strip)
-//   - prefix="/abc", path="/abc/sse", forwardedPrefix="/abc" → "/abc/sse" (don't strip, already stripped)
-//   - prefix="/abc", path="/abc/abc/sse", forwardedPrefix="" → "/abc/sse" (strip only first)
-//   - prefix="/abc", path="/abc/abc/sse", forwardedPrefix="/abc" → "/abc/abc/sse" (don't strip)
-//   - prefix="/abc", path="/sse/abc/abc", forwardedPrefix="" → "/sse/abc/abc" (no change)
+//   - prefix="/abc", path="/abc/sse", mcpServerBasePath="/sse" → "/sse" (strip)
+//   - prefix="/abc", path="/abc/sse", mcpServerBasePath="/abc" → "/abc/sse" (don't strip, prefix is server path)
+//   - prefix="/sse", path="/sse/sse/endpoint", mcpServerBasePath="/sse" → "/sse/endpoint" (strip one copy)
+//   - prefix="/abc", path="/abc/abc/sse", mcpServerBasePath="/sse" → "/abc/sse" (strip only first)
+//   - prefix="/abc", path="/sse/abc/abc", mcpServerBasePath="/sse" → "/sse/abc/abc" (no change)
 //
 // Returns the stripped path if prefix matches at start, or original path otherwise.
-func stripEndpointPrefix(path, endpointPrefix, forwardedPrefix string) string {
+func stripEndpointPrefix(path, endpointPrefix, mcpServerBasePath string) string {
 	if endpointPrefix == "" || path == "" {
 		return path
 	}
 
-	// Normalize prefix: ensure it starts with "/" and doesn't end with "/"
-	prefix := endpointPrefix
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	prefix = strings.TrimSuffix(prefix, "/")
+	normalizedEndpointPrefix := normalizePath(endpointPrefix)
 
-	// Don't strip root prefix
-	if prefix == "/" {
-		return path
-	}
+	// Normalize MCP server base path for comparison
+	normalizedMCPServerPath := normalizePath(mcpServerBasePath)
 
-	// Normalize forwarded prefix for comparison
-	normalizedForwardedPrefix := forwardedPrefix
-	if normalizedForwardedPrefix != "" {
-		if !strings.HasPrefix(normalizedForwardedPrefix, "/") {
-			normalizedForwardedPrefix = "/" + normalizedForwardedPrefix
+	// If endpointPrefix matches mcpServerBasePath, strip one copy only when the path starts with the prefix twice
+	// (e.g. /sse/sse/... -> /sse/...)
+	if normalizedEndpointPrefix == normalizedMCPServerPath {
+		if strings.HasPrefix(path, normalizedEndpointPrefix+normalizedEndpointPrefix) {
+			return path[len(normalizedEndpointPrefix):]
 		}
-		normalizedForwardedPrefix = strings.TrimSuffix(normalizedForwardedPrefix, "/")
-	}
-
-	// If X-Forwarded-Prefix matches our endpointPrefix, ingress already stripped it
-	// Don't strip again to avoid double-stripping
-	if normalizedForwardedPrefix == prefix {
 		return path
 	}
 
 	// Check if path starts with prefix (with or without trailing slash)
-	if path == prefix {
+	if path == normalizedEndpointPrefix {
 		// Exact match: /abc → /
 		return "/"
 	}
 
 	// Check if path starts with prefix followed by "/"
-	prefixWithSlash := prefix + "/"
+	prefixWithSlash := normalizedEndpointPrefix + "/"
 	if strings.HasPrefix(path, prefixWithSlash) {
 		// Strip prefix: /abc/sse → /sse, /abc/abc/sse → /abc/sse
-		return path[len(prefix):]
+		return path[len(normalizedEndpointPrefix):]
 	}
 
 	// Path doesn't start with prefix, return as-is
@@ -468,27 +482,23 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// Override director to inject trace propagation headers and strip endpoint prefix
 	proxy.Director = func(req *http.Request) {
-		// Apply original director logic first
+		// Capture original path before any modifications
+		originalPath := req.URL.Path
+
+		// Apply original director logic first (modifies scheme, host, etc., but not path)
 		originalDirector(req)
 
 		// Strip endpoint prefix from request path if configured and present at start
 		if p.endpointPrefix != "" {
-			// Check X-Forwarded-Prefix header if trustProxyHeaders is enabled
-			forwardedPrefix := ""
-			if p.trustProxyHeaders {
-				forwardedPrefix = req.Header.Get("X-Forwarded-Prefix")
-			}
-
-			originalPath := req.URL.Path
-			strippedPath := stripEndpointPrefix(req.URL.Path, p.endpointPrefix, forwardedPrefix)
+			strippedPath := stripEndpointPrefix(req.URL.Path, p.endpointPrefix, p.mcpServerBasePath)
 			req.URL.Path = strippedPath
 
 			if strippedPath != originalPath {
-				logger.Debugf("Stripped endpoint prefix %q from path: %q -> %q (forwarded-prefix: %q)",
-					p.endpointPrefix, originalPath, strippedPath, forwardedPrefix)
-			} else if forwardedPrefix == p.endpointPrefix {
-				logger.Debugf("Skipping prefix strip for path %q (already stripped by ingress, forwarded-prefix: %q)",
-					req.URL.Path, forwardedPrefix)
+				logger.Debugf("Stripped endpoint prefix %q from path: %q -> %q (mcp-server-path: %q)",
+					p.endpointPrefix, originalPath, strippedPath, p.mcpServerBasePath)
+			} else if normalizePath(p.endpointPrefix) == normalizePath(p.mcpServerBasePath) {
+				logger.Debugf("Skipping prefix strip for path %q (prefix %q matches MCP server path %q)",
+					req.URL.Path, p.endpointPrefix, p.mcpServerBasePath)
 			}
 		}
 

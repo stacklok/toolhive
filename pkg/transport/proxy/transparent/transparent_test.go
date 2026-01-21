@@ -31,7 +31,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "sse", nil, nil, "", false, "/sse")
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -88,7 +88,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false, "/mcp")
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -114,7 +114,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false, "/mcp")
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -154,7 +154,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil, nil, "", false)
+	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil, nil, "", false, "/")
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
@@ -363,7 +363,7 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false, "/sse")
 
 	ctx := context.Background()
 
@@ -391,7 +391,7 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy but don't start it
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false, "/sse")
 
 	ctx := context.Background()
 
@@ -426,7 +426,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false, "/mcp")
 
 	// Verify callback is set
 	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
@@ -475,7 +475,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false, "/mcp")
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -520,7 +520,7 @@ func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false, "/mcp")
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -546,7 +546,7 @@ func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with nil unauthorized response callback
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false, "/mcp")
 
 	// Create a test server that returns 401
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -786,7 +786,7 @@ func TestGetSSERewriteConfig(t *testing.T) {
 
 			proxy := NewTransparentProxy(
 				"127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil,
-				tt.endpointPrefix, tt.trustProxyHeaders,
+				tt.endpointPrefix, tt.trustProxyHeaders, "/sse",
 			)
 
 			req := httptest.NewRequest("GET", "/sse", nil)
@@ -811,7 +811,7 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with X-Forwarded-Prefix trust enabled
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "", true)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "", true, "/sse")
 
 	// Create a mock SSE server that returns an endpoint event
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -861,158 +861,157 @@ func TestStripEndpointPrefix(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		path            string
-		endpointPrefix  string
-		forwardedPrefix string
-		expected        string
+		name              string
+		path              string
+		endpointPrefix    string
+		mcpServerBasePath string
+		expected          string
 	}{
 		// Basic stripping cases
 		{
-			name:            "basic strip - prefix at start",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/sse",
+			name:              "basic strip - prefix at start",
+			path:              "/abc/sse",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse",
 		},
 		{
-			name:            "exact match",
-			path:            "/abc",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/",
+			name:              "exact match",
+			path:              "/abc",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/",
 		},
 		{
-			name:            "prefix with trailing slash",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc/",
-			forwardedPrefix: "",
-			expected:        "/sse",
+			name:              "prefix with trailing slash",
+			path:              "/abc/sse",
+			endpointPrefix:    "/abc/",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse",
 		},
 		{
-			name:            "prefix without leading slash",
-			path:            "/abc/sse",
-			endpointPrefix:  "abc",
-			forwardedPrefix: "",
-			expected:        "/sse",
+			name:              "prefix without leading slash",
+			path:              "/abc/sse",
+			endpointPrefix:    "abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse",
 		},
 		{
-			name:            "path with trailing slash",
-			path:            "/abc/sse/",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/sse/",
+			name:              "path with trailing slash",
+			path:              "/abc/sse/",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse/",
 		},
 		// Edge case: prefix appears later in path
 		{
-			name:            "prefix appears later in path - strip only first",
-			path:            "/abc/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/abc/sse",
+			name:              "prefix appears later in path - strip only first",
+			path:              "/abc/abc/sse",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/abc/sse",
 		},
 		{
-			name:            "multiple prefix segments",
-			path:            "/abc/abc/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/abc/abc/sse",
+			name:              "multiple prefix segments",
+			path:              "/abc/abc/abc/sse",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/abc/abc/sse",
 		},
 		// Prefix not at start - should not strip
 		{
-			name:            "prefix not at start - no change",
-			path:            "/sse/abc/abc",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/sse/abc/abc",
+			name:              "prefix not at start - no change",
+			path:              "/sse/abc/abc",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse/abc/abc",
 		},
 		{
-			name:            "prefix in middle of path",
-			path:            "/sse/abc/test",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "/sse/abc/test",
+			name:              "prefix in middle of path",
+			path:              "/sse/abc/test",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse/abc/test",
 		},
-		// Ingress already stripped - don't strip again
+		// Prefix matches MCP server base path - special handling
 		{
-			name:            "ingress already stripped - exact match",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "/abc",
-			expected:        "/abc/sse",
-		},
-		{
-			name:            "ingress already stripped - prefix in path preserved",
-			path:            "/abc/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "/abc",
-			expected:        "/abc/abc/sse",
+			name:              "prefix matches MCP server path - do not strip",
+			path:              "/abc/sse",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/abc",
+			expected:          "/abc/sse",
 		},
 		{
-			name:            "ingress already stripped - forwarded prefix normalized",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "abc",
-			expected:        "/abc/sse",
+			name:              "prefix matches MCP server path - exact match",
+			path:              "/abc",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/abc",
+			expected:          "/abc",
 		},
 		{
-			name:            "ingress already stripped - forwarded prefix with trailing slash",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "/abc/",
-			expected:        "/abc/sse",
+			name:              "prefix matches MCP server path - normalized comparison",
+			path:              "/abc/sse",
+			endpointPrefix:    "/abc/",
+			mcpServerBasePath: "/abc",
+			expected:          "/abc/sse",
 		},
-		// Different forwarded prefix - should still strip
 		{
-			name:            "different forwarded prefix - still strip",
-			path:            "/abc/sse",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "/xyz",
-			expected:        "/sse",
+			name:              "prefix matches MCP server path - strip double prefix",
+			path:              "/sse/sse/endpoint",
+			endpointPrefix:    "/sse",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse/endpoint",
+		},
+		{
+			name:              "prefix matches MCP server path - strip double prefix with trailing",
+			path:              "/sse/sse/",
+			endpointPrefix:    "/sse",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse/",
 		},
 		// Empty/edge cases
 		{
-			name:            "empty prefix - no change",
-			path:            "/abc/sse",
-			endpointPrefix:  "",
-			forwardedPrefix: "",
-			expected:        "/abc/sse",
+			name:              "empty prefix - no change",
+			path:              "/abc/sse",
+			endpointPrefix:    "",
+			mcpServerBasePath: "/sse",
+			expected:          "/abc/sse",
 		},
 		{
-			name:            "empty path - no change",
-			path:            "",
-			endpointPrefix:  "/abc",
-			forwardedPrefix: "",
-			expected:        "",
+			name:              "empty path - no change",
+			path:              "",
+			endpointPrefix:    "/abc",
+			mcpServerBasePath: "/sse",
+			expected:          "",
 		},
 		{
-			name:            "root prefix - no change",
-			path:            "/sse",
-			endpointPrefix:  "/",
-			forwardedPrefix: "",
-			expected:        "/sse",
+			name:              "root prefix - no change",
+			path:              "/sse",
+			endpointPrefix:    "/",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse",
 		},
 		// Real-world examples
 		{
-			name:            "playwright prefix example",
-			path:            "/playwright/sse",
-			endpointPrefix:  "/playwright",
-			forwardedPrefix: "",
-			expected:        "/sse",
+			name:              "playwright prefix example",
+			path:              "/playwright/sse",
+			endpointPrefix:    "/playwright",
+			mcpServerBasePath: "/sse",
+			expected:          "/sse",
 		},
 		{
-			name:            "playwright prefix already stripped by ingress",
-			path:            "/sse",
-			endpointPrefix:  "/playwright",
-			forwardedPrefix: "/playwright",
-			expected:        "/sse",
+			name:              "playwright prefix with nested path",
+			path:              "/playwright/playwright/sse",
+			endpointPrefix:    "/playwright",
+			mcpServerBasePath: "/sse",
+			expected:          "/playwright/sse",
 		},
 		{
-			name:            "playwright prefix with nested path",
-			path:            "/playwright/playwright/sse",
-			endpointPrefix:  "/playwright",
-			forwardedPrefix: "",
-			expected:        "/playwright/sse",
+			name:              "playwright prefix matches remote server path - don't strip",
+			path:              "/playwright/sse",
+			endpointPrefix:    "/playwright",
+			mcpServerBasePath: "/playwright",
+			expected:          "/playwright/sse",
 		},
 	}
 
@@ -1020,9 +1019,9 @@ func TestStripEndpointPrefix(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := stripEndpointPrefix(tt.path, tt.endpointPrefix, tt.forwardedPrefix)
+			result := stripEndpointPrefix(tt.path, tt.endpointPrefix, tt.mcpServerBasePath)
 			assert.Equal(t, tt.expected, result, "stripEndpointPrefix(%q, %q, %q) = %q, want %q",
-				tt.path, tt.endpointPrefix, tt.forwardedPrefix, result, tt.expected)
+				tt.path, tt.endpointPrefix, tt.mcpServerBasePath, result, tt.expected)
 		})
 	}
 }
@@ -1032,7 +1031,7 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with explicit endpoint prefix
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/api/mcp", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/api/mcp", false, "/sse")
 
 	// Create a mock SSE server
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1147,7 +1146,7 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			defer target.Close()
 
 			// Create proxy with endpointPrefix
-			proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, false, false, "sse", nil, nil, tt.endpointPrefix, tt.trustProxyHeaders)
+			proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, false, false, "sse", nil, nil, tt.endpointPrefix, tt.trustProxyHeaders, "")
 
 			// Start the proxy
 			ctx := context.Background()
@@ -1196,7 +1195,7 @@ func TestSSEMessageEventNotRewritten(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with prefix configuration
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/playwright", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/playwright", false, "/sse")
 
 	// Create a mock SSE server that sends both endpoint and message events
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1290,6 +1289,7 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		nil,
 		"",
 		false,
+		"",
 		nil, // middlewares
 		withHealthCheckInterval(100*time.Millisecond),    // Use 100ms for faster tests
 		withHealthCheckRetryDelay(50*time.Millisecond),   // Use 50ms retry delay for faster tests

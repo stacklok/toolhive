@@ -1,0 +1,71 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mcp-servers-ingress
+  namespace: toolhive-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # MCP Server routes (from mcp-optimizer examples)
+          - path: /fetch(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-fetch-proxy
+                port:
+                  number: 8080
+          - path: /github(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-github-proxy
+                port:
+                  number: 8080
+          - path: /toolhive-doc-mcp(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-toolhive-doc-mcp-proxy
+                port:
+                  number: 8080
+          - path: /mcp-optimizer(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-mcp-optimizer-proxy
+                port:
+                  number: 8080
+          # VirtualMCPServer route
+          - path: /vmcp-optimizer(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: vmcp-vmcp-optimizer
+                port:
+                  number: 4483
+---
+# Separate ingress for Jaeger UI
+# Jaeger UI needs to be configured with base path, and ingress passes through the path
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jaeger-ui-ingress
+  namespace: toolhive-system
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Pass through /jaeger and all subpaths to Jaeger UI
+          # Jaeger is configured with QUERY_BASE_PATH=/jaeger so it handles the path correctly
+          - path: /jaeger
+            pathType: Prefix
+            backend:
+              service:
+                name: jaeger-query
+                port:
+                  number: 16686

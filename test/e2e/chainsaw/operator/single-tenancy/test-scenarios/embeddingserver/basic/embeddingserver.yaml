@@ -6,7 +6,7 @@ metadata:
 spec:
   # Use a very lightweight model for testing (17.4M params)
   model: "sentence-transformers/paraphrase-MiniLM-L3-v2"
-  image: "text-embeddings-inference"
+  image: "ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
   imagePullPolicy: IfNotPresent
   port: 8080
   replicas: 1

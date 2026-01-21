@@ -65,7 +65,18 @@ spec:
           echo "✓ PVC is bound"
 
           # Check that the statefulset is ready
-          kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 --timeout=120s statefulset/$STATEFULSET_NAME -n toolhive-system
+          if ! kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 --timeout=120s statefulset/$STATEFULSET_NAME -n toolhive-system; then
+            echo "StatefulSet failed to become ready. Gathering diagnostics..."
+            echo "StatefulSet status:"
+            kubectl get statefulset/$STATEFULSET_NAME -n toolhive-system -o yaml
+            echo "Pod status:"
+            kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=$STATEFULSET_NAME
+            echo "Pod describe:"
+            kubectl describe pods -n toolhive-system -l app.kubernetes.io/instance=$STATEFULSET_NAME
+            echo "Pod events:"
+            kubectl get events -n toolhive-system --sort-by='.lastTimestamp' | tail -20
+            exit 1
+          fi
 
           echo "✓ StatefulSet is ready"
 
@@ -75,6 +86,8 @@ spec:
 
           if [ -z "$POD_NAME" ]; then
             echo "No running pod found for statefulset"
+            echo "All pods in namespace:"
+            kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=$STATEFULSET_NAME
             exit 1
           fi
 

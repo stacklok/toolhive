@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package optimizer provides semantic tool discovery and ingestion for MCP servers.
 //
 // The optimizer package implements an ingestion service that discovers MCP backends

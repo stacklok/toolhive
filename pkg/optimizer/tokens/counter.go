@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package tokens provides token counting utilities for LLM cost estimation.
 // It estimates token counts for MCP tools and their metadata.
 package tokens

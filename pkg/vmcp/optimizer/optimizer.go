@@ -108,9 +108,9 @@ func NewIntegration(
 // and register optimizer tools.
 //
 // This hook:
-// 1. Extracts backend tools from discovered capabilities
-// 2. Generates embeddings for all tools (parallel per-backend)
-	// 3. Registers optim_find_tool and optim_call_tool as session tools
+//  1. Extracts backend tools from discovered capabilities
+//  2. Generates embeddings for all tools (parallel per-backend)
+//  3. Registers optim_find_tool and optim_call_tool as session tools
 func (o *OptimizerIntegration) OnRegisterSession(
 	_ context.Context,
 	session server.ClientSession,
@@ -179,8 +179,8 @@ func (o *OptimizerIntegration) RegisterGlobalTools() error {
 	}, findToolHandler)
 
 	// Register optim_call_tool globally
-	o.mcpServer.AddTool(mcp.Tool		{
-			Name:        "optim_call_tool",
+	o.mcpServer.AddTool(mcp.Tool{
+		Name:        "optim_call_tool",
 		Description: "Dynamically invoke any tool on any backend using the backend_id from find_tool",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",

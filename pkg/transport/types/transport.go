@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package types provides common types and interfaces for the transport package
 // used in communication between the client and MCP server.
 package types

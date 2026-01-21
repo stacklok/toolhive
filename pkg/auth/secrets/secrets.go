@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package secrets provides generic secret management utilities for authentication.
 // This package contains functions that can be used by any authentication method
 // (OAuth, bearer tokens, etc.) to process secrets and store them in a secrets manager.

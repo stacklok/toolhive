@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package errors contains error definitions for workloads
 // It is located in a separate package to side-step an import cycle
 package errors

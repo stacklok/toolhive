@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package oidc provides utilities for resolving OIDC configuration from various sources
 // including Kubernetes service accounts, ConfigMaps, and inline configurations.
 package oidc

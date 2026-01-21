@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package images provides centralized container image references for e2e tests.
 // This package serves as a single source of truth for all container images used
 // in end-to-end testing, making it easier to maintain versions and enabling

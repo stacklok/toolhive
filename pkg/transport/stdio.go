@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package transport provides utilities for handling different transport modes
 // for communication between the client and MCP server, including stdio transport
 // with automatic re-attachment on Docker/container restarts.

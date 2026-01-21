@@ -14,6 +14,9 @@ jobs:
   spellcheck:
     name: Spellcheck
     uses: ./.github/workflows/spellcheck.yml
+  license-headers:
+    name: License Headers
+    uses: ./.github/workflows/license-headers.yml
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml

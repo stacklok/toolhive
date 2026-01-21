@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the VirtualMCPServer custom resource.
 // It handles the creation, update, and deletion of Virtual MCP Servers in Kubernetes.
 package controllers

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package permissions provides utilities for managing container permissions
 // and permission profiles for the toolhive application.
 package permissions

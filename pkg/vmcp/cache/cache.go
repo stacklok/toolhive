@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cache provides token caching interfaces for Virtual MCP Server.
 //
 // Token caching reduces authentication overhead by caching exchanged tokens

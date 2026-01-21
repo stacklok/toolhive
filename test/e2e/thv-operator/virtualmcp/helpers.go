@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package virtualmcp provides helper functions for VirtualMCP E2E tests.
 package virtualmcp
 

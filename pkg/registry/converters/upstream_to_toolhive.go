@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package converters provides conversion functions from upstream MCP ServerJSON format
 // to toolhive ImageMetadata/RemoteServerMetadata formats.
 package converters

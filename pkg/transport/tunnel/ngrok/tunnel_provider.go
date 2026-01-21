@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package ngrok provides an implementation of the TunnelProvider interface using ngrok.
 package ngrok
 

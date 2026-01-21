@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package converters provides a registry for converting external authentication configurations
 // to vMCP auth strategy metadata.
 package converters

@@ -100,8 +100,8 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		providerType = secrets.EncryptedType
 	case string(secrets.OnePasswordType):
 		providerType = secrets.OnePasswordType
-	case string(secrets.NoneType):
-		providerType = secrets.NoneType
+	case string(secrets.EnvironmentType):
+		providerType = secrets.EnvironmentType
 	case "":
 		return thverrors.WithCode(
 			fmt.Errorf("provider type cannot be empty"),
@@ -110,7 +110,11 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	default:
 		return thverrors.WithCode(
 			fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
-				req.ProviderType, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
+				req.ProviderType,
+				string(secrets.EncryptedType),
+				string(secrets.OnePasswordType),
+				string(secrets.EnvironmentType),
+			),
 			http.StatusBadRequest,
 		)
 	}
@@ -525,7 +529,7 @@ func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 //
 //	@Description	Request to setup a secrets provider
 type setupSecretsRequest struct {
-	// Type of the secrets provider (encrypted, 1password, none)
+	// Type of the secrets provider (encrypted, 1password, environment)
 	ProviderType string `json:"provider_type"`
 	// Password for encrypted provider (optional, can be set via environment variable)
 	// TODO Review environment variable for this

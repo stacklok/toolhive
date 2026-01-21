@@ -299,6 +299,14 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
 
 - **Linting**:
   - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.
+- **SPDX License Headers**:
+  - All Go files require SPDX headers at the top:
+    ```go
+    // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+    // SPDX-License-Identifier: Apache-2.0
+    ```
+  - Use `task license-check` to verify headers, `task license-fix` to add them automatically.
+  - CI enforces this on all PRs (ignores generated files: mocks, testdata, vendor, *.pb.go, zz_generated*.go).
 - **Commit messages and PR titles**:
   - Refer to the `CONTRIBUTING.md` file for guidelines on commit message format
     conventions.

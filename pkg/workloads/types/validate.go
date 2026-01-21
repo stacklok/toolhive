@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package types contains types and validation functions for workloads in ToolHive.
 // This is separated to avoid circular dependencies with the core package.
 package types

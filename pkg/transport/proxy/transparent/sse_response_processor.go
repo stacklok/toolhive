@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package transparent provides a transparent HTTP proxy implementation
 // that forwards requests to a destination without modifying them.
 package transparent
@@ -156,14 +159,14 @@ func rewriteEndpointURL(originalURL string, config sseRewriteConfig) (string, er
 		parsed.Path = prefix + parsed.Path
 	}
 
-	// Override scheme if configured
-	if config.scheme != "" {
-		parsed.Scheme = config.scheme
-	}
-
 	// Override host if configured
 	if config.host != "" {
 		parsed.Host = config.host
+
+		// Override scheme if configured
+		if config.scheme != "" {
+			parsed.Scheme = config.scheme
+		}
 	}
 
 	return parsed.String(), nil

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package remote provides authentication handling for remote MCP servers.
 //
 // This package implements OAuth/OIDC-based authentication with automatic

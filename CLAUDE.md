@@ -299,6 +299,14 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
 
 - **Linting**:
   - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.
+- **SPDX License Headers**:
+  - All Go files require SPDX headers at the top:
+    ```go
+    // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+    // SPDX-License-Identifier: Apache-2.0
+    ```
+  - Use `task license-check` to verify headers, `task license-fix` to add them automatically.
+  - CI enforces this on all PRs (ignores generated files: mocks, testdata, vendor, *.pb.go, zz_generated*.go).
 - **Commit messages and PR titles**:
   - Refer to the `CONTRIBUTING.md` file for guidelines on commit message format
     conventions.
@@ -315,3 +323,13 @@ See `docs/error-handling.md` for comprehensive documentation.
 - **Use `errors.Is()` or `errors.As()`** - For all error inspection (they properly unwrap errors)
 - **Use `fmt.Errorf` with `%w`** - To preserve error chains; don't wrap excessively
 - **Use `recover()` sparingly** - Only at top-level API/CLI boundaries
+
+## Logging Guidelines
+
+See `docs/logging.md` for comprehensive documentation.
+
+- **Silent success** - Do not log at INFO or above for successful operations; users should only see output when something requires attention or when using `--debug`
+- **DEBUG for diagnostics** - Use for detailed troubleshooting info (runtime detection, state transitions, config values)
+- **INFO sparingly** - Only for long-running operations like image pulls that benefit from progress indication
+- **WARN for non-fatal issues** - Deprecations, fallback behavior, cleanup failures
+- **No sensitive data** - Never log credentials, tokens, API keys, or passwords

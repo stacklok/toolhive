@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,

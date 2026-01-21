@@ -21,10 +21,10 @@ This command guides you through selecting and configuring a secrets provider
 for storing and retrieving secrets. The setup process validates your
 configuration and ensures the selected provider initializes properly.
 
-Available providers:
-  - encrypted: Stores secrets in an encrypted file using AES-256-GCM using the OS keyring
-  - 1password: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN environment variable)
-  - none: Disables secrets functionality
+			Available providers:
+			  - encrypted: Stores secrets in an encrypted file using AES-256-GCM using the OS keyring
+			  - 1password: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN environment variable)
+			  - environment: Read-only access to secrets from TOOLHIVE_SECRET_* env vars
 
 Run this command before using any other secrets functionality.
 

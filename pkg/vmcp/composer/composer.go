@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package composer provides composite tool workflow execution for Virtual MCP Server.
 //
 // Composite tools orchestrate multi-step workflows across multiple backend MCP servers.

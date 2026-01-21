@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package spectoconfig provides functionality to convert CRD Telemetry types into telemetry.Config.
 package spectoconfig
 

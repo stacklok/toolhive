@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aggregator provides capability aggregation for Virtual MCP Server.
 //
 // This file contains the factory function for creating conflict resolvers

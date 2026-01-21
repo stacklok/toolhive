@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package env provides abstractions for environment variable access
 // to enable dependency injection and testing isolation.
 package env

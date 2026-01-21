@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package types provides shared auth-related types for Virtual MCP Server.
 //
 // This package is designed as a leaf package with no dependencies on other

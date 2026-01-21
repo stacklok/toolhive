@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package optimizer provides the Optimizer interface for intelligent tool discovery
 // and invocation in the Virtual MCP Server.
 //

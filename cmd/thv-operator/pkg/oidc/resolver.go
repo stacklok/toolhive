@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const (
@@ -165,6 +166,11 @@ func (r *resolver) resolveConfigMapConfig(
 		return nil, fmt.Errorf("kubernetes client is required for ConfigMap OIDC resolution")
 	}
 
+	// Validate CABundleRef if present
+	if err := validation.ValidateCABundleSource(configRef.CABundleRef); err != nil {
+		return nil, err
+	}
+
 	// Read the ConfigMap
 	configMap := &corev1.ConfigMap{}
 	err := r.client.Get(ctx, types.NamespacedName{
@@ -202,6 +208,11 @@ func (r *resolver) resolveConfigMapConfig(
 	// Handle scopes as comma-separated values
 	config.Scopes = parseCommaSeparatedList(getMapValue(configMap.Data, "scopes"))
 
+	// Compute ThvCABundlePath from CABundleRef if not explicitly set in ConfigMap
+	if config.ThvCABundlePath == "" {
+		config.ThvCABundlePath = computeCABundlePath(configRef.CABundleRef)
+	}
+
 	return config, nil
 }
 
@@ -214,11 +225,23 @@ func (*resolver) resolveInlineConfig(
 		return nil, nil
 	}
 
+	// Validate CABundleRef if present
+	if err := validation.ValidateCABundleSource(config.CABundleRef); err != nil {
+		return nil, err
+	}
+
 	// Don't embed ClientSecret in the config if ClientSecretRef is set
 	// The secret will be injected via environment variable instead
 	clientSecret := config.ClientSecret
 	if config.ClientSecretRef != nil {
 		clientSecret = ""
+	}
+
+	// Compute ThvCABundlePath: use explicit value if set, otherwise auto-compute from CABundleRef
+	//nolint:staticcheck // SA1019: ThvCABundlePath is deprecated but still supported for backwards compatibility
+	thvCABundlePath := config.ThvCABundlePath
+	if thvCABundlePath == "" {
+		thvCABundlePath = computeCABundlePath(config.CABundleRef)
 	}
 
 	return &OIDCConfig{
@@ -228,7 +251,7 @@ func (*resolver) resolveInlineConfig(
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
 		ClientSecret:       clientSecret,
-		ThvCABundlePath:    config.ThvCABundlePath,
+		ThvCABundlePath:    thvCABundlePath,
 		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
 		ResourceURL:        resourceURL,
 		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,
@@ -243,6 +266,20 @@ func getMapValue(data map[string]string, key string) string {
 		return v
 	}
 	return ""
+}
+
+// computeCABundlePath computes the CA bundle mount path from a CABundleSource.
+// Returns empty string if caBundleRef is nil or has no ConfigMapRef.
+func computeCABundlePath(caBundleRef *mcpv1alpha1.CABundleSource) string {
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		return ""
+	}
+	ref := caBundleRef.ConfigMapRef
+	key := ref.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	return fmt.Sprintf("%s/%s/%s", validation.OIDCCABundleMountBasePath, ref.Name, key)
 }
 
 // parseCommaSeparatedList parses a comma-separated string into a slice of strings.

@@ -47,6 +47,13 @@ type Config struct {
 	// Bearer token configuration (alternative to OAuth)
 	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
 	BearerTokenFile string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
+
+	// Cached OAuth tokens for persistence across restarts.
+	// These are populated after a successful OAuth flow and used to restore
+	// authentication without requiring a new browser-based login.
+	CachedAccessToken  string    `json:"cached_access_token,omitempty" yaml:"cached_access_token,omitempty"`
+	CachedRefreshToken string    `json:"cached_refresh_token,omitempty" yaml:"cached_refresh_token,omitempty"`
+	CachedTokenExpiry  time.Time `json:"cached_token_expiry,omitempty" yaml:"cached_token_expiry,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -118,6 +125,22 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 
 // DefaultCallbackPort is the default port for the OAuth callback server
 const DefaultCallbackPort = 8666
+
+// HasValidCachedTokens returns true if the config has cached tokens that can be used
+// to create a TokenSource without requiring a new OAuth flow.
+// Note: This only checks if a refresh token exists, not if it's actually valid.
+// The actual validity will be determined when the token is used.
+func (c *Config) HasValidCachedTokens() bool {
+	// We need at least a refresh token to restore the session
+	return c.CachedRefreshToken != ""
+}
+
+// ClearCachedTokens removes any cached OAuth tokens from the config.
+func (c *Config) ClearCachedTokens() {
+	c.CachedAccessToken = ""
+	c.CachedRefreshToken = ""
+	c.CachedTokenExpiry = time.Time{}
+}
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.
 // This function should only be called when the user has not explicitly provided a resource indicator.

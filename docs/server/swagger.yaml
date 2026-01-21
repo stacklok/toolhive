@@ -722,6 +722,16 @@ components:
           type: string
         bearer_token_file:
           type: string
+        cached_access_token:
+          description: |-
+            Cached OAuth tokens for persistence across restarts.
+            These are populated after a successful OAuth flow and used to restore
+            authentication without requiring a new browser-based login.
+          type: string
+        cached_refresh_token:
+          type: string
+        cached_token_expiry:
+          type: string
         callback_port:
           type: integer
         client_id:

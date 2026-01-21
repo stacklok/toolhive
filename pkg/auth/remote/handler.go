@@ -16,7 +16,8 @@ import (
 // Handler handles authentication for remote MCP servers.
 // Supports OAuth/OIDC-based authentication with automatic discovery.
 type Handler struct {
-	config *Config
+	config         *Config
+	tokenPersister TokenPersister
 }
 
 // NewHandler creates a new remote authentication handler
@@ -24,6 +25,12 @@ func NewHandler(config *Config) *Handler {
 	return &Handler{
 		config: config,
 	}
+}
+
+// SetTokenPersister sets a callback function that will be called whenever
+// OAuth tokens are refreshed. This enables token persistence across restarts.
+func (h *Handler) SetTokenPersister(persister TokenPersister) {
+	h.tokenPersister = persister
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
@@ -34,82 +41,210 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		return NewBearerTokenSource(h.config.BearerToken), nil
 	}
 
-	// Priority 2: OAuth authentication (if configured or detected)
-	// First, try to detect if authentication is required
+	// Priority 2: Try to use cached OAuth tokens (if available)
+	if h.config.HasValidCachedTokens() {
+		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, remoteURL)
+		if err != nil {
+			logger.Warnf("Failed to restore from cached tokens, will perform fresh OAuth flow: %v", err)
+			// Clear invalid cached tokens
+			h.config.ClearCachedTokens()
+		} else if tokenSource != nil {
+			logger.Infof("Successfully restored OAuth session from cached tokens")
+			return tokenSource, nil
+		}
+	}
+
+	// Priority 3: OAuth authentication (if configured or detected)
+	return h.authenticateWithOAuth(ctx, remoteURL)
+}
+
+// authenticateWithOAuth detects and handles OAuth authentication requirements
+func (h *Handler) authenticateWithOAuth(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+	// Try to detect if authentication is required
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
 		return nil, nil // Not an error, just no auth detected
 	}
 
-	if authInfo != nil {
-		logger.Infof("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
-			authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
-
-		// Handle OAuth authentication
-		if authInfo.Type == "Bearer" {
-			// If we reach here, bearer token is not configured (we already checked above)
-			// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
-			// Many servers use Bearer header but support OAuth flow
-			if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
-				logger.Infof("Server returned Bearer header but no bearer token configured. " +
-					"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
-				// Fall through to OAuth handling below
-			} else {
-				// No realm or resource_metadata - likely requires static bearer token
-				return nil, fmt.Errorf("server requires bearer token authentication but no bearer token is configured. "+
-					"Please provide a bearer token using --remote-auth-bearer-token flag or %s environment variable", BearerTokenEnvVarName)
-			}
-		}
-
-		// Handle OAuth authentication (including Bearer fallback for backward compatibility)
-		if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
-			// Discover the issuer and potentially update scopes
-			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
-			if err != nil {
-				return nil, err
-			}
-
-			logger.Infof("Starting OAuth authentication flow with issuer: %s", issuer)
-
-			// Create OAuth flow config from RemoteAuthConfig
-			flowConfig := &discovery.OAuthFlowConfig{
-				ClientID:     h.config.ClientID,
-				ClientSecret: h.config.ClientSecret,
-				AuthorizeURL: h.config.AuthorizeURL,
-				TokenURL:     h.config.TokenURL,
-				Scopes:       scopes,
-				CallbackPort: h.config.CallbackPort,
-				Timeout:      h.config.Timeout,
-				SkipBrowser:  h.config.SkipBrowser,
-				Resource:     h.config.Resource,
-				OAuthParams:  h.config.OAuthParams,
-			}
-
-			// If we have discovered endpoints from the authorization server metadata,
-			// use them instead of trying to discover them again
-			if authServerInfo != nil && h.config.AuthorizeURL == "" && h.config.TokenURL == "" {
-				flowConfig.AuthorizeURL = authServerInfo.AuthorizationURL
-				flowConfig.TokenURL = authServerInfo.TokenURL
-				flowConfig.RegistrationEndpoint = authServerInfo.RegistrationEndpoint
-				logger.Infof("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
-					authServerInfo.AuthorizationURL, authServerInfo.TokenURL, authServerInfo.RegistrationEndpoint)
-			}
-
-			result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
-			if err != nil {
-				return nil, err
-			}
-
-			return result.TokenSource, nil
-		}
-
-		// Currently only OAuth-based authentication is supported
-		logger.Infof("Unsupported authentication type: %s", authInfo.Type)
-		return nil, nil
+	if authInfo == nil {
+		return nil, nil // No authentication required
 	}
 
-	return nil, nil // No authentication required
+	logger.Infof("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
+		authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
+
+	// Check if we need to handle Bearer token requirement
+	if err := h.validateBearerRequirement(authInfo); err != nil {
+		return nil, err
+	}
+
+	// Handle OAuth authentication (including Bearer fallback for backward compatibility)
+	if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
+		return h.performOAuthFlow(ctx, authInfo, remoteURL)
+	}
+
+	// Currently only OAuth-based authentication is supported
+	logger.Infof("Unsupported authentication type: %s", authInfo.Type)
+	return nil, nil
+}
+
+// validateBearerRequirement checks if Bearer auth is required without OAuth fallback
+func (*Handler) validateBearerRequirement(authInfo *discovery.AuthInfo) error {
+	if authInfo.Type != "Bearer" {
+		return nil
+	}
+
+	// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
+	// Many servers use Bearer header but support OAuth flow
+	if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
+		logger.Infof("Server returned Bearer header but no bearer token configured. " +
+			"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
+		return nil
+	}
+
+	// No realm or resource_metadata - likely requires static bearer token
+	return fmt.Errorf("server requires bearer token authentication but no bearer token is configured. "+
+		"Please provide a bearer token using --remote-auth-bearer-token flag or %s environment variable", BearerTokenEnvVarName)
+}
+
+// performOAuthFlow executes the OAuth authentication flow
+func (h *Handler) performOAuthFlow(
+	ctx context.Context,
+	authInfo *discovery.AuthInfo,
+	remoteURL string,
+) (oauth2.TokenSource, error) {
+	// Discover the issuer and potentially update scopes
+	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infof("Starting OAuth authentication flow with issuer: %s", issuer)
+
+	// Create OAuth flow config
+	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+
+	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist and wrap the token source
+	return h.wrapWithPersistence(result), nil
+}
+
+// buildOAuthFlowConfig creates the OAuth flow configuration
+func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
+	flowConfig := &discovery.OAuthFlowConfig{
+		ClientID:     h.config.ClientID,
+		ClientSecret: h.config.ClientSecret,
+		AuthorizeURL: h.config.AuthorizeURL,
+		TokenURL:     h.config.TokenURL,
+		Scopes:       scopes,
+		CallbackPort: h.config.CallbackPort,
+		Timeout:      h.config.Timeout,
+		SkipBrowser:  h.config.SkipBrowser,
+		Resource:     h.config.Resource,
+		OAuthParams:  h.config.OAuthParams,
+	}
+
+	// If we have discovered endpoints from the authorization server metadata,
+	// use them instead of trying to discover them again
+	if authServerInfo != nil && h.config.AuthorizeURL == "" && h.config.TokenURL == "" {
+		flowConfig.AuthorizeURL = authServerInfo.AuthorizationURL
+		flowConfig.TokenURL = authServerInfo.TokenURL
+		flowConfig.RegistrationEndpoint = authServerInfo.RegistrationEndpoint
+		logger.Infof("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
+			authServerInfo.AuthorizationURL, authServerInfo.TokenURL, authServerInfo.RegistrationEndpoint)
+	}
+
+	return flowConfig
+}
+
+// wrapWithPersistence wraps the OAuth result with token persistence
+func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.TokenSource {
+	// Persist the tokens for future restarts
+	if h.tokenPersister != nil && result.RefreshToken != "" {
+		if err := h.tokenPersister(result.AccessToken, result.RefreshToken, result.Expiry); err != nil {
+			logger.Warnf("Failed to persist OAuth tokens: %v", err)
+		} else {
+			logger.Infof("Successfully persisted OAuth tokens for future restarts")
+		}
+	}
+
+	// Wrap the token source to persist refreshed tokens
+	tokenSource := result.TokenSource
+	if h.tokenPersister != nil {
+		tokenSource = NewPersistingTokenSource(result.TokenSource, h.tokenPersister)
+	}
+
+	return tokenSource
+}
+
+// tryRestoreFromCachedTokens attempts to create a TokenSource from cached tokens
+func (h *Handler) tryRestoreFromCachedTokens(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+	// We need to discover the OAuth endpoints to create a proper token source
+	// that can refresh tokens when they expire
+	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect auth requirements: %w", err)
+	}
+
+	if authInfo == nil {
+		return nil, fmt.Errorf("no authentication required by server")
+	}
+
+	// Discover OAuth endpoints
+	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover OAuth endpoints: %w", err)
+	}
+
+	// Build OAuth2 config for token refresh
+	oauth2Config := &oauth2.Config{
+		ClientID:     h.config.ClientID,
+		ClientSecret: h.config.ClientSecret,
+		Scopes:       scopes,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  h.config.AuthorizeURL,
+			TokenURL: h.config.TokenURL,
+		},
+	}
+
+	// Use discovered endpoints if available
+	if authServerInfo != nil {
+		if h.config.AuthorizeURL == "" {
+			oauth2Config.Endpoint.AuthURL = authServerInfo.AuthorizationURL
+		}
+		if h.config.TokenURL == "" {
+			oauth2Config.Endpoint.TokenURL = authServerInfo.TokenURL
+		}
+	}
+
+	// Create token source from cached tokens
+	baseSource := CreateTokenSourceFromCached(
+		oauth2Config,
+		h.config.CachedAccessToken,
+		h.config.CachedRefreshToken,
+		h.config.CachedTokenExpiry,
+	)
+
+	// Try to get a token to verify the cached tokens are valid
+	// This will trigger a refresh if the access token is expired
+	_, err = baseSource.Token()
+	if err != nil {
+		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)
+	}
+
+	logger.Infof("Restored OAuth session from cached tokens (issuer: %s)", issuer)
+
+	// Wrap with persisting token source to save refreshed tokens
+	if h.tokenPersister != nil {
+		return NewPersistingTokenSource(baseSource, h.tokenPersister), nil
+	}
+
+	return baseSource, nil
 }
 
 // discoverIssuerAndScopes attempts to discover the OAuth issuer and scopes from various sources

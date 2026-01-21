@@ -800,6 +800,16 @@ const docTemplate = `{
                     "bearer_token_file": {
                         "type": "string"
                     },
+                    "cached_access_token": {
+                        "description": "Cached OAuth tokens for persistence across restarts.\nThese are populated after a successful OAuth flow and used to restore\nauthentication without requiring a new browser-based login.",
+                        "type": "string"
+                    },
+                    "cached_refresh_token": {
+                        "type": "string"
+                    },
+                    "cached_token_expiry": {
+                        "type": "string"
+                    },
                     "callback_port": {
                         "type": "integer"
                     },

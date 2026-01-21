@@ -561,6 +561,19 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	// Create remote authentication handler
 	authHandler := remote.NewHandler(r.Config.RemoteAuthConfig)
 
+	// Set up token persister to save tokens across restarts
+	authHandler.SetTokenPersister(func(accessToken, refreshToken string, expiry time.Time) error {
+		r.Config.RemoteAuthConfig.CachedAccessToken = accessToken
+		r.Config.RemoteAuthConfig.CachedRefreshToken = refreshToken
+		r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+
+		// Save the updated config to persist tokens
+		if err := r.Config.SaveState(ctx); err != nil {
+			return fmt.Errorf("failed to save config with tokens: %w", err)
+		}
+		return nil
+	})
+
 	// Perform authentication
 	tokenSource, err := authHandler.Authenticate(ctx, r.Config.RemoteURL)
 	if err != nil {

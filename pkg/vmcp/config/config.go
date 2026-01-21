@@ -148,7 +148,7 @@ type Config struct {
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 
 	// Optimizer configures the MCP optimizer for context optimization on large toolsets.
-	// When enabled, vMCP exposes optim.find_tool and optim.call_tool operations to clients
+	// When enabled, vMCP exposes optim_find_tool and optim_call_tool operations to clients
 	// instead of all backend tools directly. This reduces token usage by allowing
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
 	// +optional
@@ -700,7 +700,7 @@ type OutputProperty struct {
 // +gendoc
 type OptimizerConfig struct {
 	// Enabled determines whether the optimizer is active.
-	// When true, vMCP exposes optim.find_tool and optim.call_tool instead of all backend tools.
+	// When true, vMCP exposes optim_find_tool and optim_call_tool instead of all backend tools.
 	// +optional
 	Enabled bool `json:"enabled" yaml:"enabled"`
 

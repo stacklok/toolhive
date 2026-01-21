@@ -44,6 +44,10 @@ spec:
           # Get the statefulset name
           echo "Verifying model cache for embedding server: $embeddingServerName"
 
+          # Wait for PVC to provision
+          echo "Waiting 60 seconds for PVC to provision..."
+          sleep 60
+
           STATEFULSET_NAME="$embeddingServerName"
           # StatefulSet PVCs follow the pattern: volumeClaimTemplate-statefulsetName-ordinal
           PVC_NAME="model-cache-$embeddingServerName-0"

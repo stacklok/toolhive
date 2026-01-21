@@ -377,6 +377,76 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 	return p.responseProcessor.ProcessResponse(resp)
 }
 
+// stripEndpointPrefix removes the endpointPrefix from the beginning of the request path if present.
+// This handles cases where:
+// 1. Client makes direct request to proxy with prefix (e.g., /playwright/sse)
+// 2. Ingress doesn't strip the prefix before forwarding
+//
+// Important: Only strips the prefix if it appears at the START of the path.
+// If the prefix appears later in the path (e.g., /abc/abc/sse with prefix /abc),
+// only the leading occurrence is stripped, preserving the rest.
+//
+// Detection of already-stripped prefix:
+// - If X-Forwarded-Prefix header matches endpointPrefix, ingress already stripped it
+// - In this case, we don't strip again to avoid double-stripping
+//
+// Examples:
+//   - prefix="/abc", path="/abc/sse", forwardedPrefix="" → "/sse" (strip)
+//   - prefix="/abc", path="/abc/sse", forwardedPrefix="/abc" → "/abc/sse" (don't strip, already stripped)
+//   - prefix="/abc", path="/abc/abc/sse", forwardedPrefix="" → "/abc/sse" (strip only first)
+//   - prefix="/abc", path="/abc/abc/sse", forwardedPrefix="/abc" → "/abc/abc/sse" (don't strip)
+//   - prefix="/abc", path="/sse/abc/abc", forwardedPrefix="" → "/sse/abc/abc" (no change)
+//
+// Returns the stripped path if prefix matches at start, or original path otherwise.
+func stripEndpointPrefix(path, endpointPrefix, forwardedPrefix string) string {
+	if endpointPrefix == "" || path == "" {
+		return path
+	}
+
+	// Normalize prefix: ensure it starts with "/" and doesn't end with "/"
+	prefix := endpointPrefix
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimSuffix(prefix, "/")
+
+	// Don't strip root prefix
+	if prefix == "/" {
+		return path
+	}
+
+	// Normalize forwarded prefix for comparison
+	normalizedForwardedPrefix := forwardedPrefix
+	if normalizedForwardedPrefix != "" {
+		if !strings.HasPrefix(normalizedForwardedPrefix, "/") {
+			normalizedForwardedPrefix = "/" + normalizedForwardedPrefix
+		}
+		normalizedForwardedPrefix = strings.TrimSuffix(normalizedForwardedPrefix, "/")
+	}
+
+	// If X-Forwarded-Prefix matches our endpointPrefix, ingress already stripped it
+	// Don't strip again to avoid double-stripping
+	if normalizedForwardedPrefix == prefix {
+		return path
+	}
+
+	// Check if path starts with prefix (with or without trailing slash)
+	if path == prefix {
+		// Exact match: /abc → /
+		return "/"
+	}
+
+	// Check if path starts with prefix followed by "/"
+	prefixWithSlash := prefix + "/"
+	if strings.HasPrefix(path, prefixWithSlash) {
+		// Strip prefix: /abc/sse → /sse, /abc/abc/sse → /abc/sse
+		return path[len(prefix):]
+	}
+
+	// Path doesn't start with prefix, return as-is
+	return path
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -396,10 +466,31 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Store the original director
 	originalDirector := proxy.Director
 
-	// Override director to inject trace propagation headers
+	// Override director to inject trace propagation headers and strip endpoint prefix
 	proxy.Director = func(req *http.Request) {
 		// Apply original director logic first
 		originalDirector(req)
+
+		// Strip endpoint prefix from request path if configured and present at start
+		if p.endpointPrefix != "" {
+			// Check X-Forwarded-Prefix header if trustProxyHeaders is enabled
+			forwardedPrefix := ""
+			if p.trustProxyHeaders {
+				forwardedPrefix = req.Header.Get("X-Forwarded-Prefix")
+			}
+
+			originalPath := req.URL.Path
+			strippedPath := stripEndpointPrefix(req.URL.Path, p.endpointPrefix, forwardedPrefix)
+			req.URL.Path = strippedPath
+
+			if strippedPath != originalPath {
+				logger.Debugf("Stripped endpoint prefix %q from path: %q -> %q (forwarded-prefix: %q)",
+					p.endpointPrefix, originalPath, strippedPath, forwardedPrefix)
+			} else if forwardedPrefix == p.endpointPrefix {
+				logger.Debugf("Skipping prefix strip for path %q (already stripped by ingress, forwarded-prefix: %q)",
+					req.URL.Path, forwardedPrefix)
+			}
+		}
 
 		// Inject OpenTelemetry trace propagation headers for downstream tracing
 		if req.Context() != nil {

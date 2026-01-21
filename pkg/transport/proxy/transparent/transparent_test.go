@@ -856,6 +856,177 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	assert.True(t, ok, "sessionManager should have stored ABC123")
 }
 
+// TestStripEndpointPrefix tests the stripEndpointPrefix function
+func TestStripEndpointPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		path            string
+		endpointPrefix  string
+		forwardedPrefix string
+		expected        string
+	}{
+		// Basic stripping cases
+		{
+			name:            "basic strip - prefix at start",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/sse",
+		},
+		{
+			name:            "exact match",
+			path:            "/abc",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/",
+		},
+		{
+			name:            "prefix with trailing slash",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc/",
+			forwardedPrefix: "",
+			expected:        "/sse",
+		},
+		{
+			name:            "prefix without leading slash",
+			path:            "/abc/sse",
+			endpointPrefix:  "abc",
+			forwardedPrefix: "",
+			expected:        "/sse",
+		},
+		{
+			name:            "path with trailing slash",
+			path:            "/abc/sse/",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/sse/",
+		},
+		// Edge case: prefix appears later in path
+		{
+			name:            "prefix appears later in path - strip only first",
+			path:            "/abc/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/abc/sse",
+		},
+		{
+			name:            "multiple prefix segments",
+			path:            "/abc/abc/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/abc/abc/sse",
+		},
+		// Prefix not at start - should not strip
+		{
+			name:            "prefix not at start - no change",
+			path:            "/sse/abc/abc",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/sse/abc/abc",
+		},
+		{
+			name:            "prefix in middle of path",
+			path:            "/sse/abc/test",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "/sse/abc/test",
+		},
+		// Ingress already stripped - don't strip again
+		{
+			name:            "ingress already stripped - exact match",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "/abc",
+			expected:        "/abc/sse",
+		},
+		{
+			name:            "ingress already stripped - prefix in path preserved",
+			path:            "/abc/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "/abc",
+			expected:        "/abc/abc/sse",
+		},
+		{
+			name:            "ingress already stripped - forwarded prefix normalized",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "abc",
+			expected:        "/abc/sse",
+		},
+		{
+			name:            "ingress already stripped - forwarded prefix with trailing slash",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "/abc/",
+			expected:        "/abc/sse",
+		},
+		// Different forwarded prefix - should still strip
+		{
+			name:            "different forwarded prefix - still strip",
+			path:            "/abc/sse",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "/xyz",
+			expected:        "/sse",
+		},
+		// Empty/edge cases
+		{
+			name:            "empty prefix - no change",
+			path:            "/abc/sse",
+			endpointPrefix:  "",
+			forwardedPrefix: "",
+			expected:        "/abc/sse",
+		},
+		{
+			name:            "empty path - no change",
+			path:            "",
+			endpointPrefix:  "/abc",
+			forwardedPrefix: "",
+			expected:        "",
+		},
+		{
+			name:            "root prefix - no change",
+			path:            "/sse",
+			endpointPrefix:  "/",
+			forwardedPrefix: "",
+			expected:        "/sse",
+		},
+		// Real-world examples
+		{
+			name:            "playwright prefix example",
+			path:            "/playwright/sse",
+			endpointPrefix:  "/playwright",
+			forwardedPrefix: "",
+			expected:        "/sse",
+		},
+		{
+			name:            "playwright prefix already stripped by ingress",
+			path:            "/sse",
+			endpointPrefix:  "/playwright",
+			forwardedPrefix: "/playwright",
+			expected:        "/sse",
+		},
+		{
+			name:            "playwright prefix with nested path",
+			path:            "/playwright/playwright/sse",
+			endpointPrefix:  "/playwright",
+			forwardedPrefix: "",
+			expected:        "/playwright/sse",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := stripEndpointPrefix(tt.path, tt.endpointPrefix, tt.forwardedPrefix)
+			assert.Equal(t, tt.expected, result, "stripEndpointPrefix(%q, %q, %q) = %q, want %q",
+				tt.path, tt.endpointPrefix, tt.forwardedPrefix, result, tt.expected)
+		})
+	}
+}
+
 // TestSSEEndpointRewritingWithExplicitPrefix tests SSE endpoint rewriting with explicit prefix
 func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	t.Parallel()
@@ -896,6 +1067,128 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	// Verify the endpoint URL was rewritten with the explicit prefix
 	assert.Contains(t, bodyLines, "data: /api/mcp/sse?sessionId=DEF456",
 		"Endpoint URL should be rewritten with explicit prefix")
+}
+
+// TestPrefixStrippingInDirector tests that prefix is stripped from request path in Director
+func TestPrefixStrippingInDirector(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		endpointPrefix    string
+		trustProxyHeaders bool
+		requestPath       string
+		forwardedPrefix   string
+		expectedPath      string
+		shouldStrip       bool
+	}{
+		{
+			name:              "strip prefix when present",
+			endpointPrefix:    "/abc",
+			trustProxyHeaders: false,
+			requestPath:       "/abc/sse",
+			forwardedPrefix:   "",
+			expectedPath:      "/sse",
+			shouldStrip:       true,
+		},
+		{
+			name:              "don't strip when ingress already stripped",
+			endpointPrefix:    "/abc",
+			trustProxyHeaders: true,
+			requestPath:       "/sse",
+			forwardedPrefix:   "/abc",
+			expectedPath:      "/sse",
+			shouldStrip:       false,
+		},
+		{
+			name:              "strip prefix with nested path",
+			endpointPrefix:    "/abc",
+			trustProxyHeaders: false,
+			requestPath:       "/abc/abc/sse",
+			forwardedPrefix:   "",
+			expectedPath:      "/abc/sse",
+			shouldStrip:       true,
+		},
+		{
+			name:              "don't strip when prefix not at start",
+			endpointPrefix:    "/abc",
+			trustProxyHeaders: false,
+			requestPath:       "/sse/abc/test",
+			forwardedPrefix:   "",
+			expectedPath:      "/sse/abc/test",
+			shouldStrip:       false,
+		},
+		{
+			name:              "no prefix configured - no change",
+			endpointPrefix:    "",
+			trustProxyHeaders: false,
+			requestPath:       "/abc/sse",
+			forwardedPrefix:   "",
+			expectedPath:      "/abc/sse",
+			shouldStrip:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a backend server that records the path it receives
+			var receivedPath string
+			var pathMutex sync.Mutex
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pathMutex.Lock()
+				receivedPath = r.URL.Path
+				pathMutex.Unlock()
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("OK"))
+			}))
+			defer target.Close()
+
+			// Create proxy with endpointPrefix
+			proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, false, false, "sse", nil, nil, tt.endpointPrefix, tt.trustProxyHeaders)
+
+			// Start the proxy
+			ctx := context.Background()
+			err := proxy.Start(ctx)
+			require.NoError(t, err)
+			defer func() {
+				_ = proxy.Stop(ctx)
+			}()
+
+			// Wait a bit for proxy to start
+			time.Sleep(50 * time.Millisecond)
+
+			// Get the proxy URL (it will be on a random port)
+			proxyAddr := proxy.listener.Addr().String()
+
+			// Create request with path
+			reqURL := "http://" + proxyAddr + tt.requestPath
+			req, err := http.NewRequest("GET", reqURL, nil)
+			require.NoError(t, err)
+
+			// Set forwarded prefix header if needed
+			if tt.forwardedPrefix != "" {
+				req.Header.Set("X-Forwarded-Prefix", tt.forwardedPrefix)
+			}
+
+			// Make request through proxy
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			// Verify backend received the expected path
+			pathMutex.Lock()
+			actualPath := receivedPath
+			pathMutex.Unlock()
+
+			assert.Equal(t, tt.expectedPath, actualPath,
+				"Backend should receive path %q, got %q (prefix stripping: %v)",
+				tt.expectedPath, actualPath, tt.shouldStrip)
+		})
+	}
 }
 
 // TestSSEMessageEventNotRewritten tests that message events are not rewritten

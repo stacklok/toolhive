@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package audit provides audit logging functionality for ToolHive.
 // This package includes audit event structures and utilities based on
 // the auditevent library from metal-toolbox/auditevent to ensure

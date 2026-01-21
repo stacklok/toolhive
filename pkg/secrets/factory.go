@@ -56,9 +56,6 @@ const (
 	// OnePasswordType represents the 1Password secret provider.
 	OnePasswordType ProviderType = "1password"
 
-	// NoneType represents the none secret provider.
-	NoneType ProviderType = "none"
-
 	// EnvironmentType represents the environment variable secret provider
 	EnvironmentType ProviderType = "environment"
 )
@@ -111,8 +108,6 @@ func ValidateProviderWithPassword(ctx context.Context, providerType ProviderType
 		return validateEncryptedProvider(ctx, provider, result)
 	case OnePasswordType:
 		return validateOnePasswordProvider(ctx, provider, result)
-	case NoneType:
-		return validateNoneProvider(result)
 	case EnvironmentType:
 		return ValidateEnvironmentProvider(ctx, provider, result)
 	default:
@@ -196,14 +191,6 @@ func validateOnePasswordProvider(ctx context.Context, provider Provider, result 
 	return result
 }
 
-// validateNoneProvider validates the none provider (always succeeds)
-func validateNoneProvider(result *SetupResult) *SetupResult {
-	// None provider doesn't need validation, it always works
-	result.Success = true
-	result.Message = "None provider validation successful"
-	return result
-}
-
 // ErrKeyringNotAvailable is returned when the OS keyring is not available for the encrypted provider.
 var ErrKeyringNotAvailable = thverrors.WithCode(
 	errors.New("OS keyring is not available. "+
@@ -265,8 +252,6 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		}
 	case OnePasswordType:
 		primary, err = NewOnePasswordManager()
-	case NoneType:
-		primary, err = NewNoneManager()
 	case EnvironmentType:
 		// Direct environment provider - no fallback needed
 		return NewEnvironmentProvider(), nil

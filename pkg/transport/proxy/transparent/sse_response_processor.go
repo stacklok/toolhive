@@ -159,14 +159,14 @@ func rewriteEndpointURL(originalURL string, config sseRewriteConfig) (string, er
 		parsed.Path = prefix + parsed.Path
 	}
 
-	// Override scheme if configured
-	if config.scheme != "" {
-		parsed.Scheme = config.scheme
-	}
-
 	// Override host if configured
 	if config.host != "" {
 		parsed.Host = config.host
+
+		// Override scheme if configured
+		if config.scheme != "" {
+			parsed.Scheme = config.scheme
+		}
 	}
 
 	return parsed.String(), nil

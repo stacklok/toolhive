@@ -16,7 +16,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -525,49 +524,12 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
 	// Ensure Role with permissions to discover backends and update status
-	role := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceAccountName,
-			Namespace: vmcp.Namespace,
-		},
-		Rules: vmcpRBACRules,
-	}
-	if _, err := rbacClient.UpsertRoleWithOwnerReference(ctx, role, vmcp); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	serviceAccount := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceAccountName,
-			Namespace: vmcp.Namespace,
-		},
-	}
-	if _, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, vmcp); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	roleBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceAccountName,
-			Namespace: vmcp.Namespace,
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     serviceAccountName,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-		},
-	}
-	_, err := rbacClient.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, vmcp)
-	return err
+	return rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      serviceAccountName,
+		Namespace: vmcp.Namespace,
+		Rules:     vmcpRBACRules,
+		Owner:     vmcp,
+	})
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.

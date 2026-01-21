@@ -11,6 +11,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -1778,5 +1779,350 @@ func TestNewClient(t *testing.T) {
 		client := NewClient(fakeClient, scheme)
 
 		assert.NotNil(t, client)
+	})
+}
+
+func TestEnsureRBACResources(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+
+	t.Run("creates all RBAC resources when none exist", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		rules := []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list"},
+			},
+		}
+
+		labels := map[string]string{
+			"app": "test",
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     rules,
+			Owner:     owner,
+			Labels:    labels,
+		})
+
+		require.NoError(t, err)
+
+		// Verify ServiceAccount was created
+		sa := &corev1.ServiceAccount{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, sa)
+		require.NoError(t, err)
+		assert.Equal(t, "test-rbac", sa.Name)
+		assert.Equal(t, "default", sa.Namespace)
+		assert.Equal(t, labels, sa.Labels)
+
+		// Verify Role was created
+		role := &rbacv1.Role{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, role)
+		require.NoError(t, err)
+		assert.Equal(t, "test-rbac", role.Name)
+		assert.Equal(t, "default", role.Namespace)
+		assert.Equal(t, rules, role.Rules)
+		assert.Equal(t, labels, role.Labels)
+
+		// Verify RoleBinding was created
+		rb := &rbacv1.RoleBinding{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, rb)
+		require.NoError(t, err)
+		assert.Equal(t, "test-rbac", rb.Name)
+		assert.Equal(t, "default", rb.Namespace)
+		assert.Equal(t, labels, rb.Labels)
+		assert.Equal(t, "test-rbac", rb.RoleRef.Name)
+		assert.Len(t, rb.Subjects, 1)
+		assert.Equal(t, "ServiceAccount", rb.Subjects[0].Kind)
+		assert.Equal(t, "test-rbac", rb.Subjects[0].Name)
+	})
+
+	t.Run("updates existing RBAC resources", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		existingRole := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rbac",
+				Namespace: "default",
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"configmaps"},
+					Verbs:     []string{"get"},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(existingRole).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		newRules := []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list"},
+			},
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     newRules,
+			Owner:     owner,
+		})
+
+		require.NoError(t, err)
+
+		// Verify Role was updated
+		role := &rbacv1.Role{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, role)
+		require.NoError(t, err)
+		assert.Equal(t, newRules, role.Rules)
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		rules := []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list"},
+			},
+		}
+
+		params := EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     rules,
+			Owner:     owner,
+		}
+
+		// Create resources first time
+		err := client.EnsureRBACResources(ctx, params)
+		require.NoError(t, err)
+
+		// Create resources second time - should not error
+		err = client.EnsureRBACResources(ctx, params)
+		require.NoError(t, err)
+	})
+
+	t.Run("returns error when ServiceAccount creation fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(
+					ctx context.Context,
+					client client.WithWatch,
+					obj client.Object,
+					opts ...client.CreateOption,
+				) error {
+					if _, ok := obj.(*corev1.ServiceAccount); ok {
+						return errors.New("service account creation failed")
+					}
+					return client.Create(ctx, obj, opts...)
+				},
+			}).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     []rbacv1.PolicyRule{},
+			Owner:     owner,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to ensure service account")
+	})
+
+	t.Run("returns error when Role creation fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(
+					ctx context.Context,
+					client client.WithWatch,
+					obj client.Object,
+					opts ...client.CreateOption,
+				) error {
+					if _, ok := obj.(*rbacv1.Role); ok {
+						return errors.New("role creation failed")
+					}
+					return client.Create(ctx, obj, opts...)
+				},
+			}).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     []rbacv1.PolicyRule{},
+			Owner:     owner,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to ensure role")
+	})
+
+	t.Run("returns error when RoleBinding creation fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(
+					ctx context.Context,
+					client client.WithWatch,
+					obj client.Object,
+					opts ...client.CreateOption,
+				) error {
+					if _, ok := obj.(*rbacv1.RoleBinding); ok {
+						return errors.New("rolebinding creation failed")
+					}
+					return client.Create(ctx, obj, opts...)
+				},
+			}).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     []rbacv1.PolicyRule{},
+			Owner:     owner,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to ensure role binding")
+	})
+
+	t.Run("works without labels", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-owner",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		}
+
+		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+			Name:      "test-rbac",
+			Namespace: "default",
+			Rules:     []rbacv1.PolicyRule{},
+			Owner:     owner,
+			// Labels intentionally omitted
+		})
+
+		require.NoError(t, err)
+
+		// Verify resources were created without labels
+		sa := &corev1.ServiceAccount{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbac", Namespace: "default"}, sa)
+		require.NoError(t, err)
+		assert.Nil(t, sa.Labels)
 	})
 }

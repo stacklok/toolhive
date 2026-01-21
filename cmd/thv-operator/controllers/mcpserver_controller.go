@@ -847,49 +847,13 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
-	// Ensure Role
-	role := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: mcpServer.Namespace,
-		},
-		Rules: defaultRBACRules,
-	}
-	if _, err := rbacClient.UpsertRoleWithOwnerReference(ctx, role, mcpServer); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount for proxy runner
-	proxyRunnerSA := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: mcpServer.Namespace,
-		},
-	}
-	if _, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, proxyRunnerSA, mcpServer); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	roleBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: mcpServer.Namespace,
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     proxyRunnerNameForRBAC,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-		},
-	}
-	if _, err := rbacClient.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, mcpServer); err != nil {
+	// Ensure RBAC resources for proxy runner
+	if err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+		Rules:     defaultRBACRules,
+		Owner:     mcpServer,
+	}); err != nil {
 		return err
 	}
 
@@ -898,7 +862,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 		return nil
 	}
 
-	// otherwise, create a service account for the MCP server
+	// Otherwise, create a service account for the MCP server
 	mcpServerSAName := mcpServerServiceAccountName(mcpServer.Name)
 	mcpServerSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{

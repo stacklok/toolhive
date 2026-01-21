@@ -14,7 +14,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -477,49 +476,12 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
-	role := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: proxy.Namespace,
-		},
-		Rules: remoteProxyRBACRules,
-	}
-	if _, err := rbacClient.UpsertRoleWithOwnerReference(ctx, role, proxy); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	serviceAccount := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: proxy.Namespace,
-		},
-	}
-	if _, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, proxy); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	roleBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyRunnerNameForRBAC,
-			Namespace: proxy.Namespace,
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     proxyRunnerNameForRBAC,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-		},
-	}
-	_, err := rbacClient.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, proxy)
-	return err
+	return rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: proxy.Namespace,
+		Rules:     remoteProxyRBACRules,
+		Owner:     proxy,
+	})
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy

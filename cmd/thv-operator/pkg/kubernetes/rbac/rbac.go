@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -288,4 +289,79 @@ func (c *Client) upsertRoleBinding(
 	}
 
 	return result, nil
+}
+
+// EnsureRBACResourcesParams contains the parameters for EnsureRBACResources.
+type EnsureRBACResourcesParams struct {
+	// Name is the name to use for all RBAC resources (ServiceAccount, Role, RoleBinding)
+	Name string
+	// Namespace is the namespace where the RBAC resources will be created
+	Namespace string
+	// Rules are the RBAC policy rules for the Role
+	Rules []rbacv1.PolicyRule
+	// Owner is the owner object for setting owner references
+	Owner client.Object
+	// Labels are optional labels to apply to all RBAC resources
+	Labels map[string]string
+}
+
+// EnsureRBACResources creates or updates a complete set of RBAC resources:
+// ServiceAccount, Role, and RoleBinding. All resources use the same name and
+// are created in the same namespace. The RoleBinding binds the ServiceAccount
+// to the Role. All resources have owner references set for automatic cleanup.
+//
+// This is a convenience method that consolidates the common pattern of creating
+// RBAC resources for a controller. It returns an error if any operation fails.
+// Callers should return errors to let the controller work queue handle retries.
+func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResourcesParams) error {
+	// Ensure ServiceAccount
+	serviceAccount := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      params.Name,
+			Namespace: params.Namespace,
+			Labels:    params.Labels,
+		},
+	}
+	if _, err := c.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, params.Owner); err != nil {
+		return fmt.Errorf("failed to ensure service account: %w", err)
+	}
+
+	// Ensure Role
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      params.Name,
+			Namespace: params.Namespace,
+			Labels:    params.Labels,
+		},
+		Rules: params.Rules,
+	}
+	if _, err := c.UpsertRoleWithOwnerReference(ctx, role, params.Owner); err != nil {
+		return fmt.Errorf("failed to ensure role: %w", err)
+	}
+
+	// Ensure RoleBinding
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      params.Name,
+			Namespace: params.Namespace,
+			Labels:    params.Labels,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     params.Name,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      params.Name,
+				Namespace: params.Namespace,
+			},
+		},
+	}
+	if _, err := c.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, params.Owner); err != nil {
+		return fmt.Errorf("failed to ensure role binding: %w", err)
+	}
+
+	return nil
 }

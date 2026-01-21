@@ -92,7 +92,7 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 			Model:       embeddingConfig.Model,
 			Dimension:   embeddingConfig.Dimension,
 		},
-		HybridSearchRatio: 0.9, // 90% semantic, 10% BM25 to test semantic search
+		HybridSearchRatio: 90, // 90% semantic, 10% BM25 to test semantic search
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -392,7 +392,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.9, // 90% semantic
+		HybridSearchRatio: 90, // 90% semantic
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -410,7 +410,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.1, // 10% semantic, 90% BM25
+		HybridSearchRatio: 10, // 10% semantic, 90% BM25
 	}
 
 	integrationKeyword, err := NewIntegration(ctx, configKeyword, mcpServer, mockClient, sessionMgr)
@@ -586,7 +586,7 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.9, // High semantic ratio
+		HybridSearchRatio: 90, // High semantic ratio
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

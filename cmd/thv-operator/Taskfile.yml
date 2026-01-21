@@ -200,7 +200,7 @@ tasks:
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
       - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="{{.CONTROLLER_GEN_PATHS}}" output:rbac:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator/templates/clusterrole
-      - $(go env GOPATH)/bin/controller-gen crd:allowDangerousTypes=true webhook paths="{{.CONTROLLER_GEN_PATHS}}" output:crd:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds
+      - $(go env GOPATH)/bin/controller-gen crd webhook paths="{{.CONTROLLER_GEN_PATHS}}" output:crd:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds
       # Wrap CRDs with Helm templates for conditional installation
       - go run {{.PROJECT_ROOT}}/deploy/charts/operator-crds/crd-helm-wrapper/main.go -source {{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds -target {{.PROJECT_ROOT}}/deploy/charts/operator-crds/templates
       #  - "{{.PROJECT_ROOT}}/deploy/charts/operator-crds/scripts/wrap-crds.sh"

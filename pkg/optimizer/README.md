@@ -58,7 +58,7 @@ optimizer:
   embeddingDimension: 384
   # persistPath: /data/optimizer  # Optional: for persistence
   # ftsDBPath: /data/optimizer-fts.db  # Optional: defaults to :memory: or {persistPath}/fts.db
-  hybridSearchRatio: 0.7  # 70% semantic, 30% BM25 (default)
+  hybridSearchRatio: 70  # 70% semantic, 30% BM25 (default, 0-100 percentage)
 ```
 
 | Ratio | Semantic | BM25 | Best For |
@@ -97,7 +97,7 @@ optimizer:
   embeddingDimension: 384
   # persistPath: /data/optimizer  # Optional: for chromem-go persistence
   # ftsDBPath: /data/fts.db  # Optional: auto-defaults to :memory: or {persistPath}/fts.db
-  # hybridSearchRatio: 0.7  # Optional: 70% semantic, 30% BM25 (default)
+  # hybridSearchRatio: 70  # Optional: 70% semantic, 30% BM25 (default, 0-100 percentage)
 ```
 
 Start vMCP with optimizer:

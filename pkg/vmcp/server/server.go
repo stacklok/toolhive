@@ -143,8 +143,8 @@ type OptimizerConfig struct {
 	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
 	FTSDBPath string
 
-	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
-	HybridSearchRatio float64
+	// HybridSearchRatio controls semantic vs BM25 mix (0-100 percentage, default: 70)
+	HybridSearchRatio int
 
 	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
 	EmbeddingBackend string
@@ -416,7 +416,7 @@ func New(
 				"embedding_backend", cfg.OptimizerConfig.EmbeddingBackend)
 
 			// Convert server config to optimizer config
-			hybridRatio := 0.7 // Default
+			hybridRatio := 70 // Default (70%)
 			if cfg.OptimizerConfig.HybridSearchRatio != 0 {
 				hybridRatio = cfg.OptimizerConfig.HybridSearchRatio
 			}

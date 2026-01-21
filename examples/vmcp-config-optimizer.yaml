@@ -64,9 +64,9 @@ optimizer:
   # Hybrid search (semantic + BM25) is ALWAYS enabled
   ftsDBPath: /tmp/vmcp-optimizer-fts.db  # Uncomment to customize location
   
-  # Optional: Hybrid search ratio (0.0 = all BM25, 1.0 = all semantic)
-  # Default: 0.7 (70% semantic, 30% BM25)
-  # hybridSearchRatio: 0.7
+  # Optional: Hybrid search ratio (0-100, representing percentage)
+  # Default: 70 (70% semantic, 30% BM25)
+  # hybridSearchRatio: 70
   
   # =============================================================================
   # PRODUCTION CONFIGURATIONS (Commented Examples)

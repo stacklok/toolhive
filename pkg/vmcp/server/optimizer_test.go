@@ -72,7 +72,7 @@ func TestNew_OptimizerEnabled(t *testing.T) {
 			EmbeddingURL:       "http://localhost:11434",
 			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
-			HybridSearchRatio:  0.7,
+			HybridSearchRatio:  70,
 		},
 	}
 
@@ -274,7 +274,7 @@ func TestNew_OptimizerHybridRatio(t *testing.T) {
 			EmbeddingURL:       "http://localhost:11434",
 			EmbeddingModel:     "all-minilm",
 			EmbeddingDimension: 384,
-			HybridSearchRatio:  0.5, // Custom ratio
+			HybridSearchRatio:  50, // Custom ratio
 		},
 	}
 

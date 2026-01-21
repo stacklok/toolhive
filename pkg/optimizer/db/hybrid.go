@@ -13,9 +13,9 @@ import (
 
 // HybridSearchConfig configures hybrid search behavior
 type HybridSearchConfig struct {
-	// SemanticRatio controls the mix of semantic vs BM25 results (0.0 = all BM25, 1.0 = all semantic)
-	// Default: 0.7 (70% semantic, 30% BM25)
-	SemanticRatio float64
+	// SemanticRatio controls the mix of semantic vs BM25 results (0-100, representing percentage)
+	// Default: 70 (70% semantic, 30% BM25)
+	SemanticRatio int
 
 	// Limit is the total number of results to return
 	Limit int
@@ -27,7 +27,7 @@ type HybridSearchConfig struct {
 // DefaultHybridConfig returns sensible defaults for hybrid search
 func DefaultHybridConfig() *HybridSearchConfig {
 	return &HybridSearchConfig{
-		SemanticRatio: 0.7,
+		SemanticRatio: 70,
 		Limit:         10,
 	}
 }
@@ -44,11 +44,13 @@ func (ops *BackendToolOps) SearchHybrid(
 	}
 
 	// Calculate limits for each search method
-	semanticLimit := max(1, int(float64(config.Limit)*config.SemanticRatio))
+	// Convert percentage to ratio (0-100 -> 0.0-1.0)
+	semanticRatioFloat := float64(config.SemanticRatio) / 100.0
+	semanticLimit := max(1, int(float64(config.Limit)*semanticRatioFloat))
 	bm25Limit := max(1, config.Limit-semanticLimit)
 
 	logger.Debugf(
-		"Hybrid search: semantic_limit=%d, bm25_limit=%d, ratio=%.2f",
+		"Hybrid search: semantic_limit=%d, bm25_limit=%d, ratio=%d%%",
 		semanticLimit, bm25Limit, config.SemanticRatio,
 	)
 

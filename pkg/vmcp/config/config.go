@@ -755,13 +755,13 @@ type OptimizerConfig struct {
 	FTSDBPath string `json:"ftsDBPath,omitempty" yaml:"ftsDBPath,omitempty"`
 
 	// HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
-	// Value range: 0.0 (all BM25) to 1.0 (all semantic).
-	// Default: 0.7 (70% semantic, 30% BM25)
+	// Value range: 0 (all BM25) to 100 (all semantic), representing percentage.
+	// Default: 70 (70% semantic, 30% BM25)
 	// Only used when FTSDBPath is set.
 	// +optional
-	// +kubebuilder:validation:Minimum=0.0
-	// +kubebuilder:validation:Maximum=1.0
-	HybridSearchRatio *float64 `json:"hybridSearchRatio,omitempty" yaml:"hybridSearchRatio,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	HybridSearchRatio *int `json:"hybridSearchRatio,omitempty" yaml:"hybridSearchRatio,omitempty"`
 
 	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
 	// This is an alternative to EmbeddingURL for in-cluster deployments.

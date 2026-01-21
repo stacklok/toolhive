@@ -133,7 +133,7 @@ func TestFindTool_StringMatching(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.5, // 50% semantic, 50% BM25 for better string matching
+		HybridSearchRatio: 50, // 50% semantic, 50% BM25 for better string matching
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -410,7 +410,7 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.3, // 30% semantic, 70% BM25 for better exact string matching
+		HybridSearchRatio: 30, // 30% semantic, 70% BM25 for better exact string matching
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -591,7 +591,7 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 			Model:       embeddings.DefaultModelAllMiniLM,
 			Dimension:   384,
 		},
-		HybridSearchRatio: 0.3, // Favor BM25 for string matching
+		HybridSearchRatio: 30, // Favor BM25 for string matching
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

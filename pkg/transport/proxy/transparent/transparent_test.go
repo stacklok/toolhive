@@ -1094,7 +1094,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 		endpointPrefix    string
 		trustProxyHeaders bool
 		requestPath       string
-		forwardedPrefix   string
 		expectedPath      string
 		shouldStrip       bool
 	}{
@@ -1103,7 +1102,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			endpointPrefix:    "/abc",
 			trustProxyHeaders: false,
 			requestPath:       "/abc/sse",
-			forwardedPrefix:   "",
 			expectedPath:      "/sse",
 			shouldStrip:       true,
 		},
@@ -1112,7 +1110,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			endpointPrefix:    "/abc",
 			trustProxyHeaders: true,
 			requestPath:       "/sse",
-			forwardedPrefix:   "/abc",
 			expectedPath:      "/sse",
 			shouldStrip:       false,
 		},
@@ -1121,7 +1118,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			endpointPrefix:    "/abc",
 			trustProxyHeaders: false,
 			requestPath:       "/abc/abc/sse",
-			forwardedPrefix:   "",
 			expectedPath:      "/abc/sse",
 			shouldStrip:       true,
 		},
@@ -1130,7 +1126,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			endpointPrefix:    "/abc",
 			trustProxyHeaders: false,
 			requestPath:       "/sse/abc/test",
-			forwardedPrefix:   "",
 			expectedPath:      "/sse/abc/test",
 			shouldStrip:       false,
 		},
@@ -1139,7 +1134,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			endpointPrefix:    "",
 			trustProxyHeaders: false,
 			requestPath:       "/abc/sse",
-			forwardedPrefix:   "",
 			expectedPath:      "/abc/sse",
 			shouldStrip:       false,
 		},
@@ -1183,11 +1177,6 @@ func TestPrefixStrippingInDirector(t *testing.T) {
 			reqURL := "http://" + proxyAddr + tt.requestPath
 			req, err := http.NewRequest("GET", reqURL, nil)
 			require.NoError(t, err)
-
-			// Set forwarded prefix header if needed
-			if tt.forwardedPrefix != "" {
-				req.Header.Set("X-Forwarded-Prefix", tt.forwardedPrefix)
-			}
 
 			// Make request through proxy
 			client := &http.Client{Timeout: 2 * time.Second}

@@ -496,9 +496,6 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 			if strippedPath != originalPath {
 				logger.Debugf("Stripped endpoint prefix %q from path: %q -> %q (mcp-server-path: %q)",
 					p.endpointPrefix, originalPath, strippedPath, p.mcpServerBasePath)
-			} else if normalizePath(p.endpointPrefix) == normalizePath(p.mcpServerBasePath) {
-				logger.Debugf("Skipping prefix strip for path %q (prefix %q matches MCP server path %q)",
-					req.URL.Path, p.endpointPrefix, p.mcpServerBasePath)
 			}
 		}
 

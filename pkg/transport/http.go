@@ -272,7 +272,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			mcpServerBasePath = "/"
 		}
 	} else {
-		// For local containers, use GetMCPServerBasePath (single source of truth)
+		// For local containers, use GetMCPServerBasePath
 		mcpServerBasePath = GetMCPServerBasePath(t.transportType)
 	}
 

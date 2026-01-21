@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package vmcpconfig provides conversion logic from VirtualMCPServer CRD to vmcp Config
 package vmcpconfig
 

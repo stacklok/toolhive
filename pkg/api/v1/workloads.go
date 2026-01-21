@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -247,6 +250,20 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
+	}
+
+	// Validate that image or URL is provided
+	if req.Image == "" && req.URL == "" {
+		return thverrors.WithCode(
+			fmt.Errorf("either 'image' or 'url' field is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Validate workload name (strict validation, no sanitization)
+	// The JSON decoder sets req.Name to "" by default, so we need to validate it
+	if err := wt.ValidateWorkloadName(req.Name); err != nil {
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
 	// check if the workload already exists

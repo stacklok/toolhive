@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runtime provides interfaces and types for container runtimes,
 // including creating, starting, stopping, and monitoring containers.
 package runtime

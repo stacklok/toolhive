@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package e2e provides end-to-end testing utilities for ToolHive HTTP API.
 package e2e
 

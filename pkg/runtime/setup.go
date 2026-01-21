@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runtime provides workload deployment setup functionality
 // that was previously part of the transport package.
 package runtime

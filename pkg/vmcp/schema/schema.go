@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package schema provides typed JSON Schema structures for type coercion and defaults.
 //
 // This package wraps raw JSON Schema maps (map[string]any) into typed structures

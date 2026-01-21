@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package templates provides utilities for generating Dockerfile templates
 // based on different transport types (uvx, npx).
 package templates

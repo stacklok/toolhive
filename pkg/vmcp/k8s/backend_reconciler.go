@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package k8s provides Kubernetes integration for Virtual MCP Server dynamic mode.
 package k8s
 

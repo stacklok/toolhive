@@ -40,6 +40,15 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Update MCP Inspector source image for thv inspector command",
+      "managerFilePatterns": ["cmd/thv/app/inspector/version.go"],
+      "matchStrings": [
+        "var Image = \"(?<depName>[^:]+):(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "Update Docker base images in template files",
       "managerFilePatterns": ["pkg/container/templates/*.tmpl"],
       "matchStrings": [

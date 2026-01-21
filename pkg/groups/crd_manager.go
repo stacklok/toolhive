@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package groups provides functionality for managing logical groupings of MCP servers.
 // This file contains the CRD-based implementation for Kubernetes environments.
 package groups

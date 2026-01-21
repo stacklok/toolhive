@@ -1582,7 +1582,7 @@ components:
             TODO Review environment variable for this
           type: string
         provider_type:
-          description: Type of the secrets provider (encrypted, 1password, none)
+          description: Type of the secrets provider (encrypted, 1password, environment)
           type: string
       type: object
     v1.setupSecretsResponse:

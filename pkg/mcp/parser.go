@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package mcp provides MCP (Model Context Protocol) parsing utilities and middleware.
 package mcp
 

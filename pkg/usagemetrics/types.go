@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package usagemetrics provides internal usage metrics for tracking usage and adoption.
 package usagemetrics
 

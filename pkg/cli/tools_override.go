@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cli provides utility functions specific to the
 // CLI that we want to test more thoroughly.
 package cli

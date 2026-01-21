@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package git provides Git repository operations for MCPRegistry sources.
 //
 // This package implements a thin wrapper around the go-git library to enable

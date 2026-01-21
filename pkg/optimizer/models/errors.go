@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package models defines domain models for the optimizer.
 // It includes structures for MCP servers, tools, and related metadata.
 package models

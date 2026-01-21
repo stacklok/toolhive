@@ -677,7 +677,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
-				"toolhive-transport": "sse", // Should be "sse" not "stdio"
+				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
 		},
@@ -694,7 +694,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
-				"toolhive-transport": "streamable-http", // Should be "streamable-http" not "stdio"
+				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
 		},
@@ -1565,7 +1565,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 
 		// Extract environment variables (simulating proxy runner extraction)
 		var extractedEnvVars []string
-		if config != nil && config.TelemetryConfig != nil {
+		if config.TelemetryConfig != nil {
 			extractedEnvVars = config.TelemetryConfig.EnvironmentVariables
 		}
 
@@ -1582,7 +1582,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 		// Test with nil config (should not panic)
 		var nilConfig *RunConfig
 		var extractedEnvVars []string
-		if nilConfig != nil && nilConfig.TelemetryConfig != nil {
+		if nilConfig != nil {
 			extractedEnvVars = nilConfig.TelemetryConfig.EnvironmentVariables
 		}
 		assert.Nil(t, extractedEnvVars, "Should handle nil config gracefully")
@@ -1592,7 +1592,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 			Transport: types.TransportTypeStdio,
 		}
 		var extractedFromNilTelemetry []string
-		if configWithNilTelemetry != nil && configWithNilTelemetry.TelemetryConfig != nil {
+		if configWithNilTelemetry.TelemetryConfig != nil {
 			extractedFromNilTelemetry = configWithNilTelemetry.TelemetryConfig.EnvironmentVariables
 		}
 		assert.Nil(t, extractedFromNilTelemetry, "Should handle nil telemetry config gracefully")

@@ -45,15 +45,9 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 			result[key] = item.Data
 			imageIndex++
 
-		case "audio":
-			// Audio content uses the same structure as images (Data + MimeType)
-			// Future enhancement: add dedicated audio_ key prefix
-			key := fmt.Sprintf("image_%d", imageIndex)
-			result[key] = item.Data
-			imageIndex++
-
+			// Audio content is not currently supported
 			// "resource" type is not converted to map - handled separately
-			// Unknown types are ignored - warnings logged at conversion boundaries
+			// Unknown types (including "audio") are ignored - warnings logged at conversion boundaries
 		}
 	}
 

@@ -272,6 +272,33 @@ go test -cover ./pkg/vmcp/...
 | Use Case | Development, testing | Production, multi-server deployments |
 | Middleware | Per-server | Global + per-backend overrides |
 
+## Known Limitations
+
+### Request Metadata Not Forwarded to Backends
+
+Per the [MCP specification](https://modelcontextprotocol.io/specification), clients can include `_meta.progressToken` in requests to receive progress notifications. Currently, vMCP preserves `_meta` from backend **responses** but does **not** forward `_meta` from client **requests** to backends.
+
+**Impact**: Progress notifications cannot correlate with client requests since backends do not receive the `progressToken`.
+
+**MCP Spec Evidence**:
+- Schema defines `progressToken` in `CallToolRequestParams._meta`
+- Spec states: "When a party wants to receive progress updates for a request, it includes a progressToken in the request metadata."
+- Proxies should "preserve the JSON-RPC message format" per Custom Transports section
+
+**Future Enhancement**: Consider adding request `_meta` forwarding by either:
+- Modifying `BackendClient` interface to accept request metadata
+- Extracting `_meta` from context similar to identity propagation
+
+### Audio Content Not Supported
+
+Audio content type from MCP responses is not currently supported and will be silently ignored in template variable substitution.
+
+**Impact**: Minimal - audio content in MCP tools is rare. Audio data in tool responses will not be available for composite tool workflows.
+
+**Code Reference**: `pkg/vmcp/conversion/content.go` (ContentArrayToMap function)
+
+**Future Enhancement**: Add support for audio content with dedicated `audio_N` key prefix.
+
 ## Contributing
 
 vmcp is part of the ToolHive project. Please see the main [CONTRIBUTING.md](../../CONTRIBUTING.md) for contribution guidelines.

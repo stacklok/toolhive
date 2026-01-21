@@ -2129,3 +2129,149 @@ func TestEnsureRBACResources(t *testing.T) {
 		assert.Nil(t, sa.Labels)
 	})
 }
+
+func TestGetAllRBACResources(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+
+	t.Run("successfully retrieves all RBAC resources", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		// Create test resources
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+		}
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"get"},
+				},
+			},
+		}
+		rb := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: RBACAPIGroup,
+				Kind:     "Role",
+				Name:     "test-sa",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      "test-sa",
+					Namespace: "default",
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(sa, role, rb).
+			Build()
+
+		rbacClient := NewClient(fakeClient, scheme)
+
+		// Get all resources
+		gotSA, gotRole, gotRB, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
+		require.NoError(t, err)
+
+		// Verify all resources were retrieved
+		assert.Equal(t, "test-sa", gotSA.Name)
+		assert.Equal(t, "default", gotSA.Namespace)
+		assert.Equal(t, "test-sa", gotRole.Name)
+		assert.Equal(t, "default", gotRole.Namespace)
+		assert.Equal(t, role.Rules, gotRole.Rules)
+		assert.Equal(t, "test-sa", gotRB.Name)
+		assert.Equal(t, "default", gotRB.Namespace)
+		assert.Equal(t, rb.RoleRef, gotRB.RoleRef)
+	})
+
+	t.Run("returns error when ServiceAccount not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		rbacClient := NewClient(fakeClient, scheme)
+
+		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "nonexistent", "default")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "service account")
+	})
+
+	t.Run("returns error when Role not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		// Only create ServiceAccount
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(sa).
+			Build()
+
+		rbacClient := NewClient(fakeClient, scheme)
+
+		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "role")
+	})
+
+	t.Run("returns error when RoleBinding not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		// Create ServiceAccount and Role but not RoleBinding
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+		}
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa",
+				Namespace: "default",
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(sa, role).
+			Build()
+
+		rbacClient := NewClient(fakeClient, scheme)
+
+		_, _, _, err := rbacClient.GetAllRBACResources(ctx, "test-sa", "default")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "role binding")
+	})
+}

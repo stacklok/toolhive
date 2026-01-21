@@ -15,6 +15,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
+const (
+	// RBACAPIGroup is the Kubernetes API group for RBAC resources
+	RBACAPIGroup = "rbac.authorization.k8s.io"
+)
+
 // OperationResult is an alias for controllerutil.OperationResult for convenience.
 type OperationResult = controllerutil.OperationResult
 
@@ -316,6 +321,12 @@ type EnsureRBACResourcesParams struct {
 // This is a convenience method that consolidates the common pattern of creating
 // RBAC resources for a controller. It returns an error if any operation fails.
 // Callers should return errors to let the controller work queue handle retries.
+//
+// Non-atomic behavior: Resource creation is sequential and non-atomic. If a later
+// resource fails, earlier resources will remain. This is acceptable because:
+//   - Controller reconciliation will retry and complete the setup
+//   - All resources have owner references for automatic cleanup
+//   - Partial state is temporary and self-healing via reconciliation
 func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResourcesParams) error {
 	// Ensure ServiceAccount
 	serviceAccount := &corev1.ServiceAccount{
@@ -350,7 +361,7 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 			Labels:    params.Labels,
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
+			APIGroup: RBACAPIGroup,
 			Kind:     "Role",
 			Name:     params.Name,
 		},
@@ -367,4 +378,39 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 	}
 
 	return nil
+}
+
+// GetAllRBACResources retrieves all RBAC resources (ServiceAccount, Role, RoleBinding)
+// with the given name and namespace. This is useful for debugging, status reporting,
+// or verification of RBAC resource state.
+//
+// If any resource is not found, it returns an error indicating which resource is missing.
+// If all resources exist, they are returned in order: ServiceAccount, Role, RoleBinding.
+func (c *Client) GetAllRBACResources(
+	ctx context.Context,
+	name, namespace string,
+) (*corev1.ServiceAccount, *rbacv1.Role, *rbacv1.RoleBinding, error) {
+	// Get ServiceAccount
+	sa, err := c.GetServiceAccount(ctx, name, namespace)
+	if err != nil {
+		return nil, nil, nil, err // error already wrapped by GetServiceAccount
+	}
+
+	// Get Role
+	role := &rbacv1.Role{}
+	roleKey := client.ObjectKey{Name: name, Namespace: namespace}
+	if err := c.client.Get(ctx, roleKey, role); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get role %s in namespace %s: %w",
+			name, namespace, err)
+	}
+
+	// Get RoleBinding
+	rb := &rbacv1.RoleBinding{}
+	rbKey := client.ObjectKey{Name: name, Namespace: namespace}
+	if err := c.client.Get(ctx, rbKey, rb); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get role binding %s in namespace %s: %w",
+			name, namespace, err)
+	}
+
+	return sa, role, rb, nil
 }

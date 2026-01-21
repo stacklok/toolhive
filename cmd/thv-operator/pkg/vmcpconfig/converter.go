@@ -137,9 +137,7 @@ func (c *Converter) Convert(
 	config.Telemetry = spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 
 	// Convert audit config
-	if err := c.convertAuditConfig(config, vmcp); err != nil {
-		return nil, err
-	}
+	c.convertAuditConfig(config, vmcp)
 
 	// Convert optimizer config - resolve embeddingService to embeddingURL if needed
 	if err := c.convertOptimizerConfig(ctx, config, vmcp); err != nil {
@@ -153,7 +151,7 @@ func (c *Converter) Convert(
 }
 
 // convertAuditConfig converts audit configuration from CRD to vmcp config.
-func (c *Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alpha1.VirtualMCPServer) error {
+func (*Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alpha1.VirtualMCPServer) {
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
 	}
@@ -161,8 +159,6 @@ func (c *Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alp
 	if config.Audit != nil && config.Audit.Component == "" {
 		config.Audit.Component = vmcp.Name
 	}
-
-	return nil
 }
 
 // convertOptimizerConfig converts optimizer configuration from CRD to vmcp config,

@@ -55,10 +55,10 @@ Note: The "thv secret setup" command is recommended for interactive configuratio
 Use this command to set the secrets provider directly without interactive prompts,
 making it suitable for scripted deployments and automation.
 
-Valid secrets providers:
-  - encrypted: Full read-write secrets provider using AES-256-GCM encryption
-  - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
-  - none: Disables secrets functionality`,
+		Valid secrets providers:
+		  - encrypted: Full read-write secrets provider using AES-256-GCM encryption
+		  - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
+		  - environment: Read-only secrets provider from TOOLHIVE_SECRET_* env vars`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider := args[0]
@@ -77,13 +77,13 @@ This command guides you through selecting and configuring a secrets provider
 for storing and retrieving secrets. The setup process validates your
 configuration and ensures the selected provider initializes properly.
 
-Available providers:
-  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS keyring
-  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN environment variable)
-  - %s: Disables secrets functionality
+			Available providers:
+			  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS keyring
+			  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN environment variable)
+			  - %s: Read-only access to secrets from TOOLHIVE_SECRET_* env vars
 
 Run this command before using any other secrets functionality.`,
-			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)), //nolint:gofmt,gci
+			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.EnvironmentType)), //nolint:gofmt,gci
 		Args: cobra.NoArgs,
 		RunE: runSecretsSetup,
 	}
@@ -384,13 +384,13 @@ ToolHive Secrets Setup
 Please select a secrets provider:
   %s - Store secrets in an encrypted file (full read/write)
   %s - Use 1Password for secrets (read-only, requires service account)
-  %s - Disable secrets functionality
-`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+  %s - Read secrets from environment variables
+`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.EnvironmentType))
 
 	var providerType secrets.ProviderType
 	for {
 		fmt.Printf("\nEnter provider (%s/%s/%s): ",
-			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.EnvironmentType))
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read input: %w", err)
@@ -402,11 +402,11 @@ Please select a secrets provider:
 			providerType = secrets.EncryptedType
 		case string(secrets.OnePasswordType):
 			providerType = secrets.OnePasswordType
-		case string(secrets.NoneType):
-			providerType = secrets.NoneType
+		case string(secrets.EnvironmentType):
+			providerType = secrets.EnvironmentType
 		default:
 			fmt.Printf("Invalid provider. Please enter '%s', '%s', or '%s'.\n",
-				string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+				string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.EnvironmentType))
 			continue
 		}
 		break
@@ -429,14 +429,10 @@ To use 1Password as your secrets provider, you need to:
 3. Set the OP_SERVICE_ACCOUNT_TOKEN environment variable
 
 For more information, visit: https://developer.1password.com/docs/service-accounts/`)
-	case secrets.NoneType:
-		fmt.Println(`Setting up none secrets provider...
-Secrets functionality will be disabled.
-No secrets will be stored or retrieved.`)
 	case secrets.EnvironmentType:
 		fmt.Println(`Setting up environment variable secrets provider...
-Secrets will be read from environment variables with the TOOLHIVE_SECRET_ prefix.
-This provider is read-only and suitable for CI/CD and containerized environments.`)
+	Secrets will be read from environment variables with the TOOLHIVE_SECRET_ prefix.
+	This provider is read-only and suitable for CI/CD and containerized environments.`)
 	}
 
 	// SetSecretsProvider will handle validation and configuration

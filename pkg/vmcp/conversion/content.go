@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package conversion provides utilities for converting between MCP SDK types and vmcp wrapper types.
 // This package centralizes conversion logic to ensure consistency and eliminate duplication.
 package conversion

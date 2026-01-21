@@ -543,9 +543,10 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
-									Name:  embeddingContainerName,
-									Image: "image:v1",
-									Args:  []string{"--model-id", "model1", "--port", "8080"},
+									Name:            embeddingContainerName,
+									Image:           "image:v1",
+									ImagePullPolicy: corev1.PullIfNotPresent,
+									Args:            []string{"--model-id", "model1", "--port", "8080"},
 									Env: []corev1.EnvVar{
 										{Name: "MODEL_ID", Value: "model1"},
 									},

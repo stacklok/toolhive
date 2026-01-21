@@ -1014,63 +1014,75 @@ func (*EmbeddingServerReconciler) resourceOverridesChanged(
 	statefulSet *appsv1.StatefulSet,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {
-	// Check StatefulSet annotations
-	expectedAnnotations := make(map[string]string)
-	expectedLabels := make(map[string]string)
-
-	if embedding.Spec.ResourceOverrides != nil && embedding.Spec.ResourceOverrides.Deployment != nil {
-		if embedding.Spec.ResourceOverrides.Deployment.Annotations != nil {
-			maps.Copy(expectedAnnotations, embedding.Spec.ResourceOverrides.Deployment.Annotations)
-		}
-		if embedding.Spec.ResourceOverrides.Deployment.Labels != nil {
-			maps.Copy(expectedLabels, embedding.Spec.ResourceOverrides.Deployment.Labels)
-		}
+	if !checkDeploymentMetadata(statefulSet, embedding) {
+		return true
 	}
 
-	// Check if expected annotations are present in statefulset
-	for key, value := range expectedAnnotations {
-		if statefulSet.Annotations[key] != value {
-			return true
-		}
-	}
-
-	// Check if expected labels are present in statefulset
-	for key, value := range expectedLabels {
-		if statefulSet.Labels[key] != value {
-			return true
-		}
-	}
-
-	// Check pod template annotations and labels
-	expectedPodAnnotations := make(map[string]string)
-	expectedPodLabels := make(map[string]string)
-
-	if embedding.Spec.ResourceOverrides != nil &&
-		embedding.Spec.ResourceOverrides.Deployment != nil &&
-		embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides != nil {
-		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations != nil {
-			maps.Copy(expectedPodAnnotations, embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations)
-		}
-		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels != nil {
-			maps.Copy(expectedPodLabels, embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels)
-		}
-	}
-
-	// Check if expected pod template annotations are present
-	for key, value := range expectedPodAnnotations {
-		if statefulSet.Spec.Template.Annotations[key] != value {
-			return true
-		}
-	}
-
-	// Check if expected pod template labels are present
-	for key, value := range expectedPodLabels {
-		if statefulSet.Spec.Template.Labels[key] != value {
-			return true
-		}
+	if !checkPodTemplateMetadata(statefulSet, embedding) {
+		return true
 	}
 
 	return false
+}
+
+// checkDeploymentMetadata verifies StatefulSet-level annotations and labels match expectations
+func checkDeploymentMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
+	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.Deployment == nil {
+		return true
+	}
+
+	deployment := embedding.Spec.ResourceOverrides.Deployment
+
+	// Check annotations
+	if deployment.Annotations != nil {
+		for key, value := range deployment.Annotations {
+			if statefulSet.Annotations[key] != value {
+				return false
+			}
+		}
+	}
+
+	// Check labels
+	if deployment.Labels != nil {
+		for key, value := range deployment.Labels {
+			if statefulSet.Labels[key] != value {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// checkPodTemplateMetadata verifies pod template annotations and labels match expectations
+func checkPodTemplateMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
+	if embedding.Spec.ResourceOverrides == nil ||
+		embedding.Spec.ResourceOverrides.Deployment == nil ||
+		embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides == nil {
+		return true
+	}
+
+	podTemplateOverrides := embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides
+
+	// Check pod template annotations
+	if podTemplateOverrides.Annotations != nil {
+		for key, value := range podTemplateOverrides.Annotations {
+			if statefulSet.Spec.Template.Annotations[key] != value {
+				return false
+			}
+		}
+	}
+
+	// Check pod template labels
+	if podTemplateOverrides.Labels != nil {
+		for key, value := range podTemplateOverrides.Labels {
+			if statefulSet.Spec.Template.Labels[key] != value {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // updateEmbeddingServerStatus updates the status based on statefulset state

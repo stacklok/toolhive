@@ -272,7 +272,7 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 
 			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
-					Name: "optim.find_tool",
+					Name: "optim_find_tool",
 					Arguments: map[string]any{
 						"tool_description": tc.query,
 						"tool_keywords":    tc.keywords,
@@ -472,7 +472,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	// Test semantic search
 	requestSemantic := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": query,
 				"tool_keywords":    "",
@@ -489,7 +489,7 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	// Test keyword search
 	requestKeyword := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": query,
 				"tool_keywords":    "",
@@ -647,7 +647,7 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 
 	request := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "optim.find_tool",
+			Name: "optim_find_tool",
 			Arguments: map[string]any{
 				"tool_description": query,
 				"tool_keywords":    "",

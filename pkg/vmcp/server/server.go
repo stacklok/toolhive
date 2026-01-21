@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -123,7 +124,7 @@ type Config struct {
 	Watcher Watcher
 
 	// OptimizerConfig is the optional optimizer configuration.
-	// If nil or Enabled=false, optimizer tools (optim.find_tool, optim.call_tool) are not available.
+	// If nil or Enabled=false, optimizer tools (optim_find_tool, optim_call_tool) are not available.
 	OptimizerConfig *OptimizerConfig
 }
 
@@ -222,7 +223,7 @@ type Server struct {
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
 
-	// optimizerIntegration provides semantic tool discovery via optim.find_tool and optim.call_tool.
+	// optimizerIntegration provides semantic tool discovery via optim_find_tool and optim_call_tool.
 	// Nil if optimizer is disabled.
 	optimizerIntegration OptimizerIntegration
 
@@ -246,8 +247,19 @@ type OptimizerIntegration interface {
 	// OnRegisterSession generates embeddings for session tools
 	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
 
-	// RegisterTools adds optim.find_tool and optim.call_tool to the session
+	// RegisterGlobalTools registers optim_find_tool and optim_call_tool globally (available to all sessions)
+	// This should be called during server initialization, before any sessions are created.
+	RegisterGlobalTools() error
+
+	// RegisterTools adds optim_find_tool and optim_call_tool to the session
+	// Even though tools are registered globally via RegisterGlobalTools(),
+	// with WithToolCapabilities(false), we also need to register them per-session
+	// to ensure they appear in list_tools responses.
 	RegisterTools(ctx context.Context, session server.ClientSession) error
+
+	// GetOptimizerToolDefinitions returns the tool definitions for optimizer tools without handlers.
+	// This is useful for adding tools to capabilities before session registration.
+	GetOptimizerToolDefinitions() []mcp.Tool
 
 	// Close cleans up optimizer resources
 	Close() error
@@ -428,6 +440,13 @@ func New(
 			}
 			logger.Info("Optimizer integration initialized successfully")
 
+			// Register optimizer tools globally (available to all sessions immediately)
+			// This ensures tools are available when clients call list_tools, avoiding timing issues
+			// where list_tools is called before per-session registration completes
+			if err := optimizerInteg.RegisterGlobalTools(); err != nil {
+				return nil, fmt.Errorf("failed to register optimizer tools globally: %w", err)
+			}
+
 			// Ingest discovered backends into optimizer database (for semantic search)
 			// Note: Backends are already discovered and registered with vMCP regardless of optimizer
 			// This step indexes them in the optimizer database for semantic search
@@ -478,6 +497,21 @@ func New(
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
 		sessionID := session.SessionID()
 		logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
+
+		// CRITICAL: Register optimizer tools FIRST, before any other processing
+		// This ensures tools are available immediately when clients call list_tools
+		// during or immediately after initialize, before other hooks complete
+		if srv.optimizerIntegration != nil {
+			if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
+				logger.Errorw("failed to register optimizer tools",
+					"error", err,
+					"session_id", sessionID)
+				// Don't fail session initialization - continue without optimizer tools
+			} else {
+				logger.Debugw("optimizer tools registered for session (early registration)",
+					"session_id", sessionID)
+			}
+		}
 
 		// Get capabilities from context (discovered by middleware)
 		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
@@ -536,7 +570,7 @@ func New(
 			"prompt_count", len(caps.RoutingTable.Prompts))
 
 		// When optimizer is enabled, we should NOT inject backend tools directly.
-		// Instead, only optimizer tools (optim.find_tool, optim.call_tool) will be exposed.
+		// Instead, only optimizer tools (optim_find_tool, optim_call_tool) will be exposed.
 		// Backend tools are still discovered and stored for optimizer ingestion,
 		// but not exposed directly to clients.
 		if srv.optimizerIntegration == nil {
@@ -553,17 +587,8 @@ func New(
 				"tool_count", len(caps.Tools),
 				"resource_count", len(caps.Resources))
 		} else {
-			// Optimizer is enabled - register optimizer tools FIRST so they're available immediately
-			// Backend tools will be accessible via optim.find_tool and optim.call_tool
-			if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
-				logger.Errorw("failed to register optimizer tools",
-					"error", err,
-					"session_id", sessionID)
-				// Don't fail session initialization - continue without optimizer tools
-			} else {
-				logger.Infow("optimizer tools registered",
-					"session_id", sessionID)
-			}
+			// Optimizer tools already registered above (early registration)
+			// Backend tools will be accessible via optim_find_tool and optim_call_tool
 
 			// Inject resources (but not backend tools)
 			if len(caps.Resources) > 0 {

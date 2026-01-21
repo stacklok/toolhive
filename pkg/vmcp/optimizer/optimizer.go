@@ -1,8 +1,8 @@
 // Package optimizer provides vMCP integration for semantic tool discovery.
 //
 // This package implements the RFC-0022 optimizer integration, exposing:
-// - optim.find_tool: Semantic/keyword-based tool discovery
-// - optim.call_tool: Dynamic tool invocation across backends
+// - optim_find_tool: Semantic/keyword-based tool discovery
+// - optim_call_tool: Dynamic tool invocation across backends
 //
 // Architecture:
 //   - Embeddings are generated during session initialization (OnRegisterSession hook)
@@ -110,7 +110,7 @@ func NewIntegration(
 // This hook:
 // 1. Extracts backend tools from discovered capabilities
 // 2. Generates embeddings for all tools (parallel per-backend)
-// 3. Registers optim.find_tool and optim.call_tool as session tools
+	// 3. Registers optim_find_tool and optim_call_tool as session tools
 func (o *OptimizerIntegration) OnRegisterSession(
 	_ context.Context,
 	session server.ClientSession,
@@ -140,7 +140,76 @@ func (o *OptimizerIntegration) OnRegisterSession(
 	return nil
 }
 
+// RegisterGlobalTools registers optimizer tools globally (available to all sessions).
+// This should be called during server initialization, before any sessions are created.
+// Registering tools globally ensures they are immediately available when clients connect,
+// avoiding timing issues where list_tools is called before per-session registration completes.
+func (o *OptimizerIntegration) RegisterGlobalTools() error {
+	if o == nil {
+		return nil // Optimizer not enabled
+	}
+
+	// Define optimizer tools with handlers
+	findToolHandler := o.createFindToolHandler()
+	callToolHandler := o.CreateCallToolHandler()
+
+	// Register optim_find_tool globally
+	o.mcpServer.AddTool(mcp.Tool{
+		Name:        "optim_find_tool",
+		Description: "Semantic search across all backend tools using natural language description and optional keywords",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"tool_description": map[string]any{
+					"type":        "string",
+					"description": "Natural language description of the tool you're looking for",
+				},
+				"tool_keywords": map[string]any{
+					"type":        "string",
+					"description": "Optional space-separated keywords for keyword-based search",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of tools to return (default: 10)",
+					"default":     10,
+				},
+			},
+			Required: []string{"tool_description"},
+		},
+	}, findToolHandler)
+
+	// Register optim_call_tool globally
+	o.mcpServer.AddTool(mcp.Tool		{
+			Name:        "optim_call_tool",
+		Description: "Dynamically invoke any tool on any backend using the backend_id from find_tool",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"backend_id": map[string]any{
+					"type":        "string",
+					"description": "Backend ID from find_tool results",
+				},
+				"tool_name": map[string]any{
+					"type":        "string",
+					"description": "Tool name to invoke",
+				},
+				"parameters": map[string]any{
+					"type":        "object",
+					"description": "Parameters to pass to the tool",
+				},
+			},
+			Required: []string{"backend_id", "tool_name", "parameters"},
+		},
+	}, callToolHandler)
+
+	logger.Info("Optimizer tools registered globally (optim_find_tool, optim_call_tool)")
+	return nil
+}
+
 // RegisterTools adds optimizer tools to the session.
+// Even though tools are registered globally via RegisterGlobalTools(),
+// with WithToolCapabilities(false), we also need to register them per-session
+// to ensure they appear in list_tools responses.
 // This should be called after OnRegisterSession completes.
 func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.ClientSession) error {
 	if o == nil {
@@ -149,11 +218,11 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 
 	sessionID := session.SessionID()
 
-	// Define optimizer tools with handlers
+	// Define optimizer tools with handlers (same as global registration)
 	optimizerTools := []server.ServerTool{
 		{
 			Tool: mcp.Tool{
-				Name:        "optim.find_tool",
+				Name:        "optim_find_tool",
 				Description: "Semantic search across all backend tools using natural language description and optional keywords",
 				InputSchema: mcp.ToolInputSchema{
 					Type: "object",
@@ -179,7 +248,7 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 		},
 		{
 			Tool: mcp.Tool{
-				Name:        "optim.call_tool",
+				Name:        "optim_call_tool",
 				Description: "Dynamically invoke any tool on any backend using the backend_id from find_tool",
 				InputSchema: mcp.ToolInputSchema{
 					Type: "object",
@@ -204,16 +273,71 @@ func (o *OptimizerIntegration) RegisterTools(_ context.Context, session server.C
 		},
 	}
 
-	// Add tools to session
+	// Add tools to session (required when WithToolCapabilities(false))
 	if err := o.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
 		return fmt.Errorf("failed to add optimizer tools to session: %w", err)
 	}
 
-	logger.Debugw("Optimizer tools registered", "session_id", sessionID)
+	logger.Debugw("Optimizer tools registered for session", "session_id", sessionID)
 	return nil
 }
 
-// CreateFindToolHandler creates the handler for optim.find_tool
+// GetOptimizerToolDefinitions returns the tool definitions for optimizer tools
+// without handlers. This is useful for adding tools to capabilities before session registration.
+func (o *OptimizerIntegration) GetOptimizerToolDefinitions() []mcp.Tool {
+	if o == nil {
+		return nil
+	}
+	return []mcp.Tool{
+		{
+			Name:        "optim_find_tool",
+			Description: "Semantic search across all backend tools using natural language description and optional keywords",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"tool_description": map[string]any{
+						"type":        "string",
+						"description": "Natural language description of the tool you're looking for",
+					},
+					"tool_keywords": map[string]any{
+						"type":        "string",
+						"description": "Optional space-separated keywords for keyword-based search",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of tools to return (default: 10)",
+						"default":     10,
+					},
+				},
+				Required: []string{"tool_description"},
+			},
+		},
+		{
+			Name:        "optim_call_tool",
+			Description: "Dynamically invoke any tool on any backend using the backend_id from find_tool",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"backend_id": map[string]any{
+						"type":        "string",
+						"description": "Backend ID from find_tool results",
+					},
+					"tool_name": map[string]any{
+						"type":        "string",
+						"description": "Tool name to invoke",
+					},
+					"parameters": map[string]any{
+						"type":        "object",
+						"description": "Parameters to pass to the tool",
+					},
+				},
+				Required: []string{"backend_id", "tool_name", "parameters"},
+			},
+		},
+	}
+}
+
+// CreateFindToolHandler creates the handler for optim_find_tool
 // Exported for testing purposes
 func (o *OptimizerIntegration) CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return o.createFindToolHandler()
@@ -335,10 +459,10 @@ func convertSearchResultsToResponse(
 	return responseTools, totalReturnedTokens
 }
 
-// createFindToolHandler creates the handler for optim.find_tool
+// createFindToolHandler creates the handler for optim_find_tool
 func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		logger.Debugw("optim.find_tool called", "request", request)
+		logger.Debugw("optim_find_tool called", "request", request)
 
 		// Extract parameters from request arguments
 		args, ok := request.Params.Arguments.(map[string]any)
@@ -423,7 +547,7 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err3)), nil
 		}
 
-		logger.Infow("optim.find_tool completed",
+		logger.Infow("optim_find_tool completed",
 			"query", toolDescription,
 			"results_count", len(responseTools),
 			"tokens_saved", tokensSaved,
@@ -456,7 +580,7 @@ func (*OptimizerIntegration) recordTokenMetrics(
 
 	returnedCounter, err := meter.Int64Counter(
 		"toolhive_vmcp_optimizer_returned_tokens",
-		metric.WithDescription("Total tokens for tools returned by optim.find_tool"),
+		metric.WithDescription("Total tokens for tools returned by optim_find_tool"),
 	)
 	if err != nil {
 		logger.Debugw("Failed to create returned_tokens counter", "error", err)
@@ -465,7 +589,7 @@ func (*OptimizerIntegration) recordTokenMetrics(
 
 	savedCounter, err := meter.Int64Counter(
 		"toolhive_vmcp_optimizer_tokens_saved",
-		metric.WithDescription("Number of tokens saved by filtering tools with optim.find_tool"),
+		metric.WithDescription("Number of tokens saved by filtering tools with optim_find_tool"),
 	)
 	if err != nil {
 		logger.Debugw("Failed to create tokens_saved counter", "error", err)
@@ -499,16 +623,16 @@ func (*OptimizerIntegration) recordTokenMetrics(
 		"savings_percentage", savingsPercentage)
 }
 
-// CreateCallToolHandler creates the handler for optim.call_tool
+// CreateCallToolHandler creates the handler for optim_call_tool
 // Exported for testing purposes
 func (o *OptimizerIntegration) CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return o.createCallToolHandler()
 }
 
-// createCallToolHandler creates the handler for optim.call_tool
+// createCallToolHandler creates the handler for optim_call_tool
 func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		logger.Debugw("optim.call_tool called", "request", request)
+		logger.Debugw("optim_call_tool called", "request", request)
 
 		// Extract parameters from request arguments
 		args, ok := request.Params.Arguments.(map[string]any)
@@ -587,7 +711,7 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal result: %v", err)), nil
 		}
 
-		logger.Infow("optim.call_tool completed successfully",
+		logger.Infow("optim_call_tool completed successfully",
 			"backend_id", backendID,
 			"tool_name", toolName)
 

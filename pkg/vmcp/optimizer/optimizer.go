@@ -51,8 +51,8 @@ type Config struct {
 	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
 	FTSDBPath string
 
-	// HybridSearchRatio controls semantic vs BM25 mix (0.0-1.0, default: 0.7)
-	HybridSearchRatio float64
+	// HybridSearchRatio controls semantic vs BM25 mix (0-100 percentage, default: 70)
+	HybridSearchRatio int
 
 	// EmbeddingConfig configures the embedding backend (vLLM, Ollama, placeholder)
 	EmbeddingConfig *embeddings.Config

@@ -72,7 +72,7 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Optimizer: &vmcpconfig.OptimizerConfig{
-						// EmbeddingService is required but not used by DummyOptimizer
+						// EmbeddingService is required for optimizer configuration
 						EmbeddingService: "dummy-embedding-service",
 					},
 					// Define a composite tool that calls fetch twice

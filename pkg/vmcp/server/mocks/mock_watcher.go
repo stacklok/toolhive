@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	mcp "github.com/mark3labs/mcp-go/mcp"
 	server "github.com/mark3labs/mcp-go/server"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	aggregator "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -95,6 +96,20 @@ func (mr *MockOptimizerIntegrationMockRecorder) Close() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockOptimizerIntegration)(nil).Close))
 }
 
+// GetOptimizerToolDefinitions mocks base method.
+func (m *MockOptimizerIntegration) GetOptimizerToolDefinitions() []mcp.Tool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetOptimizerToolDefinitions")
+	ret0, _ := ret[0].([]mcp.Tool)
+	return ret0
+}
+
+// GetOptimizerToolDefinitions indicates an expected call of GetOptimizerToolDefinitions.
+func (mr *MockOptimizerIntegrationMockRecorder) GetOptimizerToolDefinitions() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOptimizerToolDefinitions", reflect.TypeOf((*MockOptimizerIntegration)(nil).GetOptimizerToolDefinitions))
+}
+
 // IngestInitialBackends mocks base method.
 func (m *MockOptimizerIntegration) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
 	m.ctrl.T.Helper()
@@ -149,18 +164,4 @@ func (m *MockOptimizerIntegration) RegisterTools(ctx context.Context, session se
 func (mr *MockOptimizerIntegrationMockRecorder) RegisterTools(ctx, session any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterTools", reflect.TypeOf((*MockOptimizerIntegration)(nil).RegisterTools), ctx, session)
-}
-
-// GetOptimizerToolDefinitions mocks base method.
-func (m *MockOptimizerIntegration) GetOptimizerToolDefinitions() []mcp.Tool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetOptimizerToolDefinitions")
-	ret0, _ := ret[0].([]mcp.Tool)
-	return ret0
-}
-
-// GetOptimizerToolDefinitions indicates an expected call of GetOptimizerToolDefinitions.
-func (mr *MockOptimizerIntegrationMockRecorder) GetOptimizerToolDefinitions() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOptimizerToolDefinitions", reflect.TypeOf((*MockOptimizerIntegration)(nil).GetOptimizerToolDefinitions))
 }

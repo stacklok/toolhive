@@ -136,6 +136,24 @@ func (c *Converter) Convert(
 	// are handled by kubebuilder annotations in pkg/telemetry/config.go and applied by the API server.
 	config.Telemetry = spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 
+	// Convert audit config
+	if err := c.convertAuditConfig(config, vmcp); err != nil {
+		return nil, err
+	}
+
+	// Convert optimizer config - resolve embeddingService to embeddingURL if needed
+	if err := c.convertOptimizerConfig(ctx, config, vmcp); err != nil {
+		return nil, err
+	}
+
+	// Apply operational defaults (fills missing values)
+	config.EnsureOperationalDefaults()
+
+	return config, nil
+}
+
+// convertAuditConfig converts audit configuration from CRD to vmcp config.
+func (c *Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alpha1.VirtualMCPServer) error {
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
 	}
@@ -144,28 +162,35 @@ func (c *Converter) Convert(
 		config.Audit.Component = vmcp.Name
 	}
 
-	// Convert optimizer config - resolve embeddingService to embeddingURL if needed
-	if vmcp.Spec.Config.Optimizer != nil {
-		optimizerConfig := vmcp.Spec.Config.Optimizer.DeepCopy()
+	return nil
+}
 
-		// If embeddingService is set, resolve it to embeddingURL
-		if optimizerConfig.EmbeddingService != "" && optimizerConfig.EmbeddingURL == "" {
-			embeddingURL, err := c.resolveEmbeddingService(ctx, vmcp.Namespace, optimizerConfig.EmbeddingService)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve embedding service %s: %w", optimizerConfig.EmbeddingService, err)
-			}
-			optimizerConfig.EmbeddingURL = embeddingURL
-			// Clear embeddingService since we've resolved it to URL
-			optimizerConfig.EmbeddingService = ""
-		}
-
-		config.Optimizer = optimizerConfig
+// convertOptimizerConfig converts optimizer configuration from CRD to vmcp config,
+// resolving embeddingService to embeddingURL if needed.
+func (c *Converter) convertOptimizerConfig(
+	ctx context.Context,
+	config *vmcpconfig.Config,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	if vmcp.Spec.Config.Optimizer == nil {
+		return nil
 	}
 
-	// Apply operational defaults (fills missing values)
-	config.EnsureOperationalDefaults()
+	optimizerConfig := vmcp.Spec.Config.Optimizer.DeepCopy()
 
-	return config, nil
+	// If embeddingService is set, resolve it to embeddingURL
+	if optimizerConfig.EmbeddingService != "" && optimizerConfig.EmbeddingURL == "" {
+		embeddingURL, err := c.resolveEmbeddingService(ctx, vmcp.Namespace, optimizerConfig.EmbeddingService)
+		if err != nil {
+			return fmt.Errorf("failed to resolve embedding service %s: %w", optimizerConfig.EmbeddingService, err)
+		}
+		optimizerConfig.EmbeddingURL = embeddingURL
+		// Clear embeddingService since we've resolved it to URL
+		optimizerConfig.EmbeddingService = ""
+	}
+
+	config.Optimizer = optimizerConfig
+	return nil
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.

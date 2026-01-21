@@ -403,38 +403,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
 
-	// Create a done channel to signal when the server has been stopped
-	doneCh := make(chan struct{})
-
-	// Start a goroutine to monitor the transport's running state
-	go func() {
-		for {
-			// Safely check if transportHandler is nil
-			if transportHandler == nil {
-				logger.Info("Transport handler is nil, exiting monitoring routine...")
-				close(doneCh)
-				return
-			}
-
-			// Check if the transport is still running
-			running, err := transportHandler.IsRunning(ctx)
-			if err != nil {
-				logger.Errorf("Error checking transport status: %v", err)
-				// Don't exit immediately on error, try again after pause
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			if !running {
-				// Transport is no longer running (container exited or was stopped)
-				logger.Warn("Transport is no longer running, attempting automatic restart...")
-				close(doneCh)
-				return
-			}
-
-			// Sleep for a short time before checking again
-			time.Sleep(1 * time.Second)
-		}
-	}()
+	// Start monitoring the transport's running state
+	// monitorTransport returns a channel that will be closed when the transport stops
+	transportStoppedCh := monitorTransport(ctx, transportHandler.IsRunning, 1*time.Second)
 
 	// At this point, we can consider the workload started successfully.
 	// However, we should preserve unauthenticated status if it was already set
@@ -459,53 +430,26 @@ func (r *Runner) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		stopMCPServer("Context cancelled")
-	case <-doneCh:
+	case <-transportStoppedCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Clean up the PID file and state
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
-		}
-
-		// Check if workload still exists (using status manager and runtime)
-		// If it doesn't exist, it was removed - clean up client config
-		// If it exists, it exited unexpectedly - signal restart needed
-		exists, checkErr := r.doesWorkloadExist(ctx, r.Config.BaseName)
-		if checkErr != nil {
-			logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
-			// Assume restart needed if we can't check
-		} else if !exists {
-			// Workload doesn't exist in `thv ls` - it was removed
-			logger.Infof(
-				"Workload %s no longer exists. Removing from client configurations.",
-				r.Config.BaseName,
-			)
-			clientManager, clientErr := client.NewManager(ctx)
-			if clientErr == nil {
-				removeErr := clientManager.RemoveServerFromClients(
-					ctx,
-					r.Config.ContainerName,
-					r.Config.Group,
-				)
-				if removeErr != nil {
-					logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
-				} else {
-					logger.Infof(
-						"Successfully removed %s from client configurations",
-						r.Config.ContainerName,
-					)
+		return handleTransportStopped(ctx, transportStoppedDeps{
+			removePIDFile: func() error {
+				return process.RemovePIDFile(r.Config.BaseName)
+			},
+			resetWorkloadPID: func(ctx context.Context) error {
+				return r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName)
+			},
+			workloadExists: func(ctx context.Context) (bool, error) {
+				return r.doesWorkloadExist(ctx, r.Config.BaseName)
+			},
+			removeFromClients: func(ctx context.Context) error {
+				clientManager, err := client.NewManager(ctx)
+				if err != nil {
+					return err
 				}
-			}
-			logger.Infof("MCP server %s stopped and cleaned up", r.Config.ContainerName)
-			return nil // Exit gracefully, no restart
-		}
-
-		// Workload still exists - signal restart needed
-		logger.Infof("MCP server %s stopped, restart needed", r.Config.ContainerName)
-		return fmt.Errorf("container exited, restart needed")
+				return clientManager.RemoveServerFromClients(ctx, r.Config.ContainerName, r.Config.Group)
+			},
+		})
 	}
 
 	return nil
@@ -712,4 +656,89 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 			delay = maxDelay
 		}
 	}
+}
+
+// transportChecker is a function that checks if a transport is running.
+type transportChecker = func(ctx context.Context) (bool, error)
+
+// monitorTransport starts a goroutine that monitors the transport's running state.
+// It returns a channel that will be closed when the transport stops running.
+// The pollInterval controls how often the transport is checked.
+func monitorTransport(ctx context.Context, isRunning transportChecker, pollInterval time.Duration) <-chan struct{} {
+	transportStoppedCh := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// Check if the transport is still running
+				running, err := isRunning(ctx)
+				if err != nil {
+					logger.Errorf("Error checking transport status: %v", err)
+					// Don't exit immediately on error, try again after pause
+					time.Sleep(pollInterval)
+					continue
+				}
+				if !running {
+					// Transport is no longer running (container exited or was stopped)
+					logger.Warn("Transport is no longer running, attempting automatic restart...")
+					close(transportStoppedCh)
+					return
+				}
+
+				// Sleep for a short time before checking again
+				time.Sleep(pollInterval)
+			}
+		}
+	}()
+
+	return transportStoppedCh
+}
+
+// transportStoppedDeps holds the dependencies for handleTransportStopped.
+// transportStoppedDeps holds the dependencies for handleTransportStopped.
+// All functions have their arguments pre-bound by the caller.
+type transportStoppedDeps struct {
+	removePIDFile     func() error
+	resetWorkloadPID  func(ctx context.Context) error
+	workloadExists    func(ctx context.Context) (bool, error)
+	removeFromClients func(ctx context.Context) error
+}
+
+// handleTransportStopped processes the event when a transport stops running.
+// It cleans up state and determines whether the workload should be restarted.
+//
+// Returns:
+// - nil if the workload was removed intentionally (graceful stop)
+// - error "container exited, restart needed" if the workload still exists
+func handleTransportStopped(ctx context.Context, deps transportStoppedDeps) error {
+	// Clean up the PID file and state
+	if err := deps.removePIDFile(); err != nil {
+		logger.Warnf("Warning: Failed to remove PID file: %v", err)
+	}
+	if err := deps.resetWorkloadPID(ctx); err != nil {
+		logger.Warnf("Warning: Failed to reset workload PID: %v", err)
+	}
+
+	// Check if workload still exists
+	exists, err := deps.workloadExists(ctx)
+	if err != nil {
+		logger.Warnf("Warning: Failed to check if workload exists: %v", err)
+		// Assume restart needed if we can't check
+	}
+
+	if err == nil && !exists {
+		// Workload was removed intentionally - clean up client config
+		if deps.removeFromClients != nil {
+			if removeErr := deps.removeFromClients(ctx); removeErr != nil {
+				logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
+			}
+		}
+		return nil // Exit gracefully, no restart
+	}
+
+	// Workload still exists (or check failed) - signal restart needed
+	return fmt.Errorf("container exited, restart needed")
 }

@@ -514,6 +514,10 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 					}
 
 					logger.Info("Container stdout closed - exiting read loop")
+
+					if err := t.Stop(ctx); err != nil {
+						logger.Errorf("Error stopping transport: %v", err)
+					}
 				} else {
 					logger.Errorf("Error reading from container stdout: %v", err)
 				}

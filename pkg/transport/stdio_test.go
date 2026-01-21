@@ -363,6 +363,7 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -444,6 +445,7 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -496,14 +498,16 @@ func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Set up expectations - container is not running
+	// Use AnyTimes() because Stop() also calls IsWorkloadRunning
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
 		Return(false, nil).
-		Times(1)
+		AnyTimes()
 
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -529,6 +533,9 @@ func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Test timed out")
 	}
+
+	// Wait a bit for the async Stop() goroutine to complete
+	time.Sleep(100 * time.Millisecond)
 }
 
 func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
@@ -568,9 +575,16 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 		Return(nil, nil, errors.New("failed to attach")).
 		AnyTimes()
 
+	// Stop() calls these during shutdown
+	mockDeployer.EXPECT().
+		StopWorkload(gomock.Any(), "test-container").
+		Return(nil).
+		AnyTimes()
+
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -603,10 +617,13 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	// Verify that we attempted at least one retry
 	assert.GreaterOrEqual(t, retryCount, 1, "Expected at least 1 retry attempt")
 
-	// Verify that stdin/stdout were NOT updated since re-attachment failed
+	// After failed re-attachment, Stop() is called which sets stdin to nil
 	transport.mutex.Lock()
-	assert.Equal(t, originalStdin, transport.stdin)
+	assert.Nil(t, transport.stdin, "stdin should be nil after Stop() is called")
 	transport.mutex.Unlock()
+
+	// Verify that the original stdin was closed
+	assert.True(t, originalStdin.(*mockWriteCloser).closed, "original stdin should be closed")
 }
 
 func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
@@ -659,6 +676,7 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -760,6 +778,7 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			// Create mock HTTP proxy
 			mockProxy := new(MockHTTPProxy)
 			mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+			mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 			// Create transport with fast retry config for testing
 			transport := &StdioTransport{
@@ -846,9 +865,16 @@ func TestConcurrentReattachment(t *testing.T) {
 		}).
 		AnyTimes()
 
+	// Stop() calls StopWorkload during shutdown
+	mockDeployer.EXPECT().
+		StopWorkload(gomock.Any(), "test-container").
+		Return(nil).
+		AnyTimes()
+
 	// Create mock HTTP proxy
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -887,16 +913,6 @@ func TestConcurrentReattachment(t *testing.T) {
 		t.Fatal("Test timed out waiting for concurrent re-attachment attempts")
 	}
 
-	// Verify that stdin and stdout were updated
-	transport.mutex.Lock()
-	finalStdin := transport.stdin
-	finalStdout := transport.stdout
-	transport.mutex.Unlock()
-
-	// Check that the transport was updated (at least one re-attachment succeeded)
-	assert.NotNil(t, finalStdin)
-	assert.NotNil(t, finalStdout)
-
 	// Verify that multiple checks were made but only one successful attachment
 	workloadCheckMutex.Lock()
 	assert.GreaterOrEqual(t, workloadCheckCount, 1, "Expected at least 1 workload check")
@@ -906,6 +922,10 @@ func TestConcurrentReattachment(t *testing.T) {
 	// We expect at least one successful attachment
 	assert.GreaterOrEqual(t, attachCount, 1, "Expected at least 1 attachment attempt")
 	attachMutex.Unlock()
+
+	// Note: stdin/stdout may be nil at this point because failed re-attachment
+	// attempts call Stop() which sets them to nil. The key assertion is that
+	// the concurrent operations completed without panic.
 }
 
 func TestStdinRaceCondition(t *testing.T) {
@@ -954,9 +974,16 @@ func TestStdinRaceCondition(t *testing.T) {
 		}).
 		AnyTimes()
 
+	// Stop() calls StopWorkload during shutdown
+	mockDeployer.EXPECT().
+		StopWorkload(gomock.Any(), "test-container").
+		Return(nil).
+		AnyTimes()
+
 	// Create mock HTTP proxy with message channel
 	mockProxy := new(MockHTTPProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
 
 	messageCh := make(chan jsonrpc2.Message, 10)
 	mockProxy.On("GetMessageChannel").Return(messageCh)
@@ -1005,14 +1032,15 @@ func TestStdinRaceCondition(t *testing.T) {
 	// Give some time for re-attachment to complete
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify that stdin was updated safely
-	transport.mutex.Lock()
-	finalStdin := transport.stdin
-	transport.mutex.Unlock()
+	// Note: stdin may be nil at this point because failed re-attachment
+	// attempts (from the second processStdout goroutine) call Stop() which
+	// sets stdin to nil. The key assertion is that the concurrent operations
+	// completed without panic or race conditions.
 
-	// The stdin should have been updated to the new one after re-attachment
-	// We can't directly compare pointers, but we can verify it's not nil
-	assert.NotNil(t, finalStdin, "stdin should not be nil after re-attachment")
+	// Verify that attachment was attempted
+	attachMutex.Lock()
+	assert.True(t, attachCalled, "At least one attachment should have been attempted")
+	attachMutex.Unlock()
 
 	// Clean up
 	cancel()
@@ -1057,4 +1085,75 @@ func TestStdioTransport_ShouldRestart(t *testing.T) {
 			assert.Equal(t, tt.expectedResult, result)
 		})
 	}
+}
+
+// TestTransport_ZombieStateWhenDockerUnavailable tests that the transport properly
+// shuts down when Docker becomes unavailable and re-attachment fails.
+// This reproduces a bug where the transport stays in a "zombie" state:
+// - processStdout exits after failed re-attachment
+// - but processMessages keeps running
+// - IsRunning() returns true even though the transport is dead
+// - the proxy accepts requests but can't communicate with the container
+func TestTransport_ZombieStateWhenDockerUnavailable(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger
+	logger.Initialize()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// Use a longer timeout to allow for retries
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Create mock deployer that simulates Docker being unavailable
+	mockDeployer := mocks.NewMockRuntime(ctrl)
+
+	// Create mock stdout that returns one message then EOF (simulating container disconnect)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}` + "\n")
+
+	// Simulate Docker socket being unavailable - all calls fail
+	mockDeployer.EXPECT().
+		IsWorkloadRunning(gomock.Any(), "test-container").
+		Return(false, errors.New("Cannot connect to the Docker daemon")).
+		AnyTimes()
+
+	// Create mock HTTP proxy with message channel
+	mockProxy := new(MockHTTPProxy)
+	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("Stop", mock.Anything).Return(nil).Maybe()
+
+	messageCh := make(chan jsonrpc2.Message, 10)
+	mockProxy.On("GetMessageChannel").Return(messageCh)
+
+	// Create transport with fast retry config for testing
+	transport := &StdioTransport{
+		containerName: "test-container",
+		deployer:      mockDeployer,
+		httpProxy:     mockProxy,
+		stdin:         newMockWriteCloser(),
+		stdout:        mockStdout,
+		shutdownCh:    make(chan struct{}),
+		retryConfig:   testRetryConfig(),
+	}
+
+	// Start processMessages which will spawn processStdout
+	go transport.processMessages(ctx, transport.stdin, mockStdout)
+
+	// Wait for processStdout to exit after failed re-attachment
+	// With testRetryConfig (3 retries, 10ms delays), this should complete quickly
+	time.Sleep(300 * time.Millisecond)
+
+	// VERIFY: After failed re-attachment, transport should NOT be running
+	// This is the bug - IsRunning() returned true (zombie state)
+	running, err := transport.IsRunning(ctx)
+	require.NoError(t, err)
+	assert.False(t, running,
+		"Transport should not be running after failed re-attachment. "+
+			"If this fails, the transport is in a zombie state where it appears running "+
+			"but cannot communicate with the container.")
+
+	// Clean up
+	cancel()
 }

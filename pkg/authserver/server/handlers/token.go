@@ -6,6 +6,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -37,13 +38,39 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// The resource parameter allows clients to specify which protected resource (MCP server)
 	// the token is intended for. This value becomes the "aud" claim in the JWT.
 	//
-	// TODO: Add proper RFC 8707 validation before granting audience:
-	// - Validate URI format (absolute URI, no fragment, http/https scheme only)
-	// - Validate against a whitelist of allowed MCP server resources
-	// - Validate client is authorized to request tokens for this resource
-	// - For auth code grant, verify resource matches the original authorization
-	// - Return "invalid_target" error for invalid/unauthorized resources
-	if resource := accessRequest.GetRequestForm().Get("resource"); resource != "" {
+	// Note: RFC 8707 allows multiple resource parameters, but we explicitly reject them
+	// for security reasons (simpler audience model, clearer token scope).
+	resources := accessRequest.GetRequestForm()["resource"]
+	if len(resources) > 1 {
+		logger.Debugw("multiple resource parameters not supported",
+			"count", len(resources),
+		)
+		h.provider.WriteAccessError(ctx, w, accessRequest,
+			server.ErrInvalidTarget.WithHint("Multiple resource parameters are not supported"))
+		return
+	}
+	if len(resources) == 1 {
+		resource := resources[0]
+		// Validate URI format per RFC 8707
+		if err := server.ValidateAudienceURI(resource); err != nil {
+			logger.Debugw("invalid resource URI format",
+				"resource", resource,
+				"error", err.Error(),
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, err)
+			return
+		}
+
+		// Validate against allowed audiences list
+		if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
+			logger.Debugw("resource not in allowed audiences",
+				"resource", resource,
+				"error", err.Error(),
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, err)
+			return
+		}
+
 		logger.Debugw("granting audience from resource parameter",
 			"resource", resource,
 		)

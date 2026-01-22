@@ -148,6 +148,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		SigningKeyID:         "test-key-1",
 		SigningKeyAlgorithm:  "RS256",
 		SigningKey:           rsaKey,
+		AllowedAudiences:     []string{"https://api.example.com"},
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)

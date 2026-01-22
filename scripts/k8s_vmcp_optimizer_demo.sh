@@ -199,13 +199,23 @@ else
     echo "  Deploying operator with helm..."
     helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image="${OPERATOR_IMAGE}" \
-        --set operator.imagePullPolicy=IfNotPresent \
+        --set operator.imagePullPolicy=Never \
         --set operator.toolhiveRunnerImage="${TOOLHIVE_IMAGE}" \
         --set operator.vmcpImage="${VMCP_IMAGE}" \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig "${KCONFIG}" && {
         echo "✓ Operator deployed with locally built images"
+        # Force rollout restart to ensure new image is picked up
+        # (Helm might not detect changes when using same tag like 'latest')
+        echo "  Restarting operator to pick up new image..."
+        kubectl rollout restart deployment toolhive-operator -n toolhive-system --kubeconfig "${KCONFIG}" || {
+            echo "  Warning: Failed to restart operator, it may still be using old image"
+        }
+        echo "  Waiting for operator rollout to complete..."
+        kubectl rollout status deployment toolhive-operator -n toolhive-system --timeout=120s --kubeconfig "${KCONFIG}" || {
+            echo "  Warning: Operator rollout status check timed out or failed"
+        }
     } || {
         echo "  Error: Failed to deploy operator"
         exit 1
@@ -220,6 +230,12 @@ kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=toolhive-operat
     echo "Warning: Operator not ready yet, continuing anyway..."
 }
 echo "✓ Operator ready"
+# Delete existing MCPServer pods to force recreation with correct imagePullPolicy
+# (The operator will recreate them with the new code that sets imagePullPolicy: Never for local images)
+echo "  Deleting existing MCPServer pods to force recreation with correct imagePullPolicy..."
+kubectl delete pods -n toolhive-system -l app.kubernetes.io/name=toolhive-proxyrunner \
+    --kubeconfig "${KCONFIG}" --ignore-not-found=true 2>/dev/null || true
+echo "  MCPServer pods will be recreated by the operator with correct imagePullPolicy"
 echo ""
 
 # Step 5: Deploy Ollama service
@@ -486,203 +502,66 @@ if [ -d "${MCP_OPTIMIZER_DIR}/examples/mcp-servers" ]; then
         echo "    ./examples/mcp-servers/create-github-secrets.sh"
     fi
     
+    # Patch and apply MCP servers
+    echo "  Applying MCP servers..."
+    
+    # Clean up any corrupted YAML files before applying
+    # (restore from git if files were corrupted by a previous run that added podTemplateSpec to non-MCPServer resources)
+    echo "    Checking for corrupted YAML files..."
+    
+    # Check if mcp-optimizer directory is a git repo and restore YAML files if corrupted
+    if [ -d "${MCP_OPTIMIZER_DIR}/.git" ]; then
+        cd "${MCP_OPTIMIZER_DIR}"
+        
+        # Check if any YAML files have been modified (indicating possible corruption)
+        modified_yamls=$(git status --porcelain examples/mcp-servers/*.yaml 2>/dev/null | awk '{print $2}' || echo "")
+        
+        if [ -n "${modified_yamls}" ]; then
+            echo "    Found modified YAML files, restoring from git to remove any corruption..."
+            echo "${modified_yamls}" | while read -r yaml_file; do
+                if [ -n "${yaml_file}" ]; then
+                    git checkout -- "${yaml_file}" 2>/dev/null && echo "      ✓ Restored ${yaml_file}" || true
+                fi
+            done
+        fi
+        
+        cd - >/dev/null
+    else
+        echo "    Note: ${MCP_OPTIMIZER_DIR} is not a git repo, skipping YAML cleanup"
+        echo "    If you see errors about podTemplateSpec in ServiceAccount/ClusterRole, restore files manually:"
+        echo "      cd ${MCP_OPTIMIZER_DIR} && git checkout examples/mcp-servers/*.yaml"
+    fi
+    
+    # Note: We patch MCPServer resources after applying (not before) to avoid corrupting YAML files
+    # This is safer and more reliable than pre-patching.
+    
     # Apply MCP servers
     echo "  Applying MCP servers..."
     if ./examples/mcp-servers/apply-mcp-servers.sh; then
         echo "✓ MCP servers setup"
         
-        # Patch MCPServer resources for image pull policy (instead of patching pods)
-        echo "  Patching MCPServer resources for image pull policy..."
-        # Wait a moment for resources to be created
-        sleep 2
-        
-        # Function to patch an MCPServer resource with podTemplateSpec for image pull policy
-        patch_mcpserver_image_pull_policy() {
-            local mcpserver_name=$1
-            local namespace=$2
-            
-            echo "    Patching MCPServer ${mcpserver_name}..."
-            
-            # Use kubectl patch with merge type to add/update podTemplateSpec
-            # podTemplateSpec is a RawExtension, so we provide the full PodTemplateSpec structure
-            # The container name for MCP servers is "mcp"
-            kubectl patch mcpserver "${mcpserver_name}" -n "${namespace}" \
-                --type=merge \
-                --kubeconfig "${KCONFIG}" \
-                --patch '{
-                    "spec": {
-                        "podTemplateSpec": {
-                            "spec": {
-                                "containers": [
-                                    {
-                                        "name": "mcp",
-                                        "imagePullPolicy": "IfNotPresent"
-                                    }
-                                ]
-                            }
-                        }
-                    }
-                }' 2>/dev/null || {
-                # If merge fails (e.g., podTemplateSpec already exists with different structure),
-                # try JSON patch to add/replace it
-                echo "      Using JSON patch method..."
-                kubectl patch mcpserver "${mcpserver_name}" -n "${namespace}" \
-                    --type=json \
-                    --kubeconfig "${KCONFIG}" \
-                    --patch '[
-                        {
-                            "op": "add",
-                            "path": "/spec/podTemplateSpec",
-                            "value": {
-                                "spec": {
-                                    "containers": [
-                                        {
-                                            "name": "mcp",
-                                            "imagePullPolicy": "IfNotPresent"
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                    ]' 2>/dev/null || \
-                kubectl patch mcpserver "${mcpserver_name}" -n "${namespace}" \
-                    --type=json \
-                    --kubeconfig "${KCONFIG}" \
-                    --patch '[
-                        {
-                            "op": "replace",
-                            "path": "/spec/podTemplateSpec",
-                            "value": {
-                                "spec": {
-                                    "containers": [
-                                        {
-                                            "name": "mcp",
-                                            "imagePullPolicy": "IfNotPresent"
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                    ]' 2>/dev/null || true
-            }
-        }
-        
-        # Get list of all MCPServer names (store in variable for later use)
-        local mcpserver_names=$(kubectl get mcpservers -n toolhive-system --kubeconfig "${KCONFIG}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
-        
-        # Patch all MCPServer resources in toolhive-system namespace
-        echo "${mcpserver_names}" | while read -r mcpserver_name; do
-            if [ -n "${mcpserver_name}" ]; then
-                patch_mcpserver_image_pull_policy "${mcpserver_name}" "toolhive-system"
+        # Wait for MCPGroup to be ready before proceeding
+        echo "  Waiting for MCPGroup 'optimized' to be ready..."
+        MCPGROUP_READY=false
+        for i in {1..60}; do
+            PHASE=$(kubectl get mcpgroup optimized -n toolhive-system \
+                -o jsonpath='{.status.phase}' --kubeconfig "${KCONFIG}" 2>/dev/null || echo "")
+            if [ "${PHASE}" = "Ready" ]; then
+                MCPGROUP_READY=true
+                break
             fi
+            if [ $((i % 10)) -eq 0 ]; then
+                echo "    Still waiting... (${i}/60, current phase: ${PHASE:-unknown})"
+            fi
+            sleep 5
         done
-        
-        echo "  ✓ Patched MCPServer resources for image pull policy"
-        
-        # Wait for operator to reconcile and update StatefulSets/Deployments
-        echo "  Waiting for operator to reconcile changes (10 seconds)..."
-        sleep 10
-        
-        # Delete existing pods so they get recreated with correct image pull policy
-        echo "  Deleting existing pods to force recreation with correct image pull policy..."
-        
-        # Delete pods managed by StatefulSets (MCPServers create StatefulSets)
-        echo "${mcpserver_names}" | while read -r mcpserver_name; do
-            if [ -z "${mcpserver_name}" ]; then
-                continue
-            fi
-            
-            echo "    Processing MCPServer ${mcpserver_name}..."
-            
-            # MCPServers create StatefulSets with the same name
-            if kubectl get statefulset "${mcpserver_name}" -n toolhive-system --kubeconfig "${KCONFIG}" &>/dev/null; then
-                # Delete pods by name pattern (StatefulSet pods follow naming pattern: <name>-0, <name>-1, etc.)
-                kubectl get pods -n toolhive-system --kubeconfig "${KCONFIG}" \
-                    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | \
-                grep "^${mcpserver_name}-[0-9]" | \
-                while read -r pod_name; do
-                    if [ -n "${pod_name}" ]; then
-                        echo "      Deleting pod ${pod_name}..."
-                        kubectl delete pod "${pod_name}" -n toolhive-system \
-                            --kubeconfig "${KCONFIG}" \
-                            --grace-period=0 \
-                            --force \
-                            --ignore-not-found=true 2>/dev/null || true
-                    fi
-                done
-                
-                # Also delete using label selector (app label matches MCPServer name)
-                kubectl delete pods -n toolhive-system \
-                    --kubeconfig "${KCONFIG}" \
-                    -l app="${mcpserver_name}" \
-                    --grace-period=0 \
-                    --force \
-                    --ignore-not-found=true 2>/dev/null || true
-            fi
-        done
-        
-        # Delete any pods that are in ImagePullBackOff or ErrImagePull states (more aggressive cleanup)
-        echo "  Cleaning up pods in error states..."
-        # Get all pods and check their status
-        kubectl get pods -n toolhive-system --kubeconfig "${KCONFIG}" \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null | \
-        while IFS=$'\t' read -r pod_name reason; do
-            if [ -n "${pod_name}" ] && [ -n "${reason}" ]; then
-                case "${reason}" in
-                    ImagePullBackOff|ErrImagePull|ImagePullError)
-                        echo "    Deleting pod ${pod_name} (reason: ${reason})..."
-                        kubectl delete pod "${pod_name}" -n toolhive-system \
-                            --kubeconfig "${KCONFIG}" \
-                            --ignore-not-found=true 2>/dev/null || true
-                        ;;
-                esac
-            fi
-        done
-        
-        # Also delete pods with toolhive label that might be stuck
-        echo "  Cleaning up any remaining toolhive pods in error states..."
-        kubectl get pods -n toolhive-system --kubeconfig "${KCONFIG}" \
-            -l toolhive=true \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null | \
-        while IFS=$'\t' read -r pod_name phase reason; do
-            if [ -n "${pod_name}" ]; then
-                # Delete if pod is in error state or has image pull issues
-                if [ "${phase}" = "Pending" ] || [ "${phase}" = "Failed" ] || \
-                   [ "${reason}" = "ImagePullBackOff" ] || [ "${reason}" = "ErrImagePull" ] || \
-                   [ "${reason}" = "ImagePullError" ]; then
-                    echo "    Deleting pod ${pod_name} (phase: ${phase}, reason: ${reason:-none})..."
-                    kubectl delete pod "${pod_name}" -n toolhive-system \
-                        --kubeconfig "${KCONFIG}" \
-                        --grace-period=0 \
-                        --force \
-                        --ignore-not-found=true 2>/dev/null || true
-                fi
-            fi
-        done
-        
-        # Final cleanup: Delete ALL pods that match MCPServer name patterns (aggressive)
-        echo "  Final cleanup: Deleting all pods matching MCPServer patterns..."
-        echo "${mcpserver_names}" | while read -r mcpserver_name; do
-            if [ -z "${mcpserver_name}" ]; then
-                continue
-            fi
-            # Delete any pod whose name starts with the MCPServer name
-            kubectl get pods -n toolhive-system --kubeconfig "${KCONFIG}" \
-                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | \
-            grep "^${mcpserver_name}" | \
-            while read -r pod_name; do
-                if [ -n "${pod_name}" ]; then
-                    echo "    Force deleting pod ${pod_name}..."
-                    kubectl delete pod "${pod_name}" -n toolhive-system \
-                        --kubeconfig "${KCONFIG}" \
-                        --grace-period=0 \
-                        --force \
-                        --ignore-not-found=true 2>/dev/null || true
-                fi
-            done
-        done
-        
-        echo "  ✓ Cleaned up existing pods"
+        if [ "${MCPGROUP_READY}" = "true" ]; then
+            echo "  ✓ MCPGroup 'optimized' is ready"
+        else
+            echo "  Warning: MCPGroup 'optimized' not ready yet, checking status..."
+            kubectl get mcpgroup optimized -n toolhive-system --kubeconfig "${KCONFIG}" || true
+            echo "  Continuing anyway, but VirtualMCPServer may not work until MCPGroup is ready"
+        fi
     else
         echo "  Warning: Failed to apply some MCP servers"
         echo "  This may be due to missing GitHub secrets (github-token)"
@@ -709,6 +588,29 @@ spec:
 EOF
     fi
     
+    # Wait for MCPGroup to be ready
+    echo "  Waiting for MCPGroup 'optimized' to be ready..."
+    MCPGROUP_READY=false
+    for i in {1..60}; do
+        PHASE=$(kubectl get mcpgroup optimized -n toolhive-system \
+            -o jsonpath='{.status.phase}' --kubeconfig "${KCONFIG}" 2>/dev/null || echo "")
+        if [ "${PHASE}" = "Ready" ]; then
+            MCPGROUP_READY=true
+            break
+        fi
+        if [ $((i % 10)) -eq 0 ]; then
+            echo "    Still waiting... (${i}/60, current phase: ${PHASE:-unknown})"
+        fi
+        sleep 5
+    done
+    if [ "${MCPGROUP_READY}" = "true" ]; then
+        echo "  ✓ MCPGroup 'optimized' is ready"
+    else
+        echo "  Warning: MCPGroup 'optimized' not ready yet, checking status..."
+        kubectl get mcpgroup optimized -n toolhive-system --kubeconfig "${KCONFIG}" || true
+        echo "  Continuing anyway, but VirtualMCPServer may not work until MCPGroup is ready"
+    fi
+    
     echo "  Note: Add MCPServer resources to the 'optimized' group to enable backend tools"
     echo "✓ MCPGroup created"
 fi
@@ -725,59 +627,83 @@ if [ ! -f "${VMCP_YAML}" ]; then
     exit 1
 fi
 
-# Apply the base YAML file (respects user's configuration)
+# Apply the base YAML file (has correct defaults for Kubernetes)
 echo "  Applying VirtualMCPServer from ${VMCP_YAML}..."
 kubectl apply -f "${VMCP_YAML}" --kubeconfig "${KCONFIG}"
 
-# Patch environment-specific values that need to be dynamic
-# Determine embedding configuration based on backend
-if [ "${EMBEDDING_BACKEND}" = "ollama" ]; then
-    # Use in-cluster Ollama service
-    echo "  Patching embedding configuration for in-cluster Ollama..."
-    kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
-        --type=json \
-        --kubeconfig "${KCONFIG}" \
-        -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/config/optimizer/embeddingBackend\", \"value\": \"${EMBEDDING_BACKEND}\"},
-            {\"op\": \"replace\", \"path\": \"/spec/config/optimizer/embeddingDimension\", \"value\": ${EMBEDDING_DIMENSION}},
-            {\"op\": \"replace\", \"path\": \"/spec/config/optimizer/embeddingModel\", \"value\": \"${EMBEDDING_MODEL}\"},
-            {\"op\": \"remove\", \"path\": \"/spec/config/optimizer/embeddingURL\"},
-            {\"op\": \"add\", \"path\": \"/spec/config/optimizer/embeddingService\", \"value\": \"${OLLAMA_SERVICE_NAME}\"}
-        ]" 2>/dev/null || {
-        # If patch fails, try individual patches
-        kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
-            --type=merge \
-            --kubeconfig "${KCONFIG}" \
-            -p="{\"spec\":{\"config\":{\"optimizer\":{\"embeddingBackend\":\"${EMBEDDING_BACKEND}\",\"embeddingDimension\":${EMBEDDING_DIMENSION},\"embeddingModel\":\"${EMBEDDING_MODEL}\",\"embeddingService\":\"${OLLAMA_SERVICE_NAME}\"}}}}" || true
-    }
-elif [ "${EMBEDDING_BACKEND}" = "openai-compatible" ]; then
-    # Use embeddingURL for OpenAI-compatible backends
-    EMBEDDING_URL="${EMBEDDING_URL:-https://api.openai.com/v1}"
-    echo "  Patching embedding configuration for OpenAI-compatible backend..."
+# Optionally patch if environment variables differ from defaults
+# (The YAML file already has correct defaults, so patching is only needed for customization)
+if [ "${EMBEDDING_BACKEND}" != "ollama" ] || \
+   [ "${EMBEDDING_MODEL}" != "nomic-embed-text" ] || \
+   [ "${EMBEDDING_DIMENSION}" != "384" ]; then
+    echo "  Patching embedding configuration (custom values)..."
     kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
         --type=merge \
         --kubeconfig "${KCONFIG}" \
-        -p="{\"spec\":{\"config\":{\"optimizer\":{\"embeddingBackend\":\"${EMBEDDING_BACKEND}\",\"embeddingDimension\":${EMBEDDING_DIMENSION},\"embeddingModel\":\"${EMBEDDING_MODEL}\",\"embeddingURL\":\"${EMBEDDING_URL}\"}}}}" || true
+        -p="{\"spec\":{\"config\":{\"optimizer\":{\"embeddingBackend\":\"${EMBEDDING_BACKEND}\",\"embeddingDimension\":${EMBEDDING_DIMENSION},\"embeddingModel\":\"${EMBEDDING_MODEL}\"}}}}" || true
 fi
 
-# Patch telemetry endpoint to use in-cluster Jaeger
-echo "  Patching telemetry endpoint for in-cluster Jaeger..."
-kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
-    --type=merge \
-    --kubeconfig "${KCONFIG}" \
-    -p="{\"spec\":{\"config\":{\"telemetry\":{\"endpoint\":\"${JAEGER_OTLP_ENDPOINT}\"}}}}" || true
+# Patch embedding URL if using a different backend or custom URL
+if [ "${EMBEDDING_BACKEND}" = "openai-compatible" ]; then
+    EMBEDDING_URL="${EMBEDDING_URL:-https://api.openai.com/v1}"
+    echo "  Patching embedding URL for OpenAI-compatible backend..."
+    kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
+        --type=merge \
+        --kubeconfig "${KCONFIG}" \
+        -p="{\"spec\":{\"config\":{\"optimizer\":{\"embeddingURL\":\"${EMBEDDING_URL}\"}}}}" || true
+elif [ "${EMBEDDING_BACKEND}" = "ollama" ] && [ -n "${EMBEDDING_URL:-}" ]; then
+    # Only patch if custom URL is provided (otherwise use YAML default)
+    echo "  Patching embedding URL (custom Ollama URL)..."
+    kubectl patch virtualmcpserver vmcp-optimizer -n toolhive-system \
+        --type=merge \
+        --kubeconfig "${KCONFIG}" \
+        -p="{\"spec\":{\"config\":{\"optimizer\":{\"embeddingURL\":\"${EMBEDDING_URL}\"}}}}" || true
+fi
 
 echo "✓ VirtualMCPServer created"
 echo ""
 
 # Step 9: Wait for VirtualMCPServer to be ready
 echo "Step 9: Waiting for VirtualMCPServer to be ready..."
-kubectl wait --for=condition=Ready virtualmcpserver/vmcp-optimizer \
-    -n toolhive-system --timeout=180s --kubeconfig "${KCONFIG}" || {
+if kubectl wait --for=condition=Ready virtualmcpserver/vmcp-optimizer \
+    -n toolhive-system --timeout=300s --kubeconfig "${KCONFIG}" 2>/dev/null; then
+    echo "✓ VirtualMCPServer ready"
+else
     echo "Warning: VirtualMCPServer not ready yet, checking status..."
     kubectl get virtualmcpserver vmcp-optimizer -n toolhive-system --kubeconfig "${KCONFIG}"
-}
-echo "✓ VirtualMCPServer ready"
+    echo ""
+    echo "Checking VirtualMCPServer conditions..."
+    kubectl get virtualmcpserver vmcp-optimizer -n toolhive-system \
+        -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}): {.message}{"\n"}{end}' \
+        --kubeconfig "${KCONFIG}" 2>/dev/null || echo "  No conditions found"
+    echo ""
+    echo "Checking deployment status..."
+    kubectl get deployment vmcp-optimizer -n toolhive-system --kubeconfig "${KCONFIG}" 2>/dev/null || echo "  Deployment not found"
+    echo ""
+    echo "Checking pods..."
+    kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=vmcp-optimizer --kubeconfig "${KCONFIG}" 2>/dev/null || echo "  No pods found"
+    echo ""
+    echo "If VirtualMCPServer is stuck, check:"
+    echo "  1. MCPGroup 'optimized' is Ready: kubectl get mcpgroup optimized -n toolhive-system"
+    echo "  2. Backend MCPServers are Ready: kubectl get mcpservers -n toolhive-system"
+    echo "  3. Operator logs: kubectl logs -n toolhive-system -l app.kubernetes.io/name=toolhive-operator --tail=50"
+    echo ""
+fi
+
+echo ""
+echo "✓ Setup complete!"
+echo ""
+echo "The VirtualMCPServer is now running with optimizer enabled."
+echo "External images (like ghcr.io/stackloklabs/toolhive-doc-mcp:v0.0.7) will be pulled normally."
+echo "Only locally built images (operator, toolhive-runner, vmcp) use imagePullPolicy=Never."
+echo ""
+echo "Note: If MCPServer pods fail with 'Failed to pull image' errors for kind.local images,"
+echo "      delete the pods to force recreation with the correct imagePullPolicy:"
+echo "      kubectl delete pods -n toolhive-system -l app.kubernetes.io/name=toolhive-proxyrunner --kubeconfig ${KCONFIG}"
+echo ""
+echo "To test the VirtualMCPServer:"
+echo "  1. Port-forward: kubectl port-forward -n toolhive-system svc/vmcp-optimizer 8080:8080 --kubeconfig ${KCONFIG}"
+echo "  2. Test endpoint: curl http://localhost:8080/health"
 echo ""
 
 # Step 10: Setup ingress

@@ -18,7 +18,7 @@
 #   4. Port-forward: kubectl port-forward svc/vmcp-optimizer 4483:4483
 #
 # For in-cluster embedding service:
-#   Set config.optimizer.embeddingService instead of embeddingURL
+#   Use the full service DNS name: http://service-name.namespace.svc.cluster.local:port
 
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -62,9 +62,10 @@ spec:
       # Embedding model name
       embeddingModel: nomic-embed-text
       
-      # Embedding URL (for local Ollama or external service)
-      # For in-cluster service, use embeddingService instead
-      embeddingURL: http://host.docker.internal:11434
+      # Embedding URL (for local Ollama, external service, or in-cluster service)
+      # For in-cluster services, use the full service DNS name: http://service-name.namespace.svc.cluster.local:port
+      # Default: in-cluster Ollama service (for Kubernetes deployments)
+      embeddingURL: http://ollama.toolhive-system.svc.cluster.local:11434
       
       # Using in-memory mode (no persistence) - recommended for production
       # The optimizer database is rebuilt from scratch on each startup by ingesting MCP backends.
@@ -73,15 +74,15 @@ spec:
       # persistPath: /var/run/vmcp-optimizer.db
       # ftsDBPath: /var/run/vmcp-optimizer-fts.db
       
-      # Optional: Hybrid search ratio (0.0 = all BM25, 1.0 = all semantic)
-      # Default: 0.7 (70% semantic, 30% BM25)
-      hybridSearchRatio: 0.7
+      # Optional: Hybrid search ratio (0-100 percentage: 0 = all BM25, 100 = all semantic)
+      # Default: 70 (70% semantic, 30% BM25)
+      hybridSearchRatio: 70
     
     # =============================================================================
     # TELEMETRY CONFIGURATION
     # =============================================================================
     telemetry:
-      endpoint: localhost:4318  # OTLP HTTP endpoint (Jaeger collector)
+      endpoint: jaeger-collector.toolhive-system.svc.cluster.local:4318  # OTLP HTTP endpoint (Jaeger collector)
       serviceName: vmcp-optimizer
       serviceVersion: "1.0.0"
       tracingEnabled: true
@@ -105,13 +106,19 @@ spec:
     source: discovered
 
   # PodTemplateSpec for customizing the pod (e.g., container image)
-  # Uncomment and customize as needed:
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: vmcp
+        imagePullPolicy: Never
   #
+  # To use a local image instead of default, uncomment and customize:
   # podTemplateSpec:
   #   spec:
   #     containers:
   #       - name: vmcp
-  #         image: kind.local/vmcp:latest  # Use local image instead of default
+  #         image: kind.local/vmcp:latest
+  #         imagePullPolicy: Never
   #
   # Note: For kind.local images, you must build and load the image first:
   #   1. Build: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp

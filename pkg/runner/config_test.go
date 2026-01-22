@@ -1767,6 +1767,147 @@ func TestRunConfig_WithPorts_PortReuse(t *testing.T) {
 	})
 }
 
+func TestHeaderForwardConfig_HasHeaders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		config *HeaderForwardConfig
+		want   bool
+	}{
+		{
+			name:   "nil receiver",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "empty struct",
+			config: &HeaderForwardConfig{},
+			want:   false,
+		},
+		{
+			name:   "empty maps",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{}, AddHeadersFromSecret: map[string]string{}},
+			want:   false,
+		},
+		{
+			name:   "plaintext only",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Key": "val"}},
+			want:   true,
+		},
+		{
+			name:   "secret only",
+			config: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{"X-Key": "secret-name"}},
+			want:   true,
+		},
+		{
+			name: "both set",
+			config: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-A": "a"},
+				AddHeadersFromSecret: map[string]string{"X-B": "secret-b"},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.config.HasHeaders())
+		})
+	}
+}
+
+func TestRunConfig_resolveHeaderForwardSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		headerForward  *HeaderForwardConfig
+		mockSecrets    map[string]string
+		mockErrors     map[string]error
+		wantErr        bool
+		wantPlaintext  map[string]string
+	}{
+		{
+			name:          "nil HeaderForward",
+			headerForward: nil,
+			wantErr:       false,
+		},
+		{
+			name:          "empty AddHeadersFromSecret",
+			headerForward: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{}},
+			wantErr:       false,
+		},
+		{
+			name: "single secret resolved",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"Authorization": "my-api-key"},
+			},
+			mockSecrets:   map[string]string{"my-api-key": "Bearer token123"},
+			wantErr:       false,
+			wantPlaintext: map[string]string{"Authorization": "Bearer token123"},
+		},
+		{
+			name: "multiple secrets",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-Api-Key": "api-secret",
+					"X-Token":   "token-secret",
+				},
+			},
+			mockSecrets: map[string]string{
+				"api-secret":   "key-value",
+				"token-secret": "token-value",
+			},
+			wantErr:       false,
+			wantPlaintext: map[string]string{"X-Api-Key": "key-value", "X-Token": "token-value"},
+		},
+		{
+			name: "secret resolution error",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Key": "missing-secret"},
+			},
+			mockErrors: map[string]error{"missing-secret": fmt.Errorf("secret not found")},
+			wantErr:    true,
+		},
+		{
+			name: "merges into existing plaintext headers",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Existing": "existing-value"},
+				AddHeadersFromSecret: map[string]string{"X-New": "new-secret"},
+			},
+			mockSecrets:   map[string]string{"new-secret": "resolved-value"},
+			wantErr:       false,
+			wantPlaintext: map[string]string{"X-Existing": "existing-value", "X-New": "resolved-value"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+
+			secretManager := secretsmocks.NewMockProvider(ctrl)
+			for name, val := range tc.mockSecrets {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return(val, nil)
+			}
+			for name, retErr := range tc.mockErrors {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return("", retErr)
+			}
+
+			cfg := &RunConfig{HeaderForward: tc.headerForward}
+			err := cfg.resolveHeaderForwardSecrets(context.Background(), secretManager)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantPlaintext != nil {
+				require.NotNil(t, cfg.HeaderForward)
+				assert.Equal(t, tc.wantPlaintext, cfg.HeaderForward.AddPlaintextHeaders)
+			}
+		})
+	}
+}
+
 // TestWithExistingPort tests the WithExistingPort builder option
 func TestWithExistingPort(t *testing.T) {
 	t.Parallel()

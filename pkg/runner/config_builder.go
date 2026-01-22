@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -1074,4 +1075,36 @@ func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
 		b.config.EnvFileDir = dirPath
 		return nil
 	}
+}
+
+// WithHeaderForward sets the plaintext header forward configuration for remote MCP servers.
+// The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
+func WithHeaderForward(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		b.ensureHeaderForward().AddPlaintextHeaders = maps.Clone(headers)
+		return nil
+	}
+}
+
+// WithHeaderForwardSecrets sets the secret-backed header forward configuration for remote MCP servers.
+// The headers parameter maps header names to secret names in the secrets manager.
+// Secret values are resolved at runtime via WithSecrets() and never persisted to disk.
+func WithHeaderForwardSecrets(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		b.ensureHeaderForward().AddHeadersFromSecret = maps.Clone(headers)
+		return nil
+	}
+}
+
+func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
+	if b.config.HeaderForward == nil {
+		b.config.HeaderForward = &HeaderForwardConfig{}
+	}
+	return b.config.HeaderForward
 }

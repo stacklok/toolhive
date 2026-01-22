@@ -186,6 +186,9 @@ type RunConfig struct {
 	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
 	// This is used to handle path-based ingress routing scenarios.
 	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
+
+	// HeaderForward contains configuration for injecting headers into requests to remote servers.
+	HeaderForward *HeaderForwardConfig `json:"header_forward,omitempty" yaml:"header_forward,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -491,7 +494,32 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
+	// Process HeaderForward.AddHeadersFromSecret
+	if err := c.resolveHeaderForwardSecrets(ctx, secretManager); err != nil {
+		return c, err
+	}
+
 	return c, nil
+}
+
+// resolveHeaderForwardSecrets resolves secret references in HeaderForward.AddHeadersFromSecret
+// and merges the actual values into AddPlaintextHeaders for middleware consumption.
+// Only the references are persisted to disk; actual values exist only in memory.
+func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManager secrets.Provider) error {
+	if c.HeaderForward == nil || len(c.HeaderForward.AddHeadersFromSecret) == 0 {
+		return nil
+	}
+	if c.HeaderForward.AddPlaintextHeaders == nil {
+		c.HeaderForward.AddPlaintextHeaders = make(map[string]string)
+	}
+	for headerName, secretName := range c.HeaderForward.AddHeadersFromSecret {
+		actualValue, err := secretManager.GetSecret(ctx, secretName)
+		if err != nil {
+			return fmt.Errorf("failed to resolve header secret %q: %w", secretName, err)
+		}
+		c.HeaderForward.AddPlaintextHeaders[headerName] = actualValue
+	}
+	return nil
 }
 
 // mergeEnvVars is a helper method to merge environment variables into RunConfig
@@ -594,6 +622,32 @@ type ToolOverride struct {
 	Name string `json:"name,omitempty"`
 	// Description is the redefined description of the tool
 	Description string `json:"description,omitempty"`
+}
+
+// HeaderForwardConfig defines configuration for injecting headers into requests to remote servers.
+// Headers are added server-side, so clients don't need to configure them individually.
+type HeaderForwardConfig struct {
+	// AddPlaintextHeaders is a map of header names to literal values to inject into requests.
+	// WARNING: These values are stored in plaintext in the configuration.
+	// For sensitive values (API keys, tokens), use AddHeadersFromSecret instead.
+	// Note: After WithSecrets() runs, this map also contains resolved secret values
+	// merged from AddHeadersFromSecret.
+	AddPlaintextHeaders map[string]string `json:"add_plaintext_headers,omitempty" yaml:"add_plaintext_headers,omitempty"`
+
+	// AddHeadersFromSecret is a map of header names to secret names.
+	// The key is the header name, the value is the secret name in ToolHive's secrets manager.
+	// Resolved at runtime via WithSecrets() and merged into AddPlaintextHeaders.
+	// The actual secret value is only held in memory, never persisted.
+	AddHeadersFromSecret map[string]string `json:"add_headers_from_secret,omitempty" yaml:"add_headers_from_secret,omitempty"`
+}
+
+// HasHeaders returns true if any headers are configured (plaintext or secret-backed).
+// Safe to call on a nil receiver.
+func (h *HeaderForwardConfig) HasHeaders() bool {
+	if h == nil {
+		return false
+	}
+	return len(h.AddPlaintextHeaders) > 0 || len(h.AddHeadersFromSecret) > 0
 }
 
 // DefaultCallbackPort is the default port for the OAuth callback server

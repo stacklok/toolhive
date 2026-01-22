@@ -77,7 +77,7 @@ func (m *manager) ensureRBACResources(
 	resourceName := GetServiceAccountName(mcpRegistry)
 	labels := labelsForRegistryAPI(mcpRegistry, resourceName)
 
-	if err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:      resourceName,
 		Namespace: mcpRegistry.Namespace,
 		Rules:     registryAPIRBACRules,

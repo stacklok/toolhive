@@ -519,17 +519,23 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		return nil
 	}
 
+	// If a service account is specified, we don't need to create one
+	if vmcp.Spec.ServiceAccount != nil {
+		return nil
+	}
+
 	// Dynamic mode (discovered): Ensure RBAC resources exist
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
 	// Ensure Role with permissions to discover backends and update status
-	return rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:      serviceAccountName,
 		Namespace: vmcp.Namespace,
 		Rules:     vmcpRBACRules,
 		Owner:     vmcp,
 	})
+	return err
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -1237,9 +1243,15 @@ func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 
 // serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer
 // based on its outgoing auth source mode.
+// - User-provided service account: Returns the user-specified service account name
 // - Dynamic mode (discovered): Returns the dedicated service account name
 // - Static mode (inline): Returns empty string (uses default service account)
 func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	// If a service account is specified, use it
+	if vmcp.Spec.ServiceAccount != nil {
+		return *vmcp.Spec.ServiceAccount
+	}
+
 	source := outgoingAuthSource(vmcp)
 
 	// Static mode: Use default service account (no RBAC resources)

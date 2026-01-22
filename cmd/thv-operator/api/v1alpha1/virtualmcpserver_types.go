@@ -34,6 +34,11 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	ServiceType string `json:"serviceType,omitempty"`
 
+	// ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
+	// If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
+	// +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
 	// PodTemplateSpec defines the pod template to use for the Virtual MCP server
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify

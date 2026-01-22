@@ -1,0 +1,58 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-custom-service-account
+spec:
+  description: |
+    Tests that custom ServiceAccounts work correctly for MCPServer.
+    Verifies that when a user provides their own ServiceAccount:
+    1. The operator does NOT create its own ServiceAccount/Role/RoleBinding
+    2. The operator uses the user-provided ServiceAccount in the StatefulSet
+    3. imagePullSecrets from the ServiceAccount are correctly applied to pods
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-custom-sa"
+  steps:
+    - name: verify-operator
+      try:
+        - assert:
+            file: ../../setup/assert-operator-ready.yaml
+
+    - name: deploy-mcpserver-with-custom-sa
+      try:
+        # Apply custom ServiceAccount with imagePullSecrets
+        - apply:
+            file: mcpserver-serviceaccount.yaml
+        - assert:
+            file: mcpserver-serviceaccount.yaml
+
+        # Apply MCPServer that references the custom ServiceAccount
+        - apply:
+            file: mcpserver.yaml
+        - assert:
+            file: mcpserver.yaml
+
+        # Assert MCPServer is running
+        - assert:
+            file: assert-mcpserver-running.yaml
+
+        # Assert pod is using the custom ServiceAccount
+        - assert:
+            file: assert-mcpserver-pod-uses-custom-sa.yaml
+
+        # Verify operator did NOT create its own RBAC resources
+        # The operator would create these if managing RBAC: <name>-mcp-server-sa
+        - script:
+            content: |
+              # Check that operator-managed RBAC resources don't exist
+              ! kubectl get serviceaccount ($testPrefix)-mcp-server-sa -n toolhive-system 2>/dev/null
+              ! kubectl get role ($testPrefix)-mcp-server-sa -n toolhive-system 2>/dev/null
+              ! kubectl get rolebinding ($testPrefix)-mcp-server-sa -n toolhive-system 2>/dev/null
+              echo "SUCCESS: Operator did not create RBAC resources (as expected)"
+

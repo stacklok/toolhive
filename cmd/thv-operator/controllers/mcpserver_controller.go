@@ -848,7 +848,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
 	// Ensure RBAC resources for proxy runner
-	if err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:      proxyRunnerNameForRBAC,
 		Namespace: mcpServer.Namespace,
 		Rules:     defaultRBACRules,

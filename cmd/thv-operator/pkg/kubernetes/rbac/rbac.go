@@ -313,13 +313,25 @@ type EnsureRBACResourcesParams struct {
 	Labels map[string]string
 }
 
+// OperationResults contains the operation results for each RBAC resource.
+type OperationResults struct {
+	// ServiceAccount is the result of the ServiceAccount operation
+	ServiceAccount OperationResult
+	// Role is the result of the Role operation
+	Role OperationResult
+	// RoleBinding is the result of the RoleBinding operation
+	RoleBinding OperationResult
+}
+
 // EnsureRBACResources creates or updates a complete set of RBAC resources:
 // ServiceAccount, Role, and RoleBinding. All resources use the same name and
 // are created in the same namespace. The RoleBinding binds the ServiceAccount
 // to the Role. All resources have owner references set for automatic cleanup.
 //
 // This is a convenience method that consolidates the common pattern of creating
-// RBAC resources for a controller. It returns an error if any operation fails.
+// RBAC resources for a controller. It returns the operation results for each
+// resource and an error if any operation fails.
+//
 // Callers should return errors to let the controller work queue handle retries.
 //
 // Non-atomic behavior: Resource creation is sequential and non-atomic. If a later
@@ -327,7 +339,9 @@ type EnsureRBACResourcesParams struct {
 //   - Controller reconciliation will retry and complete the setup
 //   - All resources have owner references for automatic cleanup
 //   - Partial state is temporary and self-healing via reconciliation
-func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResourcesParams) error {
+func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResourcesParams) (OperationResults, error) {
+	results := OperationResults{}
+
 	// Ensure ServiceAccount
 	serviceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -336,9 +350,11 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 			Labels:    params.Labels,
 		},
 	}
-	if _, err := c.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, params.Owner); err != nil {
-		return fmt.Errorf("failed to ensure service account: %w", err)
+	saResult, err := c.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, params.Owner)
+	if err != nil {
+		return results, fmt.Errorf("failed to ensure service account: %w", err)
 	}
+	results.ServiceAccount = saResult
 
 	// Ensure Role
 	role := &rbacv1.Role{
@@ -349,9 +365,11 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 		},
 		Rules: params.Rules,
 	}
-	if _, err := c.UpsertRoleWithOwnerReference(ctx, role, params.Owner); err != nil {
-		return fmt.Errorf("failed to ensure role: %w", err)
+	roleResult, err := c.UpsertRoleWithOwnerReference(ctx, role, params.Owner)
+	if err != nil {
+		return results, fmt.Errorf("failed to ensure role: %w", err)
 	}
+	results.Role = roleResult
 
 	// Ensure RoleBinding
 	roleBinding := &rbacv1.RoleBinding{
@@ -373,11 +391,13 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 			},
 		},
 	}
-	if _, err := c.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, params.Owner); err != nil {
-		return fmt.Errorf("failed to ensure role binding: %w", err)
+	rbResult, err := c.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, params.Owner)
+	if err != nil {
+		return results, fmt.Errorf("failed to ensure role binding: %w", err)
 	}
+	results.RoleBinding = rbResult
 
-	return nil
+	return results, nil
 }
 
 // GetAllRBACResources retrieves all RBAC resources (ServiceAccount, Role, RoleBinding)

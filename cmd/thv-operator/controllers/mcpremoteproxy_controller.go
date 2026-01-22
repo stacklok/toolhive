@@ -471,17 +471,23 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	// If a service account is specified, we don't need to create one
+	if proxy.Spec.ServiceAccount != nil {
+		return nil
+	}
+
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
-	return rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:      proxyRunnerNameForRBAC,
 		Namespace: proxy.Namespace,
 		Rules:     remoteProxyRBACRules,
 		Owner:     proxy,
 	})
+	return err
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
@@ -573,6 +579,15 @@ func labelsForMCPRemoteProxy(name string) map[string]string {
 // Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
 func proxyRunnerServiceAccountNameForRemoteProxy(proxyName string) string {
 	return fmt.Sprintf("%s-remote-proxy-runner", proxyName)
+}
+
+// serviceAccountNameForRemoteProxy returns the service account name for a MCPRemoteProxy
+// If a service account is specified in the spec, it returns that. Otherwise, returns the default.
+func serviceAccountNameForRemoteProxy(proxy *mcpv1alpha1.MCPRemoteProxy) string {
+	if proxy.Spec.ServiceAccount != nil {
+		return *proxy.Spec.ServiceAccount
+	}
+	return proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 }
 
 // createProxyServiceName generates the service name for a remote proxy

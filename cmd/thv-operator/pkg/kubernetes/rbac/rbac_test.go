@@ -20,12 +20,49 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func TestGetServiceAccount(t *testing.T) {
-	t.Parallel()
-
+// setupTestScheme creates and initializes a test scheme with core and RBAC types.
+func setupTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, rbacv1.AddToScheme(scheme))
+	return scheme
+}
+
+// createTestOwner creates a ConfigMap to use as an owner for testing owner references.
+func createTestOwner(name, namespace string, uid types.UID) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			UID:       uid,
+		},
+	}
+}
+
+// assertOwnerReference verifies that an object has exactly one owner reference matching the expected owner.
+// It checks the Kind, Name, UID, and that Controller and BlockOwnerDeletion are set correctly.
+func assertOwnerReference(t *testing.T, refs []metav1.OwnerReference, owner client.Object, expectedKind string) {
+	t.Helper()
+	require.Len(t, refs, 1)
+	ownerRef := refs[0]
+	assert.Equal(t, expectedKind, ownerRef.Kind)
+	assert.Equal(t, owner.GetName(), ownerRef.Name)
+	assert.Equal(t, owner.GetUID(), ownerRef.UID)
+	assert.NotNil(t, ownerRef.Controller)
+	assert.True(t, *ownerRef.Controller)
+	assert.NotNil(t, ownerRef.BlockOwnerDeletion)
+	assert.True(t, *ownerRef.BlockOwnerDeletion)
+}
+
+func TestGetServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully retrieves existing ServiceAccount", func(t *testing.T) {
 		t.Parallel()
@@ -105,9 +142,7 @@ func TestGetServiceAccount(t *testing.T) {
 func TestUpsertServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates new ServiceAccount", func(t *testing.T) {
 		t.Parallel()
@@ -256,22 +291,14 @@ func TestUpsertServiceAccount(t *testing.T) {
 func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates ServiceAccount with owner reference", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-12345",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-12345")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -295,16 +322,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		// Verify the service account was created with owner reference
 		retrieved, err := client.GetServiceAccount(ctx, "owned-sa", "default")
 		require.NoError(t, err)
-		assert.Len(t, retrieved.OwnerReferences, 1)
-
-		ownerRef := retrieved.OwnerReferences[0]
-		assert.Equal(t, "ConfigMap", ownerRef.Kind)
-		assert.Equal(t, "owner-cm", ownerRef.Name)
-		assert.Equal(t, owner.UID, ownerRef.UID)
-		assert.NotNil(t, ownerRef.Controller)
-		assert.True(t, *ownerRef.Controller)
-		assert.NotNil(t, ownerRef.BlockOwnerDeletion)
-		assert.True(t, *ownerRef.BlockOwnerDeletion)
+		assertOwnerReference(t, retrieved.OwnerReferences, owner, "ConfigMap")
 	})
 
 	t.Run("successfully updates ServiceAccount with owner reference", func(t *testing.T) {
@@ -312,13 +330,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-67890",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-67890")
 
 		existingSA := &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
@@ -366,13 +378,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "test-namespace",
-				UID:       "unique-test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "test-namespace", "unique-test-uid")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -424,13 +430,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		// Use interceptor to simulate create failure
 		fakeClient := fake.NewClientBuilder().
@@ -464,13 +464,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		existingSA := &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
@@ -511,9 +505,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 func TestGetRole(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully retrieves existing Role", func(t *testing.T) {
 		t.Parallel()
@@ -601,9 +593,7 @@ func TestGetRole(t *testing.T) {
 func TestUpsertRole(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates new Role", func(t *testing.T) {
 		t.Parallel()
@@ -773,22 +763,14 @@ func TestUpsertRole(t *testing.T) {
 func TestUpsertRoleWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates Role with owner reference", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-12345",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-12345")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -819,16 +801,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 		// Verify the role was created with owner reference
 		retrieved, err := client.GetRole(ctx, "owned-role", "default")
 		require.NoError(t, err)
-		assert.Len(t, retrieved.OwnerReferences, 1)
-
-		ownerRef := retrieved.OwnerReferences[0]
-		assert.Equal(t, "ConfigMap", ownerRef.Kind)
-		assert.Equal(t, "owner-cm", ownerRef.Name)
-		assert.Equal(t, owner.UID, ownerRef.UID)
-		assert.NotNil(t, ownerRef.Controller)
-		assert.True(t, *ownerRef.Controller)
-		assert.NotNil(t, ownerRef.BlockOwnerDeletion)
-		assert.True(t, *ownerRef.BlockOwnerDeletion)
+		assertOwnerReference(t, retrieved.OwnerReferences, owner, "ConfigMap")
 	})
 
 	t.Run("successfully updates Role with owner reference", func(t *testing.T) {
@@ -836,13 +809,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-67890",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-67890")
 
 		existingRole := &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
@@ -902,13 +869,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "test-namespace",
-				UID:       "unique-test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "test-namespace", "unique-test-uid")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -968,13 +929,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		// Use interceptor to simulate create failure
 		fakeClient := fake.NewClientBuilder().
@@ -1015,13 +970,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		existingRole := &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1076,9 +1025,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 func TestGetRoleBinding(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully retrieves existing RoleBinding", func(t *testing.T) {
 		t.Parallel()
@@ -1183,9 +1130,7 @@ func TestGetRoleBinding(t *testing.T) {
 func TestUpsertRoleBinding(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates new RoleBinding", func(t *testing.T) {
 		t.Parallel()
@@ -1437,22 +1382,14 @@ func TestUpsertRoleBinding(t *testing.T) {
 func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully creates RoleBinding with owner reference", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-12345",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-12345")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -1488,16 +1425,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 		// Verify the role binding was created with owner reference
 		retrieved, err := client.GetRoleBinding(ctx, "owned-rb", "default")
 		require.NoError(t, err)
-		assert.Len(t, retrieved.OwnerReferences, 1)
-
-		ownerRef := retrieved.OwnerReferences[0]
-		assert.Equal(t, "ConfigMap", ownerRef.Kind)
-		assert.Equal(t, "owner-cm", ownerRef.Name)
-		assert.Equal(t, owner.UID, ownerRef.UID)
-		assert.NotNil(t, ownerRef.Controller)
-		assert.True(t, *ownerRef.Controller)
-		assert.NotNil(t, ownerRef.BlockOwnerDeletion)
-		assert.True(t, *ownerRef.BlockOwnerDeletion)
+		assertOwnerReference(t, retrieved.OwnerReferences, owner, "ConfigMap")
 	})
 
 	t.Run("successfully updates RoleBinding with owner reference", func(t *testing.T) {
@@ -1505,13 +1433,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "test-uid-67890",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "test-uid-67890")
 
 		existingRB := &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1579,13 +1501,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "test-namespace",
-				UID:       "unique-test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "test-namespace", "unique-test-uid")
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -1651,13 +1567,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		// Use interceptor to simulate create failure
 		fakeClient := fake.NewClientBuilder().
@@ -1702,13 +1612,7 @@ func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 
 		ctx := t.Context()
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "owner-cm",
-				Namespace: "default",
-				UID:       "owner-uid",
-			},
-		}
+		owner := createTestOwner("owner-cm", "default", "owner-uid")
 
 		existingRB := &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1788,9 +1692,7 @@ func TestNewClient(t *testing.T) {
 func TestEnsureRBACResources(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("creates all RBAC resources when none exist", func(t *testing.T) {
 		t.Parallel()
@@ -1803,13 +1705,7 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
 		rules := []rbacv1.PolicyRule{
 			{
@@ -1823,7 +1719,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			"app": "test",
 		}
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     rules,
@@ -1889,13 +1785,7 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
 		newRules := []rbacv1.PolicyRule{
 			{
@@ -1905,7 +1795,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			},
 		}
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     newRules,
@@ -1932,13 +1822,7 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
 		rules := []rbacv1.PolicyRule{
 			{
@@ -1956,11 +1840,11 @@ func TestEnsureRBACResources(t *testing.T) {
 		}
 
 		// Create resources first time
-		err := client.EnsureRBACResources(ctx, params)
+		_, err := client.EnsureRBACResources(ctx, params)
 		require.NoError(t, err)
 
 		// Create resources second time - should not error
-		err = client.EnsureRBACResources(ctx, params)
+		_, err = client.EnsureRBACResources(ctx, params)
 		require.NoError(t, err)
 	})
 
@@ -1988,15 +1872,9 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     []rbacv1.PolicyRule{},
@@ -2031,15 +1909,9 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     []rbacv1.PolicyRule{},
@@ -2074,15 +1946,9 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     []rbacv1.PolicyRule{},
@@ -2104,15 +1970,9 @@ func TestEnsureRBACResources(t *testing.T) {
 
 		client := NewClient(fakeClient, scheme)
 
-		owner := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-owner",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := createTestOwner("test-owner", "default", "test-uid")
 
-		err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
+		_, err := client.EnsureRBACResources(ctx, EnsureRBACResourcesParams{
 			Name:      "test-rbac",
 			Namespace: "default",
 			Rules:     []rbacv1.PolicyRule{},
@@ -2133,9 +1993,7 @@ func TestEnsureRBACResources(t *testing.T) {
 func TestGetAllRBACResources(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := setupTestScheme(t)
 
 	t.Run("successfully retrieves all RBAC resources", func(t *testing.T) {
 		t.Parallel()

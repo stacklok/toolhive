@@ -243,6 +243,9 @@ type Server struct {
 
 // OptimizerIntegration is the interface for optimizer functionality in vMCP.
 // This is defined as an interface to avoid circular dependencies and allow testing.
+//
+// The optimizer integration also implements adapter.OptimizerHandlerProvider
+// to provide handlers for optimizer tools (optim_find_tool, optim_call_tool).
 type OptimizerIntegration interface {
 	// IngestInitialBackends ingests all discovered backends at startup
 	IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error
@@ -250,19 +253,17 @@ type OptimizerIntegration interface {
 	// OnRegisterSession generates embeddings for session tools
 	OnRegisterSession(ctx context.Context, session server.ClientSession, capabilities *aggregator.AggregatedCapabilities) error
 
-	// RegisterGlobalTools registers optim_find_tool and optim_call_tool globally (available to all sessions)
-	// This should be called during server initialization, before any sessions are created.
-	RegisterGlobalTools() error
-
-	// RegisterTools adds optim_find_tool and optim_call_tool to the session
-	// Even though tools are registered globally via RegisterGlobalTools(),
-	// with WithToolCapabilities(false), we also need to register them per-session
-	// to ensure they appear in list_tools responses.
-	RegisterTools(ctx context.Context, session server.ClientSession) error
-
 	// GetOptimizerToolDefinitions returns the tool definitions for optimizer tools without handlers.
 	// This is useful for adding tools to capabilities before session registration.
 	GetOptimizerToolDefinitions() []mcp.Tool
+
+	// CreateFindToolHandler returns the handler for optim_find_tool.
+	// This method is part of the adapter.OptimizerHandlerProvider interface.
+	CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+
+	// CreateCallToolHandler returns the handler for optim_call_tool.
+	// This method is part of the adapter.OptimizerHandlerProvider interface.
+	CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
 	// Close cleans up optimizer resources
 	Close() error
@@ -446,9 +447,20 @@ func New(
 			// Register optimizer tools globally (available to all sessions immediately)
 			// This ensures tools are available when clients call list_tools, avoiding timing issues
 			// where list_tools is called before per-session registration completes
-			if err := optimizerInteg.RegisterGlobalTools(); err != nil {
-				return nil, fmt.Errorf("failed to register optimizer tools globally: %w", err)
+			// Use the optimizer adapter to create optimizer tools for consistency
+			// Note: optimizerInteg implements both OptimizerIntegration and adapter.OptimizerHandlerProvider
+			handlerProvider, ok := optimizerInteg.(adapter.OptimizerHandlerProvider)
+			if !ok {
+				return nil, fmt.Errorf("optimizer integration does not implement OptimizerHandlerProvider")
 			}
+			optimizerTools, err := adapter.CreateOptimizerTools(handlerProvider)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create optimizer tools: %w", err)
+			}
+			for _, tool := range optimizerTools {
+				mcpServer.AddTool(tool.Tool, tool.Handler)
+			}
+			logger.Info("Optimizer tools registered globally (optim_find_tool, optim_call_tool)")
 
 			// Ingest discovered backends into optimizer database (for semantic search)
 			// Note: Backends are already discovered and registered with vMCP regardless of optimizer
@@ -504,15 +516,33 @@ func New(
 		// CRITICAL: Register optimizer tools FIRST, before any other processing
 		// This ensures tools are available immediately when clients call list_tools
 		// during or immediately after initialize, before other hooks complete
+		// Use the optimizer adapter to create optimizer tools for consistency
+		// Note: optimizerIntegration implements both OptimizerIntegration and adapter.OptimizerHandlerProvider
 		if srv.optimizerIntegration != nil {
-			if err := srv.optimizerIntegration.RegisterTools(ctx, session); err != nil {
-				logger.Errorw("failed to register optimizer tools",
-					"error", err,
+			handlerProvider, ok := srv.optimizerIntegration.(adapter.OptimizerHandlerProvider)
+			if !ok {
+				logger.Errorw("optimizer integration does not implement OptimizerHandlerProvider",
 					"session_id", sessionID)
 				// Don't fail session initialization - continue without optimizer tools
 			} else {
-				logger.Debugw("optimizer tools registered for session (early registration)",
-					"session_id", sessionID)
+				optimizerTools, err := adapter.CreateOptimizerTools(handlerProvider)
+				if err != nil {
+					logger.Errorw("failed to create optimizer tools",
+						"error", err,
+						"session_id", sessionID)
+					// Don't fail session initialization - continue without optimizer tools
+				} else {
+					// Add tools to session (required when WithToolCapabilities(false))
+					if err := srv.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
+						logger.Errorw("failed to add optimizer tools to session",
+							"error", err,
+							"session_id", sessionID)
+						// Don't fail session initialization - continue without optimizer tools
+					} else {
+						logger.Debugw("optimizer tools registered for session (early registration)",
+							"session_id", sessionID)
+					}
+				}
 			}
 		}
 

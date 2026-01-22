@@ -72,7 +72,12 @@ type Client struct {
 	config           *rest.Config
 	platformDetector PlatformDetector
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
-	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string, desiredGeneration int64) error
+	waitForStatefulSetReadyFunc func(
+		ctx context.Context,
+		clientset kubernetes.Interface,
+		namespace, name string,
+		desiredGeneration int64,
+	) error
 	// namespaceFunc is used for testing to override namespace detection
 	namespaceFunc func() string
 	// exitFunc is used for testing to override os.Exit behavior
@@ -638,7 +643,12 @@ func isStatefulSetReady(desiredGeneration int64, currentSts *appsv1.StatefulSet)
 // waitForStatefulSetReady waits for a statefulset to be ready using the watch API.
 // The desiredGeneration parameter is the generation from the Apply call (createdStatefulSet.Generation)
 // which is used to ensure the controller has processed our specific spec version.
-func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string, desiredGeneration int64) error {
+func waitForStatefulSetReady(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	namespace, name string,
+	desiredGeneration int64,
+) error {
 	// Create a field selector to watch only this specific statefulset
 	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
 

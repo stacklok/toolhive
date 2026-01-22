@@ -146,12 +146,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	// Process secrets if provided (regular secrets or RemoteAuthConfig secrets in CLI format)
+	// Process secrets before middleware population so that resolved values
+	// (e.g., header forward secrets) are available to middleware factories.
 	hasRegularSecrets := len(r.Config.Secrets) > 0
 	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
 		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
+	hasHeaderForwardSecrets := r.Config.HeaderForward != nil && len(r.Config.HeaderForward.AddHeadersFromSecret) > 0
 
-	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
+	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v, hasHeaderForwardSecrets=%v",
+		hasRegularSecrets, hasRemoteAuthSecret, hasHeaderForwardSecrets)
 	if hasRemoteAuthSecret {
 		if r.Config.RemoteAuthConfig.ClientSecret != "" {
 			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
@@ -161,7 +164,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	if hasRegularSecrets || hasRemoteAuthSecret {
+	if hasRegularSecrets || hasRemoteAuthSecret || hasHeaderForwardSecrets {
 		logger.Debugf("Calling WithSecrets to process secrets")
 		cfgprovider := config.NewDefaultProvider()
 		cfg := cfgprovider.GetConfig()
@@ -176,7 +179,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error instantiating secret manager %w", err)
 		}
 
-		// Process secrets (including RemoteAuthConfig.ClientSecret and BearerToken resolution)
+		// Process secrets (including RemoteAuthConfig and header forward secret resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
@@ -187,6 +190,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	if len(r.Config.MiddlewareConfigs) == 0 {
 		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
 			return fmt.Errorf("failed to populate middleware configs: %w", err)
+		}
+	} else {
+		// MiddlewareConfigs was pre-populated (e.g., by WithMiddlewareFromFlags).
+		// Header forward must be added here, after secret resolution, because
+		// secret-backed header values are not available at builder time.
+		var err error
+		r.Config.MiddlewareConfigs, err = addHeaderForwardMiddleware(r.Config.MiddlewareConfigs, r.Config)
+		if err != nil {
+			return fmt.Errorf("failed to add header forward middleware: %w", err)
 		}
 	}
 

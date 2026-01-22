@@ -483,6 +483,10 @@ func WithMiddlewareFromFlags(
 		// Add core middlewares (always present)
 		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
 
+		// NOTE: Header forward middleware is NOT added here because secret-backed
+		// headers are not yet resolved at builder time. It is added in Runner.Run()
+		// after WithSecrets() resolves all secret references.
+
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)

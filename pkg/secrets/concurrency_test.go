@@ -15,8 +15,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets/keyring"
 )
 
-// TestConcurrentKeyringAvailability tests that multiple goroutines can safely
-// check keyring availability simultaneously without conflicts.
+// TestConcurrentProviderCreation tests that multiple goroutines can safely
+// create a secrets provider simultaneously without conflicts.
 func TestConcurrentKeyringAvailability(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -27,7 +27,6 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 	const numIterations = 5
 
 	var wg sync.WaitGroup
-	results := make(chan bool, numGoroutines*numIterations)
 	errors := make(chan error, numGoroutines*numIterations)
 
 	// Start multiple goroutines that concurrently check keyring availability
@@ -37,12 +36,7 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < numIterations; j++ {
-				// Test IsKeyringAvailable
-				available := secrets.IsKeyringAvailable()
-				results <- available
-
-				// Test CreateSecretProvider (which internally calls IsKeyringAvailable)
-				_, err := secrets.CreateSecretProvider(secrets.NoneType)
+				_, err := secrets.CreateSecretProvider(secrets.EnvironmentType)
 				if err != nil {
 					errors <- fmt.Errorf("goroutine %d, iteration %d: CreateSecretProvider failed: %w", goroutineID, j, err)
 					continue
@@ -53,16 +47,7 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(results)
 	close(errors)
-
-	// Check results
-	successCount := 0
-	for result := range results {
-		if result {
-			successCount++
-		}
-	}
 
 	// Check for errors
 	var errorList []error
@@ -72,10 +57,8 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 	// We expect all operations to succeed - no errors should occur
 	assert.Empty(t, errorList, "Expected no errors during concurrent keyring availability checks, but got %d errors", len(errorList))
 
-	// All keyring availability checks should succeed
-	expectedSuccess := numGoroutines * numIterations
-	assert.Equal(t, expectedSuccess, successCount,
-		"Expected %d successful keyring availability checks, got %d", expectedSuccess, successCount)
+	// All provider creation operations should succeed
+	assert.Empty(t, errorList)
 }
 
 // TestConcurrentUniqueKeyGeneration tests that concurrent calls to
@@ -132,15 +115,7 @@ func TestSequentialConcurrency(t *testing.T) {
 
 	// Perform rapid sequential operations that could cause race conditions
 	for i := 0; i < numOperations; i++ {
-		// Test IsKeyringAvailable
-		available := secrets.IsKeyringAvailable()
-		if !available {
-			errorList = append(errorList, fmt.Errorf("operation %d: keyring not available", i))
-			continue
-		}
-
-		// Test CreateSecretProvider
-		provider, err := secrets.CreateSecretProvider(secrets.NoneType)
+		provider, err := secrets.CreateSecretProvider(secrets.EnvironmentType)
 		if err != nil {
 			errorList = append(errorList, fmt.Errorf("operation %d: CreateSecretProvider failed: %w", i, err))
 			continue

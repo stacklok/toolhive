@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,9 +62,20 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
-	// Create temporary config directory (similar to CLI tests)
-	tempXdgConfigHome := GinkgoT().TempDir()
-	tempHome := GinkgoT().TempDir()
+	// Use shared config directory for all API tests to ensure workload state consistency
+	// This prevents "run config not found" errors when containers persist across test subprocesses
+	sharedConfigDir := os.Getenv("TOOLHIVE_E2E_SHARED_CONFIG")
+	var tempXdgConfigHome, tempHome string
+
+	if sharedConfigDir != "" {
+		// Use shared config directory for API tests
+		tempXdgConfigHome = sharedConfigDir
+		tempHome = sharedConfigDir
+	} else {
+		// Fallback to per-test temp directories for non-API tests
+		tempXdgConfigHome = GinkgoT().TempDir()
+		tempHome = GinkgoT().TempDir()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 

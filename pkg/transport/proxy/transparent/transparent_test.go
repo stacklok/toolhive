@@ -656,6 +656,23 @@ func TestRewriteEndpointURL(t *testing.T) {
 			expected: "https://public.example.com/sse?sessionId=abc123",
 		},
 		{
+			name:        "scheme and host only - path-only URL remains relative",
+			originalURL: "/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				scheme: "http",
+			},
+			expected: "/sse?sessionId=abc123",
+		},
+		{
+			name:        "scheme and host only - path and prefix URL remains relative",
+			originalURL: "/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				prefix: "/playwright",
+				scheme: "http",
+			},
+			expected: "/playwright/sse?sessionId=abc123",
+		},
+		{
 			name:        "preserves complex query string",
 			originalURL: "/sse?sessionId=abc123&foo=bar&baz=qux",
 			config:      sseRewriteConfig{prefix: "/api/v1"},

@@ -22,10 +22,10 @@ Note: The "thv secret setup" command is recommended for interactive configuratio
 Use this command to set the secrets provider directly without interactive prompts,
 making it suitable for scripted deployments and automation.
 
-Valid secrets providers:
-  - encrypted: Full read-write secrets provider using AES-256-GCM encryption
-  - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
-  - none: Disables secrets functionality
+		Valid secrets providers:
+		  - encrypted: Full read-write secrets provider using AES-256-GCM encryption
+		  - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
+		  - environment: Read-only secrets provider from TOOLHIVE_SECRET_* env vars
 
 ```
 thv secret provider <name> [flags]

@@ -47,19 +47,19 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	// Check if the token was refreshed (access token changed)
+	// Check if the refresh token changed - only persist when it actually differs
+	// Refresh tokens are long-lived and usually don't change on every access token refresh
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.lastToken == nil || token.AccessToken != p.lastToken.AccessToken {
-		// Token was refreshed, persist the refresh token
-		if p.persister != nil && token.RefreshToken != "" {
-			if err := p.persister(token.RefreshToken, token.Expiry); err != nil {
-				// Log the error but don't fail the token retrieval
-				logger.Warnf("Failed to persist refreshed OAuth token: %v", err)
-			} else {
-				logger.Debugf("Successfully persisted refreshed OAuth token")
-			}
+	if token.RefreshToken != "" && p.persister != nil &&
+		(p.lastToken == nil || token.RefreshToken != p.lastToken.RefreshToken) {
+		// Refresh token changed, persist it
+		if err := p.persister(token.RefreshToken, token.Expiry); err != nil {
+			// Log the error but don't fail the token retrieval
+			logger.Warnf("Failed to persist refreshed OAuth token: %v", err)
+		} else {
+			logger.Debugf("Successfully persisted refreshed OAuth token")
 		}
 		p.lastToken = token
 	}

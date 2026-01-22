@@ -17,11 +17,11 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/tokens"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Config holds configuration for the ingestion service

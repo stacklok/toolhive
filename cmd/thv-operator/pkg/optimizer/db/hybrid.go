@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // HybridSearchConfig configures hybrid search behavior

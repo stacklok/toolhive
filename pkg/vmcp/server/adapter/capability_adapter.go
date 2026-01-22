@@ -4,6 +4,7 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -13,6 +14,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// OptimizerHandlerProvider provides handlers for optimizer tools.
+// This interface allows the adapter to create optimizer tools without
+// depending on the optimizer package implementation.
+type OptimizerHandlerProvider interface {
+	// CreateFindToolHandler returns the handler for optim_find_tool
+	CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+
+	// CreateCallToolHandler returns the handler for optim_call_tool
+	CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+}
 
 // CapabilityAdapter converts aggregator domain models to SDK types.
 //
@@ -207,4 +219,16 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 	}
 
 	return sdkTools, nil
+}
+
+// CreateOptimizerTools creates SDK tools for optimizer mode.
+//
+// When optimizer is enabled, only optim_find_tool and optim_call_tool are exposed
+// to clients instead of all backend tools. This method delegates to the standalone
+// CreateOptimizerTools function in optimizer_adapter.go for consistency.
+//
+// This keeps optimizer tool creation consistent with other tool types (backend,
+// composite) by going through the adapter layer.
+func (a *CapabilityAdapter) CreateOptimizerTools(provider OptimizerHandlerProvider) ([]server.ServerTool, error) {
+	return CreateOptimizerTools(provider)
 }

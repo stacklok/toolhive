@@ -438,20 +438,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			hybridRatio = *cfg.Optimizer.HybridSearchRatio
 		}
 
-		// embeddingURL should already be resolved from embeddingService by the operator
-		// If embeddingService is still set (CLI mode), log a warning
-		if cfg.Optimizer.EmbeddingService != "" {
-			logger.Warnf("embeddingService is set but not resolved to embeddingURL. " +
-				"This should be handled by the operator. Falling back to default port 11434")
-			// Simple fallback for CLI/testing scenarios
-			namespace := os.Getenv("POD_NAMESPACE")
-			if namespace != "" {
-				cfg.Optimizer.EmbeddingURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:11434", cfg.Optimizer.EmbeddingService, namespace)
-			} else {
-				cfg.Optimizer.EmbeddingURL = fmt.Sprintf("http://%s:11434", cfg.Optimizer.EmbeddingService)
-			}
-		}
-
 		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
 			Enabled:            cfg.Optimizer.Enabled,
 			PersistPath:        cfg.Optimizer.PersistPath,

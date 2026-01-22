@@ -49,4 +49,4 @@ cmd/vmcp/__debug_bin*
 examples/operator/virtual-mcps/vmcp_optimizer.yaml
 scripts/k8s_vmcp_optimizer_demo.sh
 examples/ingress/mcp-servers-ingress.yaml
-vmcp
+/vmcp

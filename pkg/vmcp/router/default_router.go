@@ -6,7 +6,6 @@ package router
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -79,21 +78,7 @@ func routeCapability(
 // RouteTool resolves a tool name to its backend target.
 // With lazy discovery, this method gets capabilities from the request context
 // instead of using a cached routing table.
-//
-// Special handling for optimizer tools:
-// - Tools with "optim_" prefix (optim_find_tool, optim_call_tool) are handled by vMCP itself
-// - These tools are registered during session initialization and don't route to backends
-// - The SDK handles these tools directly via registered handlers
 func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error) {
-	// Optimizer tools (optim_*) are handled by vMCP itself, not routed to backends.
-	// The SDK will invoke the registered handler directly.
-	// We return ErrToolNotFound here so the handler factory doesn't try to create
-	// a backend routing handler for these tools.
-	if strings.HasPrefix(toolName, "optim_") {
-		logger.Debugf("Optimizer tool %s is handled by vMCP, not routed to backend", toolName)
-		return nil, fmt.Errorf("%w: optimizer tool %s is handled by vMCP", ErrToolNotFound, toolName)
-	}
-
 	return routeCapability(
 		ctx,
 		toolName,

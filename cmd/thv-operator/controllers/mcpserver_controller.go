@@ -185,6 +185,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if the GroupRef is valid if specified
 	r.validateGroupRef(ctx, mcpServer)
 
+	// Validate CABundleRef if specified
+	r.validateCABundleRef(ctx, mcpServer)
+
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
 	if !r.validateAndUpdatePodTemplateStatus(ctx, mcpServer) {
@@ -484,6 +487,90 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 		ctxLogger.Error(err, "Failed to update MCPServer status after GroupRef validation")
 	}
 
+}
+
+// getCABundleRef extracts the CABundleRef from the OIDC configuration based on type
+func getCABundleRef(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.CABundleSource {
+	if oidcConfig == nil {
+		return nil
+	}
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return oidcConfig.Inline.CABundleRef
+		}
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+		if oidcConfig.ConfigMap != nil {
+			return oidcConfig.ConfigMap.CABundleRef
+		}
+	}
+	return nil
+}
+
+// setCABundleRefCondition sets the CA bundle validation status condition
+func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionCABundleRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateCABundleRef validates the CABundleRef ConfigMap reference if specified
+func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	caBundleRef := getCABundleRef(mcpServer.Spec.OIDCConfig)
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the CABundleRef configuration
+	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
+		ctxLogger.Error(err, "Invalid CABundleRef configuration")
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid, err.Error())
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Check if the referenced ConfigMap exists
+	cmName := caBundleRef.ConfigMapRef.Name
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: cmName}, configMap); err != nil {
+		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, mcpServer.Namespace))
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Verify the key exists in the ConfigMap
+	key := caBundleRef.ConfigMapRef.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	if _, exists := configMap.Data[key]; !exists {
+		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName))
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Validation passed
+	setCABundleRefCondition(mcpServer, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key))
+	r.updateCABundleStatus(ctx, mcpServer)
+}
+
+// updateCABundleStatus updates the MCPServer status after CA bundle validation
+func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	ctxLogger := log.FromContext(ctx)
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPServer status after CABundleRef validation")
+	}
 }
 
 // setImageValidationCondition is a helper function to set the image validation status condition
@@ -1063,6 +1150,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
+	}
+
+	// Add OIDC CA bundle volume if configured
+	if m.Spec.OIDCConfig != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(m.Spec.OIDCConfig)
+		volumes = append(volumes, caVolumes...)
+		volumeMounts = append(volumeMounts, caMounts...)
 	}
 
 	// Prepare container resources

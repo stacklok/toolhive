@@ -16,14 +16,14 @@ import (
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider fosite.OAuth2Provider
-	config   *server.AuthorizationServerConfig
-	storage  storage.Storage
-	upstream upstream.OAuth2Provider
+	provider     fosite.OAuth2Provider
+	config       *server.AuthorizationServerConfig
+	storage      storage.Storage
+	upstream     upstream.OAuth2Provider
+	userResolver *UserResolver
 }
 
 // NewHandler creates a new Handler with the given dependencies.
-// The upstream IDP provider is required for the auth server to function.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
@@ -31,10 +31,11 @@ func NewHandler(
 	upstreamIDP upstream.OAuth2Provider,
 ) *Handler {
 	return &Handler{
-		provider: provider,
-		config:   config,
-		storage:  stor,
-		upstream: upstreamIDP,
+		provider:     provider,
+		config:       config,
+		storage:      stor,
+		upstream:     upstreamIDP,
+		userResolver: NewUserResolver(stor),
 	}
 }
 
@@ -47,10 +48,10 @@ func (h *Handler) Routes() http.Handler {
 }
 
 // OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
-func (*Handler) OAuthRoutes(_ chi.Router) {
-	// TODO: Register OAuth endpoint handlers here once implemented:
-	// - GET /oauth/authorize  -> h.AuthorizeHandler (initiates OAuth flow)
-	// - GET /oauth/callback   -> h.CallbackHandler (receives upstream IDP callback)
+func (h *Handler) OAuthRoutes(r chi.Router) {
+	r.Get("/oauth/authorize", h.AuthorizeHandler)
+	r.Get("/oauth/callback", h.CallbackHandler)
+	// TODO: Register remaining OAuth endpoint handlers here once implemented:
 	// - POST /oauth/token     -> h.TokenHandler (token endpoint)
 	// - POST /oauth/register -> h.RegisterClientHandler (RFC 7591 dynamic client registration)
 }

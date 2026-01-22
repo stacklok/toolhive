@@ -1061,6 +1061,38 @@ spec:
                           ConfigMap references a ConfigMap containing OIDC configuration
                           Only used when Type is "configmap"
                         properties:
+                          caBundleRef:
+                            description: |-
+                              CABundleRef references a ConfigMap containing the CA certificate bundle.
+                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+                              If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence.
+                            properties:
+                              configMapRef:
+                                description: |-
+                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                  If Key is not specified, it defaults to "ca.crt".
+                                properties:
+                                  key:
+                                    description: The key to select.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            type: object
                           key:
                             default: oidc.json
                             description: Key is the key in the ConfigMap that contains
@@ -1081,6 +1113,38 @@ spec:
                             description: Audience is the expected audience for the
                               token
                             type: string
+                          caBundleRef:
+                            description: |-
+                              CABundleRef references a ConfigMap containing the CA certificate bundle.
+                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+                              If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+                            properties:
+                              configMapRef:
+                                description: |-
+                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                  If Key is not specified, it defaults to "ca.crt".
+                                properties:
+                                  key:
+                                    description: The key to select.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            type: object
                           clientId:
                             description: ClientID is the OIDC client ID
                             type: string
@@ -1147,8 +1211,13 @@ spec:
                             type: array
                           thvCABundlePath:
                             description: |-
-                              ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
-                              The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+                              ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
+
+                              Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
+                              already exist in the proxy runner container (e.g., Kubernetes service account CA at
+                              /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
+                              use CABundleRef which automatically mounts the ConfigMap and computes the path.
+                              This field will be removed when the API graduates to v1beta1.
                             type: string
                         required:
                         - issuer

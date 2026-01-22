@@ -48,26 +48,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		return NewBearerTokenSource(h.config.BearerToken), nil
 	}
 
-	// Priority 2: Try to use cached OAuth tokens (if available)
-	if h.config.HasValidCachedTokens() {
-		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, remoteURL)
-		if err != nil {
-			logger.Warnf("Failed to restore from cached tokens, will perform fresh OAuth flow: %v", err)
-			// Clear invalid cached tokens
-			h.config.ClearCachedTokens()
-		} else if tokenSource != nil {
-			logger.Infof("Successfully restored OAuth session from cached tokens")
-			return tokenSource, nil
-		}
-	}
-
-	// Priority 3: OAuth authentication (if configured or detected)
-	return h.authenticateWithOAuth(ctx, remoteURL)
-}
-
-// authenticateWithOAuth detects and handles OAuth authentication requirements
-func (h *Handler) authenticateWithOAuth(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
-	// Try to detect if authentication is required
+	// Detect authentication requirements once (used by both cached token restore and fresh OAuth)
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
@@ -86,14 +67,33 @@ func (h *Handler) authenticateWithOAuth(ctx context.Context, remoteURL string) (
 		return nil, err
 	}
 
-	// Handle OAuth authentication (including Bearer fallback for backward compatibility)
-	if authInfo.Type == "OAuth" || authInfo.Type == "Bearer" {
-		return h.performOAuthFlow(ctx, authInfo, remoteURL)
+	// Only proceed with OAuth if the auth type supports it
+	if authInfo.Type != "OAuth" && authInfo.Type != "Bearer" {
+		logger.Infof("Unsupported authentication type: %s", authInfo.Type)
+		return nil, nil
 	}
 
-	// Currently only OAuth-based authentication is supported
-	logger.Infof("Unsupported authentication type: %s", authInfo.Type)
-	return nil, nil
+	// Discover OAuth endpoints once (used by both cached token restore and fresh OAuth)
+	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Priority 2: Try to use cached OAuth tokens (if available)
+	if h.config.HasValidCachedTokens() {
+		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, issuer, scopes, authServerInfo)
+		if err != nil {
+			logger.Warnf("Failed to restore from cached tokens, will perform fresh OAuth flow: %v", err)
+			// Clear invalid cached tokens
+			h.config.ClearCachedTokens()
+		} else if tokenSource != nil {
+			logger.Infof("Successfully restored OAuth session from cached tokens")
+			return tokenSource, nil
+		}
+	}
+
+	// Priority 3: Fresh OAuth authentication flow
+	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo)
 }
 
 // validateBearerRequirement checks if Bearer auth is required without OAuth fallback
@@ -118,15 +118,10 @@ func (*Handler) validateBearerRequirement(authInfo *discovery.AuthInfo) error {
 // performOAuthFlow executes the OAuth authentication flow
 func (h *Handler) performOAuthFlow(
 	ctx context.Context,
-	authInfo *discovery.AuthInfo,
-	remoteURL string,
+	issuer string,
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
 ) (oauth2.TokenSource, error) {
-	// Discover the issuer and potentially update scopes
-	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
-	if err != nil {
-		return nil, err
-	}
-
 	logger.Infof("Starting OAuth authentication flow with issuer: %s", issuer)
 
 	// Create OAuth flow config
@@ -190,7 +185,12 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 }
 
 // tryRestoreFromCachedTokens attempts to create a TokenSource from cached tokens
-func (h *Handler) tryRestoreFromCachedTokens(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+func (h *Handler) tryRestoreFromCachedTokens(
+	ctx context.Context,
+	issuer string,
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
+) (oauth2.TokenSource, error) {
 	// Resolve the refresh token from the secret manager
 	if h.secretProvider == nil {
 		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
@@ -199,23 +199,6 @@ func (h *Handler) tryRestoreFromCachedTokens(ctx context.Context, remoteURL stri
 	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
-	}
-
-	// We need to discover the OAuth endpoints to create a proper token source
-	// that can refresh tokens when they expire
-	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to detect auth requirements: %w", err)
-	}
-
-	if authInfo == nil {
-		return nil, fmt.Errorf("no authentication required by server")
-	}
-
-	// Discover OAuth endpoints
-	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover OAuth endpoints: %w", err)
 	}
 
 	// Build OAuth2 config for token refresh

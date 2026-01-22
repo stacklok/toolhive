@@ -733,12 +733,12 @@ spec:
                       hybridSearchRatio:
                         description: |-
                           HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
-                          Value range: 0.0 (all BM25) to 1.0 (all semantic).
-                          Default: 0.7 (70% semantic, 30% BM25)
+                          Value range: 0 (all BM25) to 100 (all semantic), representing percentage.
+                          Default: 70 (70% semantic, 30% BM25)
                           Only used when FTSDBPath is set.
-                        maximum: 1
+                        maximum: 100
                         minimum: 0
-                        type: number
+                        type: integer
                       persistPath:
                         description: |-
                           PersistPath is the optional filesystem path for persisting the chromem-go database.

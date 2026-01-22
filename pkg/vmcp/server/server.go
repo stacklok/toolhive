@@ -24,7 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"

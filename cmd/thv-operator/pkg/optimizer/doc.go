@@ -66,8 +66,8 @@
 // Example vMCP integration (see pkg/vmcp/optimizer):
 //
 //	import (
-//	    "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
-//	    "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+//	    "github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/ingestion"
+//	    "github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 //	)
 //
 //	// Create embedding manager

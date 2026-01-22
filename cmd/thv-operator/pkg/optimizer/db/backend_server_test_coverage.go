@@ -11,11 +11,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
 )
 
-// TestBackendToolOps_Create_FTS tests FTS integration in Create
-func TestBackendToolOps_Create_FTS(t *testing.T) {
+// TestBackendServerOps_Create_FTS tests FTS integration in Create
+func TestBackendServerOps_Create_FTS(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -33,31 +33,31 @@ func TestBackendToolOps_Create_FTS(t *testing.T) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
-	ops := NewBackendToolOps(db, embeddingFunc)
+	ops := NewBackendServerOps(db, embeddingFunc)
 
-	desc := "A test tool"
-	tool := &models.BackendTool{
-		ID:          "tool-1",
-		MCPServerID: "server-1",
-		ToolName:    "test_tool",
-		Description: &desc,
-		InputSchema: []byte(`{"type": "object"}`),
-		TokenCount:  10,
+	server := &models.BackendServer{
+		ID:          "server-1",
+		Name:        "Test Server",
+		Description: stringPtr("A test server"),
+		Group:       "default",
 		CreatedAt:   time.Now(),
 		LastUpdated: time.Now(),
 	}
 
 	// Create should also update FTS
-	err = ops.Create(ctx, tool, "TestServer")
+	err = ops.Create(ctx, server)
 	require.NoError(t, err)
 
-	// Verify FTS was updated
+	// Verify FTS was updated by checking FTS DB directly
 	ftsDB := db.GetFTSDB()
 	require.NotNil(t, ftsDB)
+
+	// FTS should have the server
+	// We can't easily query FTS directly, but we can verify it doesn't error
 }
 
-// TestBackendToolOps_DeleteByServer_FTS tests FTS integration in DeleteByServer
-func TestBackendToolOps_DeleteByServer_FTS(t *testing.T) {
+// TestBackendServerOps_Delete_FTS tests FTS integration in Delete
+func TestBackendServerOps_Delete_FTS(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -75,25 +75,23 @@ func TestBackendToolOps_DeleteByServer_FTS(t *testing.T) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
-	ops := NewBackendToolOps(db, embeddingFunc)
+	ops := NewBackendServerOps(db, embeddingFunc)
 
-	desc := "A test tool"
-	tool := &models.BackendTool{
-		ID:          "tool-1",
-		MCPServerID: "server-1",
-		ToolName:    "test_tool",
+	desc := "A test server"
+	server := &models.BackendServer{
+		ID:          "server-1",
+		Name:        "Test Server",
 		Description: &desc,
-		InputSchema: []byte(`{"type": "object"}`),
-		TokenCount:  10,
+		Group:       "default",
 		CreatedAt:   time.Now(),
 		LastUpdated: time.Now(),
 	}
 
-	// Create tool
-	err = ops.Create(ctx, tool, "TestServer")
+	// Create server
+	err = ops.Create(ctx, server)
 	require.NoError(t, err)
 
-	// DeleteByServer should also delete from FTS
-	err = ops.DeleteByServer(ctx, "server-1")
+	// Delete should also delete from FTS
+	err = ops.Delete(ctx, server.ID)
 	require.NoError(t, err)
 }

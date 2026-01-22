@@ -15,7 +15,7 @@ The optimizer package provides semantic tool discovery and ingestion for MCP ser
 ## Architecture
 
 ```
-pkg/optimizer/
+cmd/thv-operator/pkg/optimizer/
 ├── models/           # Domain models (Server, Tool, etc.)
 ├── db/               # Hybrid database layer (chromem-go + SQLite FTS5)
 │   ├── db.go         # Database coordinator
@@ -116,9 +116,9 @@ When optimizer is enabled, vMCP exposes:
 import (
     "context"
     
-    "github.com/stacklok/toolhive/pkg/optimizer/db"
-    "github.com/stacklok/toolhive/pkg/optimizer/embeddings"
-    "github.com/stacklok/toolhive/pkg/optimizer/ingestion"
+    "github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
+    "github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
+    "github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/ingestion"
 )
 
 func main() {
@@ -249,13 +249,13 @@ Run the unit tests:
 
 ```bash
 # Test all packages
-go test ./pkg/optimizer/...
+go test ./cmd/thv-operator/pkg/optimizer/...
 
 # Test with coverage
-go test -cover ./pkg/optimizer/...
+go test -cover ./cmd/thv-operator/pkg/optimizer/...
 
 # Test specific package
-go test ./pkg/optimizer/models
+go test ./cmd/thv-operator/pkg/optimizer/models
 ```
 
 ## Inspecting the Database

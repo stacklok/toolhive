@@ -14,8 +14,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/optimizer/db"
-	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 )
 
 // TestServiceCreationAndIngestion demonstrates the complete chromem-go workflow:

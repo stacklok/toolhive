@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -347,15 +348,17 @@ var _ = Describe("Groups API", Label("api", "groups", "e2e"), func() {
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
 
+				By("Waiting for workload to be running")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
-						if w.Name == workloadName {
+						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
 							return true
 						}
 					}
 					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+					"Workload should reach running state before deletion")
 
 				By("Deleting the group with workloads")
 				delResp := deleteGroupWithWorkloads(apiServer, groupName, true)

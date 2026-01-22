@@ -50,7 +50,7 @@ When the optimizer is enabled, vMCP automatically exposes these tools to LLM cli
 The integration code is located in:
 - `cmd/vmcp/optimizer.go`: Optimizer initialization and configuration
 - `pkg/vmcp/optimizer/optimizer.go`: Session registration hook implementation
-- `pkg/optimizer/ingestion/service.go`: Core ingestion service
+- `cmd/thv-operator/pkg/optimizer/ingestion/service.go`: Core ingestion service
 
 ## Configuration
 

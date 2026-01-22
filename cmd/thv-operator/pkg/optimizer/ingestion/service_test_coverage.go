@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/optimizer/db"
-	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 )
 
 // TestService_GetTotalToolTokens tests token counting

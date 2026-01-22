@@ -17,7 +17,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"

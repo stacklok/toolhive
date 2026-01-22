@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/optimizer/embeddings"
-	"github.com/stacklok/toolhive/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
 )
 
 // createTestDB creates a test database

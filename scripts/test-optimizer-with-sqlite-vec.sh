@@ -105,7 +105,7 @@ export SQLITE_VEC_PATH="$SQLITE_VEC_FILE"
 export CGO_ENABLED=1
 
 # Run tests with FTS5 support
-if go test -tags="fts5" ./pkg/optimizer/ingestion/... -v "$@"; then
+if go test -tags="fts5" ./cmd/thv-operator/pkg/optimizer/ingestion/... -v "$@"; then
     echo ""
     echo -e "${GREEN}✅ All tests passed!${NC}"
     exit 0

@@ -13,7 +13,7 @@ import (
 	"github.com/philippgille/chromem-go"
 
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
 )
 
 // BackendServerOps provides operations for backend servers in chromem-go

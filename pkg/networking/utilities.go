@@ -14,8 +14,7 @@ import (
 
 const (
 	// ErrPrivateIpAddress is the error returned when the provided URL redirects to a private IP address
-	ErrPrivateIpAddress = "the provided registry URL redirects to a private IP address, which is not allowed; " +
-		"to override this, reset the registry URL using the --allow-private-ip (-p) flag"
+	ErrPrivateIpAddress = "the provided URL redirects to a private IP address, which is not allowed"
 )
 
 func init() {

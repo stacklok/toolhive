@@ -713,12 +713,6 @@ spec:
                           - vLLM: "BAAI/bge-small-en-v1.5"
                           - OpenAI: "text-embedding-3-small"
                         type: string
-                      embeddingService:
-                        description: |-
-                          EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
-                          This is an alternative to EmbeddingURL for in-cluster deployments.
-                          When set, vMCP will resolve the service DNS name for the embedding API.
-                        type: string
                       embeddingURL:
                         description: |-
                           EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).

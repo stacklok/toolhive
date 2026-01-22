@@ -59,11 +59,6 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	codeChallengeMethod := ar.GetRequestForm().Get("code_challenge_method")
 	scopes := []string(ar.GetRequestedScopes())
 
-	// Validate state is present (recommended by OAuth 2.0 spec)
-	if state == "" {
-		logger.Warn("authorization request missing state parameter")
-	}
-
 	// Check if upstream provider is configured
 	if h.upstream == nil {
 		logger.Error("upstream provider not configured")
@@ -116,10 +111,6 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
 		return
 	}
-
-	logger.Infow("redirecting to upstream IDP",
-		"upstream_provider", string(h.upstream.Type()),
-	)
 
 	// Redirect user to upstream IDP
 	http.Redirect(w, req, upstreamURL, http.StatusFound)

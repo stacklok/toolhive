@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // Handler handles authentication for remote MCP servers.
@@ -18,6 +19,7 @@ import (
 type Handler struct {
 	config         *Config
 	tokenPersister TokenPersister
+	secretProvider secrets.Provider
 }
 
 // NewHandler creates a new remote authentication handler
@@ -31,6 +33,11 @@ func NewHandler(config *Config) *Handler {
 // OAuth tokens are refreshed. This enables token persistence across restarts.
 func (h *Handler) SetTokenPersister(persister TokenPersister) {
 	h.tokenPersister = persister
+}
+
+// SetSecretProvider sets the secret provider used to store and retrieve cached tokens.
+func (h *Handler) SetSecretProvider(provider secrets.Provider) {
+	h.secretProvider = provider
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
@@ -164,9 +171,9 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 
 // wrapWithPersistence wraps the OAuth result with token persistence
 func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.TokenSource {
-	// Persist the tokens for future restarts
+	// Persist the refresh token for future restarts
 	if h.tokenPersister != nil && result.RefreshToken != "" {
-		if err := h.tokenPersister(result.AccessToken, result.RefreshToken, result.Expiry); err != nil {
+		if err := h.tokenPersister(result.RefreshToken, result.Expiry); err != nil {
 			logger.Warnf("Failed to persist OAuth tokens: %v", err)
 		} else {
 			logger.Infof("Successfully persisted OAuth tokens for future restarts")
@@ -184,6 +191,16 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 
 // tryRestoreFromCachedTokens attempts to create a TokenSource from cached tokens
 func (h *Handler) tryRestoreFromCachedTokens(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+	// Resolve the refresh token from the secret manager
+	if h.secretProvider == nil {
+		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
+	}
+
+	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
+	}
+
 	// We need to discover the OAuth endpoints to create a proper token source
 	// that can refresh tokens when they expire
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
@@ -222,16 +239,15 @@ func (h *Handler) tryRestoreFromCachedTokens(ctx context.Context, remoteURL stri
 		}
 	}
 
-	// Create token source from cached tokens
+	// Create token source from cached refresh token
 	baseSource := CreateTokenSourceFromCached(
 		oauth2Config,
-		h.config.CachedAccessToken,
-		h.config.CachedRefreshToken,
+		refreshToken,
 		h.config.CachedTokenExpiry,
 	)
 
 	// Try to get a token to verify the cached tokens are valid
-	// This will trigger a refresh if the access token is expired
+	// This will trigger a refresh since we don't have an access token
 	_, err = baseSource.Token()
 	if err != nil {
 		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)

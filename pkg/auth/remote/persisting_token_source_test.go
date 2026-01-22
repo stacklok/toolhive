@@ -85,7 +85,7 @@ func TestPersistingTokenSource_Token(t *testing.T) {
 			}
 
 			var persistCount atomic.Int32
-			persister := func(_, _ string, _ time.Time) error {
+			persister := func(_ string, _ time.Time) error {
 				persistCount.Add(1)
 				return nil
 			}
@@ -126,7 +126,7 @@ func TestPersistingTokenSource_PersisterError(t *testing.T) {
 	}
 
 	// Persister that always fails
-	persister := func(_, _ string, _ time.Time) error {
+	persister := func(_ string, _ time.Time) error {
 		return errors.New("persistence failed")
 	}
 
@@ -165,32 +165,31 @@ func TestConfig_HasValidCachedTokens(t *testing.T) {
 		want   bool
 	}{
 		{
-			name: "returns true when refresh token exists",
+			name: "returns true when refresh token ref exists",
 			config: Config{
-				CachedRefreshToken: "refresh_token",
+				CachedRefreshTokenRef: "OAUTH_REFRESH_TOKEN_test",
 			},
 			want: true,
 		},
 		{
-			name: "returns true when both tokens exist",
+			name: "returns true when refresh token ref and expiry exist",
 			config: Config{
-				CachedAccessToken:  "access_token",
-				CachedRefreshToken: "refresh_token",
-				CachedTokenExpiry:  time.Now().Add(time.Hour),
+				CachedRefreshTokenRef: "OAUTH_REFRESH_TOKEN_test",
+				CachedTokenExpiry:     time.Now().Add(time.Hour),
 			},
 			want: true,
 		},
 		{
-			name: "returns false when only access token exists",
-			config: Config{
-				CachedAccessToken: "access_token",
-			},
-			want: false,
-		},
-		{
-			name:   "returns false when no tokens exist",
+			name:   "returns false when no token ref exists",
 			config: Config{},
 			want:   false,
+		},
+		{
+			name: "returns false when only expiry exists",
+			config: Config{
+				CachedTokenExpiry: time.Now().Add(time.Hour),
+			},
+			want: false,
 		},
 	}
 
@@ -206,15 +205,13 @@ func TestConfig_ClearCachedTokens(t *testing.T) {
 	t.Parallel()
 
 	config := Config{
-		CachedAccessToken:  "access_token",
-		CachedRefreshToken: "refresh_token",
-		CachedTokenExpiry:  time.Now().Add(time.Hour),
+		CachedRefreshTokenRef: "OAUTH_REFRESH_TOKEN_test",
+		CachedTokenExpiry:     time.Now().Add(time.Hour),
 	}
 
 	config.ClearCachedTokens()
 
-	assert.Empty(t, config.CachedAccessToken)
-	assert.Empty(t, config.CachedRefreshToken)
+	assert.Empty(t, config.CachedRefreshTokenRef)
 	assert.True(t, config.CachedTokenExpiry.IsZero())
 }
 
@@ -234,7 +231,6 @@ func TestCreateTokenSourceFromCached(t *testing.T) {
 
 	tokenSource := CreateTokenSourceFromCached(
 		oauth2Config,
-		"access_token",
 		"refresh_token",
 		time.Now().Add(time.Hour),
 	)

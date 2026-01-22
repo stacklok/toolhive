@@ -13,9 +13,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// TokenPersister is a callback function that persists OAuth tokens.
-// It is called whenever tokens are refreshed.
-type TokenPersister func(accessToken, refreshToken string, expiry time.Time) error
+// TokenPersister is a callback function that persists OAuth refresh tokens.
+// It is called whenever tokens are refreshed. Only the refresh token is persisted
+// since the access token can be regenerated from it.
+type TokenPersister func(refreshToken string, expiry time.Time) error
 
 // PersistingTokenSource wraps an oauth2.TokenSource and persists tokens
 // whenever they are refreshed. This enables session restoration across
@@ -51,9 +52,9 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 	defer p.mu.Unlock()
 
 	if p.lastToken == nil || token.AccessToken != p.lastToken.AccessToken {
-		// Token was refreshed, persist it
-		if p.persister != nil {
-			if err := p.persister(token.AccessToken, token.RefreshToken, token.Expiry); err != nil {
+		// Token was refreshed, persist the refresh token
+		if p.persister != nil && token.RefreshToken != "" {
+			if err := p.persister(token.RefreshToken, token.Expiry); err != nil {
 				// Log the error but don't fail the token retrieval
 				logger.Warnf("Failed to persist refreshed OAuth token: %v", err)
 			} else {
@@ -66,16 +67,20 @@ func (p *PersistingTokenSource) Token() (*oauth2.Token, error) {
 	return token, nil
 }
 
-// CreateTokenSourceFromCached creates an oauth2.TokenSource from cached tokens.
-// The returned token source will automatically refresh the token when it expires,
-// using the refresh token.
+// CreateTokenSourceFromCached creates an oauth2.TokenSource from a cached refresh token.
+// The returned token source will immediately refresh to get a new access token,
+// then automatically refresh when it expires.
 func CreateTokenSourceFromCached(
 	config *oauth2.Config,
-	accessToken, refreshToken string,
+	refreshToken string,
 	expiry time.Time,
 ) oauth2.TokenSource {
+	// Create a token with only the refresh token.
+	// The access token is intentionally empty - ReuseTokenSource will detect
+	// that the token is expired (since Expiry is in the past or AccessToken is empty)
+	// and trigger a refresh using the refresh token.
 	token := &oauth2.Token{
-		AccessToken:  accessToken,
+		AccessToken:  "", // Empty - will trigger immediate refresh
 		RefreshToken: refreshToken,
 		Expiry:       expiry,
 		TokenType:    "Bearer",

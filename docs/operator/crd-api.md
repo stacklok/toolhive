@@ -396,7 +396,6 @@ _Appears in:_
 | `persistPath` _string_ | PersistPath is the optional filesystem path for persisting the chromem-go database.<br />If empty, the database will be in-memory only (ephemeral).<br />When set, tool metadata and embeddings are persisted to disk for faster restarts. |  |  |
 | `ftsDBPath` _string_ | FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.<br />If empty, defaults to ":memory:" for in-memory FTS5, or "\{PersistPath\}/fts.db" if PersistPath is set.<br />Hybrid search (semantic + BM25) is always enabled. |  |  |
 | `hybridSearchRatio` _integer_ | HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.<br />Value range: 0-100 (representing percentage, 0 = all BM25, 100 = all semantic).<br />Default: 70 (70% semantic, 30% BM25)<br />Only used when FTSDBPath is set. |  | Maximum: 100 <br />Minimum: 0 <br /> |
-| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).<br />This is an alternative to EmbeddingURL for in-cluster deployments.<br />When set, vMCP will resolve the service DNS name for the embedding API. |  |  |
 
 
 #### vmcp.config.OutgoingAuthConfig

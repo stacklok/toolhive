@@ -92,8 +92,8 @@ optimizer:
   # (requires OPENAI_API_KEY environment variable)
   
   # Option 4: Kubernetes in-cluster service (K8s deployments)
-  # embeddingService: embedding-service-name
-  # (vMCP will resolve the service DNS name)
+  # embeddingURL: http://embedding-service-name.namespace.svc.cluster.local:port
+  # Use the full service DNS name with port for in-cluster services
 
 # =============================================================================
 # TELEMETRY CONFIGURATION (for Jaeger tracing)

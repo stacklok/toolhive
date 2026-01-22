@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -139,11 +138,6 @@ func (c *Converter) Convert(
 	// Convert audit config
 	c.convertAuditConfig(config, vmcp)
 
-	// Convert optimizer config - resolve embeddingService to embeddingURL if needed
-	if err := c.convertOptimizerConfig(ctx, config, vmcp); err != nil {
-		return nil, err
-	}
-
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
 
@@ -159,34 +153,6 @@ func (*Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alpha
 	if config.Audit != nil && config.Audit.Component == "" {
 		config.Audit.Component = vmcp.Name
 	}
-}
-
-// convertOptimizerConfig converts optimizer configuration from CRD to vmcp config,
-// resolving embeddingService to embeddingURL if needed.
-func (c *Converter) convertOptimizerConfig(
-	ctx context.Context,
-	config *vmcpconfig.Config,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) error {
-	if vmcp.Spec.Config.Optimizer == nil {
-		return nil
-	}
-
-	optimizerConfig := vmcp.Spec.Config.Optimizer.DeepCopy()
-
-	// If embeddingService is set, resolve it to embeddingURL
-	if optimizerConfig.EmbeddingService != "" && optimizerConfig.EmbeddingURL == "" {
-		embeddingURL, err := c.resolveEmbeddingService(ctx, vmcp.Namespace, optimizerConfig.EmbeddingService)
-		if err != nil {
-			return fmt.Errorf("failed to resolve embedding service %s: %w", optimizerConfig.EmbeddingService, err)
-		}
-		optimizerConfig.EmbeddingURL = embeddingURL
-		// Clear embeddingService since we've resolved it to URL
-		optimizerConfig.EmbeddingService = ""
-	}
-
-	config.Optimizer = optimizerConfig
-	return nil
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.
@@ -647,32 +613,4 @@ func validateCompositeToolNames(tools []vmcpconfig.CompositeToolConfig) error {
 		seen[tools[i].Name] = true
 	}
 	return nil
-}
-
-// resolveEmbeddingService resolves a Kubernetes service name to its URL by querying the service.
-// Returns the service URL in format: http://<service-name>.<namespace>.svc.cluster.local:<port>
-func (c *Converter) resolveEmbeddingService(ctx context.Context, namespace, serviceName string) (string, error) {
-	// Get the service
-	svc := &corev1.Service{}
-	key := types.NamespacedName{
-		Name:      serviceName,
-		Namespace: namespace,
-	}
-	if err := c.k8sClient.Get(ctx, key, svc); err != nil {
-		return "", fmt.Errorf("failed to get service %s/%s: %w", namespace, serviceName, err)
-	}
-
-	// Find the first port (typically there's only one for embedding services)
-	if len(svc.Spec.Ports) == 0 {
-		return "", fmt.Errorf("service %s/%s has no ports", namespace, serviceName)
-	}
-
-	port := svc.Spec.Ports[0].Port
-	if port == 0 {
-		return "", fmt.Errorf("service %s/%s has invalid port", namespace, serviceName)
-	}
-
-	// Construct URL using full DNS name
-	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
-	return url, nil
 }

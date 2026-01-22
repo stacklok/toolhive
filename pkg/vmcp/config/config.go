@@ -762,12 +762,6 @@ type OptimizerConfig struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	HybridSearchRatio *int `json:"hybridSearchRatio,omitempty" yaml:"hybridSearchRatio,omitempty"`
-
-	// EmbeddingService is the name of a Kubernetes Service that provides embeddings (K8s only).
-	// This is an alternative to EmbeddingURL for in-cluster deployments.
-	// When set, vMCP will resolve the service DNS name for the embedding API.
-	// +optional
-	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
 }
 
 // Validator validates configuration.

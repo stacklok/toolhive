@@ -1250,13 +1250,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
-						Image:            getToolhiveRunnerImage(),
-						Name:             "toolhive",
-						ImagePullPolicy:  getImagePullPolicyForToolhiveRunner(),
-						Args:             args,
-						Env:              env,
-						VolumeMounts:     volumeMounts,
-						Resources:        resources,
+						Image:           getToolhiveRunnerImage(),
+						Name:            "toolhive",
+						ImagePullPolicy: getImagePullPolicyForToolhiveRunner(),
+						Args:            args,
+						Env:             env,
+						VolumeMounts:    volumeMounts,
+						Resources:       resources,
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: m.GetProxyPort(),
 							Name:          "http",

@@ -28,11 +28,11 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/ingestion"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/logger"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"

@@ -776,6 +776,23 @@ _Appears in:_
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
+#### api.v1alpha1.CABundleSource
+
+
+
+CABundleSource defines a source for CA certificate bundles.
+
+
+
+_Appears in:_
+- [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
+- [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef references a ConfigMap containing the CA certificate bundle.<br />If Key is not specified, it defaults to "ca.crt". |  |  |
+
+
 #### api.v1alpha1.ConfigMapAuthzRef
 
 
@@ -808,6 +825,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json |  |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence. |  |  |
 
 
 #### api.v1alpha1.DiscoveredBackend
@@ -980,7 +998,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OIDC client ID |  |  |
 | `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional)<br />Deprecated: Use ClientSecretRef instead for better security |  |  |
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret<br />If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence |  |  |
-| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
+| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.<br />Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to<br />already exist in the proxy runner container (e.g., Kubernetes service account CA at<br />/var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,<br />use CABundleRef which automatically mounts the ConfigMap and computes the path.<br />This field will be removed when the API graduates to v1beta1. |  |  |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef. |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing | false |  |

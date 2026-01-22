@@ -124,6 +124,7 @@ func dumpK8sState(header string) {
 	dumpPods(namespace)
 	dumpServices(namespace)
 	dumpEvents(namespace)
+	dumpOperatorLogs()
 
 	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
 	ginkgo.GinkgoWriter.Println("END OF STATE DUMP")
@@ -296,6 +297,64 @@ func dumpEvents(namespace string) {
 		ginkgo.GinkgoWriter.Printf("  [%s] %s/%s: %s - %s\n",
 			event.Type, event.InvolvedObject.Kind, event.InvolvedObject.Name,
 			event.Reason, event.Message)
+	}
+}
+
+func dumpOperatorLogs() {
+	ginkgo.GinkgoWriter.Println("\n--- Operator Logs (filtered for errors and VirtualMCPServer) ---")
+
+	// List operator pods in toolhive-system namespace
+	podList := &corev1.PodList{}
+	if err := k8sClient.List(ctx, podList,
+		client.InNamespace("toolhive-system"),
+		client.MatchingLabels{"app.kubernetes.io/name": "toolhive-operator"}); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list operator pods: %v\n", err)
+		return
+	}
+
+	if len(podList.Items) == 0 {
+		ginkgo.GinkgoWriter.Println("  No operator pods found in toolhive-system namespace")
+		return
+	}
+
+	for _, pod := range podList.Items {
+		ginkgo.GinkgoWriter.Printf("\n  Operator Pod: %s (Phase: %s)\n", pod.Name, pod.Status.Phase)
+
+		// Get logs from the main container (typically named "manager" or first container)
+		for _, container := range pod.Spec.Containers {
+			logs, err := getPodLogs(ctx, "toolhive-system", pod.Name, container.Name, false)
+			if err != nil {
+				ginkgo.GinkgoWriter.Printf("    Logs (%s): failed to get: %v\n", container.Name, err)
+				continue
+			}
+
+			if logs == "" {
+				ginkgo.GinkgoWriter.Printf("    Logs (%s): no logs available\n", container.Name)
+				continue
+			}
+
+			ginkgo.GinkgoWriter.Printf("    Logs (%s) [filtered]:\n", container.Name)
+			// Filter for relevant log lines (errors, warnings, and virtualmcpserver reconciliation)
+			lineCount := 0
+			for _, line := range strings.Split(logs, "\n") {
+				if line == "" {
+					continue
+				}
+				// Show error/warning logs or logs related to virtualmcpserver reconciliation
+				lineLower := strings.ToLower(line)
+				if strings.Contains(lineLower, "error") ||
+					strings.Contains(lineLower, "warning") ||
+					strings.Contains(lineLower, "virtualmcpserver") ||
+					strings.Contains(lineLower, "failed") ||
+					strings.Contains(lineLower, "vmcp") {
+					ginkgo.GinkgoWriter.Printf("      %s\n", line)
+					lineCount++
+				}
+			}
+			if lineCount == 0 {
+				ginkgo.GinkgoWriter.Println("      (no matching log lines found)")
+			}
+		}
 	}
 }
 

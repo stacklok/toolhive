@@ -971,17 +971,10 @@ func TestApplyPodTemplatePatchAnnotations(t *testing.T) {
 
 // Test_isStatefulSetReady tests the isStatefulSetReady function.
 //
-// These tests FAIL to demonstrate the bug where isStatefulSetReady returns true
-// during a rolling update when the OLD pod(s) are still ready but the NEW pod(s)
-// haven't started yet.
-//
-// Current behavior: Only checks ReadyReplicas == Replicas.
-// - DOES wait for all replicas to be ready
-// - Does NOT wait for all replicas to be updated to the new spec
-//
-// For multi-replica StatefulSets, this means during a rolling update we may
-// return "ready" when a mix of old and new pods are running, as long as the
-// total ready count matches the desired replica count.
+// The function checks three conditions before returning ready:
+// 1. ObservedGeneration >= desiredGeneration (controller processed our spec)
+// 2. UpdatedReplicas == Replicas (all pods on new spec)
+// 3. ReadyReplicas == Replicas (all pods ready)
 func Test_isStatefulSetReady(t *testing.T) {
 	t.Parallel()
 
@@ -1001,7 +994,7 @@ func Test_isStatefulSetReady(t *testing.T) {
 			updatedReplicas: 0,
 			readyReplicas:   1,
 			replicas:        1,
-			expectedReady:   false, // BUG: returns true
+			expectedReady:   false,
 		},
 		{
 			name:            "controller_caught_up_no_new_pods",
@@ -1010,7 +1003,7 @@ func Test_isStatefulSetReady(t *testing.T) {
 			updatedReplicas: 0,
 			readyReplicas:   1,
 			replicas:        1,
-			expectedReady:   false, // BUG: returns true
+			expectedReady:   false,
 		},
 		{
 			name:            "new_pod_starting_not_ready",
@@ -1039,9 +1032,7 @@ func Test_isStatefulSetReady(t *testing.T) {
 			replicas:        1,
 			expectedReady:   true,
 		},
-		// Multi-replica tests: Current behavior waits for ReadyReplicas == Replicas,
-		// but does NOT wait for UpdatedReplicas == Replicas. This means during a
-		// rolling update, we may return "ready" while old pods are still running.
+		// Multi-replica tests
 		{
 			name:            "multi_replica_rolling_update_not_started",
 			desiredGen:      2,
@@ -1049,43 +1040,43 @@ func Test_isStatefulSetReady(t *testing.T) {
 			updatedReplicas: 0, // no pods updated yet
 			readyReplicas:   3, // all old pods still ready
 			replicas:        3,
-			expectedReady:   false, // BUG: returns true (all 3 ready, but none updated)
+			expectedReady:   false,
 		},
 		{
 			name:            "multi_replica_rolling_update_one_updated",
 			desiredGen:      2,
 			observedGen:     2,
-			updatedReplicas: 1, // 1 pod updated
-			readyReplicas:   3, // mix of old and new pods ready
+			updatedReplicas: 1,
+			readyReplicas:   3,
 			replicas:        3,
-			expectedReady:   false, // BUG: returns true (all 3 ready, but only 1 updated)
+			expectedReady:   false,
 		},
 		{
 			name:            "multi_replica_rolling_update_two_updated",
 			desiredGen:      2,
 			observedGen:     2,
-			updatedReplicas: 2, // 2 pods updated
-			readyReplicas:   3, // mix of old and new pods ready
+			updatedReplicas: 2,
+			readyReplicas:   3,
 			replicas:        3,
-			expectedReady:   false, // BUG: returns true (all 3 ready, but only 2 updated)
+			expectedReady:   false,
 		},
 		{
 			name:            "multi_replica_rolling_update_complete",
 			desiredGen:      2,
 			observedGen:     2,
-			updatedReplicas: 3, // all pods updated
-			readyReplicas:   3, // all new pods ready
+			updatedReplicas: 3,
+			readyReplicas:   3,
 			replicas:        3,
-			expectedReady:   true, // correct: all updated and ready
+			expectedReady:   true,
 		},
 		{
 			name:            "multi_replica_last_pod_not_ready",
 			desiredGen:      2,
 			observedGen:     2,
-			updatedReplicas: 3, // all pods updated
-			readyReplicas:   2, // one pod not ready yet
+			updatedReplicas: 3,
+			readyReplicas:   2,
 			replicas:        3,
-			expectedReady:   false, // correct: waits for all to be ready
+			expectedReady:   false,
 		},
 		{
 			name:            "multi_replica_steady_state",

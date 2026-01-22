@@ -625,24 +625,14 @@ func (c *Client) IsRunning(ctx context.Context) error {
 // 1. ObservedGeneration >= desiredGeneration (controller has processed our spec)
 // 2. UpdatedReplicas == Replicas (all pods are on the new spec)
 // 3. ReadyReplicas == Replicas (all pods are ready)
-//
-// BUG: The current implementation only checks ReadyReplicas == Replicas,
-// which can return true during a rolling update when the OLD pod is still ready
-// but the NEW pod hasn't started yet.
 func isStatefulSetReady(desiredGeneration int64, currentSts *appsv1.StatefulSet) bool {
 	if currentSts.Spec.Replicas == nil {
 		return false
 	}
 
-	// BUG: This only checks ReadyReplicas == Replicas, which can return true
-	// during a rolling update when the OLD pod is still ready. This causes
-	// the proxy to start before the NEW pod is ready.
-	//
-	// The fix should check:
-	// return currentSts.Status.ObservedGeneration >= desiredGeneration &&
-	//     currentSts.Status.UpdatedReplicas == *currentSts.Spec.Replicas &&
-	//     currentSts.Status.ReadyReplicas == *currentSts.Spec.Replicas
-	return currentSts.Status.ReadyReplicas == *currentSts.Spec.Replicas
+	return currentSts.Status.ObservedGeneration >= desiredGeneration &&
+		currentSts.Status.UpdatedReplicas == *currentSts.Spec.Replicas &&
+		currentSts.Status.ReadyReplicas == *currentSts.Spec.Replicas
 }
 
 // waitForStatefulSetReady waits for a statefulset to be ready using the watch API.

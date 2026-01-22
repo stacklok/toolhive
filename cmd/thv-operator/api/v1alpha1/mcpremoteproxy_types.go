@@ -7,6 +7,32 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// HeaderForwardConfig defines header forward configuration for remote servers.
+type HeaderForwardConfig struct {
+	// AddPlaintextHeaders is a map of header names to literal values to inject into requests.
+	// WARNING: Values are stored in plaintext and visible via kubectl commands.
+	// Use addHeadersFromSecret for sensitive data like API keys or tokens.
+	// +optional
+	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty"`
+
+	// AddHeadersFromSecret references Kubernetes Secrets for sensitive header values.
+	// +optional
+	AddHeadersFromSecret []HeaderFromSecret `json:"addHeadersFromSecret,omitempty"`
+}
+
+// HeaderFromSecret defines a header whose value comes from a Kubernetes Secret.
+type HeaderFromSecret struct {
+	// HeaderName is the HTTP header name (e.g., "X-API-Key")
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	HeaderName string `json:"headerName"`
+
+	// ValueSecretRef references the Secret and key containing the header value
+	// +kubebuilder:validation:Required
+	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
+}
+
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
@@ -35,6 +61,11 @@ type MCPRemoteProxySpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// HeaderForward configures headers to inject into requests to the remote MCP server.
+	// Use this to add custom headers like X-Tenant-ID or correlation IDs.
+	// +optional
+	HeaderForward *HeaderForwardConfig `json:"headerForward,omitempty"`
 
 	// AuthzConfig defines authorization policy configuration for the proxy
 	// +optional

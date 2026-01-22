@@ -596,10 +596,11 @@ aggregation:
 composite_tools: [...]
 ```
 
-Code to remove from operator (dynamic mode path):
-- `discoverBackends()` function in `virtualmcpserver_controller.go`
-- `buildOutgoingAuthConfig()` function
-- Complex OutgoingAuth.Backends resolution in `vmcpconfig/converter.go`
+Code changes in operator (dynamic mode path) - ✅ **Implemented**:
+- `discoverBackends()` function in `virtualmcpserver_controller.go` - skipped in dynamic mode
+- `buildOutgoingAuthConfig()` function - not called in dynamic mode
+- Operator preserves vMCP-reported status instead of discovering backends itself
+- Static mode continues to use operator discovery unchanged
 
 **Static mode (`outgoingAuth.source: inline`):**
 
@@ -671,10 +672,11 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 No polling logic needed. vMCP writes status directly. Operator just observes changes via existing watch.
 
-Files to modify:
-- `cmd/thv-operator/controllers/virtualmcpserver_controller.go` - Remove discovery, add status reading (approach TBD)
-- `cmd/thv-operator/controllers/virtualmcpserver_vmcpconfig.go` - Simplify config generation
-- `cmd/thv-operator/pkg/vmcpconfig/converter.go` - Remove OutgoingAuth.Backends resolution
+Files modified - ✅ **Implemented**:
+- `cmd/thv-operator/controllers/virtualmcpserver_controller.go` - Added mode detection, skip discovery in dynamic mode
+- `cmd/thv-operator/controllers/virtualmcpserver_mode_test.go` - Added comprehensive tests for both modes
+- Config generation already handled both modes correctly (no changes needed)
+- Converter already preserves `source` field correctly (no changes needed)
 
 ### Phase 6: Conditional RBAC Based on Mode
 

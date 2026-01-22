@@ -29,7 +29,7 @@ func init() {
 }
 
 // mockWaitForStatefulSetReady is used to mock the waitForStatefulSetReady function in tests
-var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string) error {
+var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string, _ int64) error {
 	return nil
 }
 
@@ -965,6 +965,157 @@ func TestApplyPodTemplatePatchAnnotations(t *testing.T) {
 				assert.Equal(t, tc.expectedAnnotations, resultAnnotations,
 					"BUG: Annotations are not being applied from the patch")
 			}
+		})
+	}
+}
+
+// Test_isStatefulSetReady tests the isStatefulSetReady function.
+//
+// These tests FAIL to demonstrate the bug where isStatefulSetReady returns true
+// during a rolling update when the OLD pod(s) are still ready but the NEW pod(s)
+// haven't started yet.
+//
+// Current behavior: Only checks ReadyReplicas == Replicas.
+// - DOES wait for all replicas to be ready
+// - Does NOT wait for all replicas to be updated to the new spec
+//
+// For multi-replica StatefulSets, this means during a rolling update we may
+// return "ready" when a mix of old and new pods are running, as long as the
+// total ready count matches the desired replica count.
+func Test_isStatefulSetReady(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name            string
+		desiredGen      int64
+		observedGen     int64
+		updatedReplicas int32
+		readyReplicas   int32
+		replicas        int32
+		expectedReady   bool
+	}{
+		{
+			name:            "controller_not_caught_up_old_pod_ready",
+			desiredGen:      2,
+			observedGen:     1,
+			updatedReplicas: 0,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   false, // BUG: returns true
+		},
+		{
+			name:            "controller_caught_up_no_new_pods",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 0,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   false, // BUG: returns true
+		},
+		{
+			name:            "new_pod_starting_not_ready",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1,
+			readyReplicas:   0,
+			replicas:        1,
+			expectedReady:   false,
+		},
+		{
+			name:            "rolling_update_complete",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   true,
+		},
+		{
+			name:            "steady_state",
+			desiredGen:      1,
+			observedGen:     1,
+			updatedReplicas: 1,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   true,
+		},
+		// Multi-replica tests: Current behavior waits for ReadyReplicas == Replicas,
+		// but does NOT wait for UpdatedReplicas == Replicas. This means during a
+		// rolling update, we may return "ready" while old pods are still running.
+		{
+			name:            "multi_replica_rolling_update_not_started",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 0, // no pods updated yet
+			readyReplicas:   3, // all old pods still ready
+			replicas:        3,
+			expectedReady:   false, // BUG: returns true (all 3 ready, but none updated)
+		},
+		{
+			name:            "multi_replica_rolling_update_one_updated",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1, // 1 pod updated
+			readyReplicas:   3, // mix of old and new pods ready
+			replicas:        3,
+			expectedReady:   false, // BUG: returns true (all 3 ready, but only 1 updated)
+		},
+		{
+			name:            "multi_replica_rolling_update_two_updated",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 2, // 2 pods updated
+			readyReplicas:   3, // mix of old and new pods ready
+			replicas:        3,
+			expectedReady:   false, // BUG: returns true (all 3 ready, but only 2 updated)
+		},
+		{
+			name:            "multi_replica_rolling_update_complete",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 3, // all pods updated
+			readyReplicas:   3, // all new pods ready
+			replicas:        3,
+			expectedReady:   true, // correct: all updated and ready
+		},
+		{
+			name:            "multi_replica_last_pod_not_ready",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 3, // all pods updated
+			readyReplicas:   2, // one pod not ready yet
+			replicas:        3,
+			expectedReady:   false, // correct: waits for all to be ready
+		},
+		{
+			name:            "multi_replica_steady_state",
+			desiredGen:      1,
+			observedGen:     1,
+			updatedReplicas: 3,
+			readyReplicas:   3,
+			replicas:        3,
+			expectedReady:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ss := &appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &tc.replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: tc.observedGen,
+					UpdatedReplicas:    tc.updatedReplicas,
+					ReadyReplicas:      tc.readyReplicas,
+					Replicas:           tc.replicas,
+				},
+			}
+
+			result := isStatefulSetReady(tc.desiredGen, ss)
+			assert.Equal(t, tc.expectedReady, result)
 		})
 	}
 }

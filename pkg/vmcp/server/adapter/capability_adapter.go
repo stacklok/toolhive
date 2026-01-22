@@ -229,6 +229,6 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 //
 // This keeps optimizer tool creation consistent with other tool types (backend,
 // composite) by going through the adapter layer.
-func (a *CapabilityAdapter) CreateOptimizerTools(provider OptimizerHandlerProvider) ([]server.ServerTool, error) {
+func (_ *CapabilityAdapter) CreateOptimizerTools(provider OptimizerHandlerProvider) ([]server.ServerTool, error) {
 	return CreateOptimizerTools(provider)
 }

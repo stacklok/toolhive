@@ -401,12 +401,14 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
 
+	var headlessServiceName string
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create headless service: %w", err)
 		}
+		headlessServiceName = options.SSEHeadlessServiceName
 	}
 
 	// Wait for the statefulset to be ready
@@ -419,6 +421,15 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name, createdStatefulSet.Generation)
 	if err != nil {
 		return 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
+	}
+
+	// If we created a headless service, wait for it to have endpoints
+	// This ensures the service is routable before we start the proxy
+	if headlessServiceName != "" {
+		err = waitForServiceEndpoints(ctx, c.client, namespace, headlessServiceName)
+		if err != nil {
+			return 0, fmt.Errorf("headless service created but has no endpoints: %w", err)
+		}
 	}
 
 	return 0, nil
@@ -677,6 +688,53 @@ func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface
 	_, err = watch.UntilWithoutRetry(timeoutCtx, watcher, isStatefulSetReady)
 	if err != nil {
 		return fmt.Errorf("error waiting for statefulset to be ready: %w", err)
+	}
+
+	return nil
+}
+
+// waitForServiceEndpoints waits for a service to have at least one ready endpoint.
+// This ensures the service is routable before we start the proxy.
+func waitForServiceEndpoints(ctx context.Context, clientset kubernetes.Interface, namespace, serviceName string) error {
+	// Create a field selector to watch only this specific endpoints object
+	fieldSelector := fmt.Sprintf("metadata.name=%s", serviceName)
+
+	// Set up the watch
+	watcher, err := clientset.CoreV1().Endpoints(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: fieldSelector,
+		Watch:         true,
+	})
+	if err != nil {
+		return fmt.Errorf("error watching endpoints: %w", err)
+	}
+
+	// Define the condition function that checks if the endpoints have addresses
+	hasEndpoints := func(event apimwatch.Event) (bool, error) {
+		endpoints, ok := event.Object.(*corev1.Endpoints)
+		if !ok {
+			return false, fmt.Errorf("unexpected object type: %T", event.Object)
+		}
+
+		// Check if there's at least one ready address
+		for _, subset := range endpoints.Subsets {
+			if len(subset.Addresses) > 0 {
+				logger.Infof("Service %s has %d ready endpoint(s)", serviceName, len(subset.Addresses))
+				return true, nil
+			}
+		}
+
+		logger.Infof("Waiting for service %s to have ready endpoints...", serviceName)
+		return false, nil
+	}
+
+	// Create a context with timeout (shorter than StatefulSet since endpoints should update quickly)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Wait for the endpoints to have addresses
+	_, err = watch.UntilWithoutRetry(timeoutCtx, watcher, hasEndpoints)
+	if err != nil {
+		return fmt.Errorf("error waiting for service endpoints: %w", err)
 	}
 
 	return nil

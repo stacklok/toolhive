@@ -1,9 +1,0 @@
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: ($testPrefix)
-  namespace: toolhive-system
-spec:
-  serviceAccount: (join('-', [$testPrefix, 'mcpserver-sa']))
-status:
-  phase: Running

@@ -495,6 +495,68 @@ func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
 	assert.Error(t, err, "RoleBinding should not be created in static mode")
 }
 
+// TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources
+// are NOT created when a custom ServiceAccount is provided
+func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	customSA := "custom-vmcp-sa"
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-sa-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:         vmcpconfig.Config{Group: "test-group"},
+			ServiceAccount: &customSA,
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should return nil without creating resources
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := vmcpServiceAccountName(vmcp.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when custom ServiceAccount is provided")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.Error(t, err, "Role should not be created when custom ServiceAccount is provided")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
+}
+
 // TestVirtualMCPServerEnsureDeployment tests Deployment creation
 func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	t.Parallel()

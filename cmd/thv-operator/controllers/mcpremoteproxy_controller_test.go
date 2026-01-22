@@ -885,6 +885,66 @@ func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount tests that RBAC resources
+// are NOT created when a custom ServiceAccount is provided
+func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	customSA := "custom-proxy-sa"
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-sa-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL:      "https://mcp.example.com",
+			Port:           8080,
+			ServiceAccount: &customSA,
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should return nil without creating resources
+	err := reconciler.ensureRBACResources(context.TODO(), proxy)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when custom ServiceAccount is provided")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, role)
+	assert.Error(t, err, "Role should not be created when custom ServiceAccount is provided")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, rb)
+	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
+}
+
 // TestUpdateMCPRemoteProxyStatus tests status update logic
 func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()

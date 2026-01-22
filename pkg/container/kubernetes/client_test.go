@@ -1109,4 +1109,46 @@ func Test_isStatefulSetReady(t *testing.T) {
 			assert.Equal(t, tc.expectedReady, result)
 		})
 	}
+
+	// Test nil/zero value edge cases - all should return false
+	nilTests := []struct {
+		name  string
+		input *appsv1.StatefulSet
+	}{
+		{
+			name:  "nil_statefulset",
+			input: nil,
+		},
+		{
+			name:  "empty_statefulset",
+			input: &appsv1.StatefulSet{},
+		},
+		{
+			name: "spec_replicas_nil",
+			input: &appsv1.StatefulSet{
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 1,
+					UpdatedReplicas:    1,
+					ReadyReplicas:      1,
+				},
+			},
+		},
+		{
+			name: "status_all_zero",
+			input: &appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: func() *int32 { v := int32(1); return &v }(),
+				},
+			},
+		},
+	}
+
+	for _, tc := range nilTests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := isStatefulSetReady(1, tc.input)
+			assert.False(t, result)
+		})
+	}
 }

@@ -631,7 +631,7 @@ func (c *Client) IsRunning(ctx context.Context) error {
 // 2. UpdatedReplicas == Replicas (all pods are on the new spec)
 // 3. ReadyReplicas == Replicas (all pods are ready)
 func isStatefulSetReady(desiredGeneration int64, currentSts *appsv1.StatefulSet) bool {
-	if currentSts.Spec.Replicas == nil {
+	if currentSts == nil || currentSts.Spec.Replicas == nil {
 		return false
 	}
 

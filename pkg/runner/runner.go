@@ -130,13 +130,6 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
-	// Populate default middlewares from old config fields if not already populated
-	if len(r.Config.MiddlewareConfigs) == 0 {
-		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
-			return fmt.Errorf("failed to populate middleware configs: %w", err)
-		}
-	}
-
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -149,26 +142,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
 	}
-
-	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
-	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
-		// First, get the correct factory function for the middleware type.
-		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
-		if !ok {
-			return fmt.Errorf("unsupported middleware type: %s", middlewareConfig.Type)
-		}
-
-		// Create the middleware instance using the factory function.
-		// The factory will add the middleware to the runner and handle any special configuration.
-		if err := factory(&middlewareConfig, r); err != nil {
-			return fmt.Errorf("failed to create middleware of type %s: %w", middlewareConfig.Type, err)
-		}
-	}
-
-	// Set all named middleware and handlers on transport config
-	transportConfig.Middlewares = r.namedMiddlewares
-	transportConfig.AuthInfoHandler = r.authInfoHandler
-	transportConfig.PrometheusHandler = r.prometheusHandler
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
@@ -208,6 +181,34 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// Populate default middlewares from config fields if not already populated.
+	// This runs after WithSecrets so resolved values are available.
+	if len(r.Config.MiddlewareConfigs) == 0 {
+		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
+			return fmt.Errorf("failed to populate middleware configs: %w", err)
+		}
+	}
+
+	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
+	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
+		// First, get the correct factory function for the middleware type.
+		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
+		if !ok {
+			return fmt.Errorf("unsupported middleware type: %s", middlewareConfig.Type)
+		}
+
+		// Create the middleware instance using the factory function.
+		// The factory will add the middleware to the runner and handle any special configuration.
+		if err := factory(&middlewareConfig, r); err != nil {
+			return fmt.Errorf("failed to create middleware of type %s: %w", middlewareConfig.Type, err)
+		}
+	}
+
+	// Set all named middleware and handlers on transport config
+	transportConfig.Middlewares = r.namedMiddlewares
+	transportConfig.AuthInfoHandler = r.authInfoHandler
+	transportConfig.PrometheusHandler = r.prometheusHandler
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)

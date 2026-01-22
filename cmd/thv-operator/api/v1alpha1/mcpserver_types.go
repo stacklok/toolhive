@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -48,6 +49,23 @@ const (
 
 	// ConditionReasonPodTemplateInvalid indicates PodTemplateSpec validation failed
 	ConditionReasonPodTemplateInvalid = "InvalidPodTemplateSpec"
+)
+
+// Condition type for CA bundle validation
+const (
+	// ConditionCABundleRefValidated indicates whether the CABundleRef is valid
+	ConditionCABundleRefValidated = "CABundleRefValidated"
+)
+
+const (
+	// ConditionReasonCABundleRefValid indicates the CABundleRef is valid and the ConfigMap exists
+	ConditionReasonCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonCABundleRefNotFound indicates the referenced ConfigMap was not found
+	ConditionReasonCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonCABundleRefInvalid indicates the CABundleRef configuration is invalid
+	ConditionReasonCABundleRefInvalid = "CABundleRefInvalid"
 )
 
 // MCPServerSpec defines the desired state of MCPServer
@@ -464,6 +482,20 @@ type ConfigMapOIDCRef struct {
 	// +kubebuilder:default=oidc.json
 	// +optional
 	Key string `json:"key,omitempty"`
+
+	// CABundleRef references a ConfigMap containing the CA certificate bundle.
+	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+	// If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
+}
+
+// CABundleSource defines a source for CA certificate bundles.
+type CABundleSource struct {
+	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+	// If Key is not specified, it defaults to "ca.crt".
+	// +optional
+	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 }
 
 // InlineOIDCConfig contains direct OIDC configuration
@@ -498,10 +530,21 @@ type InlineOIDCConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
-	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
+	//
+	// Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
+	// already exist in the proxy runner container (e.g., Kubernetes service account CA at
+	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
+	// use CABundleRef which automatically mounts the ConfigMap and computes the path.
+	// This field will be removed when the API graduates to v1beta1.
 	// +optional
 	ThvCABundlePath string `json:"thvCABundlePath,omitempty"`
+
+	// CABundleRef references a ConfigMap containing the CA certificate bundle.
+	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+	// If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 
 	// JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
 	// The file must be mounted into the pod (e.g., via Secret volume)

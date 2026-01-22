@@ -116,6 +116,10 @@ var (
 
 	// Remote server authentication flags
 	remoteAuthFlags RemoteAuthFlags
+
+	// Header forwarding flags
+	remoteForwardHeaders       []string
+	remoteForwardHeadersSecret []string
 )
 
 // Environment variable names
@@ -142,6 +146,12 @@ func init() {
 
 	// Add remote server authentication flags
 	AddRemoteAuthFlags(proxyCmd, &remoteAuthFlags)
+
+	// Add header forwarding flags
+	proxyCmd.Flags().StringSliceVar(&remoteForwardHeaders, "remote-forward-headers", []string{},
+		"Headers to inject into requests to remote server (format: Name=Value, can be repeated)")
+	proxyCmd.Flags().StringSliceVar(&remoteForwardHeadersSecret, "remote-forward-headers-secret", []string{},
+		"Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -247,6 +257,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Add OAuth token injection or token exchange middleware for outgoing requests
 	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+		return err
+	}
+
+	// Add header forward middleware if headers are configured
+	if err := addHeaderForwardMiddleware(
+		&middlewares, remoteForwardHeaders, remoteForwardHeadersSecret,
+	); err != nil {
 		return err
 	}
 
@@ -427,6 +444,50 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			Function: tokenMiddleware,
 		})
 	}
+	return nil
+}
+
+// addHeaderForwardMiddleware adds header forward middleware to the middleware chain if headers are configured.
+// Secret references are resolved immediately via the secrets manager.
+func addHeaderForwardMiddleware(
+	middlewares *[]types.NamedMiddleware, headers []string, secretHeaders []string,
+) error {
+	// Parse plaintext headers from flags
+	addHeaders, err := parseHeaderForwardFlags(headers)
+	if err != nil {
+		return fmt.Errorf("failed to parse header forward flags: %w", err)
+	}
+
+	// Resolve secret-backed headers
+	if len(secretHeaders) > 0 {
+		secretMap, err := parseHeaderSecretFlags(secretHeaders)
+		if err != nil {
+			return err
+		}
+		resolved, err := resolveHeaderSecrets(secretMap)
+		if err != nil {
+			return err
+		}
+		for name, value := range resolved {
+			addHeaders[name] = value
+		}
+	}
+
+	// Skip if no headers configured
+	if len(addHeaders) == 0 {
+		return nil
+	}
+
+	// Create the header forward middleware
+	mwFunc, err := middleware.CreateHeaderForwardMiddleware(addHeaders)
+	if err != nil {
+		return fmt.Errorf("failed to create header forward middleware: %w", err)
+	}
+	*middlewares = append(*middlewares, types.NamedMiddleware{
+		Name:     middleware.HeaderForwardMiddlewareName,
+		Function: mwFunc,
+	})
+
 	return nil
 }
 

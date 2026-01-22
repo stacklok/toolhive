@@ -124,6 +124,10 @@ type RunFlags struct {
 	// Remote authentication
 	RemoteAuthFlags RemoteAuthFlags
 	OAuthParams     map[string]string
+
+	// Remote header forwarding
+	RemoteForwardHeaders       []string
+	RemoteForwardHeadersSecret []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -192,6 +196,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	// Remote authentication flags
 	AddRemoteAuthFlags(cmd, &config.RemoteAuthFlags)
+
+	// Remote header forwarding flags
+	cmd.Flags().StringSliceVar(&config.RemoteForwardHeaders, "remote-forward-headers", []string{},
+		"Headers to inject into requests to remote MCP server (format: Name=Value, can be repeated)")
+	cmd.Flags().StringSliceVar(&config.RemoteForwardHeadersSecret, "remote-forward-headers-secret", []string{},
+		"Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)")
 
 	// OAuth discovery configuration
 	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
@@ -489,6 +499,28 @@ func buildRunnerConfig(
 			return nil, fmt.Errorf("failed to load tools override: %w", err)
 		}
 		toolsOverride = *loadedToolsOverride
+	}
+
+	// Configure header forwarding for remote servers
+	if runFlags.RemoteURL != "" {
+		addHeaders, err := parseHeaderForwardFlags(runFlags.RemoteForwardHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse header forward flags: %w", err)
+		}
+		if len(addHeaders) > 0 {
+			opts = append(opts, runner.WithHeaderForward(addHeaders))
+		}
+
+		// Parse secret header references (stored in RunConfig, resolved at runtime by WithSecrets)
+		if len(runFlags.RemoteForwardHeadersSecret) > 0 {
+			secretHeaders, err := parseHeaderSecretFlags(runFlags.RemoteForwardHeadersSecret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse header secret flags: %w", err)
+			}
+			if len(secretHeaders) > 0 {
+				opts = append(opts, runner.WithHeaderForwardSecrets(secretHeaders))
+			}
+		}
 	}
 
 	// Configure middleware and additional options

@@ -1250,12 +1250,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
-						Image:        getToolhiveRunnerImage(),
-						Name:         "toolhive",
-						Args:         args,
-						Env:          env,
-						VolumeMounts: volumeMounts,
-						Resources:    resources,
+						Image:            getToolhiveRunnerImage(),
+						Name:             "toolhive",
+						ImagePullPolicy:  getImagePullPolicyForToolhiveRunner(),
+						Args:             args,
+						Env:              env,
+						VolumeMounts:     volumeMounts,
+						Resources:        resources,
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: m.GetProxyPort(),
 							Name:          "http",
@@ -1811,6 +1812,19 @@ func getToolhiveRunnerImage() string {
 		image = "ghcr.io/stacklok/toolhive/proxyrunner:latest"
 	}
 	return image
+}
+
+// getImagePullPolicyForToolhiveRunner returns the appropriate imagePullPolicy for the toolhive runner container.
+// If the image is a local image (starts with "kind.local/" or "localhost/"), use Never.
+// Otherwise, use IfNotPresent to allow pulling when needed but avoid unnecessary pulls.
+func getImagePullPolicyForToolhiveRunner() corev1.PullPolicy {
+	image := getToolhiveRunnerImage()
+	// Check if it's a local image that should use Never
+	if strings.HasPrefix(image, "kind.local/") || strings.HasPrefix(image, "localhost/") {
+		return corev1.PullNever
+	}
+	// For other images, use IfNotPresent to allow pulling when needed
+	return corev1.PullIfNotPresent
 }
 
 // handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig.

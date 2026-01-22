@@ -59,6 +59,28 @@ spec:
               MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
               MCPServer resources in the same namespace.
             properties:
+              bearerToken:
+                description: |-
+                  BearerToken configures bearer token authentication
+                  Only used when Type is "bearerToken"
+                properties:
+                  tokenSecretRef:
+                    description: TokenSecretRef references a Kubernetes Secret containing
+                      the bearer token
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - tokenSecretRef
+                type: object
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -150,6 +172,7 @@ spec:
                 enum:
                 - tokenExchange
                 - headerInjection
+                - bearerToken
                 - unauthenticated
                 type: string
             required:

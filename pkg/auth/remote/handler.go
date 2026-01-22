@@ -10,6 +10,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -184,6 +185,41 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 	return tokenSource
 }
 
+// getClientCredentials returns client credentials for token refresh.
+// If configured credentials exist, they are used. Otherwise, if a registration
+// endpoint is available, dynamic client registration is performed.
+// This allows token restoration to work even when the original client was
+// dynamically registered (client credentials are re-obtained on each run).
+func (h *Handler) getClientCredentials(
+	ctx context.Context,
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
+) (clientID, clientSecret string, err error) {
+	// If client credentials are configured, use them
+	if h.config.ClientID != "" {
+		return h.config.ClientID, h.config.ClientSecret, nil
+	}
+
+	// No configured credentials - try dynamic registration
+	if authServerInfo == nil || authServerInfo.RegistrationEndpoint == "" {
+		return "", "", fmt.Errorf("no client credentials configured and dynamic registration not available")
+	}
+
+	logger.Infof("No client credentials configured, performing dynamic client registration")
+
+	// Create registration request
+	registrationRequest := oauth.NewDynamicClientRegistrationRequest(scopes, h.config.CallbackPort)
+
+	// Perform dynamic registration
+	response, err := oauth.RegisterClientDynamically(ctx, authServerInfo.RegistrationEndpoint, registrationRequest)
+	if err != nil {
+		return "", "", fmt.Errorf("dynamic client registration failed: %w", err)
+	}
+
+	logger.Infof("Successfully obtained client credentials via dynamic registration")
+	return response.ClientID, response.ClientSecret, nil
+}
+
 // tryRestoreFromCachedTokens attempts to create a TokenSource from cached tokens
 func (h *Handler) tryRestoreFromCachedTokens(
 	ctx context.Context,
@@ -201,10 +237,16 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
 	}
 
+	// Get client credentials - may need dynamic registration
+	clientID, clientSecret, err := h.getClientCredentials(ctx, scopes, authServerInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to obtain client credentials: %w", err)
+	}
+
 	// Build OAuth2 config for token refresh
 	oauth2Config := &oauth2.Config{
-		ClientID:     h.config.ClientID,
-		ClientSecret: h.config.ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  h.config.AuthorizeURL,

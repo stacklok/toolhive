@@ -505,6 +505,11 @@ type OAuthFlowConfig struct {
 type OAuthFlowResult struct {
 	TokenSource oauth2.TokenSource
 	Config      *oauth.Config
+
+	// Token details for persistence across restarts
+	AccessToken  string
+	RefreshToken string
+	Expiry       time.Time
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -681,8 +686,11 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 
 	source := flow.TokenSource()
 	return &OAuthFlowResult{
-		TokenSource: source,
-		Config:      oauthConfig,
+		TokenSource:  source,
+		Config:       oauthConfig,
+		AccessToken:  tokenResult.AccessToken,
+		RefreshToken: tokenResult.RefreshToken,
+		Expiry:       tokenResult.Expiry,
 	}, nil
 }
 

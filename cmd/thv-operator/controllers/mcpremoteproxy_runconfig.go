@@ -154,6 +154,12 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, proxy.Spec.Audit)
 
+	// Add header forward configuration if specified
+	// Note: AddHeadersFromSecrets is handled separately via environment variable mounting
+	if proxy.Spec.HeaderForward != nil && len(proxy.Spec.HeaderForward.AddPlaintextHeaders) > 0 {
+		options = append(options, runner.WithHeaderForward(proxy.Spec.HeaderForward.AddPlaintextHeaders))
+	}
+
 	// Use the RunConfigBuilder for operator context
 	// Deployer is nil for remote proxies because they connect to external services
 	// and do not require container deployment (unlike MCPServer which deploys containers)

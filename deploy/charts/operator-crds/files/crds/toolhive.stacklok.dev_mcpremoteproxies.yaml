@@ -136,6 +136,49 @@ spec:
                   GroupRef is the name of the MCPGroup this proxy belongs to
                   Must reference an existing MCPGroup in the same namespace
                 type: string
+              headerForward:
+                description: |-
+                  HeaderForward configures headers to inject into requests to the remote MCP server.
+                  Use this to add custom headers like X-Tenant-ID or correlation IDs.
+                properties:
+                  addHeadersFromSecrets:
+                    description: AddHeadersFromSecrets references Kubernetes Secrets
+                      for sensitive header values.
+                    items:
+                      description: HeaderFromSecret defines a header whose value comes
+                        from a Kubernetes Secret.
+                      properties:
+                        headerName:
+                          description: HeaderName is the HTTP header name (e.g., "X-API-Key")
+                          minLength: 1
+                          type: string
+                        valueSecretRef:
+                          description: ValueSecretRef references the Secret and key
+                            containing the header value
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - headerName
+                      - valueSecretRef
+                      type: object
+                    type: array
+                  addPlaintextHeaders:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      AddPlaintextHeaders is a map of header names to literal values to inject into requests.
+                      WARNING: Values are stored in plaintext. Use addHeadersFromSecrets for sensitive data.
+                    type: object
+                type: object
               oidcConfig:
                 description: |-
                   OIDCConfig defines OIDC authentication configuration for the proxy

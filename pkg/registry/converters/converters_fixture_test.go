@@ -202,6 +202,21 @@ func validateImageToServerConversion(t *testing.T, inputData, outputData []byte)
 	assert.Equal(t, input.Tier, extensions["tier"], "Tier should be in extensions")
 	assert.NotNil(t, extensions["tools"], "Tools should be in extensions")
 	assert.NotNil(t, extensions["tags"], "Tags should be in extensions")
+
+	// Verify docker_tags if present
+	if len(input.DockerTags) > 0 {
+		assert.NotNil(t, extensions["docker_tags"], "docker_tags should be in extensions")
+	}
+
+	// Verify proxy_port if present
+	if input.ProxyPort > 0 {
+		assert.NotNil(t, extensions["proxy_port"], "proxy_port should be in extensions")
+	}
+
+	// Verify custom_metadata if present
+	if len(input.CustomMetadata) > 0 {
+		assert.NotNil(t, extensions["custom_metadata"], "custom_metadata should be in extensions")
+	}
 }
 
 func validateServerToImageConversion(t *testing.T, inputData, outputData []byte) {
@@ -221,6 +236,31 @@ func validateServerToImageConversion(t *testing.T, inputData, outputData []byte)
 	// Verify environment variables were extracted
 	assert.Len(t, output.EnvVars, len(input.Packages[0].EnvironmentVariables),
 		"Environment variables count should match")
+
+	// Verify new fields were extracted from extensions if present
+	if input.Meta != nil && input.Meta.PublisherProvided != nil {
+		stacklokData, ok := input.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+		if ok {
+			for _, extData := range stacklokData {
+				extensions, ok := extData.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if _, hasDockerTags := extensions["docker_tags"]; hasDockerTags {
+					assert.NotNil(t, output.DockerTags, "DockerTags should be extracted from extensions")
+					assert.Greater(t, len(output.DockerTags), 0, "DockerTags should not be empty")
+				}
+				if _, hasProxyPort := extensions["proxy_port"]; hasProxyPort {
+					assert.Greater(t, output.ProxyPort, 0, "ProxyPort should be extracted from extensions")
+				}
+				if _, hasCustomMetadata := extensions["custom_metadata"]; hasCustomMetadata {
+					assert.NotNil(t, output.CustomMetadata, "CustomMetadata should be extracted from extensions")
+					assert.Greater(t, len(output.CustomMetadata), 0, "CustomMetadata should not be empty")
+				}
+				break
+			}
+		}
+	}
 }
 
 func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte) {
@@ -261,6 +301,13 @@ func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte
 		extensions := stacklokData[input.URL].(map[string]interface{})
 		assert.NotNil(t, extensions["oauth_config"], "oauth_config should be in extensions")
 	}
+
+	// Verify custom_metadata if present
+	if len(input.CustomMetadata) > 0 {
+		stacklokData := output.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+		extensions := stacklokData[input.URL].(map[string]interface{})
+		assert.NotNil(t, extensions["custom_metadata"], "custom_metadata should be in extensions")
+	}
 }
 
 func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte) {
@@ -296,6 +343,10 @@ func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte
 				}
 				if _, hasOAuth := extensions["oauth_config"]; hasOAuth {
 					assert.NotNil(t, output.OAuthConfig, "OAuthConfig should be extracted from extensions")
+				}
+				if _, hasCustomMetadata := extensions["custom_metadata"]; hasCustomMetadata {
+					assert.NotNil(t, output.CustomMetadata, "CustomMetadata should be extracted from extensions")
+					assert.Greater(t, len(output.CustomMetadata), 0, "CustomMetadata should not be empty")
 				}
 				break
 			}

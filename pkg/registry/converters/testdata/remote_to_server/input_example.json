@@ -51,5 +51,10 @@
     "issuer": "https://auth.example.com",
     "client_id": "example-client",
     "scopes": ["openid", "profile"]
+  },
+  "custom_metadata": {
+    "provider": "Example Corp",
+    "api_version": "v2",
+    "rate_limit": 1000
   }
 }

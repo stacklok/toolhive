@@ -257,6 +257,8 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.R
 				Description: header.Description,
 				Required:    header.IsRequired,
 				Secret:      header.IsSecret,
+				Default:     header.Default,
+				Choices:     header.Choices,
 			})
 		}
 	}
@@ -334,7 +336,7 @@ func extractImageMetadataField(extensions map[string]interface{}, imageMetadata 
 	}
 }
 
-// extractComplexImageFields extracts complex fields (args, permissions, provenance)
+// extractComplexImageFields extracts complex fields (args, permissions, provenance, docker_tags, proxy_port, custom_metadata)
 func extractComplexImageFields(extensions map[string]interface{}, imageMetadata *types.ImageMetadata) {
 	// Extract args (fallback if PackageArguments wasn't used)
 	if len(imageMetadata.Args) == 0 {
@@ -351,6 +353,21 @@ func extractComplexImageFields(extensions map[string]interface{}, imageMetadata 
 	// Extract provenance using JSON round-trip
 	if provData, ok := extensions["provenance"]; ok {
 		imageMetadata.Provenance = remarshalToType[*types.Provenance](provData)
+	}
+
+	// Extract docker_tags
+	if dockerTagsData, ok := extensions["docker_tags"].([]interface{}); ok {
+		imageMetadata.DockerTags = interfaceSliceToStringSlice(dockerTagsData)
+	}
+
+	// Extract proxy_port
+	if proxyPort, ok := extensions["proxy_port"].(float64); ok {
+		imageMetadata.ProxyPort = int(proxyPort)
+	}
+
+	// Extract custom_metadata using JSON round-trip
+	if customMetadataData, ok := extensions["custom_metadata"]; ok {
+		imageMetadata.CustomMetadata = remarshalToType[map[string]any](customMetadataData)
 	}
 }
 
@@ -401,7 +418,7 @@ func extractRemoteMetadataField(extensions map[string]interface{}, remoteMetadat
 	}
 }
 
-// extractComplexRemoteFields extracts complex fields (oauth_config, env_vars) for remote servers
+// extractComplexRemoteFields extracts complex fields (oauth_config, env_vars, custom_metadata) for remote servers
 func extractComplexRemoteFields(extensions map[string]interface{}, remoteMetadata *types.RemoteServerMetadata) {
 	// Extract OAuth config using JSON round-trip
 	if oauthData, ok := extensions["oauth_config"]; ok {
@@ -411,6 +428,11 @@ func extractComplexRemoteFields(extensions map[string]interface{}, remoteMetadat
 	// Extract env_vars using JSON round-trip
 	if envVarsData, ok := extensions["env_vars"]; ok {
 		remoteMetadata.EnvVars = remarshalToType[[]*types.EnvVar](envVarsData)
+	}
+
+	// Extract custom_metadata using JSON round-trip
+	if customMetadataData, ok := extensions["custom_metadata"]; ok {
+		remoteMetadata.CustomMetadata = remarshalToType[map[string]any](customMetadataData)
 	}
 }
 

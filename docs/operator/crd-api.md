@@ -645,6 +645,8 @@ _Appears in:_
 
 ## toolhive.stacklok.dev/v1alpha1
 ### Resource Types
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+- [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
 - [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
 - [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
 - [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
@@ -848,6 +850,153 @@ _Appears in:_
 
 
 
+#### api.v1alpha1.EmbeddingResourceOverrides
+
+
+
+EmbeddingResourceOverrides defines overrides for annotations and labels on created resources
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `statefulSet` _[api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)_ | StatefulSet defines overrides for the StatefulSet resource |  |  |
+| `service` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | Service defines overrides for the Service resource |  |  |
+| `persistentVolumeClaim` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PersistentVolumeClaim defines overrides for the PVC resource |  |  |
+
+
+#### api.v1alpha1.EmbeddingServer
+
+
+
+EmbeddingServer is the Schema for the embeddingservers API
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServer` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)_ |  |  |  |
+| `status` _[api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.EmbeddingServerList
+
+
+
+EmbeddingServerList contains a list of EmbeddingServer
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServerList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver) array_ |  |  |  |
+
+
+#### api.v1alpha1.EmbeddingServerPhase
+
+_Underlying type:_ _string_
+
+EmbeddingServerPhase is the phase of the EmbeddingServer
+
+_Validation:_
+- Enum: [Pending Downloading Running Failed Terminating]
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)
+
+| Field | Description |
+| --- | --- |
+| `Pending` | EmbeddingServerPhasePending means the EmbeddingServer is being created<br /> |
+| `Downloading` | EmbeddingServerPhaseDownloading means the model is being downloaded<br /> |
+| `Running` | EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready<br /> |
+| `Failed` | EmbeddingServerPhaseFailed means the EmbeddingServer failed to start<br /> |
+| `Terminating` | EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted<br /> |
+
+
+#### api.v1alpha1.EmbeddingServerSpec
+
+
+
+EmbeddingServerSpec defines the desired state of EmbeddingServer
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") |  | Required: \{\} <br /> |
+| `hfTokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  |  |
+| `image` _string_ | Image is the container image for huggingface-embedding-inference | ghcr.io/huggingface/text-embeddings-inference:latest | Required: \{\} <br /> |
+| `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br /> |
+| `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  |  |
+| `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the container |  |  |
+| `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines compute resources for the embedding server |  |  |
+| `modelCache` _[api.v1alpha1.ModelCacheConfig](#apiv1alpha1modelcacheconfig)_ | ModelCache configures persistent storage for downloaded models<br />When enabled, models are cached in a PVC and reused across pod restarts |  |  |
+| `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec allows customizing the pod (node selection, tolerations, etc.)<br />This field accepts a PodTemplateSpec object as JSON/YAML.<br />Note that to modify the specific container the embedding server runs in, you must specify<br />the 'embedding' container name in the PodTemplateSpec. |  | Type: object <br /> |
+| `resourceOverrides` _[api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
+| `replicas` _integer_ | Replicas is the number of embedding server replicas to run | 1 | Minimum: 1 <br /> |
+
+
+#### api.v1alpha1.EmbeddingServerStatus
+
+
+
+EmbeddingServerStatus defines the observed state of EmbeddingServer
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the EmbeddingServer's state |  |  |
+| `phase` _[api.v1alpha1.EmbeddingServerPhase](#apiv1alpha1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Running Failed Terminating] <br /> |
+| `message` _string_ | Message provides additional information about the current phase |  |  |
+| `url` _string_ | URL is the URL where the embedding service can be accessed |  |  |
+| `readyReplicas` _integer_ | ReadyReplicas is the number of ready replicas |  |  |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  |  |
+
+
+#### api.v1alpha1.EmbeddingStatefulSetOverrides
+
+
+
+EmbeddingStatefulSetOverrides defines overrides specific to the embedding statefulset
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
+| `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
+| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  |  |
+
+
 #### api.v1alpha1.EnvVar
 
 
@@ -857,6 +1006,7 @@ EnvVar represents an environment variable in a container
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 - [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
 
@@ -1770,6 +1920,25 @@ _Appears in:_
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
+#### api.v1alpha1.ModelCacheConfig
+
+
+
+ModelCacheConfig configures persistent storage for model caching
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether model caching is enabled | true |  |
+| `storageClassName` _string_ | StorageClassName is the storage class to use for the PVC<br />If not specified, uses the cluster's default storage class |  |  |
+| `size` _string_ | Size is the size of the PVC for model caching (e.g., "10Gi") | 10Gi |  |
+| `accessMode` _string_ | AccessMode is the access mode for the PVC | ReadWriteOnce | Enum: [ReadWriteOnce ReadWriteMany ReadOnlyMany] <br /> |
+
+
 #### api.v1alpha1.NameFilter
 
 
@@ -2032,6 +2201,8 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+- [api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)
 - [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
 - [api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)
 
@@ -2068,6 +2239,7 @@ ResourceRequirements describes the compute resource requirements
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
@@ -2087,6 +2259,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 _Appears in:_
 - [api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)

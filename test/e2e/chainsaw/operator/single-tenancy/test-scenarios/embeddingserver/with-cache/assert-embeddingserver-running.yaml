@@ -1,0 +1,7 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: st-embedding-cache
+  namespace: toolhive-system
+status:
+  (contains(['Downloading', 'Running'], phase)): true

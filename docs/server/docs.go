@@ -873,6 +873,26 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "runner.HeaderForwardConfig": {
+                "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret is a map of header names to secret names.\nThe key is the header name, the value is the secret name in ToolHive's secrets manager.\nResolved at runtime via WithSecrets() into resolvedHeaders.\nThe actual secret value is only held in memory, never persisted.",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders is a map of header names to literal values to inject into requests.\nWARNING: These values are stored in plaintext in the configuration.\nFor sensitive values (API keys, tokens), use AddHeadersFromSecret instead.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
             "runner.RunConfig": {
                 "properties": {
                     "audit_config": {
@@ -934,6 +954,9 @@ const docTemplate = `{
                     "group": {
                         "description": "Group is the name of the group this workload belongs to, if any",
                         "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/runner.HeaderForwardConfig"
                     },
                     "host": {
                         "description": "Host is the host for the HTTP proxy",

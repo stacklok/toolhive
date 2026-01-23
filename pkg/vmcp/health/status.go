@@ -16,6 +16,9 @@ type backendHealthState struct {
 	// status is the current health status.
 	status vmcp.BackendHealthStatus
 
+	// reason explains why the backend is in its current status.
+	reason vmcp.BackendHealthReason
+
 	// consecutiveFailures is the number of consecutive failed health checks.
 	consecutiveFailures int
 
@@ -70,22 +73,24 @@ func newStatusTracker(unhealthyThreshold int) *statusTracker {
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
 //   - status: The health status returned by the health check (healthy or degraded)
-func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus) {
+//   - reason: Why the backend is in that status (empty for healthy, slow_response for degraded)
+func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus, reason vmcp.BackendHealthReason) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	state, exists := t.states[backendID]
 	if !exists {
-		// Initialize new state - no failure history, so accept status as-is
+		// Initialize new state - no failure history, so accept status and reason as-is
 		state = &backendHealthState{
 			status:              status,
+			reason:              reason,
 			consecutiveFailures: 0,
 			lastCheckTime:       time.Now(),
 			lastError:           nil,
 			lastTransitionTime:  time.Now(),
 		}
 		t.states[backendID] = state
-		logger.Debugf("Backend %s initialized as %s", backendName, status)
+		logger.Debugf("Backend %s initialized as %s (reason: %s)", backendName, status, reason)
 		return
 	}
 
@@ -97,13 +102,15 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 	// This takes precedence over the health check's status determination
 	if previousFailures > 0 {
 		state.status = vmcp.BackendDegraded
+		state.reason = vmcp.ReasonRecovering
 		logger.Infof("Backend %s recovering from failures: %s → %s (had %d consecutive failures)",
 			backendName, previousStatus, vmcp.BackendDegraded, previousFailures)
 	} else {
-		// No recent failures, use the status from health check (healthy or degraded from slow response)
+		// No recent failures, use the status and reason from health check
 		state.status = status
+		state.reason = reason
 		if previousStatus != status {
-			logger.Infof("Backend %s status changed: %s → %s", backendName, previousStatus, status)
+			logger.Infof("Backend %s status changed: %s → %s (reason: %s)", backendName, previousStatus, status, reason)
 		}
 	}
 
@@ -124,9 +131,10 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 // Parameters:
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
-//   - status: The health status returned by the health check (unhealthy, unauthenticated, etc.)
+//   - status: The health status returned by the health check (should be unhealthy)
+//   - reason: Why the backend is unhealthy (authentication_failed, timeout, etc.)
 //   - err: The error encountered during health check
-func (t *statusTracker) RecordFailure(backendID string, backendName string, status vmcp.BackendHealthStatus, err error) {
+func (t *statusTracker) RecordFailure(backendID string, backendName string, status vmcp.BackendHealthStatus, reason vmcp.BackendHealthReason, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -135,6 +143,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		// Initialize new state
 		state = &backendHealthState{
 			status:              vmcp.BackendUnknown,
+			reason:              reason,
 			consecutiveFailures: 1,
 			lastCheckTime:       time.Now(),
 			lastError:           err,
@@ -145,11 +154,11 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		// Check if threshold is reached on initialization (e.g., threshold of 1)
 		if state.consecutiveFailures >= t.unhealthyThreshold {
 			state.status = status
-			logger.Warnf("Backend %s initialized with failure and reached threshold: %s (%d/%d failures): %v",
-				backendName, status, state.consecutiveFailures, t.unhealthyThreshold, err)
+			logger.Warnf("Backend %s initialized with failure and reached threshold: %s (reason: %s, %d/%d failures): %v",
+				backendName, status, reason, state.consecutiveFailures, t.unhealthyThreshold, err)
 		} else {
-			logger.Warnf("Backend %s initialized with failure (1/%d failures, status: %s): %v",
-				backendName, t.unhealthyThreshold, vmcp.BackendUnknown, err)
+			logger.Warnf("Backend %s initialized with failure (1/%d failures, status: %s, reason: %s): %v",
+				backendName, t.unhealthyThreshold, vmcp.BackendUnknown, reason, err)
 		}
 		return
 	}
@@ -167,17 +176,19 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 	if thresholdReached && statusChanged {
 		// Transition to new unhealthy status
 		state.status = status
+		state.reason = reason
 		state.lastTransitionTime = time.Now()
-		logger.Warnf("Backend %s health degraded: %s → %s (%d consecutive failures, threshold: %d) - last error: %v",
-			backendName, previousStatus, status, state.consecutiveFailures, t.unhealthyThreshold, err)
+		logger.Warnf("Backend %s health degraded: %s → %s (reason: %s, %d consecutive failures, threshold: %d) - last error: %v",
+			backendName, previousStatus, status, reason, state.consecutiveFailures, t.unhealthyThreshold, err)
 	} else if thresholdReached {
-		// Already at threshold with same status - no transition needed
-		logger.Debugf("Backend %s remains %s (%d consecutive failures, incoming: %s): %v",
-			backendName, state.status, state.consecutiveFailures, status, err)
+		// Already at threshold - update reason even if status doesn't change
+		state.reason = reason
+		logger.Debugf("Backend %s remains %s (reason: %s, %d consecutive failures, incoming: %s): %v",
+			backendName, state.status, reason, state.consecutiveFailures, status, err)
 	} else {
 		// Below threshold - accumulating failures but not yet unhealthy
-		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, current status: %s, incoming: %s): %v",
-			backendName, state.consecutiveFailures, t.unhealthyThreshold, state.status, status, err)
+		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, current status: %s, incoming: %s, reason: %s): %v",
+			backendName, state.consecutiveFailures, t.unhealthyThreshold, state.status, status, reason, err)
 	}
 }
 
@@ -210,6 +221,7 @@ func (t *statusTracker) GetState(backendID string) (*State, bool) {
 	// Return a copy to avoid race conditions
 	return &State{
 		Status:              state.status,
+		Reason:              state.reason,
 		ConsecutiveFailures: state.consecutiveFailures,
 		LastCheckTime:       state.lastCheckTime,
 		LastError:           state.lastError,
@@ -227,6 +239,7 @@ func (t *statusTracker) GetAllStates() map[string]*State {
 	for backendID, state := range t.states {
 		result[backendID] = &State{
 			Status:              state.status,
+			Reason:              state.reason,
 			ConsecutiveFailures: state.consecutiveFailures,
 			LastCheckTime:       state.lastCheckTime,
 			LastError:           state.lastError,
@@ -250,6 +263,9 @@ func (t *statusTracker) IsHealthy(backendID string) bool {
 type State struct {
 	// Status is the current health status.
 	Status vmcp.BackendHealthStatus
+
+	// Reason explains why the backend is in its current status.
+	Reason vmcp.BackendHealthReason
 
 	// ConsecutiveFailures is the number of consecutive failed health checks.
 	ConsecutiveFailures int

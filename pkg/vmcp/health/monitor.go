@@ -249,15 +249,15 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 	healthCheckCtx := WithHealthCheckMarker(ctx)
 
 	// Perform health check
-	status, err := m.checker.CheckHealth(healthCheckCtx, target)
+	status, reason, err := m.checker.CheckHealth(healthCheckCtx, target)
 
 	// Record result in status tracker
 	if err != nil {
-		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
+		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, reason, err)
 	} else {
-		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
+		// Pass status and reason to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
-		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status, reason)
 	}
 }
 
@@ -299,12 +299,11 @@ func (m *Monitor) GetHealthSummary() Summary {
 	allStates := m.statusTracker.GetAllStates()
 
 	summary := Summary{
-		Total:           len(allStates),
-		Healthy:         0,
-		Degraded:        0,
-		Unhealthy:       0,
-		Unknown:         0,
-		Unauthenticated: 0,
+		Total:     len(allStates),
+		Healthy:   0,
+		Degraded:  0,
+		Unhealthy: 0,
+		Unknown:   0,
 	}
 
 	for _, state := range allStates {
@@ -317,8 +316,6 @@ func (m *Monitor) GetHealthSummary() Summary {
 			summary.Unhealthy++
 		case vmcp.BackendUnknown:
 			summary.Unknown++
-		case vmcp.BackendUnauthenticated:
-			summary.Unauthenticated++
 		}
 	}
 
@@ -327,16 +324,15 @@ func (m *Monitor) GetHealthSummary() Summary {
 
 // Summary provides aggregate health statistics for all backends.
 type Summary struct {
-	Total           int
-	Healthy         int
-	Degraded        int
-	Unhealthy       int
-	Unknown         int
-	Unauthenticated int
+	Total     int
+	Healthy   int
+	Degraded  int
+	Unhealthy int
+	Unknown   int
 }
 
 // String returns a human-readable summary.
 func (s Summary) String() string {
-	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d unauthenticated=%d",
-		s.Total, s.Healthy, s.Degraded, s.Unhealthy, s.Unknown, s.Unauthenticated)
+	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d",
+		s.Total, s.Healthy, s.Degraded, s.Unhealthy, s.Unknown)
 }

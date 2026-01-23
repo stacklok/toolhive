@@ -98,6 +98,8 @@ func (t *BackendTarget) GetBackendCapabilityName(resolvedName string) string {
 }
 
 // BackendHealthStatus represents the health state of a backend.
+// This describes WHAT the current state is (healthy, degraded, unhealthy, unknown).
+// Use BackendHealthReason to describe WHY the backend is in that state.
 type BackendHealthStatus string
 
 const (
@@ -111,21 +113,48 @@ const (
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.
+	// Check the Reason field to understand why (e.g., unauthenticated, connection_refused, timeout).
 	BackendUnhealthy BackendHealthStatus = "unhealthy"
 
 	// BackendUnknown indicates the backend health status is unknown.
 	BackendUnknown BackendHealthStatus = "unknown"
+)
 
-	// BackendUnauthenticated indicates the backend is not authenticated.
-	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
+// BackendHealthReason describes WHY a backend is in its current health status.
+// This provides causation context for status values.
+type BackendHealthReason string
+
+const (
+	// ReasonHealthy indicates the backend is healthy with no issues.
+	ReasonHealthy BackendHealthReason = ""
+
+	// ReasonAuthenticationFailed indicates authentication failed (401, 403, invalid credentials).
+	ReasonAuthenticationFailed BackendHealthReason = "authentication_failed"
+
+	// ReasonConnectionRefused indicates the connection was refused.
+	ReasonConnectionRefused BackendHealthReason = "connection_refused"
+
+	// ReasonTimeout indicates the health check timed out.
+	ReasonTimeout BackendHealthReason = "timeout"
+
+	// ReasonNetworkUnreachable indicates the network is unreachable.
+	ReasonNetworkUnreachable BackendHealthReason = "network_unreachable"
+
+	// ReasonHealthCheckFailed indicates a generic health check failure.
+	ReasonHealthCheckFailed BackendHealthReason = "health_check_failed"
+
+	// ReasonSlowResponse indicates health check succeeded but response was slow (degraded threshold exceeded).
+	ReasonSlowResponse BackendHealthReason = "slow_response"
+
+	// ReasonRecovering indicates backend is recovering from previous failures.
+	ReasonRecovering BackendHealthReason = "recovering"
 )
 
 // ToCRDStatus converts BackendHealthStatus to CRD-friendly status string.
 // This maps internal health states to user-facing status values:
 //   - healthy → ready
 //   - degraded → degraded
-//   - unhealthy → unavailable
-//   - unauthenticated → unavailable (unauthenticated is a reason, not a status)
+//   - unhealthy → unavailable (use Reason field to determine why)
 //   - unknown → unknown
 func (s BackendHealthStatus) ToCRDStatus() string {
 	switch s {
@@ -133,7 +162,7 @@ func (s BackendHealthStatus) ToCRDStatus() string {
 		return "ready"
 	case BackendDegraded:
 		return "degraded"
-	case BackendUnhealthy, BackendUnauthenticated:
+	case BackendUnhealthy:
 		return "unavailable"
 	case BackendUnknown:
 		return "unknown"
@@ -187,6 +216,11 @@ type DiscoveredBackend struct {
 	// Use BackendHealthStatus.ToCRDStatus() to populate this field.
 	// +optional
 	Status string `json:"status,omitempty"`
+
+	// Reason provides the reason for the current status (e.g., authentication_failed, timeout, connection_refused).
+	// This explains WHY the backend is in its current status.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 
 	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
 	// +optional
@@ -247,6 +281,10 @@ type Backend struct {
 
 	// HealthStatus is the current health state.
 	HealthStatus BackendHealthStatus
+
+	// HealthReason explains why the backend is in its current HealthStatus.
+	// For example: authentication_failed, timeout, connection_refused, slow_response, recovering.
+	HealthReason BackendHealthReason
 
 	// AuthConfig contains the typed authentication configuration for this backend.
 	// The actual authentication is handled by OutgoingAuthRegistry interface.
@@ -358,8 +396,11 @@ const (
 // HealthChecker performs health checks on backend MCP servers.
 type HealthChecker interface {
 	// CheckHealth checks if a backend is healthy and responding.
-	// Returns the current health status and any error encountered.
-	CheckHealth(ctx context.Context, target *BackendTarget) (BackendHealthStatus, error)
+	// Returns:
+	//   - status: The current health status (healthy, degraded, unhealthy, unknown)
+	//   - reason: Why the backend is in that status (authentication_failed, timeout, etc.)
+	//   - error: Any error encountered during the health check (for logging/debugging)
+	CheckHealth(ctx context.Context, target *BackendTarget) (status BackendHealthStatus, reason BackendHealthReason, err error)
 }
 
 // BackendClient abstracts MCP protocol communication with backend servers.

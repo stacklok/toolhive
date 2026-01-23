@@ -58,7 +58,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 				{ID: "degraded", HealthStatus: BackendDegraded},
 				{ID: "unhealthy", HealthStatus: BackendUnhealthy},
 				{ID: "unknown", HealthStatus: BackendUnknown},
-				{ID: "unauthenticated", HealthStatus: BackendUnauthenticated},
+				{ID: "auth_failed", HealthStatus: BackendUnhealthy, HealthReason: ReasonAuthenticationFailed},
 			},
 			expectedCount: 5,
 		},
@@ -558,7 +558,6 @@ func TestBackendToTarget(t *testing.T) {
 			BackendDegraded,
 			BackendUnhealthy,
 			BackendUnknown,
-			BackendUnauthenticated,
 		}
 
 		for _, status := range statuses {
@@ -649,7 +648,6 @@ func TestDomainTypes_BackendHealthStatus(t *testing.T) {
 		{BackendDegraded, "degraded"},
 		{BackendUnhealthy, "unhealthy"},
 		{BackendUnknown, "unknown"},
-		{BackendUnauthenticated, "unauthenticated"},
 	}
 
 	for _, tt := range tests {

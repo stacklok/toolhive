@@ -75,9 +75,10 @@ func TestHealthChecker_CheckHealth_Success(t *testing.T) {
 		BaseURL:      "http://localhost:8080",
 	}
 
-	status, err := checker.CheckHealth(context.Background(), target)
+	status, reason, err := checker.CheckHealth(context.Background(), target)
 	assert.NoError(t, err)
 	assert.Equal(t, vmcp.BackendHealthy, status)
+	assert.Equal(t, vmcp.ReasonHealthy, reason)
 }
 
 func TestHealthChecker_CheckHealth_ContextCancellation(t *testing.T) {
@@ -105,9 +106,10 @@ func TestHealthChecker_CheckHealth_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	status, err := checker.CheckHealth(ctx, target)
+	status, reason, err := checker.CheckHealth(ctx, target)
 	assert.Error(t, err)
 	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	assert.Equal(t, vmcp.ReasonTimeout, reason)
 }
 
 func TestHealthChecker_CheckHealth_NoTimeout(t *testing.T) {
@@ -130,9 +132,10 @@ func TestHealthChecker_CheckHealth_NoTimeout(t *testing.T) {
 		BaseURL:      "http://localhost:8080",
 	}
 
-	status, err := checker.CheckHealth(context.Background(), target)
+	status, reason, err := checker.CheckHealth(context.Background(), target)
 	assert.NoError(t, err)
 	assert.Equal(t, vmcp.BackendHealthy, status)
+	assert.Equal(t, vmcp.ReasonHealthy, reason)
 }
 
 func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
@@ -142,61 +145,71 @@ func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
 		name           string
 		err            error
 		expectedStatus vmcp.BackendHealthStatus
+		expectedReason vmcp.BackendHealthReason
 		description    string
 	}{
 		{
 			name:           "timeout error",
 			err:            fmt.Errorf("context deadline exceeded"),
 			expectedStatus: vmcp.BackendUnhealthy,
-			description:    "should categorize timeout as unhealthy",
+			expectedReason: vmcp.ReasonTimeout,
+			description:    "should categorize timeout as unhealthy with timeout reason",
 		},
 		{
 			name:           "connection refused",
 			err:            fmt.Errorf("connection refused"),
 			expectedStatus: vmcp.BackendUnhealthy,
-			description:    "should categorize connection error as unhealthy",
+			expectedReason: vmcp.ReasonConnectionRefused,
+			description:    "should categorize connection error as unhealthy with connection_refused reason",
 		},
 		{
 			name:           "authentication failed",
 			err:            fmt.Errorf("authentication failed: invalid token"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should categorize auth failure as unauthenticated",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should categorize auth failure as unhealthy with authentication_failed reason",
 		},
 		{
 			name:           "401 unauthorized",
 			err:            fmt.Errorf("HTTP 401 unauthorized"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should categorize 401 as unauthenticated",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should categorize 401 as unhealthy with authentication_failed reason",
 		},
 		{
 			name:           "403 forbidden",
 			err:            fmt.Errorf("403 forbidden"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should categorize 403 as unauthenticated",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should categorize 403 as unhealthy with authentication_failed reason",
 		},
 		{
 			name:           "status code 401",
 			err:            fmt.Errorf("status code 401"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should recognize status code format",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should recognize status code format as authentication_failed",
 		},
 		{
 			name:           "request unauthenticated",
 			err:            fmt.Errorf("request unauthenticated"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should recognize request unauthenticated",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should recognize request unauthenticated as authentication_failed",
 		},
 		{
 			name:           "access denied",
 			err:            fmt.Errorf("access denied"),
-			expectedStatus: vmcp.BackendUnauthenticated,
-			description:    "should recognize access denied",
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
+			description:    "should recognize access denied as authentication_failed",
 		},
 		{
 			name:           "generic error",
 			err:            fmt.Errorf("unknown error"),
 			expectedStatus: vmcp.BackendUnhealthy,
-			description:    "should default unknown errors to unhealthy",
+			expectedReason: vmcp.ReasonHealthCheckFailed,
+			description:    "should default unknown errors to unhealthy with health_check_failed reason",
 		},
 	}
 
@@ -220,9 +233,10 @@ func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
 				BaseURL:      "http://localhost:8080",
 			}
 
-			status, err := checker.CheckHealth(context.Background(), target)
+			status, reason, err := checker.CheckHealth(context.Background(), target)
 			assert.Error(t, err, tt.description)
 			assert.Equal(t, tt.expectedStatus, status, tt.description)
+			assert.Equal(t, tt.expectedReason, reason, tt.description)
 		})
 	}
 }
@@ -234,71 +248,85 @@ func TestCategorizeError(t *testing.T) {
 		name           string
 		err            error
 		expectedStatus vmcp.BackendHealthStatus
+		expectedReason vmcp.BackendHealthReason
 	}{
 		{
 			name:           "nil error",
 			err:            nil,
 			expectedStatus: vmcp.BackendHealthy,
+			expectedReason: vmcp.ReasonHealthy,
 		},
 		{
 			name:           "authentication failed",
 			err:            errors.New("authentication failed"),
-			expectedStatus: vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
 		},
 		{
 			name:           "authentication error",
 			err:            errors.New("authentication error: invalid credentials"),
-			expectedStatus: vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
 		},
 		{
 			name:           "request unauthorized",
 			err:            errors.New("request unauthorized"),
-			expectedStatus: vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
 		},
 		{
 			name:           "HTTP 401",
 			err:            errors.New("HTTP 401"),
-			expectedStatus: vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
 		},
 		{
 			name:           "HTTP 403",
 			err:            errors.New("HTTP 403"),
-			expectedStatus: vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonAuthenticationFailed,
 		},
 		{
 			name:           "timeout",
 			err:            errors.New("request timeout"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonTimeout,
 		},
 		{
 			name:           "deadline exceeded",
 			err:            errors.New("context deadline exceeded"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonTimeout,
 		},
 		{
 			name:           "connection refused",
 			err:            errors.New("connection refused"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonConnectionRefused,
 		},
 		{
 			name:           "connection reset",
 			err:            errors.New("connection reset by peer"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonHealthCheckFailed,
 		},
 		{
 			name:           "no route to host",
 			err:            errors.New("no route to host"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonNetworkUnreachable,
 		},
 		{
 			name:           "network unreachable",
 			err:            errors.New("network is unreachable"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonNetworkUnreachable,
 		},
 		{
 			name:           "generic error",
 			err:            errors.New("something went wrong"),
 			expectedStatus: vmcp.BackendUnhealthy,
+			expectedReason: vmcp.ReasonHealthCheckFailed,
 		},
 	}
 
@@ -306,8 +334,9 @@ func TestCategorizeError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			status := categorizeError(tt.err)
+			status, reason := categorizeError(tt.err)
 			assert.Equal(t, tt.expectedStatus, status)
+			assert.Equal(t, tt.expectedReason, reason)
 		})
 	}
 }
@@ -437,9 +466,10 @@ func TestHealthChecker_CheckHealth_Timeout(t *testing.T) {
 		BaseURL:      "http://localhost:8080",
 	}
 
-	status, err := checker.CheckHealth(context.Background(), target)
+	status, reason, err := checker.CheckHealth(context.Background(), target)
 	assert.Error(t, err)
 	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	assert.Equal(t, vmcp.ReasonTimeout, reason)
 }
 
 func TestHealthChecker_CheckHealth_MultipleBackends(t *testing.T) {
@@ -470,38 +500,42 @@ func TestHealthChecker_CheckHealth_MultipleBackends(t *testing.T) {
 	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
 
 	// Test healthy backend
-	status, err := checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
+	status, reason, err := checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
 		WorkloadID:   "backend-healthy",
 		WorkloadName: "Healthy Backend",
 		BaseURL:      "http://localhost:8080",
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, vmcp.BackendHealthy, status)
+	assert.Equal(t, vmcp.ReasonHealthy, reason)
 
 	// Test auth error backend
-	status, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
+	status, reason, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
 		WorkloadID:   "backend-auth-error",
 		WorkloadName: "Auth Error Backend",
 		BaseURL:      "http://localhost:8081",
 	})
 	assert.Error(t, err)
-	assert.Equal(t, vmcp.BackendUnauthenticated, status)
+	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	assert.Equal(t, vmcp.ReasonAuthenticationFailed, reason)
 
 	// Test timeout backend
-	status, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
+	status, reason, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
 		WorkloadID:   "backend-timeout",
 		WorkloadName: "Timeout Backend",
 		BaseURL:      "http://localhost:8082",
 	})
 	assert.Error(t, err)
 	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	assert.Equal(t, vmcp.ReasonTimeout, reason)
 
 	// Test unknown error backend
-	status, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
+	status, reason, err = checker.CheckHealth(context.Background(), &vmcp.BackendTarget{
 		WorkloadID:   "backend-unknown",
 		WorkloadName: "Unknown Backend",
 		BaseURL:      "http://localhost:8083",
 	})
 	assert.Error(t, err)
 	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	assert.Equal(t, vmcp.ReasonHealthCheckFailed, reason)
 }

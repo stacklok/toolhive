@@ -281,8 +281,8 @@ func TestNewClient_PublicClient(t *testing.T) {
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, client.GetRedirectURIs())
 
 	// Check defaults are applied (use ElementsMatch since fosite returns fosite.Arguments type)
-	assert.ElementsMatch(t, DefaultGrantTypes, client.GetGrantTypes())
-	assert.ElementsMatch(t, DefaultResponseTypes, client.GetResponseTypes())
+	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
+	assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
 }
 
@@ -313,8 +313,8 @@ func TestNewClient_ConfidentialClient(t *testing.T) {
 	assert.NoError(t, err, "stored secret should be bcrypt hash of plaintext")
 
 	// Check defaults are applied (use ElementsMatch since fosite returns fosite.Arguments type)
-	assert.ElementsMatch(t, DefaultGrantTypes, client.GetGrantTypes())
-	assert.ElementsMatch(t, DefaultResponseTypes, client.GetResponseTypes())
+	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
+	assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
 }
 
@@ -375,7 +375,7 @@ func TestNewClient_EmptySlicesUseDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use ElementsMatch since fosite returns fosite.Arguments type
-	assert.ElementsMatch(t, DefaultGrantTypes, client.GetGrantTypes())
-	assert.ElementsMatch(t, DefaultResponseTypes, client.GetResponseTypes())
+	assert.ElementsMatch(t, defaultGrantTypes, client.GetGrantTypes())
+	assert.ElementsMatch(t, defaultResponseTypes, client.GetResponseTypes())
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
 }

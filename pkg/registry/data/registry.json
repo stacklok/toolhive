@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-22T00:20:22Z",
+  "last_updated": "2026-01-23T00:20:04Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.4.1",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.5.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -576,9 +576,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 7643,
+        "stars": 7923,
         "pulls": 0,
-        "last_updated": "2025-12-14T02:40:43Z"
+        "last_updated": "2026-01-22T02:44:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -627,9 +627,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 7643,
+        "stars": 7923,
         "pulls": 0,
-        "last_updated": "2025-12-14T02:40:43Z"
+        "last_updated": "2026-01-22T02:44:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1115,9 +1115,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 445,
+        "stars": 472,
         "pulls": 0,
-        "last_updated": "2025-12-16T02:36:32Z"
+        "last_updated": "2026-01-22T02:44:01Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1548,9 +1548,9 @@
         "unstage_table"
       ],
       "metadata": {
-        "stars": 5,
+        "stars": 6,
         "pulls": 0,
-        "last_updated": "2025-12-16T02:36:33Z"
+        "last_updated": "2026-01-22T02:44:02Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -3873,9 +3873,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 74,
+        "stars": 75,
         "pulls": 0,
-        "last_updated": "2025-12-16T02:36:33Z"
+        "last_updated": "2026-01-22T02:44:02Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -4672,7 +4672,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.3.3",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.3.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -4888,7 +4888,7 @@
         "observability",
         "query"
       ],
-      "image": "ghcr.io/pab1it0/prometheus-mcp-server:1.5.2",
+      "image": "ghcr.io/pab1it0/prometheus-mcp-server:1.5.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -5259,7 +5259,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.27.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.28.0",
       "permissions": {
         "network": {
           "outbound": {

@@ -158,8 +158,8 @@ func TestValidateDCRRequest(t *testing.T) {
 			},
 			expectError:        false,
 			expectedAuthMethod: "none",
-			expectedGrants:     DefaultGrantTypes,
-			expectedResponses:  DefaultResponseTypes,
+			expectedGrants:     defaultGrantTypes,
+			expectedResponses:  defaultResponseTypes,
 		},
 		{
 			name: "valid request with all fields specified",
@@ -182,8 +182,8 @@ func TestValidateDCRRequest(t *testing.T) {
 			},
 			expectError:        false,
 			expectedAuthMethod: "none",
-			expectedGrants:     DefaultGrantTypes,
-			expectedResponses:  DefaultResponseTypes,
+			expectedGrants:     defaultGrantTypes,
+			expectedResponses:  defaultResponseTypes,
 		},
 
 		// Empty redirect_uris
@@ -290,7 +290,7 @@ func TestValidateDCRRequest(t *testing.T) {
 				GrantTypes:   []string{},
 			},
 			expectError:    false,
-			expectedGrants: DefaultGrantTypes,
+			expectedGrants: defaultGrantTypes,
 		},
 		{
 			name: "grant_types defaults when nil",
@@ -299,7 +299,7 @@ func TestValidateDCRRequest(t *testing.T) {
 				GrantTypes:   nil,
 			},
 			expectError:    false,
-			expectedGrants: DefaultGrantTypes,
+			expectedGrants: defaultGrantTypes,
 		},
 		{
 			name: "grant_types without authorization_code fails",
@@ -328,6 +328,15 @@ func TestValidateDCRRequest(t *testing.T) {
 			expectError:    false,
 			expectedGrants: []string{"authorization_code"},
 		},
+		{
+			name: "grant_types with unsupported type rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				GrantTypes:   []string{"authorization_code", "client_credentials"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
 
 		// response_types validation
 		{
@@ -337,7 +346,7 @@ func TestValidateDCRRequest(t *testing.T) {
 				ResponseTypes: []string{},
 			},
 			expectError:       false,
-			expectedResponses: DefaultResponseTypes,
+			expectedResponses: defaultResponseTypes,
 		},
 		{
 			name: "response_types defaults when nil",
@@ -346,7 +355,7 @@ func TestValidateDCRRequest(t *testing.T) {
 				ResponseTypes: nil,
 			},
 			expectError:       false,
-			expectedResponses: DefaultResponseTypes,
+			expectedResponses: defaultResponseTypes,
 		},
 		{
 			name: "response_types without code fails",
@@ -376,21 +385,38 @@ func TestValidateDCRRequest(t *testing.T) {
 			expectedResponses: []string{"code"},
 		},
 		{
-			name: "response_types with code and others passes",
+			name: "response_types with unsupported type rejected",
 			request: &DCRRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{"code", "token"},
 			},
-			expectError:       false,
-			expectedResponses: []string{"code", "token"},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
 		},
 
-		// ClientName preservation
+		// ClientName validation
 		{
 			name: "client_name is preserved",
 			request: &DCRRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				ClientName:   "My Application",
+			},
+			expectError: false,
+		},
+		{
+			name: "client_name exceeding max length is rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				ClientName:   strings.Repeat("a", MaxClientNameLength+1),
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "client_name at max length is accepted",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				ClientName:   strings.Repeat("a", MaxClientNameLength),
 			},
 			expectError: false,
 		},
@@ -443,9 +469,9 @@ func TestDefaultGrantTypesAndResponseTypes(t *testing.T) {
 	t.Parallel()
 
 	// Verify default grant types include authorization_code
-	assert.Contains(t, DefaultGrantTypes, "authorization_code")
-	assert.Contains(t, DefaultGrantTypes, "refresh_token")
+	assert.Contains(t, defaultGrantTypes, "authorization_code")
+	assert.Contains(t, defaultGrantTypes, "refresh_token")
 
 	// Verify default response types include code
-	assert.Contains(t, DefaultResponseTypes, "code")
+	assert.Contains(t, defaultResponseTypes, "code")
 }

@@ -459,7 +459,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
 	// (e.g., after laptop sleep where zombie processes may hold ports)
 	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
+		Control: func(_, _ string, c syscall.RawConn) error {
 			var opErr error
 			if err := c.Control(func(fd uintptr) {
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
@@ -469,7 +469,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 			return opErr
 		},
 	}
-	ln, err := lc.Listen(ctx, "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}

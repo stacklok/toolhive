@@ -166,7 +166,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
 	addr := fmt.Sprintf("%s:%d", p.host, p.port)
 	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
+		Control: func(_, _ string, c syscall.RawConn) error {
 			var opErr error
 			if err := c.Control(func(fd uintptr) {
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)

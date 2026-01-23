@@ -109,6 +109,9 @@ func NewIntegration(
 	}, nil
 }
 
+// Ensure OptimizerIntegration implements Integration interface at compile time.
+var _ Integration = (*OptimizerIntegration)(nil)
+
 // HandleSessionRegistration handles session registration for optimizer mode.
 // Returns true if optimizer mode is enabled and handled the registration,
 // false if optimizer is disabled and normal registration should proceed.
@@ -118,7 +121,7 @@ func NewIntegration(
 //  2. Injects resources (but not backend tools or composite tools)
 //  3. Backend tools are accessible via find_tool and call_tool
 func (o *OptimizerIntegration) HandleSessionRegistration(
-	ctx context.Context,
+	_ context.Context,
 	sessionID string,
 	caps *aggregator.AggregatedCapabilities,
 	mcpServer *server.MCPServer,

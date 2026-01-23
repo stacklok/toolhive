@@ -74,34 +74,6 @@ type Watcher interface {
 	WaitForCacheSync(ctx context.Context) bool
 }
 
-// OptimizerIntegration is the interface for optimizer functionality in vMCP.
-// This interface encapsulates all optimizer logic, keeping server.go clean.
-type OptimizerIntegration interface {
-	// Initialize performs all optimizer initialization:
-	//   - Registers optimizer tools globally with the MCP server
-	//   - Ingests initial backends from the registry
-	// This should be called once during server startup, after the MCP server is created.
-	Initialize(ctx context.Context, mcpServer *server.MCPServer, backendRegistry vmcp.BackendRegistry) error
-
-	// HandleSessionRegistration handles session registration for optimizer mode.
-	// Returns true if optimizer mode is enabled and handled the registration,
-	// false if optimizer is disabled and normal registration should proceed.
-	// The resourceConverter function converts vmcp.Resource to server.ServerResource.
-	HandleSessionRegistration(
-		ctx context.Context,
-		sessionID string,
-		caps *aggregator.AggregatedCapabilities,
-		mcpServer *server.MCPServer,
-		resourceConverter func([]vmcp.Resource) []server.ServerResource,
-	) (bool, error)
-
-	// Close cleans up optimizer resources
-	Close() error
-
-	// OptimizerHandlerProvider is embedded to provide tool handlers
-	adapter.OptimizerHandlerProvider
-}
-
 // OptimizerConfig holds optimizer-specific configuration for vMCP integration.
 // This is used for backward compatibility with CLI configuration.
 // Prefer using OptimizerIntegration directly for better modularity.
@@ -187,7 +159,7 @@ type Config struct {
 	// OptimizerIntegration is the optional optimizer integration.
 	// If nil, optimizer is disabled and backend tools are exposed directly.
 	// If set, this takes precedence over OptimizerConfig.
-	OptimizerIntegration OptimizerIntegration
+	OptimizerIntegration optimizer.Integration
 
 	// OptimizerConfig is the optional optimizer configuration (for backward compatibility).
 	// If OptimizerIntegration is set, this is ignored.
@@ -430,7 +402,7 @@ func New(
 	}
 
 	// Initialize optimizer integration if configured
-	var optimizerInteg OptimizerIntegration
+	var optimizerInteg optimizer.Integration
 	if cfg.OptimizerIntegration != nil {
 		optimizerInteg = cfg.OptimizerIntegration
 	} else if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
@@ -1214,7 +1186,7 @@ func createOptimizerIntegrationFromConfig(
 	mcpServer *server.MCPServer,
 	backendClient vmcp.BackendClient,
 	sessionManager *transportsession.Manager,
-) (OptimizerIntegration, error) {
+) (optimizer.Integration, error) {
 	optimizerCfg := &optimizer.Config{
 		Enabled:           cfg.Enabled,
 		PersistPath:       cfg.PersistPath,

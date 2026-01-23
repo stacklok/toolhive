@@ -201,6 +201,7 @@ func (o *OptimizerIntegration) OnRegisterSession(
 // Initialize performs all optimizer initialization:
 //   - Registers optimizer tools globally with the MCP server
 //   - Ingests initial backends from the registry
+//
 // This should be called once during server startup, after the MCP server is created.
 func (o *OptimizerIntegration) Initialize(
 	ctx context.Context,

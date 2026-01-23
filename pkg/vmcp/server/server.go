@@ -20,6 +20,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -36,7 +37,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 )
 
 const (
@@ -578,7 +578,7 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
-		IdleTimeout:        defaultIdleTimeout,
+		IdleTimeout:       defaultIdleTimeout,
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 

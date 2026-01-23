@@ -33,6 +33,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 )
 
 // TestMCPRemoteProxyFullReconciliation tests the complete reconciliation flow
@@ -663,14 +664,15 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 	assert.Contains(t, cm.Data[ctrlutil.DefaultAuthzKey], "tools/list")
 }
 
-// TestEnsureRBACResourceShared tests the shared RBAC resource helper
-func TestEnsureRBACResourceShared(t *testing.T) {
+// TestRBACClientIntegration tests the rbac.Client integration
+func TestRBACClientIntegration(t *testing.T) {
 	t.Parallel()
 
 	proxy := &mcpv1alpha1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "rbac-test-proxy",
 			Namespace: "default",
+			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
@@ -692,15 +694,16 @@ func TestEnsureRBACResourceShared(t *testing.T) {
 		WithRuntimeObjects(proxy).
 		Build()
 
+	rbacClient := rbac.NewClient(fakeClient, scheme)
+
 	// Test ServiceAccount creation
-	err := ctrlutil.EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sa",
-				Namespace: proxy.Namespace,
-			},
-		}
-	})
+	serviceAccount := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sa",
+			Namespace: proxy.Namespace,
+		},
+	}
+	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(context.TODO(), serviceAccount, proxy)
 	assert.NoError(t, err)
 
 	// Verify ServiceAccount was created
@@ -712,29 +715,28 @@ func TestEnsureRBACResourceShared(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test Role creation
-	err = ctrlutil.EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: proxy.Namespace,
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-role",
+			Namespace: proxy.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
 			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get"},
-				},
-			},
-		}
-	})
+		},
+	}
+	_, err = rbacClient.UpsertRoleWithOwnerReference(context.TODO(), role, proxy)
 	assert.NoError(t, err)
 
 	// Verify Role was created
-	role := &rbacv1.Role{}
+	createdRole := &rbacv1.Role{}
 	err = fakeClient.Get(context.TODO(), types.NamespacedName{
 		Name:      "test-role",
 		Namespace: proxy.Namespace,
-	}, role)
+	}, createdRole)
 	assert.NoError(t, err)
 }
 

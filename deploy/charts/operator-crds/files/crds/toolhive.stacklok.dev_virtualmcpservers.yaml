@@ -1316,6 +1316,11 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
+                  If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
+                type: string
               serviceType:
                 default: ClusterIP
                 description: ServiceType specifies the Kubernetes service type for

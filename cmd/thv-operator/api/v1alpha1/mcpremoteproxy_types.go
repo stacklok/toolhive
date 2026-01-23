@@ -59,6 +59,11 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
 
+	// ServiceAccount is the name of an already existing service account to use by the proxy.
+	// If not specified, a ServiceAccount will be created automatically and used by the proxy.
+	// +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
 	// and X-Forwarded-Prefix headers to construct endpoint URLs

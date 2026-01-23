@@ -930,6 +930,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		(*in).DeepCopyInto(*out)
 	}
 	out.Resources = in.Resources
+	if in.ServiceAccount != nil {
+		in, out := &in.ServiceAccount, &out.ServiceAccount
+		*out = new(string)
+		**out = **in
+	}
 	if in.ResourceOverrides != nil {
 		in, out := &in.ResourceOverrides, &out.ResourceOverrides
 		*out = new(ResourceOverrides)
@@ -2017,6 +2022,11 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		in, out := &in.OutgoingAuth, &out.OutgoingAuth
 		*out = new(OutgoingAuthConfig)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ServiceAccount != nil {
+		in, out := &in.ServiceAccount, &out.ServiceAccount
+		*out = new(string)
+		**out = **in
 	}
 	if in.PodTemplateSpec != nil {
 		in, out := &in.PodTemplateSpec, &out.PodTemplateSpec

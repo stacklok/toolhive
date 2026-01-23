@@ -295,6 +295,11 @@ func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[s
 		extensions["oauth_config"] = remoteMetadata.OAuthConfig
 	}
 
+	// Add env_vars
+	if len(remoteMetadata.EnvVars) > 0 {
+		extensions["env_vars"] = remoteMetadata.EnvVars
+	}
+
 	return map[string]interface{}{
 		"io.github.stacklok": map[string]interface{}{
 			remoteMetadata.URL: extensions,

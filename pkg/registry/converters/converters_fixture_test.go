@@ -240,6 +240,27 @@ func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte
 	// Verify headers count
 	assert.Len(t, output.Remotes[0].Headers, len(input.Headers),
 		"Headers count should match")
+
+	// Verify publisher extensions exist and contain env_vars if input has them
+	if len(input.EnvVars) > 0 {
+		require.NotNil(t, output.Meta, "Meta should not be nil")
+		require.NotNil(t, output.Meta.PublisherProvided, "PublisherProvided should not be nil")
+
+		stacklokData, ok := output.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+		require.True(t, ok, "Should have io.github.stacklok namespace")
+
+		extensions, ok := stacklokData[input.URL].(map[string]interface{})
+		require.True(t, ok, "Should have URL-specific extensions")
+
+		assert.NotNil(t, extensions["env_vars"], "env_vars should be in extensions")
+	}
+
+	// Verify oauth_config if present
+	if input.OAuthConfig != nil {
+		stacklokData := output.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+		extensions := stacklokData[input.URL].(map[string]interface{})
+		assert.NotNil(t, extensions["oauth_config"], "oauth_config should be in extensions")
+	}
 }
 
 func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte) {
@@ -259,4 +280,25 @@ func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte
 	// Verify headers were extracted
 	assert.Len(t, output.Headers, len(input.Remotes[0].Headers),
 		"Headers count should match")
+
+	// Verify env_vars were extracted from extensions if present
+	if input.Meta != nil && input.Meta.PublisherProvided != nil {
+		stacklokData, ok := input.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+		if ok {
+			for _, extData := range stacklokData {
+				extensions, ok := extData.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if _, hasEnvVars := extensions["env_vars"]; hasEnvVars {
+					assert.NotNil(t, output.EnvVars, "EnvVars should be extracted from extensions")
+					assert.Greater(t, len(output.EnvVars), 0, "EnvVars should not be empty")
+				}
+				if _, hasOAuth := extensions["oauth_config"]; hasOAuth {
+					assert.NotNil(t, output.OAuthConfig, "OAuthConfig should be extracted from extensions")
+				}
+				break
+			}
+		}
+	}
 }

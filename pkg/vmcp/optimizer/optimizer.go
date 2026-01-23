@@ -165,6 +165,39 @@ func (o *OptimizerIntegration) HandleSessionRegistration(
 	return true, nil // Optimizer handled the registration
 }
 
+// OnRegisterSession is a legacy method kept for test compatibility.
+// It does nothing since ingestion is now handled by Initialize().
+// This method is deprecated and will be removed in a future version.
+// Tests should be updated to use HandleSessionRegistration instead.
+func (o *OptimizerIntegration) OnRegisterSession(
+	_ context.Context,
+	session server.ClientSession,
+	_ *aggregator.AggregatedCapabilities,
+) error {
+	if o == nil {
+		return nil // Optimizer not enabled
+	}
+
+	sessionID := session.SessionID()
+
+	logger.Debugw("OnRegisterSession called (legacy method, no-op)", "session_id", sessionID)
+
+	// Check if this session has already been processed
+	if _, alreadyProcessed := o.processedSessions.LoadOrStore(sessionID, true); alreadyProcessed {
+		logger.Debugw("Session already processed, skipping duplicate ingestion",
+			"session_id", sessionID)
+		return nil
+	}
+
+	// Skip ingestion in OnRegisterSession - IngestInitialBackends already handles ingestion at startup
+	// This prevents duplicate ingestion when sessions are registered
+	// The optimizer database is populated once at startup, not per-session
+	logger.Infow("Skipping ingestion in OnRegisterSession (handled by Initialize at startup)",
+		"session_id", sessionID)
+
+	return nil
+}
+
 // Initialize performs all optimizer initialization:
 //   - Registers optimizer tools globally with the MCP server
 //   - Ingests initial backends from the registry

@@ -752,28 +752,37 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
 	}
 
+	// Determine baseName and isAuxiliary for cleanup (needed even if container doesn't exist)
+	var baseName string
+	var isAuxiliary bool
+
 	if container != nil {
 		containerLabels := container.Labels
-		baseName := labels.GetContainerBaseName(containerLabels)
+		baseName = labels.GetContainerBaseName(containerLabels)
+		isAuxiliary = labels.IsAuxiliaryWorkload(containerLabels)
 
-		// Stop proxy if running (skip for auxiliary workloads like inspector)
-		if container.IsRunning() {
-			// Skip proxy stopping for auxiliary workloads that don't use proxy processes
-			if labels.IsAuxiliaryWorkload(containerLabels) {
-				logger.Debugf("Skipping proxy stop for auxiliary workload %s", name)
-			} else {
-				d.stopProxyIfNeeded(ctx, name, baseName)
-			}
-		}
-
-		// Remove the container
+		// Remove the container first
 		if err := d.removeContainer(ctx, name); err != nil {
 			return err
 		}
-
-		// Clean up associated resources
-		d.cleanupWorkloadResources(ctx, name, baseName, labels.IsAuxiliaryWorkload(containerLabels))
+	} else {
+		// Container doesn't exist, but we still need to clean up state
+		// Use the workload name as baseName (they're typically the same)
+		baseName = name
+		isAuxiliary = false
+		logger.Debugf("Container not found for workload %s, proceeding with state cleanup", name)
 	}
+
+	// Stop proxy-runner process AFTER container removal to prevent recreation
+	// Skip for auxiliary workloads like inspector that don't use proxy processes
+	if !isAuxiliary {
+		d.stopProxyIfNeeded(ctx, name, baseName)
+	} else {
+		logger.Debugf("Skipping proxy-runner stop for auxiliary workload %s", name)
+	}
+
+	// Clean up associated resources (must happen even if container doesn't exist)
+	d.cleanupWorkloadResources(ctx, name, baseName, isAuxiliary)
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
@@ -867,7 +876,28 @@ func (d *DefaultManager) removeContainer(ctx context.Context, name string) error
 		}
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
-	return nil
+
+	// Wait for the container to actually be removed from the runtime
+	// This ensures deletion is complete before we return
+	const maxRetries = 30
+	const retryDelay = 100 * time.Millisecond
+	for range maxRetries {
+		_, err := d.runtime.GetWorkloadInfo(ctx, name)
+		if err != nil {
+			if errors.Is(err, rt.ErrWorkloadNotFound) {
+				// Container is gone, deletion complete
+				logger.Debugf("Container %s successfully removed from runtime", name)
+				return nil
+			}
+			// Some other error occurred
+			logger.Warnf("Error checking container status during removal: %v", err)
+			return fmt.Errorf("failed to verify container removal: %w", err)
+		}
+		// Container still exists, wait and retry
+		time.Sleep(retryDelay)
+	}
+
+	return fmt.Errorf("timed out waiting for container %s to be removed", name)
 }
 
 // cleanupWorkloadResources cleans up all resources associated with a workload

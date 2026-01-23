@@ -722,6 +722,13 @@ components:
           type: string
         bearer_token_file:
           type: string
+        cached_client_id_ref:
+          description: |-
+            Cached DCR client credentials for persistence across restarts.
+            These are obtained during Dynamic Client Registration and needed to refresh tokens.
+          type: string
+        cached_client_secret_ref:
+          type: string
         cached_refresh_token_ref:
           description: |-
             Cached OAuth token reference for persistence across restarts.

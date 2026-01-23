@@ -17,9 +17,10 @@ import (
 // Handler handles authentication for remote MCP servers.
 // Supports OAuth/OIDC-based authentication with automatic discovery.
 type Handler struct {
-	config         *Config
-	tokenPersister TokenPersister
-	secretProvider secrets.Provider
+	config                     *Config
+	tokenPersister             TokenPersister
+	clientCredentialsPersister ClientCredentialsPersister
+	secretProvider             secrets.Provider
 }
 
 // NewHandler creates a new remote authentication handler
@@ -38,6 +39,12 @@ func (h *Handler) SetTokenPersister(persister TokenPersister) {
 // SetSecretProvider sets the secret provider used to store and retrieve cached tokens.
 func (h *Handler) SetSecretProvider(provider secrets.Provider) {
 	h.secretProvider = provider
+}
+
+// SetClientCredentialsPersister sets a callback function that will be called
+// when DCR client credentials are obtained and need to be persisted.
+func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersister) {
+	h.clientCredentialsPersister = persister
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
@@ -175,6 +182,16 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 		}
 	}
 
+	// Persist DCR client credentials if available (for servers that use Dynamic Client Registration)
+	// Only persist if client_id exists - client_secret may be empty for PKCE flows
+	if h.clientCredentialsPersister != nil && result.ClientID != "" {
+		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
+			logger.Warnf("Failed to persist DCR client credentials: %v", err)
+		} else {
+			logger.Infof("Successfully persisted DCR client credentials for future restarts")
+		}
+	}
+
 	// Wrap the token source to persist refreshed tokens
 	tokenSource := result.TokenSource
 	if h.tokenPersister != nil {
@@ -182,6 +199,37 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 	}
 
 	return tokenSource
+}
+
+// resolveClientCredentials returns the client ID and secret to use, preferring
+// cached DCR credentials over statically configured ones.
+func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clientSecret string) {
+	// First try to use statically configured credentials
+	clientID = h.config.ClientID
+	clientSecret = h.config.ClientSecret
+
+	// If we have cached DCR client credentials and a secret provider, use those instead
+	if h.config.HasCachedClientCredentials() && h.secretProvider != nil {
+		cachedClientID, err := h.secretProvider.GetSecret(ctx, h.config.CachedClientIDRef)
+		if err != nil {
+			logger.Warnf("Failed to retrieve cached client ID, falling back to config: %v", err)
+		} else {
+			clientID = cachedClientID
+			logger.Debugf("Using cached DCR client credentials (client_id: %s)", clientID)
+		}
+
+		// Client secret may be empty for PKCE flows
+		if h.config.CachedClientSecretRef != "" {
+			cachedClientSecret, err := h.secretProvider.GetSecret(ctx, h.config.CachedClientSecretRef)
+			if err != nil {
+				logger.Warnf("Failed to retrieve cached client secret: %v", err)
+			} else {
+				clientSecret = cachedClientSecret
+			}
+		}
+	}
+
+	return clientID, clientSecret
 }
 
 // tryRestoreFromCachedTokens attempts to create a TokenSource from cached tokens
@@ -201,10 +249,13 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
 	}
 
+	// Resolve client credentials - prefer cached DCR credentials over config
+	clientID, clientSecret := h.resolveClientCredentials(ctx)
+
 	// Build OAuth2 config for token refresh
 	oauth2Config := &oauth2.Config{
-		ClientID:     h.config.ClientID,
-		ClientSecret: h.config.ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  h.config.AuthorizeURL,

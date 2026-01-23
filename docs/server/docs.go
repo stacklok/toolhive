@@ -800,6 +800,13 @@ const docTemplate = `{
                     "bearer_token_file": {
                         "type": "string"
                     },
+                    "cached_client_id_ref": {
+                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.",
+                        "type": "string"
+                    },
+                    "cached_client_secret_ref": {
+                        "type": "string"
+                    },
                     "cached_refresh_token_ref": {
                         "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
                         "type": "string"

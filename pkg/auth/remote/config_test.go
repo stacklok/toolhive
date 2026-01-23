@@ -158,3 +158,69 @@ func TestConfig_UnmarshalJSON_BearerTokenFields(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_HasCachedClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   Config
+		expected bool
+	}{
+		{
+			name:     "no cached credentials",
+			config:   Config{},
+			expected: false,
+		},
+		{
+			name: "has cached client ID only",
+			config: Config{
+				CachedClientIDRef: "OAUTH_CLIENT_ID_test",
+			},
+			expected: true,
+		},
+		{
+			name: "has both cached credentials",
+			config: Config{
+				CachedClientIDRef:     "OAUTH_CLIENT_ID_test",
+				CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
+			},
+			expected: true,
+		},
+		{
+			name: "has only cached client secret (invalid state)",
+			config: Config{
+				CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := tt.config.HasCachedClientCredentials()
+			if result != tt.expected {
+				t.Errorf("HasCachedClientCredentials() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConfig_ClearCachedClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	config := Config{
+		CachedClientIDRef:     "OAUTH_CLIENT_ID_test",
+		CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
+	}
+
+	config.ClearCachedClientCredentials()
+
+	if config.CachedClientIDRef != "" {
+		t.Errorf("CachedClientIDRef should be empty, got %s", config.CachedClientIDRef)
+	}
+	if config.CachedClientSecretRef != "" {
+		t.Errorf("CachedClientSecretRef should be empty, got %s", config.CachedClientSecretRef)
+	}
+}

@@ -54,6 +54,11 @@ type Config struct {
 	// This enables session restoration without requiring a new browser-based login.
 	CachedRefreshTokenRef string    `json:"cached_refresh_token_ref,omitempty" yaml:"cached_refresh_token_ref,omitempty"`
 	CachedTokenExpiry     time.Time `json:"cached_token_expiry,omitempty" yaml:"cached_token_expiry,omitempty"`
+
+	// Cached DCR client credentials for persistence across restarts.
+	// These are obtained during Dynamic Client Registration and needed to refresh tokens.
+	CachedClientIDRef     string `json:"cached_client_id_ref,omitempty" yaml:"cached_client_id_ref,omitempty"`
+	CachedClientSecretRef string `json:"cached_client_secret_ref,omitempty" yaml:"cached_client_secret_ref,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -140,6 +145,17 @@ func (c *Config) HasValidCachedTokens() bool {
 func (c *Config) ClearCachedTokens() {
 	c.CachedRefreshTokenRef = ""
 	c.CachedTokenExpiry = time.Time{}
+}
+
+// HasCachedClientCredentials returns true if the config has cached DCR client credentials.
+func (c *Config) HasCachedClientCredentials() bool {
+	return c.CachedClientIDRef != ""
+}
+
+// ClearCachedClientCredentials removes any cached DCR client credential references from the config.
+func (c *Config) ClearCachedClientCredentials() {
+	c.CachedClientIDRef = ""
+	c.CachedClientSecretRef = ""
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

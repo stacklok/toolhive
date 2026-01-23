@@ -526,6 +526,17 @@ func TestValidateImage(t *testing.T) {
 func TestStatefulSetNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
+	scheme := createEmbeddingServerTestScheme()
+	reconciler := &EmbeddingServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	// Helper to generate a StatefulSet from an embedding using the reconciler
+	generateSts := func(e *mcpv1alpha1.EmbeddingServer) *appsv1.StatefulSet {
+		return reconciler.statefulSetForEmbedding(context.TODO(), e)
+	}
+
 	tests := []struct {
 		name           string
 		embedding      *mcpv1alpha1.EmbeddingServer
@@ -534,121 +545,36 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 		updateReason   string
 	}{
 		{
-			name:      "no update needed - identical",
-			embedding: createTestEmbeddingServer("test", "default", "image:v1", "model1"),
-			existingSts: &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: ptr.To(int32(1)),
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:            embeddingContainerName,
-									Image:           "image:v1",
-									ImagePullPolicy: corev1.PullIfNotPresent,
-									Args:            []string{"--model-id", "model1", "--port", "8080"},
-									Env: []corev1.EnvVar{
-										{Name: "MODEL_ID", Value: "model1"},
-									},
-									Ports: []corev1.ContainerPort{
-										{ContainerPort: 8080},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "no update needed - identical",
+			embedding:      createTestEmbeddingServer("test", "default", "image:v1", "model1"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
 			expectedUpdate: false,
 		},
 		{
-			name:      "update needed - image changed",
-			embedding: createTestEmbeddingServer("test", "default", "image:v2", "model1"),
-			existingSts: &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: ptr.To(int32(1)),
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  embeddingContainerName,
-									Image: "image:v1",
-									Args:  []string{"--model-id", "model1", "--port", "8080"},
-									Env: []corev1.EnvVar{
-										{Name: "MODEL_ID", Value: "model1"},
-									},
-									Ports: []corev1.ContainerPort{
-										{ContainerPort: 8080},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "update needed - image changed",
+			embedding:      createTestEmbeddingServer("test", "default", "image:v2", "model1"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "image changed",
 		},
 		{
-			name:      "update needed - model changed",
-			embedding: createTestEmbeddingServer("test", "default", "image:v1", "model2"),
-			existingSts: &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: ptr.To(int32(1)),
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  embeddingContainerName,
-									Image: "image:v1",
-									Args:  []string{"--model-id", "model1", "--port", "8080"},
-									Env: []corev1.EnvVar{
-										{Name: "MODEL_ID", Value: "model1"},
-									},
-									Ports: []corev1.ContainerPort{
-										{ContainerPort: 8080},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "update needed - model changed",
+			embedding:      createTestEmbeddingServer("test", "default", "image:v1", "model2"),
+			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "model changed",
 		},
 		{
 			name: "update needed - port changed",
 			embedding: &mcpv1alpha1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", Generation: 1},
 				Spec: mcpv1alpha1.EmbeddingServerSpec{
 					Image: "image:v1",
 					Model: "model1",
 					Port:  9090,
 				},
 			},
-			existingSts: &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Replicas: ptr.To(int32(1)),
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  embeddingContainerName,
-									Image: "image:v1",
-									Args:  []string{"--model-id", "model1", "--port", "8080"},
-									Env: []corev1.EnvVar{
-										{Name: "MODEL_ID", Value: "model1"},
-									},
-									Ports: []corev1.ContainerPort{
-										{ContainerPort: 8080},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			existingSts:    generateSts(createTestEmbeddingServer("test", "default", "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "port changed",
 		},
@@ -658,7 +584,6 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			reconciler := &EmbeddingServerReconciler{}
 			needsUpdate := reconciler.statefulSetNeedsUpdate(context.TODO(), tt.existingSts, tt.embedding)
 
 			assert.Equal(t, tt.expectedUpdate, needsUpdate, tt.updateReason)

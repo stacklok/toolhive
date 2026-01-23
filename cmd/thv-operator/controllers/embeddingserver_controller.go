@@ -870,218 +870,110 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 }
 
 // statefulSetNeedsUpdate checks if the statefulset needs to be updated
-//
-//nolint:gocyclo // Complexity unavoidable due to many field comparisons
 func (r *EmbeddingServerReconciler) statefulSetNeedsUpdate(
-	_ context.Context,
-	statefulSet *appsv1.StatefulSet,
+	ctx context.Context,
+	currentSts *appsv1.StatefulSet,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {
-	// Check if the number of replicas changed
-	desiredReplicas := embedding.GetReplicas()
-	if *statefulSet.Spec.Replicas != desiredReplicas {
+	// Generate the expected StatefulSet from the current spec
+	newSts := r.statefulSetForEmbedding(ctx, embedding)
+	if newSts == nil {
+		// If we can't generate a new StatefulSet, assume update is needed
 		return true
 	}
 
-	// Compare containers by checking specific important fields
-	// Find the embedding container by name to support sidecars
+	// Check StatefulSet-level fields
+	if r.statefulSetMetadataChanged(currentSts, newSts) {
+		return true
+	}
+
+	// Check container-level fields
+	existingContainer, newContainer := r.findEmbeddingContainers(currentSts, newSts)
+	if existingContainer == nil || newContainer == nil {
+		return true
+	}
+
+	if r.containerNeedsUpdate(existingContainer, newContainer) {
+		return true
+	}
+
+	// Check pod template metadata
+	if r.podTemplateMetadataChanged(currentSts, newSts) {
+		return true
+	}
+
+	return false
+}
+
+// statefulSetMetadataChanged checks if StatefulSet-level metadata has changed
+func (*EmbeddingServerReconciler) statefulSetMetadataChanged(currentSts, newSts *appsv1.StatefulSet) bool {
+	if *currentSts.Spec.Replicas != *newSts.Spec.Replicas {
+		return true
+	}
+	if !reflect.DeepEqual(newSts.Annotations, currentSts.Annotations) {
+		return true
+	}
+	if !reflect.DeepEqual(newSts.Labels, currentSts.Labels) {
+		return true
+	}
+	return false
+}
+
+// findEmbeddingContainers finds the embedding container in both StatefulSets
+func (*EmbeddingServerReconciler) findEmbeddingContainers(
+	currentSts, newSts *appsv1.StatefulSet,
+) (*corev1.Container, *corev1.Container) {
 	var existingContainer *corev1.Container
-	for i := range statefulSet.Spec.Template.Spec.Containers {
-		if statefulSet.Spec.Template.Spec.Containers[i].Name == embeddingContainerName {
-			existingContainer = &statefulSet.Spec.Template.Spec.Containers[i]
+	for i := range currentSts.Spec.Template.Spec.Containers {
+		if currentSts.Spec.Template.Spec.Containers[i].Name == embeddingContainerName {
+			existingContainer = &currentSts.Spec.Template.Spec.Containers[i]
 			break
 		}
 	}
 
-	if existingContainer == nil {
-		// Embedding container not found - this should never happen for a valid StatefulSet
-		return true
-	}
-
-	// Check image
-	if existingContainer.Image != embedding.Spec.Image {
-		return true
-	}
-
-	// Check args
-	expectedArgs := []string{
-		"--model-id", embedding.Spec.Model,
-		"--port", fmt.Sprintf("%d", embedding.GetPort()),
-	}
-	expectedArgs = append(expectedArgs, embedding.Spec.Args...)
-	if !reflect.DeepEqual(existingContainer.Args, expectedArgs) {
-		return true
-	}
-
-	// Check environment variables (basic comparison of names and values)
-	expectedEnvMap := make(map[string]string)
-	expectedEnvMap["MODEL_ID"] = embedding.Spec.Model
-	for _, env := range embedding.Spec.Env {
-		expectedEnvMap[env.Name] = env.Value
-	}
-	if embedding.IsModelCacheEnabled() {
-		expectedEnvMap["HF_HOME"] = modelCacheMountPath
-	}
-
-	existingEnvMap := make(map[string]string)
-	for _, env := range existingContainer.Env {
-		if env.Value != "" {
-			existingEnvMap[env.Name] = env.Value
-		}
-	}
-
-	if !reflect.DeepEqual(expectedEnvMap, existingEnvMap) {
-		return true
-	}
-
-	// Check HF_TOKEN secret reference
-	expectedHFTokenRef := embedding.Spec.HFTokenSecretRef
-	var existingHFTokenRef *corev1.SecretKeySelector
-	for _, env := range existingContainer.Env {
-		if env.Name == "HF_TOKEN" && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
-			existingHFTokenRef = env.ValueFrom.SecretKeyRef
+	var newContainer *corev1.Container
+	for i := range newSts.Spec.Template.Spec.Containers {
+		if newSts.Spec.Template.Spec.Containers[i].Name == embeddingContainerName {
+			newContainer = &newSts.Spec.Template.Spec.Containers[i]
 			break
 		}
 	}
 
-	// Compare HF token secret references
-	if expectedHFTokenRef != nil && existingHFTokenRef == nil {
-		return true
-	}
-	if expectedHFTokenRef == nil && existingHFTokenRef != nil {
-		return true
-	}
-	if expectedHFTokenRef != nil && existingHFTokenRef != nil {
-		if expectedHFTokenRef.Name != existingHFTokenRef.Name || expectedHFTokenRef.Key != existingHFTokenRef.Key {
-			return true
-		}
-	}
+	return existingContainer, newContainer
+}
 
-	// Check ports
-	if len(existingContainer.Ports) != 1 || existingContainer.Ports[0].ContainerPort != embedding.GetPort() {
+// containerNeedsUpdate checks if the container spec has changed
+func (*EmbeddingServerReconciler) containerNeedsUpdate(existingContainer, newContainer *corev1.Container) bool {
+	if existingContainer.Image != newContainer.Image {
 		return true
 	}
-
-	// Check image pull policy
-	if existingContainer.ImagePullPolicy != corev1.PullPolicy(embedding.GetImagePullPolicy()) {
+	if !reflect.DeepEqual(existingContainer.Args, newContainer.Args) {
 		return true
 	}
-
-	// Check resources
-	if !reflect.DeepEqual(existingContainer.Resources, r.buildExpectedResources(embedding)) {
+	if !reflect.DeepEqual(existingContainer.Env, newContainer.Env) {
 		return true
 	}
-
-	// Check ResourceOverrides (annotations and labels)
-	if r.resourceOverridesChanged(statefulSet, embedding) {
+	if !reflect.DeepEqual(existingContainer.Ports, newContainer.Ports) {
 		return true
 	}
-
+	if existingContainer.ImagePullPolicy != newContainer.ImagePullPolicy {
+		return true
+	}
+	if !reflect.DeepEqual(existingContainer.Resources, newContainer.Resources) {
+		return true
+	}
 	return false
 }
 
-// buildExpectedResources builds the expected resource requirements based on the embedding spec
-func (*EmbeddingServerReconciler) buildExpectedResources(embedding *mcpv1alpha1.EmbeddingServer) corev1.ResourceRequirements {
-	if embedding.Spec.Resources.Limits.CPU == "" && embedding.Spec.Resources.Limits.Memory == "" &&
-		embedding.Spec.Resources.Requests.CPU == "" && embedding.Spec.Resources.Requests.Memory == "" {
-		return corev1.ResourceRequirements{}
-	}
-
-	resources := corev1.ResourceRequirements{
-		Limits:   corev1.ResourceList{},
-		Requests: corev1.ResourceList{},
-	}
-
-	if embedding.Spec.Resources.Limits.CPU != "" {
-		resources.Limits[corev1.ResourceCPU] = resource.MustParse(embedding.Spec.Resources.Limits.CPU)
-	}
-	if embedding.Spec.Resources.Limits.Memory != "" {
-		resources.Limits[corev1.ResourceMemory] = resource.MustParse(embedding.Spec.Resources.Limits.Memory)
-	}
-	if embedding.Spec.Resources.Requests.CPU != "" {
-		resources.Requests[corev1.ResourceCPU] = resource.MustParse(embedding.Spec.Resources.Requests.CPU)
-	}
-	if embedding.Spec.Resources.Requests.Memory != "" {
-		resources.Requests[corev1.ResourceMemory] = resource.MustParse(embedding.Spec.Resources.Requests.Memory)
-	}
-
-	return resources
-}
-
-// resourceOverridesChanged checks if ResourceOverrides have changed
-func (*EmbeddingServerReconciler) resourceOverridesChanged(
-	statefulSet *appsv1.StatefulSet,
-	embedding *mcpv1alpha1.EmbeddingServer,
-) bool {
-	if !checkStatefulSetMetadata(statefulSet, embedding) {
+// podTemplateMetadataChanged checks if pod template metadata has changed
+func (*EmbeddingServerReconciler) podTemplateMetadataChanged(currentSts, newSts *appsv1.StatefulSet) bool {
+	if !reflect.DeepEqual(currentSts.Spec.Template.Annotations, newSts.Spec.Template.Annotations) {
 		return true
 	}
-
-	if !checkPodTemplateMetadata(statefulSet, embedding) {
+	if !reflect.DeepEqual(currentSts.Spec.Template.Labels, newSts.Spec.Template.Labels) {
 		return true
 	}
-
 	return false
-}
-
-// checkStatefulSetMetadata verifies StatefulSet-level annotations and labels match expectations
-func checkStatefulSetMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
-	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.StatefulSet == nil {
-		return true
-	}
-
-	statefulset := embedding.Spec.ResourceOverrides.StatefulSet
-
-	// Check annotations
-	if statefulset.Annotations != nil {
-		for key, value := range statefulset.Annotations {
-			if statefulSet.Annotations[key] != value {
-				return false
-			}
-		}
-	}
-
-	// Check labels
-	if statefulset.Labels != nil {
-		for key, value := range statefulset.Labels {
-			if statefulSet.Labels[key] != value {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-// checkPodTemplateMetadata verifies pod template annotations and labels match expectations
-func checkPodTemplateMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
-	if embedding.Spec.ResourceOverrides == nil ||
-		embedding.Spec.ResourceOverrides.StatefulSet == nil ||
-		embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides == nil {
-		return true
-	}
-
-	podTemplateOverrides := embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides
-
-	// Check pod template annotations
-	if podTemplateOverrides.Annotations != nil {
-		for key, value := range podTemplateOverrides.Annotations {
-			if statefulSet.Spec.Template.Annotations[key] != value {
-				return false
-			}
-		}
-	}
-
-	// Check pod template labels
-	if podTemplateOverrides.Labels != nil {
-		for key, value := range podTemplateOverrides.Labels {
-			if statefulSet.Spec.Template.Labels[key] != value {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 // updateEmbeddingServerStatus updates the status based on statefulset state

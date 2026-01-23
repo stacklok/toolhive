@@ -62,8 +62,8 @@ func (h *Handler) Routes() http.Handler {
 func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.AuthorizeHandler)
 	r.Get("/oauth/callback", h.CallbackHandler)
+	r.Post("/oauth/token", h.TokenHandler)
 	// TODO: Register remaining OAuth endpoint handlers here once implemented:
-	// - POST /oauth/token     -> h.TokenHandler (token endpoint)
 	// - POST /oauth/register -> h.RegisterClientHandler (RFC 7591 dynamic client registration)
 }
 

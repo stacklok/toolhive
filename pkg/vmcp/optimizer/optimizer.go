@@ -25,6 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -37,6 +38,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
 
 // Config holds optimizer configuration for vMCP integration.
@@ -107,105 +109,92 @@ func NewIntegration(
 	}, nil
 }
 
-// OnRegisterSession is called during session initialization to generate embeddings
-// and register optimizer tools.
+// HandleSessionRegistration handles session registration for optimizer mode.
+// Returns true if optimizer mode is enabled and handled the registration,
+// false if optimizer is disabled and normal registration should proceed.
 //
-// This hook:
-//  1. Extracts backend tools from discovered capabilities
-//  2. Generates embeddings for all tools (parallel per-backend)
-//  3. Registers optim_find_tool and optim_call_tool as session tools
-func (o *OptimizerIntegration) OnRegisterSession(
-	_ context.Context,
-	session server.ClientSession,
-	_ *aggregator.AggregatedCapabilities,
+// When optimizer is enabled:
+//  1. Registers optimizer tools (find_tool, call_tool) for the session
+//  2. Injects resources (but not backend tools or composite tools)
+//  3. Backend tools are accessible via find_tool and call_tool
+func (o *OptimizerIntegration) HandleSessionRegistration(
+	ctx context.Context,
+	sessionID string,
+	caps *aggregator.AggregatedCapabilities,
+	mcpServer *server.MCPServer,
+	resourceConverter func([]vmcp.Resource) []server.ServerResource,
+) (bool, error) {
+	if o == nil {
+		return false, nil // Optimizer not enabled, use normal registration
+	}
+
+	logger.Debugw("HandleSessionRegistration called for optimizer mode", "session_id", sessionID)
+
+	// Register optimizer tools for this session
+	// Tools are already registered globally, but we need to add them to the session
+	// when using WithToolCapabilities(false)
+	optimizerTools, err := adapter.CreateOptimizerTools(o)
+	if err != nil {
+		return false, fmt.Errorf("failed to create optimizer tools: %w", err)
+	}
+
+	// Add optimizer tools to session
+	if err := mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
+		return false, fmt.Errorf("failed to add optimizer tools to session: %w", err)
+	}
+
+	logger.Debugw("Optimizer tools registered for session", "session_id", sessionID)
+
+	// Inject resources (but not backend tools or composite tools)
+	// Backend tools will be accessible via find_tool and call_tool
+	if len(caps.Resources) > 0 {
+		sdkResources := resourceConverter(caps.Resources)
+		if err := mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {
+			return false, fmt.Errorf("failed to add session resources: %w", err)
+		}
+		logger.Debugw("Added session resources (optimizer mode)",
+			"session_id", sessionID,
+			"count", len(sdkResources))
+	}
+
+	logger.Infow("Optimizer mode: backend tools not exposed directly",
+		"session_id", sessionID,
+		"backend_tool_count", len(caps.Tools),
+		"resource_count", len(caps.Resources))
+
+	return true, nil // Optimizer handled the registration
+}
+
+// Initialize performs all optimizer initialization:
+//   - Registers optimizer tools globally with the MCP server
+//   - Ingests initial backends from the registry
+// This should be called once during server startup, after the MCP server is created.
+func (o *OptimizerIntegration) Initialize(
+	ctx context.Context,
+	mcpServer *server.MCPServer,
+	backendRegistry vmcp.BackendRegistry,
 ) error {
 	if o == nil {
 		return nil // Optimizer not enabled
 	}
 
-	sessionID := session.SessionID()
+	// Register optimizer tools globally (available to all sessions immediately)
+	optimizerTools, err := adapter.CreateOptimizerTools(o)
+	if err != nil {
+		return fmt.Errorf("failed to create optimizer tools: %w", err)
+	}
+	for _, tool := range optimizerTools {
+		mcpServer.AddTool(tool.Tool, tool.Handler)
+	}
+	logger.Info("Optimizer tools registered globally")
 
-	logger.Debugw("OnRegisterSession called", "session_id", sessionID)
-
-	// Check if this session has already been processed
-	if _, alreadyProcessed := o.processedSessions.LoadOrStore(sessionID, true); alreadyProcessed {
-		logger.Debugw("Session already processed, skipping duplicate ingestion",
-			"session_id", sessionID)
-		return nil
+	// Ingest discovered backends into optimizer database
+	initialBackends := backendRegistry.List(ctx)
+	if err := o.IngestInitialBackends(ctx, initialBackends); err != nil {
+		logger.Warnf("Failed to ingest initial backends into optimizer: %v", err)
+		// Don't fail initialization - optimizer can still work with incremental ingestion
 	}
 
-	// Skip ingestion in OnRegisterSession - IngestInitialBackends already handles ingestion at startup
-	// This prevents duplicate ingestion when sessions are registered
-	// The optimizer database is populated once at startup, not per-session
-	logger.Infow("Skipping ingestion in OnRegisterSession (handled by IngestInitialBackends at startup)",
-		"session_id", sessionID)
-
-	return nil
-}
-
-// RegisterGlobalTools registers optimizer tools globally (available to all sessions).
-// This should be called during server initialization, before any sessions are created.
-// Registering tools globally ensures they are immediately available when clients connect,
-// avoiding timing issues where list_tools is called before per-session registration completes.
-func (o *OptimizerIntegration) RegisterGlobalTools() error {
-	if o == nil {
-		return nil // Optimizer not enabled
-	}
-
-	// Define optimizer tools with handlers
-	findToolHandler := o.createFindToolHandler()
-	callToolHandler := o.CreateCallToolHandler()
-
-	// Register optim_find_tool globally
-	o.mcpServer.AddTool(mcp.Tool{
-		Name:        "optim_find_tool",
-		Description: "Semantic search across all backend tools using natural language description and optional keywords",
-		InputSchema: mcp.ToolInputSchema{
-			Type: "object",
-			Properties: map[string]any{
-				"tool_description": map[string]any{
-					"type":        "string",
-					"description": "Natural language description of the tool you're looking for",
-				},
-				"tool_keywords": map[string]any{
-					"type":        "string",
-					"description": "Optional space-separated keywords for keyword-based search",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum number of tools to return (default: 10)",
-					"default":     10,
-				},
-			},
-			Required: []string{"tool_description"},
-		},
-	}, findToolHandler)
-
-	// Register optim_call_tool globally
-	o.mcpServer.AddTool(mcp.Tool{
-		Name:        "optim_call_tool",
-		Description: "Dynamically invoke any tool on any backend using the backend_id from find_tool",
-		InputSchema: mcp.ToolInputSchema{
-			Type: "object",
-			Properties: map[string]any{
-				"backend_id": map[string]any{
-					"type":        "string",
-					"description": "Backend ID from find_tool results",
-				},
-				"tool_name": map[string]any{
-					"type":        "string",
-					"description": "Tool name to invoke",
-				},
-				"parameters": map[string]any{
-					"type":        "object",
-					"description": "Parameters to pass to the tool",
-				},
-			},
-			Required: []string{"backend_id", "tool_name", "parameters"},
-		},
-	}, callToolHandler)
-
-	logger.Info("Optimizer tools registered globally (optim_find_tool, optim_call_tool)")
 	return nil
 }
 
@@ -747,17 +736,29 @@ func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backen
 	ingestedCount := 0
 	totalToolsIngested := 0
 	for _, backend := range backends {
+		// Create a span for each backend ingestion
+		backendCtx, backendSpan := o.tracer.Start(ctx, "optimizer.ingestion.ingest_backend",
+			trace.WithAttributes(
+				attribute.String("backend.id", backend.ID),
+				attribute.String("backend.name", backend.Name),
+			))
+		defer backendSpan.End()
+
 		// Convert Backend to BackendTarget for client API
 		target := vmcp.BackendToTarget(&backend)
 		if target == nil {
 			logger.Warnf("Failed to convert backend %s to target", backend.Name)
+			backendSpan.RecordError(fmt.Errorf("failed to convert backend to target"))
+			backendSpan.SetStatus(codes.Error, "conversion failed")
 			continue
 		}
 
 		// Query backend capabilities to get its tools
-		capabilities, err := o.backendClient.ListCapabilities(ctx, target)
+		capabilities, err := o.backendClient.ListCapabilities(backendCtx, target)
 		if err != nil {
 			logger.Warnf("Failed to query capabilities for backend %s: %v", backend.Name, err)
+			backendSpan.RecordError(err)
+			backendSpan.SetStatus(codes.Error, err.Error())
 			continue // Skip this backend but continue with others
 		}
 
@@ -781,19 +782,29 @@ func (o *OptimizerIntegration) IngestInitialBackends(ctx context.Context, backen
 			}
 		}
 
-		// Ingest this backend's tools
+		backendSpan.SetAttributes(
+			attribute.Int("tools.count", len(tools)),
+		)
+
+		// Ingest this backend's tools (IngestServer will create its own spans)
 		if err := o.ingestionService.IngestServer(
-			ctx,
+			backendCtx,
 			backend.ID,
 			backend.Name,
 			description,
 			tools,
 		); err != nil {
 			logger.Warnf("Failed to ingest backend %s: %v", backend.Name, err)
+			backendSpan.RecordError(err)
+			backendSpan.SetStatus(codes.Error, err.Error())
 			continue // Log but don't fail startup
 		}
 		ingestedCount++
 		totalToolsIngested += len(tools)
+		backendSpan.SetAttributes(
+			attribute.Int("tools.ingested", len(tools)),
+		)
+		backendSpan.SetStatus(codes.Ok, "backend ingested successfully")
 	}
 
 	// Get total embedding time

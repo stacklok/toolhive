@@ -413,7 +413,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 					Name: "Should update StatefulSet when adding annotations",
 					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
 						es.Spec.ResourceOverrides = &mcpv1alpha1.EmbeddingResourceOverrides{
-							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
 								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"new-annotation": "new-value"},
 								},
@@ -430,7 +430,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 					Name: "Should update StatefulSet and Service when adding annotations to both",
 					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
 						es.Spec.ResourceOverrides = &mcpv1alpha1.EmbeddingResourceOverrides{
-							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
 								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"new-annotation": "new-value"},
 								},

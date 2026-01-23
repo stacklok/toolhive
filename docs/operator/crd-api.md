@@ -851,24 +851,6 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
-#### api.v1alpha1.EmbeddingDeploymentOverrides
-
-
-
-EmbeddingDeploymentOverrides defines overrides specific to the embedding deployment
-
-
-
-_Appears in:_
-- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
-| `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
-| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  |  |
-
-
 #### api.v1alpha1.EmbeddingResourceOverrides
 
 
@@ -882,7 +864,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `deployment` _[api.v1alpha1.EmbeddingDeploymentOverrides](#apiv1alpha1embeddingdeploymentoverrides)_ | Deployment defines overrides for the Deployment resource |  |  |
+| `statefulSet` _[api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)_ | StatefulSet defines overrides for the StatefulSet resource |  |  |
 | `service` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | Service defines overrides for the Service resource |  |  |
 | `persistentVolumeClaim` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PersistentVolumeClaim defines overrides for the PVC resource |  |  |
 
@@ -996,6 +978,24 @@ _Appears in:_
 | `url` _string_ | URL is the URL where the embedding service can be accessed |  |  |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready replicas |  |  |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  |  |
+
+
+#### api.v1alpha1.EmbeddingStatefulSetOverrides
+
+
+
+EmbeddingStatefulSetOverrides defines overrides specific to the embedding statefulset
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
+| `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
+| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  |  |
 
 
 #### api.v1alpha1.EnvVar
@@ -2199,8 +2199,8 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingDeploymentOverrides](#apiv1alpha1embeddingdeploymentoverrides)
 - [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+- [api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)
 - [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
 - [api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)
 

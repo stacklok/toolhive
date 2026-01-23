@@ -166,35 +166,6 @@ spec:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
                 properties:
-                  deployment:
-                    description: Deployment defines overrides for the Deployment resource
-                    properties:
-                      annotations:
-                        additionalProperties:
-                          type: string
-                        description: Annotations to add or override on the resource
-                        type: object
-                      labels:
-                        additionalProperties:
-                          type: string
-                        description: Labels to add or override on the resource
-                        type: object
-                      podTemplateMetadataOverrides:
-                        description: PodTemplateMetadataOverrides defines metadata
-                          overrides for the pod template
-                        properties:
-                          annotations:
-                            additionalProperties:
-                              type: string
-                            description: Annotations to add or override on the resource
-                            type: object
-                          labels:
-                            additionalProperties:
-                              type: string
-                            description: Labels to add or override on the resource
-                            type: object
-                        type: object
-                    type: object
                   persistentVolumeClaim:
                     description: PersistentVolumeClaim defines overrides for the PVC
                       resource
@@ -222,6 +193,36 @@ spec:
                         additionalProperties:
                           type: string
                         description: Labels to add or override on the resource
+                        type: object
+                    type: object
+                  statefulSet:
+                    description: StatefulSet defines overrides for the StatefulSet
+                      resource
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add or override on the resource
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add or override on the resource
+                        type: object
+                      podTemplateMetadataOverrides:
+                        description: PodTemplateMetadataOverrides defines metadata
+                          overrides for the pod template
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
                         type: object
                     type: object
                 type: object

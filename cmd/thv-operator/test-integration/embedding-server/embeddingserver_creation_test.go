@@ -793,7 +793,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						Model: "sentence-transformers/all-MiniLM-L6-v2",
 						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
 						ResourceOverrides: &mcpv1alpha1.EmbeddingResourceOverrides{
-							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
 								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"custom-annotation": "sts-value"},
 									Labels:      map[string]string{"custom-label": "sts-value"},
@@ -874,7 +874,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						Model: "sentence-transformers/all-MiniLM-L6-v2",
 						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
 						ResourceOverrides: &mcpv1alpha1.EmbeddingResourceOverrides{
-							Deployment: &mcpv1alpha1.EmbeddingDeploymentOverrides{
+							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
 								PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"pod-annotation": "pod-value"},
 									Labels:      map[string]string{"pod-label": "pod-value"},

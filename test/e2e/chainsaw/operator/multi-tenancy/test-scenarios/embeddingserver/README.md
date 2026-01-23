@@ -18,13 +18,13 @@ Tests EmbeddingServer deployment across multiple namespaces to verify isolation.
 **Resources tested:**
 - Two test namespaces (`toolhive-test-ns-1`, `toolhive-test-ns-2`)
 - EmbeddingServer CRs in each namespace
-- Separate Deployments per namespace
+- Separate StatefulSets per namespace
 - Separate ClusterIP Services per namespace
 - Network isolation between namespaces
 
 **Verification:**
 1. EmbeddingServers exist in both namespaces
-2. Deployments are created in correct namespaces
+2. StatefulSets are created in correct namespaces
 3. Services have different ClusterIPs
 4. Health endpoints respond in both namespaces
 5. No cross-namespace interference
@@ -45,19 +45,19 @@ chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios
    - Apply EmbeddingServer CR
    - Assert CR is created
    - Assert status is "Running"
-   - Assert Deployment is ready
+   - Assert StatefulSet is ready
    - Assert Service is created
 
 3. **Deploy EmbeddingServer in Namespace 2:**
    - Apply EmbeddingServer CR
    - Assert CR is created
    - Assert status is "Running"
-   - Assert Deployment is ready
+   - Assert StatefulSet is ready
    - Assert Service is created
 
 4. **Verify Isolation:**
    - Check EmbeddingServers exist in correct namespaces
-   - Verify Deployments are in separate namespaces
+   - Verify StatefulSets are in separate namespaces
    - Verify Services have different ClusterIPs
    - Confirm no resource leakage between namespaces
 
@@ -95,7 +95,7 @@ In multi-tenancy mode, the operator should:
 
 2. **Resource Naming:**
    - Same resource names can exist in different namespaces
-   - Deployment: `embedding-<name>`
+   - StatefulSet: `embedding-<name>`
    - Service: `embedding-<name>`
 
 3. **Network Isolation:**
@@ -118,7 +118,7 @@ In multi-tenancy mode, the operator should:
 
 Chainsaw automatically cleans up test resources including:
 - EmbeddingServer CRs
-- Deployments
+- StatefulSets
 - Services
 - Test namespaces
 

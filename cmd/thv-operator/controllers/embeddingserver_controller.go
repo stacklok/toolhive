@@ -474,8 +474,8 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	// Build pod template
 	podTemplate := r.buildPodTemplate(embedding, labels, container)
 
-	// Apply deployment overrides (reuse for StatefulSet pod template)
-	stsAnnotations, stsLabels := r.applyDeploymentOverrides(embedding, &podTemplate)
+	// Apply statefulset overrides
+	stsAnnotations, stsLabels := r.applyStatefulSetOverrides(embedding, &podTemplate)
 
 	// Merge ResourceOverrides labels into base labels
 	finalLabels := make(map[string]string)
@@ -783,38 +783,38 @@ func (*EmbeddingServerReconciler) mergeContainerSecurityContext(
 	}
 }
 
-// applyDeploymentOverrides applies deployment-level overrides and returns annotations and labels
-func (*EmbeddingServerReconciler) applyDeploymentOverrides(
+// applyStatefulSetOverrides applies statefulset-level overrides and returns annotations and labels
+func (*EmbeddingServerReconciler) applyStatefulSetOverrides(
 	embedding *mcpv1alpha1.EmbeddingServer,
 	podTemplate *corev1.PodTemplateSpec,
 ) (map[string]string, map[string]string) {
 	annotations := make(map[string]string)
 	labels := make(map[string]string)
 
-	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.Deployment == nil {
+	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.StatefulSet == nil {
 		return annotations, labels
 	}
 
-	if embedding.Spec.ResourceOverrides.Deployment.Annotations != nil {
-		maps.Copy(annotations, embedding.Spec.ResourceOverrides.Deployment.Annotations)
+	if embedding.Spec.ResourceOverrides.StatefulSet.Annotations != nil {
+		maps.Copy(annotations, embedding.Spec.ResourceOverrides.StatefulSet.Annotations)
 	}
 
-	if embedding.Spec.ResourceOverrides.Deployment.Labels != nil {
-		maps.Copy(labels, embedding.Spec.ResourceOverrides.Deployment.Labels)
+	if embedding.Spec.ResourceOverrides.StatefulSet.Labels != nil {
+		maps.Copy(labels, embedding.Spec.ResourceOverrides.StatefulSet.Labels)
 	}
 
-	if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides != nil {
+	if embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides != nil {
 		if podTemplate.Annotations == nil {
 			podTemplate.Annotations = make(map[string]string)
 		}
-		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations != nil {
+		if embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides.Annotations != nil {
 			maps.Copy(
 				podTemplate.Annotations,
-				embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Annotations,
+				embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides.Annotations,
 			)
 		}
-		if embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels != nil {
-			maps.Copy(podTemplate.Labels, embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides.Labels)
+		if embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides.Labels != nil {
+			maps.Copy(podTemplate.Labels, embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides.Labels)
 		}
 	}
 
@@ -1014,7 +1014,7 @@ func (*EmbeddingServerReconciler) resourceOverridesChanged(
 	statefulSet *appsv1.StatefulSet,
 	embedding *mcpv1alpha1.EmbeddingServer,
 ) bool {
-	if !checkDeploymentMetadata(statefulSet, embedding) {
+	if !checkStatefulSetMetadata(statefulSet, embedding) {
 		return true
 	}
 
@@ -1025,17 +1025,17 @@ func (*EmbeddingServerReconciler) resourceOverridesChanged(
 	return false
 }
 
-// checkDeploymentMetadata verifies StatefulSet-level annotations and labels match expectations
-func checkDeploymentMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
-	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.Deployment == nil {
+// checkStatefulSetMetadata verifies StatefulSet-level annotations and labels match expectations
+func checkStatefulSetMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
+	if embedding.Spec.ResourceOverrides == nil || embedding.Spec.ResourceOverrides.StatefulSet == nil {
 		return true
 	}
 
-	deployment := embedding.Spec.ResourceOverrides.Deployment
+	statefulset := embedding.Spec.ResourceOverrides.StatefulSet
 
 	// Check annotations
-	if deployment.Annotations != nil {
-		for key, value := range deployment.Annotations {
+	if statefulset.Annotations != nil {
+		for key, value := range statefulset.Annotations {
 			if statefulSet.Annotations[key] != value {
 				return false
 			}
@@ -1043,8 +1043,8 @@ func checkDeploymentMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1al
 	}
 
 	// Check labels
-	if deployment.Labels != nil {
-		for key, value := range deployment.Labels {
+	if statefulset.Labels != nil {
+		for key, value := range statefulset.Labels {
 			if statefulSet.Labels[key] != value {
 				return false
 			}
@@ -1057,12 +1057,12 @@ func checkDeploymentMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1al
 // checkPodTemplateMetadata verifies pod template annotations and labels match expectations
 func checkPodTemplateMetadata(statefulSet *appsv1.StatefulSet, embedding *mcpv1alpha1.EmbeddingServer) bool {
 	if embedding.Spec.ResourceOverrides == nil ||
-		embedding.Spec.ResourceOverrides.Deployment == nil ||
-		embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides == nil {
+		embedding.Spec.ResourceOverrides.StatefulSet == nil ||
+		embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides == nil {
 		return true
 	}
 
-	podTemplateOverrides := embedding.Spec.ResourceOverrides.Deployment.PodTemplateMetadataOverrides
+	podTemplateOverrides := embedding.Spec.ResourceOverrides.StatefulSet.PodTemplateMetadataOverrides
 
 	// Check pod template annotations
 	if podTemplateOverrides.Annotations != nil {

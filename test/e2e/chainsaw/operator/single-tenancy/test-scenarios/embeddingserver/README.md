@@ -10,13 +10,13 @@ Tests basic EmbeddingServer deployment without model caching.
 
 **Coverage:**
 - EmbeddingServer resource creation
-- Deployment creation and readiness
+- StatefulSet creation and readiness
 - Service creation with ClusterIP
 - Health endpoint verification
 
 **Resources tested:**
 - EmbeddingServer CR with minimal configuration
-- Deployment with single replica
+- StatefulSet with single replica
 - ClusterIP Service on port 8080
 
 **Command:**
@@ -31,13 +31,13 @@ Tests EmbeddingServer deployment with persistent model caching enabled.
 **Coverage:**
 - EmbeddingServer with ModelCache configuration
 - PersistentVolumeClaim creation and binding
-- Volume mount verification in deployment
+- Volume mount verification in statefulset
 - Model cache persistence across pod restarts
 
 **Resources tested:**
 - EmbeddingServer CR with ModelCache enabled
 - PersistentVolumeClaim (5Gi, ReadWriteOnce)
-- Deployment with mounted cache volume
+- StatefulSet with mounted cache volume
 - ClusterIP Service
 
 **Command:**
@@ -53,13 +53,13 @@ Tests complete lifecycle operations for EmbeddingServer.
 - Create initial EmbeddingServer
 - Scale replicas (1 → 2)
 - Update environment variables
-- Verify updates propagate to Deployment
+- Verify updates propagate to StatefulSet
 - Delete EmbeddingServer
 - Verify resource cleanup
 
 **Resources tested:**
 - EmbeddingServer CR updates
-- Deployment scaling
+- StatefulSet scaling
 - Environment variable propagation
 - Resource deletion and cleanup
 
@@ -100,7 +100,7 @@ Each test verifies:
    - ReadyReplicas matches expected count
    - URL is set (when applicable)
 
-2. **Deployment:**
+2. **StatefulSet:**
    - AvailableReplicas matches expected count
    - ReadyReplicas matches expected count
    - Proper labels and selectors
@@ -114,7 +114,7 @@ Each test verifies:
    - Status: Bound
    - Size: As specified
    - AccessMode: As specified
-   - Mounted in deployment
+   - Mounted in statefulset
 
 ## Prerequisites
 
@@ -137,9 +137,9 @@ If tests fail, check:
    kubectl describe embeddingserver <name> -n toolhive-system
    ```
 
-3. Deployment status:
+3. StatefulSet status:
    ```bash
-   kubectl describe deployment embedding-<name> -n toolhive-system
+   kubectl describe statefulset embedding-<name> -n toolhive-system
    ```
 
 4. Pod logs:

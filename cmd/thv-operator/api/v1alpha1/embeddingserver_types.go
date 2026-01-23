@@ -128,9 +128,9 @@ type ModelCacheConfig struct {
 
 // EmbeddingResourceOverrides defines overrides for annotations and labels on created resources
 type EmbeddingResourceOverrides struct {
-	// Deployment defines overrides for the Deployment resource
+	// StatefulSet defines overrides for the StatefulSet resource
 	// +optional
-	Deployment *EmbeddingDeploymentOverrides `json:"deployment,omitempty"`
+	StatefulSet *EmbeddingStatefulSetOverrides `json:"statefulSet,omitempty"`
 
 	// Service defines overrides for the Service resource
 	// +optional
@@ -141,8 +141,8 @@ type EmbeddingResourceOverrides struct {
 	PersistentVolumeClaim *ResourceMetadataOverrides `json:"persistentVolumeClaim,omitempty"`
 }
 
-// EmbeddingDeploymentOverrides defines overrides specific to the embedding deployment
-type EmbeddingDeploymentOverrides struct {
+// EmbeddingStatefulSetOverrides defines overrides specific to the embedding statefulset
+type EmbeddingStatefulSetOverrides struct {
 	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
 	ResourceMetadataOverrides `json:",inline"` // nolint:revive
 

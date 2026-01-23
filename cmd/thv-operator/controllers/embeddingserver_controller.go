@@ -1002,18 +1002,34 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 		embedding.Status.ReadyReplicas = statefulSet.Status.ReadyReplicas
 		embedding.Status.ObservedGeneration = embedding.Generation
 
-		// Determine phase based on statefulset status
-		if statefulSet.Status.ReadyReplicas > 0 {
-			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseRunning
-			embedding.Status.Message = "Embedding server is running"
-		} else if statefulSet.Status.Replicas > 0 && statefulSet.Status.ReadyReplicas == 0 {
-			// Check if pods are downloading the model
-			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseDownloading
-			embedding.Status.Message = "Downloading embedding model"
-		} else {
-			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhasePending
-			embedding.Status.Message = "Waiting for statefulset"
+		// Determine phase and message based on statefulset status using immutable assignment
+		type phaseInfo struct {
+			phase   mcpv1alpha1.EmbeddingServerPhase
+			message string
 		}
+
+		info := func() phaseInfo {
+			if statefulSet.Status.ReadyReplicas > 0 {
+				return phaseInfo{
+					phase:   mcpv1alpha1.EmbeddingServerPhaseRunning,
+					message: "Embedding server is running",
+				}
+			}
+			if statefulSet.Status.Replicas > 0 && statefulSet.Status.ReadyReplicas == 0 {
+				// Check if pods are downloading the model
+				return phaseInfo{
+					phase:   mcpv1alpha1.EmbeddingServerPhaseDownloading,
+					message: "Downloading embedding model",
+				}
+			}
+			return phaseInfo{
+				phase:   mcpv1alpha1.EmbeddingServerPhasePending,
+				message: "Waiting for statefulset",
+			}
+		}()
+
+		embedding.Status.Phase = info.phase
+		embedding.Status.Message = info.message
 	}
 
 	err = r.Status().Update(ctx, embedding)

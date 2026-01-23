@@ -23,12 +23,13 @@ const HeaderForwardMiddlewareName = "header-forward"
 var RestrictedHeaders = map[string]bool{
 	// Routing manipulation
 	"Host": true,
-	// Hop-by-hop headers (RFC 7230)
-	"Connection": true,
-	"Keep-Alive": true,
-	"Te":         true,
-	"Trailer":    true,
-	"Upgrade":    true,
+	// Hop-by-hop headers (RFC 7230, RFC 7540)
+	"Connection":     true,
+	"Keep-Alive":     true,
+	"Te":             true,
+	"Trailer":        true,
+	"Upgrade":        true,
+	"Http2-Settings": true, // RFC 7540 Section 3.2.1
 	// Hop-by-hop proxy headers
 	"Proxy-Authorization": true,
 	"Proxy-Authenticate":  true,
@@ -37,6 +38,7 @@ var RestrictedHeaders = map[string]bool{
 	"Transfer-Encoding": true,
 	"Content-Length":    true,
 	// Identity spoofing
+	"Forwarded":         true, // RFC 7239 (standardized X-Forwarded-*)
 	"X-Forwarded-For":   true,
 	"X-Forwarded-Host":  true,
 	"X-Forwarded-Proto": true,

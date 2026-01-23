@@ -472,7 +472,7 @@ func New(
 			for _, tool := range optimizerTools {
 				mcpServer.AddTool(tool.Tool, tool.Handler)
 			}
-			logger.Info("Optimizer tools registered globally (optim_find_tool, optim_call_tool)")
+			logger.Info("Optimizer tools registered globally (find_tool, call_tool)")
 
 			// Ingest discovered backends into optimizer database (for semantic search)
 			// Note: Backends are already discovered and registered with vMCP regardless of optimizer
@@ -577,7 +577,8 @@ func New(
 		// Add composite tools to capabilities
 		// Composite tools are static (from configuration) and not discovered from backends
 		// They are added here to be exposed alongside backend tools in the session
-		if len(srv.workflowDefs) > 0 {
+		// When optimizer is enabled, composite tools are NOT exposed directly - they're accessible via find_tool/call_tool
+		if srv.optimizerIntegration == nil && len(srv.workflowDefs) > 0 {
 			compositeTools := convertWorkflowDefsToTools(srv.workflowDefs)
 
 			// Validate no conflicts between composite tool names and backend tool names
@@ -594,6 +595,10 @@ func New(
 			logger.Debugw("added composite tools to session capabilities",
 				"session_id", sessionID,
 				"composite_tool_count", len(compositeTools))
+		} else if srv.optimizerIntegration != nil && len(srv.workflowDefs) > 0 {
+			logger.Debugw("composite tools not exposed directly in optimizer mode (accessible via find_tool/call_tool)",
+				"session_id", sessionID,
+				"composite_tool_count", len(srv.workflowDefs))
 		}
 
 		// Store routing table in VMCPSession for subsequent requests
@@ -616,7 +621,7 @@ func New(
 			"prompt_count", len(caps.RoutingTable.Prompts))
 
 		// When optimizer is enabled, we should NOT inject backend tools directly.
-		// Instead, only optimizer tools (optim_find_tool, optim_call_tool) will be exposed.
+		// Instead, only optimizer tools (find_tool, call_tool) will be exposed.
 		// Backend tools are still discovered and stored for optimizer ingestion,
 		// but not exposed directly to clients.
 		if srv.optimizerIntegration == nil {
@@ -634,9 +639,9 @@ func New(
 				"resource_count", len(caps.Resources))
 		} else {
 			// Optimizer tools already registered above (early registration)
-			// Backend tools will be accessible via optim_find_tool and optim_call_tool
+			// Backend tools will be accessible via find_tool and call_tool
 
-			// Inject resources (but not backend tools)
+			// Inject resources (but not backend tools or composite tools)
 			if len(caps.Resources) > 0 {
 				sdkResources := srv.capabilityAdapter.ToSDKResources(caps.Resources)
 				if err := srv.mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {

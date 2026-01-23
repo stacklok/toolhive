@@ -13,8 +13,8 @@ import (
 
 // OptimizerToolNames defines the tool names exposed when optimizer is enabled.
 const (
-	FindToolName = "optim_find_tool"
-	CallToolName = "optim_call_tool"
+	FindToolName = "find_tool"
+	CallToolName = "call_tool"
 )
 
 // Pre-generated schemas for optimizer tools.

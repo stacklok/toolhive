@@ -27,10 +27,15 @@ type Config struct {
 	// These keys are included in the JWKS endpoint for token verification but are NOT
 	// used for signing new tokens.
 	//
-	// This enables key rotation:
-	//   - Deploy new signing key as SigningKeyFile
-	//   - Move old key filename to FallbackKeyFiles
-	//   - Tokens signed with old keys remain verifiable until they expire
+	// Key rotation (single replica): update SigningKeyFile to the new key and move
+	// the old filename here. Tokens signed with old keys remain verifiable until
+	// they expire.
+	//
+	// Key rotation (multiple replicas): to avoid a window where one replica signs
+	// with a key not yet advertised by another replica's JWKS endpoint:
+	//  1. Add the new key to FallbackKeyFiles and roll out to all replicas.
+	//  2. Promote it to SigningKeyFile, move the old key to FallbackKeyFiles, roll out.
+	//  3. Remove the old key from FallbackKeyFiles after its tokens have expired.
 	FallbackKeyFiles []string
 }
 

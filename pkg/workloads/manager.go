@@ -841,21 +841,21 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 	// Try to read the PID and kill the process
 	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
-		logger.Errorf("No PID file found for %s, proxy may not be running in detached mode", name)
+		logger.Debugf("No PID file found for %s, proxy may not be running in detached mode", name)
 		return
 	}
 
 	// PID file found, try to kill the process
 	logger.Infof("Stopping proxy process (PID: %d)...", pid)
 	if err := process.KillProcess(pid); err != nil {
-		logger.Warnf("Warning: Failed to kill proxy process: %v", err)
+		logger.Debugf("Warning: Failed to kill proxy process: %v", err)
 	} else {
-		logger.Info("Proxy process stopped")
+		logger.Debugf("Proxy process stopped")
 	}
 
 	// Clean up PID file after successful kill
 	if err := process.RemovePIDFile(name); err != nil {
-		logger.Warnf("Warning: Failed to remove PID file: %v", err)
+		logger.Debugf("Warning: Failed to remove PID file: %v", err)
 	}
 }
 
@@ -894,7 +894,12 @@ func (d *DefaultManager) removeContainer(ctx context.Context, name string) error
 			return fmt.Errorf("failed to verify container removal: %w", err)
 		}
 		// Container still exists, wait and retry
-		time.Sleep(retryDelay)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for container removal: %w", ctx.Err())
+		case <-time.After(retryDelay):
+			continue
+		}
 	}
 
 	return fmt.Errorf("timed out waiting for container %s to be removed", name)

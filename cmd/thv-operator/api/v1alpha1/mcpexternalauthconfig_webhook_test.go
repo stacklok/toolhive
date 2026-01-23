@@ -81,6 +81,28 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
 		},
 		{
+			name: "unauthenticated with bearerToken should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError:   true,
+			errorMsg:      "bearerToken must not be set when type is 'unauthenticated'",
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
+		},
+		{
 			name: "valid tokenExchange",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -135,6 +157,30 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "headerInjection must not be set when type is 'tokenExchange'",
+		},
+		{
+			name: "tokenExchange with bearerToken should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						Audience: "backend-service",
+					},
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "bearerToken must not be set when type is 'tokenExchange'",
 		},
 		{
 			name: "valid headerInjection",
@@ -193,6 +239,117 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "tokenExchange must not be set when type is 'headerInjection'",
+		},
+		{
+			name: "headerInjection with bearerToken should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &HeaderInjectionConfig{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+					},
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "bearerToken must not be set when type is 'headerInjection'",
+		},
+		{
+			name: "valid bearerToken",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-bearertoken",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeBearerToken,
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "bearerToken without config should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeBearerToken,
+				},
+			},
+			expectError: true,
+			errorMsg:    "bearerToken configuration is required when type is 'bearerToken'",
+		},
+		{
+			name: "bearerToken with tokenExchange should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeBearerToken,
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						Audience: "backend-service",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "tokenExchange must not be set when type is 'bearerToken'",
+		},
+		{
+			name: "bearerToken with headerInjection should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeBearerToken,
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+					HeaderInjection: &HeaderInjectionConfig{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "headerInjection must not be set when type is 'bearerToken'",
 		},
 	}
 

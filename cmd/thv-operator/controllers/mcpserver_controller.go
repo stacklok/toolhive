@@ -36,6 +36,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -798,83 +799,6 @@ func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpSe
 	return nil
 }
 
-// ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date
-func (r *MCPServerReconciler) ensureRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	current := createResource()
-	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
-	} else if err != nil {
-		return fmt.Errorf("failed to get %s: %w", resourceType, err)
-	}
-
-	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
-}
-
-// createRBACResource creates a new RBAC resource
-func (r *MCPServerReconciler) createRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	ctxLogger.Info(
-		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
-		fmt.Sprintf("%s.Name", resourceType),
-		desired.GetName(),
-	)
-	if err := r.Create(ctx, desired); err != nil {
-		return fmt.Errorf("failed to create %s: %w", resourceType, err)
-	}
-	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	return nil
-}
-
-// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
-func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-	current client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	if !reflect.DeepEqual(current, desired) {
-		ctxLogger.Info(
-			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
-			fmt.Sprintf("%s.Name", resourceType),
-			desired.GetName(),
-		)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update %s: %w", resourceType, err)
-		}
-		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	}
-	return nil
-}
-
-// ensureRBACResources ensures that the RBAC resources are in place for the MCP server
-
 // handleToolConfig handles MCPToolConfig reference for an MCPServer
 func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
@@ -920,52 +844,15 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 	return nil
 }
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
-	// Ensure Role
-	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			Rules: defaultRBACRules,
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	if err := r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     proxyRunnerNameForRBAC,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      proxyRunnerNameForRBAC,
-					Namespace: mcpServer.Namespace,
-				},
-			},
-		}
+	// Ensure RBAC resources for proxy runner
+	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+		Rules:     defaultRBACRules,
+		Owner:     mcpServer,
 	}); err != nil {
 		return err
 	}
@@ -975,16 +862,16 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 		return nil
 	}
 
-	// otherwise, create a service account for the MCP server
-	mcpServerServiceAccountName := mcpServerServiceAccountName(mcpServer.Name)
-	return r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServerServiceAccountName,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	})
+	// Otherwise, create a service account for the MCP server
+	mcpServerSAName := mcpServerServiceAccountName(mcpServer.Name)
+	mcpServerSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcpServerSAName,
+			Namespace: mcpServer.Namespace,
+		},
+	}
+	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, mcpServerSA, mcpServer)
+	return err
 }
 
 // deploymentForMCPServer returns a MCPServer Deployment object

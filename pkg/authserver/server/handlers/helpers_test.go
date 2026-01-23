@@ -117,6 +117,8 @@ type testStorageState struct {
 	clients            map[string]fosite.Client
 	users              map[string]*storage.User
 	providerIdentities map[string]*storage.ProviderIdentity // key: providerID:providerSubject
+	authCodeSessions   map[string]fosite.Requester          // authorize code sessions for token exchange
+	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
 }
 
@@ -146,6 +148,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		SigningKeyID:         "test-key-1",
 		SigningKeyAlgorithm:  "RS256",
 		SigningKey:           rsaKey,
+		AllowedAudiences:     []string{"https://api.example.com"},
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -158,6 +161,8 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		clients:            make(map[string]fosite.Client),
 		users:              make(map[string]*storage.User),
 		providerIdentities: make(map[string]*storage.ProviderIdentity),
+		authCodeSessions:   make(map[string]fosite.Requester),
+		pkceSessions:       make(map[string]fosite.Requester),
 	}
 
 	stor := mocks.NewMockStorage(ctrl)
@@ -228,14 +233,54 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 		}).AnyTimes()
 
 	// Setup mock expectations for authorization code storage (needed by fosite)
-	stor.EXPECT().CreateAuthorizeCodeSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	stor.EXPECT().GetAuthorizeCodeSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-	stor.EXPECT().InvalidateAuthorizeCodeSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().CreateAuthorizeCodeSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string, req fosite.Requester) error {
+			storState.authCodeSessions[code] = req
+			return nil
+		}).AnyTimes()
+	stor.EXPECT().GetAuthorizeCodeSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
+			if req, ok := storState.authCodeSessions[code]; ok {
+				return req, nil
+			}
+			return nil, fosite.ErrNotFound
+		}).AnyTimes()
+	stor.EXPECT().InvalidateAuthorizeCodeSession(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string) error {
+			delete(storState.authCodeSessions, code)
+			return nil
+		}).AnyTimes()
 
 	// Setup mock expectations for PKCE storage (needed by fosite)
-	stor.EXPECT().CreatePKCERequestSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	stor.EXPECT().GetPKCERequestSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-	stor.EXPECT().DeletePKCERequestSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().CreatePKCERequestSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string, req fosite.Requester) error {
+			storState.pkceSessions[code] = req
+			return nil
+		}).AnyTimes()
+	stor.EXPECT().GetPKCERequestSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
+			if req, ok := storState.pkceSessions[code]; ok {
+				return req, nil
+			}
+			return nil, fosite.ErrNotFound
+		}).AnyTimes()
+	stor.EXPECT().DeletePKCERequestSession(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, code string) error {
+			delete(storState.pkceSessions, code)
+			return nil
+		}).AnyTimes()
+
+	// Setup mock expectations for access token storage (needed by fosite for token generation)
+	stor.EXPECT().CreateAccessTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().GetAccessTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
+	stor.EXPECT().DeleteAccessTokenSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().RevokeAccessToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	// Setup mock expectations for refresh token storage (needed by fosite for token generation)
+	stor.EXPECT().CreateRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().GetRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
+	stor.EXPECT().DeleteRefreshTokenSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().RevokeRefreshToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for user storage (needed by UserResolver)
 	stor.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(

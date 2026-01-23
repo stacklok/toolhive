@@ -722,6 +722,15 @@ components:
           type: string
         bearer_token_file:
           type: string
+        cached_refresh_token_ref:
+          description: |-
+            Cached OAuth token reference for persistence across restarts.
+            The refresh token is stored securely in the secret manager, and this field
+            contains the reference to retrieve it (e.g., "OAUTH_REFRESH_TOKEN_workload").
+            This enables session restoration without requiring a new browser-based login.
+          type: string
+        cached_token_expiry:
+          type: string
         callback_port:
           type: integer
         client_id:

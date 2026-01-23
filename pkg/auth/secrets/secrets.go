@@ -25,6 +25,9 @@ const (
 	TokenTypeOAuthClientSecret TokenType = "oauth_client_secret"
 	// TokenTypeBearerToken represents a bearer token
 	TokenTypeBearerToken TokenType = "bearer_token"
+	// TokenTypeOAuthRefreshToken represents a cached OAuth refresh token
+	// #nosec G101 - this is a type identifier, not a credential
+	TokenTypeOAuthRefreshToken TokenType = "oauth_refresh_token"
 )
 
 // tokenTypeConfig holds configuration for each token type
@@ -44,6 +47,11 @@ var tokenTypeConfigs = map[TokenType]tokenTypeConfig{
 		prefix:       "BEARER_TOKEN_",
 		target:       "bearer_token",
 		errorContext: "bearer token",
+	},
+	TokenTypeOAuthRefreshToken: {
+		prefix:       "OAUTH_REFRESH_TOKEN_",
+		target:       "oauth_refresh",
+		errorContext: "OAuth refresh token",
 	},
 }
 

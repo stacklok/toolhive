@@ -231,6 +231,39 @@ vMCP can be deployed two ways:
 - Kubernetes: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 - CLI: `cmd/vmcp/`
 
+## Status Reporting
+
+Status reporting enables vMCP runtime to report operational status directly instead of relying on the operator to infer state. Status reporting is optional and pluggable so different environments can consume status (CLI vs Kubernetes) without duplicating discovery logic.
+
+### Why Status Reporting
+
+- **Avoid duplicate backend discovery**: vMCP already discovers backends for capability aggregation; we reuse that data for status instead of having the operator rediscover.
+- **Provide authoritative runtime view**: backend availability, phase, and conditions are produced at runtime by the component that actually talks to backends.
+- **Enable multiple sinks**: logging for CLI, Kubernetes CRD status for clusters, future file/metrics reporters.
+
+### Key Concepts
+
+- `StatusReporter` interface (`pkg/vmcp/status/reporter.go`): `ReportStatus(ctx, *vmcp.Status)` and `Start(ctx)` returning shutdown func.
+- Status model (`pkg/vmcp/types.go`):
+  - Phase: Pending, Ready, Degraded, Failed
+  - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
+  - DiscoveredBackends: backend URL/auth type/health with timestamps
+- CLI reporter: Logging-only reporter (no persistence) always logs status updates.
+- Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
+
+### Integration in vMCP Runtime
+
+- Server config (`pkg/vmcp/server/server.go`): optional `StatusReporter`; nil disables status reporting.
+- Startup: reporter `Start` is invoked; failure is treated as fatal when configured. Shutdown funcs are collected and run on `Stop`.
+- Reporting: runtime components call `ReportStatus` as discovery and health change.
+
+### Extensibility
+
+- Additional reporters can be added under `pkg/vmcp/status/` implementing `Reporter` and using shared `vmcp.Status` types.
+- Future sinks: Kubernetes status writer, file-based reporter for CLI (`thv status`), metrics exporter.
+
+**Implementation**: `pkg/vmcp/status/`
+
 ## Related Documentation
 
 - [Core Concepts](02-core-concepts.md) - Virtual MCP Server concept

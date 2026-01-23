@@ -100,11 +100,11 @@ type Config struct {
 	Public bool
 
 	// GrantTypes overrides the default grant types.
-	// If nil or empty, DefaultGrantTypes is used.
+	// If nil or empty, defaultGrantTypes is used.
 	GrantTypes []string
 
 	// ResponseTypes overrides the default response types.
-	// If nil or empty, DefaultResponseTypes is used.
+	// If nil or empty, defaultResponseTypes is used.
 	ResponseTypes []string
 
 	// Scopes overrides the default scopes.
@@ -121,12 +121,12 @@ func New(cfg Config) (fosite.Client, error) {
 	// Apply defaults for empty slices
 	grantTypes := cfg.GrantTypes
 	if len(grantTypes) == 0 {
-		grantTypes = DefaultGrantTypes
+		grantTypes = defaultGrantTypes
 	}
 
 	responseTypes := cfg.ResponseTypes
 	if len(responseTypes) == 0 {
-		responseTypes = DefaultResponseTypes
+		responseTypes = defaultResponseTypes
 	}
 
 	scopes := cfg.Scopes

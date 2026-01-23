@@ -800,6 +800,13 @@ const docTemplate = `{
                     "bearer_token_file": {
                         "type": "string"
                     },
+                    "cached_refresh_token_ref": {
+                        "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
+                        "type": "string"
+                    },
+                    "cached_token_expiry": {
+                        "type": "string"
+                    },
                     "callback_port": {
                         "type": "integer"
                     },

@@ -5,6 +5,9 @@ package vmcp
 
 import (
 	"context"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -116,6 +119,117 @@ const (
 	// BackendUnauthenticated indicates the backend is not authenticated.
 	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
 )
+
+// ToCRDStatus converts BackendHealthStatus to CRD-friendly status string.
+// This maps internal health states to user-facing status values:
+//   - healthy → ready
+//   - degraded → degraded
+//   - unhealthy → unavailable
+//   - unauthenticated → unavailable (unauthenticated is a reason, not a status)
+//   - unknown → unknown
+func (s BackendHealthStatus) ToCRDStatus() string {
+	switch s {
+	case BackendHealthy:
+		return "ready"
+	case BackendDegraded:
+		return "degraded"
+	case BackendUnhealthy, BackendUnauthenticated:
+		return "unavailable"
+	case BackendUnknown:
+		return "unknown"
+	default:
+		return "unknown"
+	}
+}
+
+// Condition represents a specific aspect of vMCP server status.
+type Condition = metav1.Condition
+
+// Phase represents the operational lifecycle phase of a vMCP server.
+type Phase string
+
+// Phase constants for vMCP server lifecycle.
+const (
+	PhasePending  Phase = "Pending"
+	PhaseReady    Phase = "Ready"
+	PhaseDegraded Phase = "Degraded"
+	PhaseFailed   Phase = "Failed"
+)
+
+// Condition type constants for common vMCP conditions.
+const (
+	ConditionTypeBackendsDiscovered = "BackendsDiscovered"
+	ConditionTypeReady              = "Ready"
+	ConditionTypeAuthConfigured     = "AuthConfigured"
+)
+
+// Reason constants for condition reasons.
+const (
+	ReasonBackendDiscoverySucceeded = "BackendDiscoverySucceeded"
+	ReasonBackendDiscoveryFailed    = "BackendDiscoveryFailed"
+	ReasonServerReady               = "ServerReady"
+	ReasonServerStarting            = "ServerStarting"
+	ReasonServerDegraded            = "ServerDegraded"
+	ReasonServerFailed              = "ServerFailed"
+)
+
+// DiscoveredBackend represents a backend server discovered by vMCP runtime.
+// This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+type DiscoveredBackend struct {
+	// Name is the name of the backend MCPServer
+	Name string `json:"name"`
+
+	// URL is the URL of the backend MCPServer
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// Status is the current status of the backend (ready, degraded, unavailable, unknown).
+	// Use BackendHealthStatus.ToCRDStatus() to populate this field.
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
+	// +optional
+	AuthConfigRef string `json:"authConfigRef,omitempty"`
+
+	// AuthType is the type of authentication configured
+	// +optional
+	AuthType string `json:"authType,omitempty"`
+
+	// LastHealthCheck is the timestamp of the last health check
+	// +optional
+	LastHealthCheck metav1.Time `json:"lastHealthCheck,omitempty"`
+
+	// Message provides additional information about the backend status
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// DeepCopyInto copies the receiver into out. Required for Kubernetes CRD types.
+func (in *DiscoveredBackend) DeepCopyInto(out *DiscoveredBackend) {
+	*out = *in
+	in.LastHealthCheck.DeepCopyInto(&out.LastHealthCheck)
+}
+
+// DeepCopy creates a deep copy of DiscoveredBackend. Required for Kubernetes CRD types.
+func (in *DiscoveredBackend) DeepCopy() *DiscoveredBackend {
+	if in == nil {
+		return nil
+	}
+	out := new(DiscoveredBackend)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// Status represents the runtime status of a vMCP server.
+type Status struct {
+	Phase              Phase               `json:"phase"`
+	Message            string              `json:"message,omitempty"`
+	Conditions         []Condition         `json:"conditions,omitempty"`
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
+	Timestamp          time.Time           `json:"timestamp"`
+}
 
 // Backend represents a discovered backend MCP server workload.
 type Backend struct {

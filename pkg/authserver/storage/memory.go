@@ -89,6 +89,10 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
+	// maxClients is the maximum number of registered clients allowed.
+	// 0 means unlimited.
+	maxClients int
+
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
 
@@ -109,6 +113,14 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 	}
 }
 
+// WithMaxClients sets the maximum number of registered clients.
+// 0 means unlimited.
+func WithMaxClients(max int) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.maxClients = max
+	}
+}
+
 // NewMemoryStorage creates a new MemoryStorage instance with initialized maps
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
@@ -124,6 +136,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		clientAssertionJWTs:   make(map[string]time.Time),
 		users:                 make(map[string]*User),
 		providerIdentities:    make(map[string]*ProviderIdentity),
+		maxClients:            DefaultMaxClients,
 		cleanupInterval:       DefaultCleanupInterval,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
@@ -308,11 +321,16 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 	return expTime
 }
 
-// RegisterClient adds or updates a client in the storage.
-// This is useful for setting up test clients.
+// RegisterClient adds a client to the storage.
+// Returns ErrCapacityExceeded if the maximum number of clients has been reached.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.maxClients > 0 && len(s.clients) >= s.maxClients {
+		return fmt.Errorf("%w: maximum number of registered clients reached (%d)", ErrCapacityExceeded, s.maxClients)
+	}
+
 	s.clients[client.GetID()] = client
 	return nil
 }

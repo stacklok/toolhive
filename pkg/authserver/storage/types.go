@@ -43,6 +43,10 @@ var (
 	// ErrInvalidBinding is returned when token binding validation fails
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
+
+	// ErrCapacityExceeded is returned when a storage limit has been reached
+	// (e.g., maximum number of registered clients).
+	ErrCapacityExceeded = errors.New("storage: capacity exceeded")
 )
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.

@@ -40,6 +40,10 @@ const (
 
 	// DefaultPKCETTL is the default TTL for PKCE requests (same as auth codes).
 	DefaultPKCETTL = 10 * time.Minute
+
+	// DefaultMaxClients is the default maximum number of registered clients.
+	// 0 means unlimited.
+	DefaultMaxClients = 100
 )
 
 // Config configures the storage backend.

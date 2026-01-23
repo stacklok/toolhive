@@ -220,6 +220,59 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+func TestNewMemoryStorage_WithMaxClients(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage(WithMaxClients(5))
+	defer s.Close()
+	assert.Equal(t, 5, s.maxClients)
+}
+
+func TestNewMemoryStorage_DefaultMaxClients(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	assert.Equal(t, DefaultMaxClients, s.maxClients)
+}
+
+func TestMemoryStorage_RegisterClient_MaxClientsEnforced(t *testing.T) {
+	t.Parallel()
+	maxClients := 3
+	s := NewMemoryStorage(WithMaxClients(maxClients))
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Register up to the limit
+	for i := range maxClients {
+		client := &mockClient{id: fmt.Sprintf("client-%d", i)}
+		require.NoError(t, s.RegisterClient(ctx, client))
+	}
+
+	// Next registration should fail
+	client := &mockClient{id: "client-overflow"}
+	err := s.RegisterClient(ctx, client)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCapacityExceeded)
+
+	// Verify we still have exactly maxClients
+	stats := s.Stats()
+	assert.Equal(t, maxClients, stats.Clients)
+}
+
+func TestMemoryStorage_RegisterClient_UnlimitedWhenZero(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage(WithMaxClients(0))
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Should allow many registrations when limit is 0 (unlimited)
+	for i := range 50 {
+		client := &mockClient{id: fmt.Sprintf("client-%d", i)}
+		require.NoError(t, s.RegisterClient(ctx, client))
+	}
+}
+
 func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

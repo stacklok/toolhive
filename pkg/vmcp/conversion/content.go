@@ -18,7 +18,9 @@ import (
 //   - First text content: key="text"
 //   - Subsequent text content: key="text_1", "text_2", etc.
 //   - Image content: key="image_0", "image_1", etc.
-//   - Other content types are currently ignored (logged elsewhere)
+//   - Audio content: ignored (not supported for template substitution)
+//   - Resource content: ignored (handled separately, not converted to map)
+//   - Unknown content types: ignored (warnings logged at conversion boundaries)
 //
 // This ensures consistent behavior between client response handling and workflow step output processing.
 func ContentArrayToMap(content []vmcp.Content) map[string]any {
@@ -45,9 +47,10 @@ func ContentArrayToMap(content []vmcp.Content) map[string]any {
 			result[key] = item.Data
 			imageIndex++
 
-			// Audio content is not currently supported
-			// "resource" type is not converted to map - handled separately
-			// Unknown types (including "audio") are ignored - warnings logged at conversion boundaries
+			// Default case (implicit):
+			// - Audio content is ignored (not supported for template substitution)
+			// - Resource content is ignored (handled separately, not converted to map)
+			// - Unknown content types are ignored (warnings logged at conversion boundaries)
 		}
 	}
 

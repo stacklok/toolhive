@@ -69,7 +69,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					CallTool(gomock.Any(), target, "test_tool", map[string]any{
 						"input": "test",
 						"count": 42,
-					}).
+					}, gomock.Any()).
 					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{
@@ -174,8 +174,13 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}).
-					Return(nil, vmcp.ErrToolExecutionFailed)
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					Return(&vmcp.ToolCallResult{
+						Content: []vmcp.Content{
+							{Type: "text", Text: "tool execution failed"},
+						},
+						IsError: true,
+					}, nil)
 			},
 			request: mcp.CallToolRequest{
 				Params: mcp.CallToolParams{
@@ -203,7 +208,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}).
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			request: mcp.CallToolRequest{
@@ -232,7 +237,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}).
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
 					Return(nil, errors.New("unknown backend error"))
 			},
 			request: mcp.CallToolRequest{
@@ -266,7 +271,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 				// Handler factory now passes the client-facing name (backend1_fetch)
 				// Backend client handles translation to original name (fetch)
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}).
+					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}, gomock.Any()).
 					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{

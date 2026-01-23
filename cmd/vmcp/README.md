@@ -11,6 +11,7 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 - ✅ **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, manual)
 - ✅ **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
 - ✅ **Request Routing**: Intelligent routing of tool/resource/prompt requests to correct backends
+- ✅ **Metadata Preservation**: Forwards `_meta` fields from client requests to backends and preserves `_meta` from backend responses (including `progressToken` for progress notifications)
 - ✅ **Session Management**: MCP protocol session tracking with TTL-based cleanup
 - ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
 - ✅ **Configuration Validation**: `vmcp validate` command for config verification
@@ -273,21 +274,6 @@ go test -cover ./pkg/vmcp/...
 | Middleware | Per-server | Global + per-backend overrides |
 
 ## Known Limitations
-
-### Request Metadata Not Forwarded to Backends
-
-Per the [MCP specification](https://modelcontextprotocol.io/specification), clients can include `_meta.progressToken` in requests to receive progress notifications. Currently, vMCP preserves `_meta` from backend **responses** but does **not** forward `_meta` from client **requests** to backends.
-
-**Impact**: Progress notifications cannot correlate with client requests since backends do not receive the `progressToken`.
-
-**MCP Spec Evidence**:
-- Schema defines `progressToken` in `CallToolRequestParams._meta`
-- Spec states: "When a party wants to receive progress updates for a request, it includes a progressToken in the request metadata."
-- Proxies should "preserve the JSON-RPC message format" per Custom Transports section
-
-**Future Enhancement**: Consider adding request `_meta` forwarding by either:
-- Modifying `BackendClient` interface to accept request metadata
-- Extracting `_meta` from context similar to identity propagation
 
 ### Audio Content Not Supported
 

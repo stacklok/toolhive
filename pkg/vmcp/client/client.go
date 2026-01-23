@@ -397,8 +397,8 @@ func convertContent(content mcp.Content) vmcp.Content {
 		}
 	}
 	// Handle embedded resources if needed
-	// For now, unknown types return text with empty content
-	logger.Warnf("Encountered unknown content type %T, converting to empty content. "+
+	// Unknown content types are marked as "unknown" type with no data
+	logger.Warnf("Encountered unknown content type %T, marking as unknown content. "+
 		"This may indicate missing support for embedded resources or other MCP content types.", content)
 	return vmcp.Content{Type: "unknown"}
 }
@@ -526,6 +526,7 @@ func (h *httpBackendClient) CallTool(
 	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
+	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
 
@@ -557,6 +558,7 @@ func (h *httpBackendClient) CallTool(
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,
 			Arguments: arguments,
+			Meta:      conversion.ToMCPMeta(meta),
 		},
 	})
 	if err != nil {
@@ -564,12 +566,12 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
-	// Extract _meta field from backend response early for error logging
-	meta := conversion.FromMCPMeta(result.Meta)
+	// Extract _meta field from backend response
+	responseMeta := conversion.FromMCPMeta(result.Meta)
 
-	// Check if the tool call returned an error (MCP domain error)
+	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error)
+	// We still return the full result to preserve metadata and error details for the client
 	if result.IsError {
-		// Extract error message from content for logging and forwarding
 		var errorMsg string
 		if len(result.Content) > 0 {
 			if textContent, ok := mcp.AsTextContent(result.Content[0]); ok {
@@ -577,18 +579,17 @@ func (h *httpBackendClient) CallTool(
 			}
 		}
 		if errorMsg == "" {
-			errorMsg = "unknown error"
+			errorMsg = "tool execution error"
 		}
 
-		// Include _meta in error log for distributed tracing and debugging
-		if meta != nil {
-			logger.Warnf("Tool %s on backend %s returned error: %s (meta: %+v)", toolName, target.WorkloadID, errorMsg, meta)
+		// Log with metadata for distributed tracing
+		if responseMeta != nil {
+			logger.Warnf("Tool %s on backend %s returned IsError=true: %s (meta: %+v)",
+				toolName, target.WorkloadID, errorMsg, responseMeta)
 		} else {
-			logger.Warnf("Tool %s on backend %s returned error: %s", toolName, target.WorkloadID, errorMsg)
+			logger.Warnf("Tool %s on backend %s returned IsError=true: %s", toolName, target.WorkloadID, errorMsg)
 		}
-
-		// Wrap with ErrToolExecutionFailed so router can forward transparently to client
-		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
+		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
 
 	// Convert MCP content to vmcp.Content array
@@ -623,7 +624,7 @@ func (h *httpBackendClient) CallTool(
 		Content:           contentArray,
 		StructuredContent: structuredContent,
 		IsError:           result.IsError,
-		Meta:              meta,
+		Meta:              responseMeta,
 	}, nil
 }
 

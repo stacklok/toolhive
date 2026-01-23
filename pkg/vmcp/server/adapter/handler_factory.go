@@ -118,13 +118,13 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
 		}
 
-		// Call the backend tool - the backend client handles name translation
-		result, err := f.backendClient.CallTool(ctx, target, toolName, args)
+		// Extract metadata from request to forward to backend
+		meta := conversion.FromMCPMeta(request.Params.Meta)
+
+		// Call the backend tool - the backend client handles name translation and metadata forwarding
+		result, err := f.backendClient.CallTool(ctx, target, toolName, args, meta)
 		if err != nil {
-			if errors.Is(err, vmcp.ErrToolExecutionFailed) {
-				logger.Debugf("Tool execution failed for %s: %v", toolName, err)
-				return mcp.NewToolResultError(err.Error()), nil
-			}
+			// Only actual network/transport errors reach here now (IsError=true is handled in result)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
 				logger.Warnf("Backend unavailable for tool %s: %v", toolName, err)
 				return mcp.NewToolResultError(fmt.Sprintf("Backend unavailable: %v", err)), nil

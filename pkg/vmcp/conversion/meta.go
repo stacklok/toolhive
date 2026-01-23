@@ -21,13 +21,14 @@ func FromMCPMeta(meta *mcp.Meta) map[string]any {
 
 	result := make(map[string]any)
 
-	// Add progressToken if present
+	// Merge additional fields first (custom metadata like trace context)
+	maps.Copy(result, meta.AdditionalFields)
+
+	// Set progressToken last to ensure it takes precedence over any
+	// progressToken key in AdditionalFields (prevents malicious/incorrect overrides)
 	if meta.ProgressToken != nil {
 		result["progressToken"] = meta.ProgressToken
 	}
-
-	// Merge additional fields (custom metadata like trace context)
-	maps.Copy(result, meta.AdditionalFields)
 
 	// Return nil if the map is empty (no metadata to preserve)
 	if len(result) == 0 {

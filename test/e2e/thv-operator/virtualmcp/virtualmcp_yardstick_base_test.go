@@ -256,40 +256,71 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}
 			Expect(toolToCall).ToNot(BeEmpty(), "Should find an echo tool")
 
-			By(fmt.Sprintf("Calling tool: %s", toolToCall))
+			By(fmt.Sprintf("Calling tool: %s with metadata", toolToCall))
+			// Yardstick server echoes back metadata from requests to responses
+			// This tests the full round-trip: client → vMCP → backend → vMCP → client
+			testTraceID := "test-trace-123"
+			testRequestID := "req-456"
 			callRequest := mcp.CallToolRequest{}
 			callRequest.Params.Name = toolToCall
 			callRequest.Params.Arguments = map[string]interface{}{
-				"message": "test-metadata-preservation",
+				"input": "testmetadatapreservation",
+			}
+			callRequest.Params.Meta = &mcp.Meta{
+				AdditionalFields: map[string]interface{}{
+					"traceId":   testTraceID,
+					"requestId": testRequestID,
+				},
 			}
 
 			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
 			Expect(err).ToNot(HaveOccurred(), "Tool call should succeed")
 			Expect(result).ToNot(BeNil())
 
-			By("Checking metadata preservation infrastructure")
-			// NOTE: This test validates that the vMCP conversion layer (pkg/vmcp/conversion/meta.go)
-			// correctly handles _meta fields from backend responses. If a backend returns _meta,
-			// it will be preserved in CallToolResult.Meta. If not, Meta will be nil.
-			// The test passes regardless of whether the tool call itself succeeded, as we're testing
-			// the metadata handling infrastructure, not the tool functionality.
+			By("Verifying metadata preservation through vMCP")
+			// Yardstick echoes back _meta fields from the request
+			// This validates the full metadata preservation path:
+			// 1. vMCP accepts _meta in client requests
+			// 2. vMCP forwards _meta to backend (yardstick)
+			// 3. Backend echoes _meta in response
+			// 4. vMCP preserves _meta from backend response back to client
 
 			GinkgoWriter.Printf("Tool call result - IsError: %v\n", result.IsError)
 
-			if result.Meta != nil {
-				GinkgoWriter.Printf("[PASS] Metadata found and preserved:\n")
-				if result.Meta.ProgressToken != nil {
-					GinkgoWriter.Printf("  progressToken: %v\n", result.Meta.ProgressToken)
-				}
-				if len(result.Meta.AdditionalFields) > 0 {
-					for key, value := range result.Meta.AdditionalFields {
-						GinkgoWriter.Printf("  %s: %v\n", key, value)
-					}
-				}
-			} else {
-				GinkgoWriter.Printf("[INFO] Backend did not return _meta fields (this is valid)\n")
+			if result.Meta == nil {
+				GinkgoWriter.Printf("[DEBUG] Result.Meta is nil - metadata was not preserved\n")
+				GinkgoWriter.Printf("[DEBUG] This could indicate:\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not forwarded from vMCP to backend\n")
+				GinkgoWriter.Printf("[DEBUG]   - Backend not returning metadata (check yardstick logs)\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not preserved from backend response to client\n")
 			}
-			GinkgoWriter.Printf("[PASS] Test validates vMCP infrastructure handles metadata correctly when present\n")
+
+			Expect(result.Meta).ToNot(BeNil(),
+				"Yardstick should echo back metadata from request. "+
+					"Check: 1) vMCP forwarding _meta to backend, 2) backend echoing _meta, 3) vMCP preserving _meta from response")
+
+			GinkgoWriter.Printf("Metadata preserved through vMCP:\n")
+			if result.Meta.ProgressToken != nil {
+				GinkgoWriter.Printf("  progressToken: %v\n", result.Meta.ProgressToken)
+			}
+
+			Expect(result.Meta.AdditionalFields).ToNot(BeEmpty(),
+				"Yardstick should preserve additional metadata fields from request")
+
+			// Verify the custom fields we sent are echoed back
+			traceID, hasTraceID := result.Meta.AdditionalFields["traceId"]
+			Expect(hasTraceID).To(BeTrue(), "Should preserve traceId field")
+			Expect(traceID).To(Equal(testTraceID), "TraceId value should match what was sent")
+
+			requestID, hasRequestID := result.Meta.AdditionalFields["requestId"]
+			Expect(hasRequestID).To(BeTrue(), "Should preserve requestId field")
+			Expect(requestID).To(Equal(testRequestID), "RequestId value should match what was sent")
+
+			for key, value := range result.Meta.AdditionalFields {
+				GinkgoWriter.Printf("  %s: %v\n", key, value)
+			}
+
+			GinkgoWriter.Printf("[PASS] vMCP correctly preserves metadata end-to-end\n")
 		})
 	})
 

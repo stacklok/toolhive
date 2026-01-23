@@ -720,9 +720,9 @@ func TestCompositeToolWithOutputConfig_ErrorHandlingWithRetry(t *testing.T) {
 
 	// Fail once, then succeed
 	gomock.InOrder(
-		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any()).
+		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("temporary failure")),
-		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any()).
+		te.Backend.EXPECT().CallTool(gomock.Any(), target, "api.flaky_call", gomock.Any(), gomock.Any()).
 			Return(&vmcp.ToolCallResult{
 				StructuredContent: map[string]any{"data": "success_after_retry"},
 				Content:           []vmcp.Content{},

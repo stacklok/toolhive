@@ -81,18 +81,18 @@ func (m *MockBackendClient) EXPECT() *MockBackendClientMockRecorder {
 }
 
 // CallTool mocks base method.
-func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any) (*vmcp.ToolCallResult, error) {
+func (m *MockBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any) (*vmcp.ToolCallResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments)
+	ret := m.ctrl.Call(m, "CallTool", ctx, target, toolName, arguments, meta)
 	ret0, _ := ret[0].(*vmcp.ToolCallResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // CallTool indicates an expected call of CallTool.
-func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, arguments any) *gomock.Call {
+func (mr *MockBackendClientMockRecorder) CallTool(ctx, target, toolName, arguments, meta any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallTool", reflect.TypeOf((*MockBackendClient)(nil).CallTool), ctx, target, toolName, arguments, meta)
 }
 
 // GetPrompt mocks base method.

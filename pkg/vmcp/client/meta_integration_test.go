@@ -54,7 +54,7 @@ func TestMetaPreservation_CallTool(t *testing.T) {
 	// Call tool through vMCP backend client
 	result, err := backendClient.CallTool(ctx, target, "test_tool_with_meta", map[string]any{
 		"input": "test-value",
-	})
+	}, nil)
 
 	// Verify call succeeded
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	// Call tool that doesn't return _meta
 	result, err := backendClient.CallTool(ctx, target, "test_tool_no_meta", map[string]any{
 		"input": "test-value",
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -114,8 +114,13 @@ func TestMetaPreservation_CallTool_NoMeta(t *testing.T) {
 	assert.Equal(t, "text", result.Content[0].Type)
 }
 
-// TestMetaPreservation_CallTool_Error tests that _meta is logged when a tool returns an error.
-// This verifies that trace IDs and other metadata are included in error logs for debugging.
+// TestMetaPreservation_CallTool_Error tests that _meta fields are preserved even when tool returns IsError=true.
+// This test verifies that error results (IsError=true) preserve metadata for distributed tracing.
+//
+// Note: This test does not verify that _meta is included in error logs. Log output verification
+// would require capturing logger output, which is typically done manually or in log aggregation systems.
+// The client code logs _meta fields when present (see client.go error handling), but automated
+// verification of log output is outside the scope of this integration test.
 func TestMetaPreservation_CallTool_Error(t *testing.T) {
 	t.Parallel()
 
@@ -142,15 +147,24 @@ func TestMetaPreservation_CallTool_Error(t *testing.T) {
 	// Call tool that returns an error with _meta
 	result, err := backendClient.CallTool(ctx, target, "test_tool_error", map[string]any{
 		"input": "trigger-error",
-	})
+	}, nil)
 
-	// Should return error
-	require.Error(t, err)
-	require.Nil(t, result)
+	// Should return result (not a Go error) when tool returns IsError=true
+	require.NoError(t, err, "IsError=true is not a transport error, should return result")
+	require.NotNil(t, result)
 
-	// The error log should have included the _meta field (trace ID, etc.)
-	// This is verified by checking the log output manually or in log aggregation systems
-	// The test confirms the error path executes correctly
+	// Verify the result has IsError flag set
+	assert.True(t, result.IsError, "Result should have IsError=true")
+
+	// Verify _meta is preserved even for error results
+	assert.NotNil(t, result.Meta, "_meta should be preserved for error results")
+	assert.Equal(t, "error-token-999", result.Meta["progressToken"])
+	assert.Equal(t, "error-trace-abc123", result.Meta["traceId"])
+	assert.Equal(t, "req-error-xyz789", result.Meta["requestId"])
+
+	// Verify error content is present
+	assert.NotEmpty(t, result.Content)
+	assert.Contains(t, result.Content[0].Text, "Tool execution failed")
 }
 
 // TestMetaPreservation_GetPrompt tests that _meta fields are preserved when getting prompts.

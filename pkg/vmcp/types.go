@@ -347,8 +347,14 @@ type ToolCallResult struct {
 	// This is the array of content items returned by the backend.
 	Content []Content
 
-	// StructuredContent is structured JSON output (preferred for composite tools and workflows).
-	// When the backend returns a single text content with JSON, this field contains the parsed JSON.
+	// StructuredContent is structured output (preferred for composite tools and workflows).
+	// If the backend MCP server provides StructuredContent, it is used directly.
+	// Otherwise, this is populated by converting the Content array to a map:
+	//   - First text item: key="text"
+	//   - Additional text items: key="text_1", "text_2", etc.
+	//   - Image items: key="image_0", "image_1", etc.
+	// This allows templates to access fields via {{.steps.stepID.output.text}}.
+	// Note: No JSON parsing is performed - backends must provide structured data explicitly.
 	StructuredContent map[string]any
 
 	// IsError indicates if the tool call failed.
@@ -364,7 +370,9 @@ type ToolCallResult struct {
 // This preserves both the resource data AND the _meta field from the backend MCP server.
 type ResourceReadResult struct {
 	// Contents is the concatenated resource data.
-	// Multiple resource contents are concatenated with newlines.
+	// When a resource has multiple contents (text or blob), they are concatenated
+	// directly without separators. Text contents are converted to bytes, blob contents
+	// are base64-decoded before concatenation.
 	Contents []byte
 
 	// MimeType is the content type of the resource.
@@ -437,15 +445,20 @@ type HealthChecker interface {
 // This interface handles the protocol-level details of calling backend MCP servers,
 // supporting multiple transport types (HTTP, SSE, stdio, streamable-http).
 //
-// All methods now return wrapper types that preserve the _meta field from backend
-// MCP server responses, ensuring protocol-level metadata (progress tokens, trace context,
-// custom metadata) is forwarded to clients.
+// All methods return wrapper types that preserve the _meta field from backend
+// MCP server responses. Protocol-level metadata (progress tokens, trace context,
+// custom metadata) is forwarded to clients where supported (tools and prompts).
+// Note: Resource _meta forwarding is not currently supported due to MCP SDK handler
+// signature limitations; the Meta field is preserved for future SDK improvements.
 //
 //go:generate mockgen -destination=mocks/mock_backend_client.go -package=mocks -source=types.go BackendClient HealthChecker
 type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
-	// Returns the complete tool result including _meta field.
-	CallTool(ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any) (*ToolCallResult, error)
+	// The meta parameter contains _meta fields from the client request that should be forwarded to the backend.
+	// Returns the complete tool result including _meta field from the backend response.
+	CallTool(
+		ctx context.Context, target *BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+	) (*ToolCallResult, error)
 
 	// ReadResource retrieves a resource from the backend MCP server.
 	// Returns the complete resource result including _meta field.

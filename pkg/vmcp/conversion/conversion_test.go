@@ -84,12 +84,22 @@ func TestContentArrayToMap(t *testing.T) {
 			},
 		},
 		{
-			name: "audio content treated like image",
+			name: "audio content is ignored",
 			content: []vmcp.Content{
 				{Type: "audio", Data: "audiodata", MimeType: "audio/mpeg"},
 			},
+			expected: map[string]any{},
+		},
+		{
+			name: "audio mixed with other content is ignored",
+			content: []vmcp.Content{
+				{Type: "text", Text: "Text content"},
+				{Type: "audio", Data: "audiodata", MimeType: "audio/mpeg"},
+				{Type: "image", Data: "imagedata", MimeType: "image/png"},
+			},
 			expected: map[string]any{
-				"image_0": "audiodata",
+				"text":    "Text content",
+				"image_0": "imagedata",
 			},
 		},
 		{
@@ -224,6 +234,20 @@ func TestFromMCPMeta(t *testing.T) {
 			},
 			expected: map[string]any{
 				"traceId": "trace-123",
+			},
+		},
+		{
+			name: "dedicated progressToken takes precedence over AdditionalFields",
+			input: &mcp.Meta{
+				ProgressToken: "correct-token",
+				AdditionalFields: map[string]any{
+					"progressToken": "malicious-token",
+					"traceId":       "trace-456",
+				},
+			},
+			expected: map[string]any{
+				"progressToken": "correct-token",
+				"traceId":       "trace-456",
 			},
 		},
 	}

@@ -118,11 +118,11 @@ func (t telemetryBackendClient) record(
 }
 
 func (t telemetryBackendClient) CallTool(
-	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any,
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
 ) (_ *vmcp.ToolCallResult, retErr error) {
 	ctx, done := t.record(ctx, target, "call_tool", &retErr)
 	defer done()
-	return t.backendClient.CallTool(ctx, target, toolName, arguments)
+	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
 
 func (t telemetryBackendClient) ReadResource(

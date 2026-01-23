@@ -20,7 +20,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -72,36 +71,6 @@ type Watcher interface {
 	// WaitForCacheSync waits for the Kubernetes informer caches to sync.
 	// Returns true if caches synced successfully, false on timeout or error.
 	WaitForCacheSync(ctx context.Context) bool
-}
-
-// OptimizerConfig holds optimizer-specific configuration for vMCP integration.
-// This is used for backward compatibility with CLI configuration.
-// Prefer using OptimizerIntegration directly for better modularity.
-type OptimizerConfig struct {
-	// Enabled controls whether optimizer tools are available
-	Enabled bool
-
-	// PersistPath is the optional path for chromem-go database persistence (empty = in-memory)
-	PersistPath string
-
-	// FTSDBPath is the path to SQLite FTS5 database for BM25 search
-	// (empty = auto-default: ":memory:" or "{PersistPath}/fts.db")
-	FTSDBPath string
-
-	// HybridSearchRatio controls semantic vs BM25 mix (0-100 percentage, default: 70)
-	HybridSearchRatio int
-
-	// EmbeddingBackend specifies the embedding provider (vllm, ollama, placeholder)
-	EmbeddingBackend string
-
-	// EmbeddingURL is the URL for the embedding service (vLLM or Ollama)
-	EmbeddingURL string
-
-	// EmbeddingModel is the model name for embeddings
-	EmbeddingModel string
-
-	// EmbeddingDimension is the embedding vector dimension
-	EmbeddingDimension int
 }
 
 // Config holds the Virtual MCP Server configuration.
@@ -164,7 +133,7 @@ type Config struct {
 	// OptimizerConfig is the optional optimizer configuration (for backward compatibility).
 	// If OptimizerIntegration is set, this is ignored.
 	// If both are nil, optimizer is disabled.
-	OptimizerConfig *OptimizerConfig
+	OptimizerConfig *optimizer.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -408,7 +377,7 @@ func New(
 	} else if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
 		// Create optimizer integration from config (for backward compatibility)
 		var err error
-		optimizerInteg, err = createOptimizerIntegrationFromConfig(ctx, cfg.OptimizerConfig, mcpServer, backendClient, sessionManager)
+		optimizerInteg, err = optimizer.NewIntegration(ctx, cfg.OptimizerConfig, mcpServer, backendClient, sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create optimizer integration: %w", err)
 		}
@@ -1175,29 +1144,4 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	if _, err := w.Write(data); err != nil {
 		logger.Errorf("Failed to write backend health response: %v", err)
 	}
-}
-
-// createOptimizerIntegrationFromConfig creates an optimizer integration from server config.
-// This is a helper function to convert server.OptimizerConfig to optimizer.Config,
-// keeping the conversion logic in the server package to avoid circular dependencies.
-func createOptimizerIntegrationFromConfig(
-	ctx context.Context,
-	cfg *OptimizerConfig,
-	mcpServer *server.MCPServer,
-	backendClient vmcp.BackendClient,
-	sessionManager *transportsession.Manager,
-) (optimizer.Integration, error) {
-	optimizerCfg := &optimizer.Config{
-		Enabled:           cfg.Enabled,
-		PersistPath:       cfg.PersistPath,
-		FTSDBPath:         cfg.FTSDBPath,
-		HybridSearchRatio: cfg.HybridSearchRatio,
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: cfg.EmbeddingBackend,
-			BaseURL:     cfg.EmbeddingURL,
-			Model:       cfg.EmbeddingModel,
-			Dimension:   cfg.EmbeddingDimension,
-		},
-	}
-	return optimizer.NewIntegration(ctx, optimizerCfg, mcpServer, backendClient, sessionManager)
 }

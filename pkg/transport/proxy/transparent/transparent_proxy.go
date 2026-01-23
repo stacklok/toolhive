@@ -19,11 +19,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/exp/jsonrpc2"
+	"golang.org/x/sys/unix"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -454,7 +456,20 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
+	// (e.g., after laptop sleep where zombie processes may hold ports)
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var opErr error
+			if err := c.Control(func(fd uintptr) {
+				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			}); err != nil {
+				return err
+			}
+			return opErr
+		},
+	}
+	ln, err := lc.Listen(ctx, "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}

@@ -405,12 +405,18 @@ func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duratio
 // responseWriter wraps http.ResponseWriter to capture response details.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
+	statusCode    int
+	bytesWritten  int64
+	headerWritten bool // Guard against double WriteHeader calls
 }
 
-// WriteHeader captures the status code.
+// WriteHeader captures the status code. Guards against duplicate calls which
+// can cause panics in Go's reverse proxy (http: superfluous response.WriteHeader call).
 func (rw *responseWriter) WriteHeader(statusCode int) {
+	if rw.headerWritten {
+		return // Silently ignore duplicate WriteHeader calls
+	}
+	rw.headerWritten = true
 	rw.statusCode = statusCode
 	rw.ResponseWriter.WriteHeader(statusCode)
 }

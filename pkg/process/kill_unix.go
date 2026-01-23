@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 //go:build !windows
 
 package process
@@ -6,19 +9,45 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 )
 
-// KillProcess kills a process by its ID
+// KillProcess kills a process by its ID.
+// It first sends SIGTERM for graceful shutdown, waits briefly, then sends SIGKILL
+// if the process is still running. This handles zombie processes that may survive
+// laptop sleep/wake cycles and don't respond to SIGTERM.
 func KillProcess(pid int) error {
-	// Check if the process exists
-	process, err := os.FindProcess(pid)
+	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("failed to find process: %w", err)
 	}
 
-	// Send a SIGTERM signal to the process
-	if err := process.Signal(syscall.SIGTERM); err != nil {
+	// First try graceful termination with SIGTERM
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		// Process might already be dead
+		if err.Error() == "os: process already finished" {
+			return nil
+		}
 		return fmt.Errorf("failed to send SIGTERM to process: %w", err)
+	}
+
+	// Wait briefly for graceful shutdown
+	time.Sleep(500 * time.Millisecond)
+
+	// Check if process is still alive
+	alive, err := FindProcess(pid)
+	if err != nil || !alive {
+		// Process terminated gracefully
+		return nil
+	}
+
+	// Process didn't respond to SIGTERM - force kill with SIGKILL
+	// This handles zombie processes that may survive laptop sleep
+	if err := proc.Signal(syscall.SIGKILL); err != nil {
+		if err.Error() == "os: process already finished" {
+			return nil
+		}
+		return fmt.Errorf("failed to send SIGKILL to process: %w", err)
 	}
 
 	return nil

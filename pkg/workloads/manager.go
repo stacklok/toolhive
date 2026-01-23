@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package workloads contains high-level logic for managing the lifecycle of
 // ToolHive-managed containers.
 package workloads
@@ -31,6 +34,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
+
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
 // NOTE: This interface may be split up in future PRs, in particular, operations
@@ -76,10 +80,16 @@ type Manager interface {
 }
 
 // DefaultManager is the default implementation of the Manager interface.
+// ProcessFinder is a function type for checking if a process exists.
+// This allows dependency injection for testing.
+type ProcessFinder func(pid int) (bool, error)
+
+// DefaultManager is the default implementation of the Manager interface.
 type DefaultManager struct {
 	runtime        rt.Runtime
 	statuses       statuses.StatusManager
 	configProvider config.Provider
+	findProcess    ProcessFinder // defaults to process.FindProcess
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -760,24 +770,43 @@ func (d *DefaultManager) getWorkloadContainer(ctx context.Context, name string) 
 }
 
 // isSupervisorProcessAlive checks if the supervisor process for a workload is alive
-// by checking if a PID exists. If a PID exists, we assume the supervisor is running.
-// This is a reasonable assumption because:
-// - If the supervisor exits cleanly, it cleans up the PID
-// - If killed unexpectedly, the PID remains but stopProcess will handle it gracefully
-// - The main issue we're preventing is accumulating zombie supervisors from repeated restarts
+// by checking if a PID exists AND the process is actually running.
+// This handles scenarios where:
+// - The supervisor exits cleanly and removes the PID file
+// - The supervisor is killed but PID file remains (zombie)
+// - The process survives laptop sleep but becomes unresponsive
 func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name string) bool {
 	if name == "" {
 		return false
 	}
 
-	// Try to read the PID - if it exists, assume supervisor is running
-	_, err := d.statuses.GetWorkloadPID(ctx, name)
+	// Try to read the PID
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
 		// No PID found, supervisor is not running
 		return false
 	}
 
-	// PID exists, assume supervisor is alive
+	// Actually check if the process is running (not just if PID file exists)
+	findProcess := d.findProcess
+	if findProcess == nil {
+		findProcess = process.FindProcess
+	}
+	alive, err := findProcess(pid)
+	if err != nil {
+		logger.Debugf("Error checking if supervisor process %d is alive: %v", pid, err)
+		return false
+	}
+
+	if !alive {
+		// Process is dead but PID file exists - clean up the stale PID file
+		logger.Debugf("Supervisor process %d is dead, cleaning up stale PID file for %s", pid, name)
+		if err := process.RemovePIDFile(name); err != nil {
+			logger.Warnf("Failed to remove stale PID file for %s: %v", name, err)
+		}
+		return false
+	}
+
 	return true
 }
 

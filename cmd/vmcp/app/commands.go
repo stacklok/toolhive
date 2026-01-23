@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	vmcpoptimizer "github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -438,21 +439,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Configure optimizer if enabled in YAML config
 	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
 		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
-		hybridRatio := 70 // Default (70%)
-		if cfg.Optimizer.HybridSearchRatio != nil {
-			hybridRatio = *cfg.Optimizer.HybridSearchRatio
-		}
-
-		serverCfg.OptimizerConfig = &vmcpserver.OptimizerConfig{
-			Enabled:            cfg.Optimizer.Enabled,
-			PersistPath:        cfg.Optimizer.PersistPath,
-			FTSDBPath:          cfg.Optimizer.FTSDBPath,
-			HybridSearchRatio:  hybridRatio,
-			EmbeddingBackend:   cfg.Optimizer.EmbeddingBackend,
-			EmbeddingURL:       cfg.Optimizer.EmbeddingURL,
-			EmbeddingModel:     cfg.Optimizer.EmbeddingModel,
-			EmbeddingDimension: cfg.Optimizer.EmbeddingDimension,
-		}
+		optimizerCfg := vmcpoptimizer.ConfigFromVMCPConfig(cfg.Optimizer)
+		serverCfg.OptimizerConfig = optimizerCfg
 		persistInfo := "in-memory"
 		if cfg.Optimizer.PersistPath != "" {
 			persistInfo = cfg.Optimizer.PersistPath

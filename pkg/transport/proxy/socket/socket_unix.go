@@ -3,6 +3,7 @@
 
 //go:build !windows
 
+// Package socket provides platform-specific socket configuration.
 package socket
 
 import (

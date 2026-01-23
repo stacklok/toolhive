@@ -1,0 +1,108 @@
+# Advanced EmbeddingServer configuration with all features
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: advanced-embedding
+  namespace: toolhive-system
+spec:
+  # Model configuration
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  image: "text-embeddings-inference:latest"
+  port: 8080
+  replicas: 2
+
+  # HuggingFace authentication token (optional)
+  # Reference a Kubernetes Secret containing the HuggingFace token for accessing private models
+  # Create the secret with: kubectl create secret generic hf-token --from-literal=token=hf_xxxxx
+  hfTokenSecretRef:
+    name: hf-token
+    key: token
+
+  # Additional arguments to pass to the embedding server
+  args:
+    - "--max-concurrent-requests"
+    - "512"
+    - "--max-batch-tokens"
+    - "32768"
+
+  # Environment variables
+  env:
+    - name: RUST_LOG
+      value: "info"
+    - name: MAX_CLIENT_BATCH_SIZE
+      value: "32"
+
+  # Model caching
+  modelCache:
+    enabled: true
+    size: "20Gi"
+    accessMode: "ReadWriteOnce"
+    storageClassName: "fast-ssd"
+
+  # Resource requirements
+  resources:
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+    requests:
+      cpu: "2000m"
+      memory: "4Gi"
+
+  # PodTemplateSpec for advanced pod customization
+  podTemplateSpec:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      # Node selection
+      nodeSelector:
+        workload: ml-inference
+      # Tolerations for dedicated nodes
+      tolerations:
+        - key: "ml-workload"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      # Affinity rules
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - mcpembedding
+                topologyKey: kubernetes.io/hostname
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      # Container-specific overrides
+      containers:
+        - name: embedding
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+  # Resource overrides for metadata
+  resourceOverrides:
+    deployment:
+      annotations:
+        description: "Advanced embedding server with HA configuration"
+      podTemplateMetadataOverrides:
+        labels:
+          app.custom: "ml-embedding"
+          version: "v1"
+    service:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    persistentVolumeClaim:
+      annotations:
+        volume.beta.kubernetes.io/storage-class: "fast-ssd"

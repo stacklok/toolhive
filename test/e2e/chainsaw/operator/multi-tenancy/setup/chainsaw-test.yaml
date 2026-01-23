@@ -41,7 +41,7 @@ spec:
         - --set
         - operator.rbac.scope=namespace
         - --set
-        - operator.rbac.allowedNamespaces={toolhive-system,test-namespace}
+        - operator.rbac.allowedNamespaces={toolhive-system,test-namespace,toolhive-test-ns-1,toolhive-test-ns-2}
     - assert:
         file: assert-operator-ready.yaml
     - assert:

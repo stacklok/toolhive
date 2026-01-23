@@ -313,6 +313,40 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
 
+### Go Coding Style
+
+- **Prefer immutable variable assignment with anonymous functions**:
+  When you need to assign a variable based on complex conditional logic, prefer using an immediately-invoked anonymous function instead of mutating the variable across multiple branches:
+
+  ```go
+  // ✅ Good: Immutable assignment with anonymous function
+  phase := func() PhaseType {
+      if someCondition {
+          return PhaseA
+      }
+      if anotherCondition {
+          return PhaseB
+      }
+      return PhaseDefault
+  }()
+
+  // ❌ Avoid: Mutable variable across branches
+  var phase PhaseType
+  if someCondition {
+      phase = PhaseA
+  } else if anotherCondition {
+      phase = PhaseB
+  } else {
+      phase = PhaseDefault
+  }
+  ```
+
+  **Benefits**:
+  - The variable is immutable after assignment, reducing bugs from accidental modification
+  - All decision logic is in one place with explicit returns
+  - Clearer logic flow and easier to understand
+  - Reduces cognitive load from tracking which branch sets which value
+
 ## Error Handling Guidelines
 
 See `docs/error-handling.md` for comprehensive documentation.

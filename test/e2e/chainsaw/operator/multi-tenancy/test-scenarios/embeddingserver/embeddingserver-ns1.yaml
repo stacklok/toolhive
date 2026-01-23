@@ -1,0 +1,23 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: ($testPrefix)
+  namespace: ($namespace1)
+spec:
+  model: "sentence-transformers/paraphrase-MiniLM-L3-v2"
+  image: "text-embeddings-inference"
+  imagePullPolicy: IfNotPresent
+  port: 8080
+  replicas: 1
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+  env:
+  - name: RUST_LOG
+    value: "info"
+  - name: NAMESPACE_IDENTIFIER
+    value: "namespace-1"

@@ -860,8 +860,6 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				},
 			},
 		},
-		// TODO(embeddingserver): Update assertion when ResourceOverrides on pod template is implemented.
-		// Expected: Annotations: {"pod-annotation": "pod-value"}, Labels: {"pod-label": "pod-value"} on pod template
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on pod template",
 			InitialState: InitialState{

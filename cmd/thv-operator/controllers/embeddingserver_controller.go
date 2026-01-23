@@ -233,7 +233,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	desiredReplicas := embedding.GetReplicas()
 	if *statefulSet.Spec.Replicas != desiredReplicas {
 		statefulSet.Spec.Replicas = &desiredReplicas
-		if err := r.updateStatefulSetWithRetry(ctx, statefulSet); err != nil {
+		if err := r.Update(ctx, statefulSet); err != nil {
 			ctxLogger.Error(err, "Failed to update StatefulSet replicas",
 				"StatefulSet.Namespace", statefulSet.Namespace,
 				"StatefulSet.Name", statefulSet.Name)
@@ -248,7 +248,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 		statefulSet.Spec = newStatefulSet.Spec
 		statefulSet.Annotations = newStatefulSet.Annotations
 		statefulSet.Labels = newStatefulSet.Labels
-		if err := r.updateStatefulSetWithRetry(ctx, statefulSet); err != nil {
+		if err := r.Update(ctx, statefulSet); err != nil {
 			ctxLogger.Error(err, "Failed to update StatefulSet",
 				"StatefulSet.Namespace", statefulSet.Namespace,
 				"StatefulSet.Name", statefulSet.Name)
@@ -258,15 +258,6 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// updateStatefulSetWithRetry updates the statefulset
-// The reconciler loop will automatically retry on conflicts
-func (r *EmbeddingServerReconciler) updateStatefulSetWithRetry(
-	ctx context.Context,
-	statefulSet *appsv1.StatefulSet,
-) error {
-	return r.Update(ctx, statefulSet)
 }
 
 // ensureService ensures the service exists and is up to date

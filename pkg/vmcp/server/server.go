@@ -35,6 +35,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -127,6 +128,12 @@ type Config struct {
 	// OptimizerFactory builds an optimizer from a list of tools.
 	// If not set, the optimizer is disabled.
 	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
+
+	// StatusReporter enables vMCP runtime to report operational status.
+	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
+	// In CLI mode: NoOpReporter (no persistent status)
+	// If nil, status reporting is disabled.
+	StatusReporter vmcpstatus.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -195,6 +202,15 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// statusReporter enables vMCP to report operational status to control plane.
+	// Nil if status reporting is disabled.
+	statusReporter vmcpstatus.Reporter
+
+	// shutdownFuncs contains cleanup functions to run during Stop().
+	// Populated during Start() initialization before blocking; no mutex needed
+	// since Stop() is only called after Start()'s select returns.
+	shutdownFuncs []func(context.Context) error
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -352,6 +368,7 @@ func New(
 		workflowExecutors: workflowExecutors,
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
+		statusReporter:    cfg.StatusReporter,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -516,6 +533,15 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start status reporter if configured
+	if s.statusReporter != nil {
+		shutdown, err := s.statusReporter.Start(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start status reporter: %w", err)
+		}
+		s.shutdownFuncs = append(s.shutdownFuncs, shutdown)
+	}
+
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
@@ -563,6 +589,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	if healthMon != nil {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
+		}
+	}
+
+	// Run shutdown functions (e.g., status reporter, future components)
+	for _, shutdown := range s.shutdownFuncs {
+		if err := shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to execute shutdown function: %w", err))
 		}
 	}
 

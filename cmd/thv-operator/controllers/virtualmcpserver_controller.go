@@ -1658,20 +1658,8 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		}
 
 		// Convert vmcp.Backend to DiscoveredBackend
-		// Map health status from BackendHealthStatus to string
-		var backendStatus string
-		switch backend.HealthStatus {
-		case vmcptypes.BackendHealthy:
-			backendStatus = mcpv1alpha1.BackendStatusReady
-		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
-			backendStatus = mcpv1alpha1.BackendStatusUnavailable
-		case vmcptypes.BackendDegraded:
-			backendStatus = mcpv1alpha1.BackendStatusDegraded
-		case vmcptypes.BackendUnknown:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
-		default:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
-		}
+		// Use ToCRDStatus() to map internal health status to CRD status string
+		backendStatus := backend.HealthStatus.ToCRDStatus()
 
 		// Extract auth config reference and check workload phase based on workload type
 		// Using pre-fetched maps instead of individual Get calls

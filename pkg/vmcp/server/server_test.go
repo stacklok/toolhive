@@ -5,7 +5,9 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +20,119 @@ import (
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 )
+
+// stubReporter allows controlling Start/ReportStatus behavior in tests.
+type stubReporter struct {
+	startErr       error
+	shutdownErr    error
+	shutdownCalled chan struct{}
+	reported       []*vmcp.Status
+}
+
+func (s *stubReporter) ReportStatus(_ context.Context, status *vmcp.Status) error {
+	s.reported = append(s.reported, status)
+	return nil
+}
+
+func (s *stubReporter) Start(_ context.Context) (func(context.Context) error, error) {
+	if s.startErr != nil {
+		return nil, s.startErr
+	}
+	return func(_ context.Context) error {
+		if s.shutdownCalled != nil {
+			select {
+			case s.shutdownCalled <- struct{}{}:
+			default:
+			}
+		}
+		return s.shutdownErr
+	}, nil
+}
+
+func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
+	t.Parallel()
+
+	sr := &stubReporter{startErr: errors.New("boom")}
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	srv, err := server.New(
+		context.Background(),
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	err = srv.Start(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to start status reporter")
+}
+
+func TestServerStopRunsReporterShutdown(t *testing.T) {
+	t.Parallel()
+
+	shutdownCalled := make(chan struct{}, 1)
+	sr := &stubReporter{shutdownErr: nil, shutdownCalled: shutdownCalled}
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+
+	srv, err := server.New(
+		context.Background(),
+		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Start(ctx)
+	}()
+
+	select {
+	case <-srv.Ready():
+	case err := <-done:
+		t.Fatalf("server failed to start: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("server did not become ready")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("server start/stop did not complete")
+	}
+
+	select {
+	case <-shutdownCalled:
+	case <-time.After(time.Second):
+		t.Fatalf("shutdown func was not called")
+	}
+}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -84,16 +199,11 @@ func TestNew(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, s)
 
-			// Address() returns formatted string
 			addr := s.Address()
 			require.Contains(t, addr, tt.expectedHost)
 		})
 	}
 }
-
-// TestServer_RegisterCapabilities has been removed because with lazy discovery,
-// capabilities are no longer registered upfront. Instead, they are discovered
-// per-user via the discovery middleware when requests are made.
 
 func TestServer_Address(t *testing.T) {
 	t.Parallel()
@@ -174,23 +284,6 @@ func TestServer_Stop(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
-
-// TestServer_ToolSchemaConversion verifies that tool InputSchema is correctly
-// converted to MCP format without double-nesting.
-//
-// This test addresses a bug where InputSchema (which is already a complete
-// JSON Schema with type, properties, required) was being wrapped in a new
-// ToolInputSchema struct, causing an extra layer of nesting.
-//
-// Example of the bug:
-// Input:  {type: "object", properties: {...}, required: [...]}
-// Output: {type: "object", properties: {properties: {...}, required: [...], type: "object"}}
-//
-// The fix uses RawInputSchema to pass the schema as-is without double-nesting.
-// TestServer_ToolSchemaConversion has been removed because with lazy discovery,
-// capabilities (including tool schemas) are discovered per-user via the discovery
-// middleware when requests are made. Schema validation now happens in the
-// aggregator and is tested there.
 
 func TestNew_WithAuditConfig(t *testing.T) {
 	t.Parallel()

@@ -884,11 +884,19 @@ func (r *EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	}
 
 	// Compare containers by checking specific important fields
-	if len(statefulSet.Spec.Template.Spec.Containers) != 1 {
-		return true
+	// Find the embedding container by name to support sidecars
+	var existingContainer *corev1.Container
+	for i := range statefulSet.Spec.Template.Spec.Containers {
+		if statefulSet.Spec.Template.Spec.Containers[i].Name == embeddingContainerName {
+			existingContainer = &statefulSet.Spec.Template.Spec.Containers[i]
+			break
+		}
 	}
 
-	existingContainer := statefulSet.Spec.Template.Spec.Containers[0]
+	if existingContainer == nil {
+		// Embedding container not found - this should never happen for a valid StatefulSet
+		return true
+	}
 
 	// Check image
 	if existingContainer.Image != embedding.Spec.Image {

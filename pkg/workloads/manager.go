@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package workloads contains high-level logic for managing the lifecycle of
 // ToolHive-managed containers.
 package workloads
@@ -6,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +35,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
+
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
 // NOTE: This interface may be split up in future PRs, in particular, operations
@@ -76,10 +81,21 @@ type Manager interface {
 }
 
 // DefaultManager is the default implementation of the Manager interface.
+// ProcessFinder is a function type for checking if a process exists.
+// This allows dependency injection for testing.
+type ProcessFinder func(pid int) (bool, error)
+
+// HealthChecker is a function type for checking HTTP health.
+// This allows dependency injection for testing.
+type HealthChecker func(ctx context.Context, url string) bool
+
+// DefaultManager is the default implementation of the Manager interface.
 type DefaultManager struct {
 	runtime        rt.Runtime
 	statuses       statuses.StatusManager
 	configProvider config.Provider
+	findProcess    ProcessFinder // defaults to process.FindProcess
+	checkHealth    HealthChecker // defaults to checkHTTPHealth
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -759,25 +775,125 @@ func (d *DefaultManager) getWorkloadContainer(ctx context.Context, name string) 
 	return &container, nil
 }
 
+// checkHTTPHealth performs a simple HTTP GET request to check health
+func checkHTTPHealth(ctx context.Context, url string) bool {
+	// Create a client with a short timeout
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		logger.Debugf("Failed to create health check request: %v", err)
+		return false
+	}
+
+	// Perform request
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Debugf("Health check failed for %s: %v", url, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Check status code (200-299 is considered healthy)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true
+	}
+
+	logger.Debugf("Health check returned unhealthy status for %s: %d", url, resp.StatusCode)
+	return false
+}
+
+// isSupervisorHealthy checks if the supervisor process is both running and responsive.
+func (d *DefaultManager) isSupervisorHealthy(ctx context.Context, workload core.Workload) bool {
+	// 1. Check process existence (PID)
+	if !d.isSupervisorProcessAlive(ctx, workload.Name) {
+		logger.Debugf("Supervisor process for %s is not alive (PID check failed)", workload.Name)
+		return false
+	}
+
+	// 2. If it's a remote workload (like Glean/Datadog), we have a URL. Ping it.
+	// We only do this for remote workloads because they are the ones prone to
+	// "alive but unresponsive" states after sleep/wake cycles.
+	if workload.Remote && workload.URL != "" {
+		// Construct health endpoint URL
+		// The proxy URL usually ends with /mcp or similar, but the health endpoint is at /health relative to root
+		// However, workload.URL is the full proxy URL (e.g. http://127.0.0.1:54321/mcp)
+		// We need to be careful about constructing the health URL.
+		// Let's try the root /health first.
+
+		// Parse the URL to get the base
+		// Since we don't want to import net/url just for this if we can avoid it,
+		// let's assume standard ToolHive proxy structure where /health is at the root.
+		// Actually, we imported net/http so we can import net/url easily if needed,
+		// but let's look at how URL is constructed.
+		// In file_status.go: proxyURL = transport.GenerateMCPServerURL(...)
+		// It returns http://host:port/mcp/...
+		// So we want http://host:port/health
+
+		// Simple string manipulation to get the base URL
+		// Find the third slash (http://host:port/)
+		healthURL := workload.URL
+		parts := strings.Split(workload.URL, "/")
+		if len(parts) >= 3 {
+			healthURL = strings.Join(parts[:3], "/") + "/health"
+		}
+
+		checkHealth := d.checkHealth
+		if checkHealth == nil {
+			checkHealth = checkHTTPHealth
+		}
+
+		if !checkHealth(ctx, healthURL) {
+			logger.Warnf("Supervisor process for %s is running but unhealthy (health check failed)", workload.Name)
+			return false
+		}
+		logger.Debugf("Supervisor process for %s is running and healthy", workload.Name)
+	}
+
+	return true
+}
+
 // isSupervisorProcessAlive checks if the supervisor process for a workload is alive
-// by checking if a PID exists. If a PID exists, we assume the supervisor is running.
-// This is a reasonable assumption because:
-// - If the supervisor exits cleanly, it cleans up the PID
-// - If killed unexpectedly, the PID remains but stopProcess will handle it gracefully
-// - The main issue we're preventing is accumulating zombie supervisors from repeated restarts
+// by checking if a PID exists AND the process is actually running.
+// This handles scenarios where:
+// - The supervisor exits cleanly and removes the PID file
+// - The supervisor is killed but PID file remains (zombie)
+// - The process survives laptop sleep but becomes unresponsive
 func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name string) bool {
 	if name == "" {
 		return false
 	}
 
-	// Try to read the PID - if it exists, assume supervisor is running
-	_, err := d.statuses.GetWorkloadPID(ctx, name)
+	// Try to read the PID
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
 		// No PID found, supervisor is not running
 		return false
 	}
 
-	// PID exists, assume supervisor is alive
+	// Actually check if the process is running (not just if PID file exists)
+	findProcess := d.findProcess
+	if findProcess == nil {
+		findProcess = process.FindProcess
+	}
+	alive, err := findProcess(pid)
+	if err != nil {
+		logger.Debugf("Error checking if supervisor process %d is alive: %v", pid, err)
+		return false
+	}
+
+	if !alive {
+		// Process is dead but PID file exists - clean up the stale PID file
+		logger.Debugf("Supervisor process %d is dead, cleaning up stale PID file for %s", pid, name)
+		if err := process.RemovePIDFile(name); err != nil {
+			logger.Warnf("Failed to remove stale PID file for %s: %v", name, err)
+		}
+		return false
+	}
+
 	return true
 }
 
@@ -1010,17 +1126,17 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 
 	// If workload is already running, check if the supervisor process is healthy
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		// Check if the supervisor process is actually alive
-		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
+		// Check if the supervisor process is actually alive AND healthy
+		supervisorHealthy := d.isSupervisorHealthy(ctx, workload)
 
-		if supervisorAlive {
+		if supervisorHealthy {
 			// Workload is running and healthy - preserve old behavior (no-op)
-			logger.Infof("Remote workload %s is already running", name)
+			logger.Infof("Remote workload %s is already running and healthy", name)
 			return nil, nil
 		}
 
-		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
-		logger.Infof("Remote workload %s is running but supervisor is dead, cleaning up before restart", name)
+		// Supervisor is dead/missing/unhealthy - we need to clean up and restart to fix the damaged state
+		logger.Infof("Remote workload %s is running but supervisor is dead or unhealthy, cleaning up before restart", name)
 
 		// Set status to stopping
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
@@ -1107,17 +1223,17 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 
 	// Check if workload is running and healthy (including supervisor process)
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		// Check if the supervisor process is actually alive
-		supervisorAlive := d.isSupervisorProcessAlive(ctx, workloadName)
+		// Check if the supervisor process is actually alive AND healthy
+		supervisorHealthy := d.isSupervisorHealthy(ctx, workload)
 
-		if supervisorAlive {
+		if supervisorHealthy {
 			// Workload is running and healthy - preserve old behavior (no-op)
-			logger.Infof("Container %s is already running", containerName)
+			logger.Infof("Container %s is already running and healthy", containerName)
 			return "", nil, nil
 		}
 
-		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
-		logger.Infof("Container %s is running but supervisor is dead, cleaning up before restart", containerName)
+		// Supervisor is dead/missing/unhealthy - we need to clean up and restart to fix the damaged state
+		logger.Infof("Container %s is running but supervisor is dead or unhealthy, cleaning up before restart", containerName)
 	}
 
 	// Check if we need to stop the workload before restarting

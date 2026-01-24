@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package oauth provides OAuth 2.0 and OIDC authentication functionality.
 package oauth
 
@@ -14,43 +17,21 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // UserAgent is the user agent for the ToolHive MCP client
 const UserAgent = "ToolHive/1.0"
 
-// Well-known endpoint paths for OIDC and OAuth discovery
-const (
-	// WellKnownOIDCPath is the standard OIDC discovery endpoint path
-	// per OpenID Connect Discovery 1.0 specification
-	WellKnownOIDCPath = "/.well-known/openid-configuration"
-	// WellKnownOAuthServerPath is the standard OAuth authorization server metadata endpoint path
-	// per RFC 8414 (OAuth 2.0 Authorization Server Metadata)
-	WellKnownOAuthServerPath = "/.well-known/oauth-authorization-server"
-)
-
-// OIDCDiscoveryDocument represents the OIDC discovery document structure
-// This is a simplified wrapper around the Zitadel OIDC discovery
-type OIDCDiscoveryDocument struct {
-	Issuer                        string   `json:"issuer"`
-	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
-	IntrospectionEndpoint         string   `json:"introspection_endpoint,omitempty"`
-	TokenEndpoint                 string   `json:"token_endpoint"`
-	UserinfoEndpoint              string   `json:"userinfo_endpoint"`
-	JWKSURI                       string   `json:"jwks_uri"`
-	RegistrationEndpoint          string   `json:"registration_endpoint,omitempty"`
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-}
-
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
-func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
+func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*oauthproto.OIDCDiscoveryDocument, error) {
 	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
 // This is useful when the resource metadata points to a URL that hosts the authorization server metadata
 // but the actual issuer identifier is different (e.g., Stripe's case)
-func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*OIDCDiscoveryDocument, error) {
+func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*oauthproto.OIDCDiscoveryDocument, error) {
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false)
 }
 
@@ -60,7 +41,7 @@ func discoverOIDCEndpointsWithClient(
 	issuer string,
 	client networking.HTTPClient,
 	insecureAllowHTTP bool,
-) (*OIDCDiscoveryDocument, error) {
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP)
 }
 
@@ -73,7 +54,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	client networking.HTTPClient,
 	validateIssuer bool,
 	insecureAllowHTTP bool,
-) (*OIDCDiscoveryDocument, error) {
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 
 	oidcURL, oauthURL, err := buildWellKnownURLs(issuer, insecureAllowHTTP)
 	if err != nil {
@@ -90,7 +71,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		}
 	}
 
-	try := func(urlStr string, oidc bool) (*OIDCDiscoveryDocument, error) {
+	try := func(urlStr string, oidc bool) (*oauthproto.OIDCDiscoveryDocument, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
@@ -118,7 +99,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 
 		// Limit response size to prevent DoS
 		const maxResponseSize = 1024 * 1024 // 1MB
-		var doc OIDCDiscoveryDocument
+		var doc oauthproto.OIDCDiscoveryDocument
 		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
 		}
@@ -165,30 +146,34 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		oidcURL, oauthURL, oidcErr, oauthErr)
 }
 
-// validateOIDCDocument validates the OIDC discovery document
-func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool, insecureAllowHTTP bool) error {
-	if doc.Issuer == "" {
-		return fmt.Errorf("missing issuer")
+// validateOIDCDocument validates the OIDC discovery document.
+// It delegates basic field presence validation to the shared doc.Validate() method,
+// then performs additional security checks (issuer mismatch, URL HTTPS validation).
+func validateOIDCDocument(
+	doc *oauthproto.OIDCDiscoveryDocument,
+	expectedIssuer string,
+	oidc bool,
+	insecureAllowHTTP bool,
+) error {
+	// Delegate basic field presence validation to the shared method.
+	// Note: We pass oidc=false here because we handle jwks_uri separately below
+	// with a more specific error message, and response_types_supported validation
+	// is not enforced in this legacy code path to maintain backward compatibility.
+	if err := doc.Validate(false); err != nil {
+		return err
 	}
 
-	if doc.Issuer != expectedIssuer {
-		return fmt.Errorf("issuer mismatch: expected %s, got %s", expectedIssuer, doc.Issuer)
-	}
-
-	if doc.AuthorizationEndpoint == "" {
-		return fmt.Errorf("missing authorization_endpoint")
-	}
-
-	if doc.TokenEndpoint == "" {
-		return fmt.Errorf("missing token_endpoint")
-	}
-
-	// Require jwks_uri for OIDC
+	// Require jwks_uri for OIDC (with specific error message)
 	if oidc && doc.JWKSURI == "" {
 		return fmt.Errorf("missing jwks_uri (OIDC requires it)")
 	}
 
-	// Validate URLs (skip HTTPS validation if insecureAllowHTTP is enabled)
+	// Security check: issuer must match expected value
+	if doc.Issuer != expectedIssuer {
+		return fmt.Errorf("issuer mismatch: expected %s, got %s", expectedIssuer, doc.Issuer)
+	}
+
+	// Security check: validate endpoint URLs (HTTPS required unless insecureAllowHTTP)
 	endpoints := map[string]string{
 		"authorization_endpoint": doc.AuthorizationEndpoint,
 		"token_endpoint":         doc.TokenEndpoint,
@@ -245,7 +230,7 @@ func createOAuthConfigFromOIDCWithClient(
 	// Enable PKCE by default if supported
 	if !usePKCE && len(doc.CodeChallengeMethodsSupported) > 0 {
 		for _, method := range doc.CodeChallengeMethodsSupported {
-			if method == "S256" {
+			if method == oauthproto.PKCEMethodS256 {
 				usePKCE = true
 				break
 			}
@@ -293,7 +278,7 @@ func buildWellKnownURLs(issuer string, insecureAllowHTTP bool) (oidcURL, oauthUR
 	//   /{tenant}/.well-known/openid-configuration
 	//
 	oidc := *base
-	oidc.Path = path.Join("/", tenant, WellKnownOIDCPath)
+	oidc.Path = path.Join("/", tenant, oauthproto.WellKnownOIDCPath)
 	oidcURL = oidc.String()
 
 	//
@@ -301,7 +286,7 @@ func buildWellKnownURLs(issuer string, insecureAllowHTTP bool) (oidcURL, oauthUR
 	//   /.well-known/oauth-authorization-server/{tenant}
 	//
 	oauth := *base
-	oauth.Path = path.Join(WellKnownOAuthServerPath, tenant)
+	oauth.Path = path.Join(oauthproto.WellKnownOAuthServerPath, tenant)
 	oauthURL = oauth.String()
 
 	return oidcURL, oauthURL, nil

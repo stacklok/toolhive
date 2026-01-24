@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package workloads contains high-level logic for managing the lifecycle of
 // ToolHive-managed containers.
 package workloads
@@ -70,9 +73,13 @@ type Manager interface {
 	// The operation runs asynchronously unless the CompletionFunc is called.
 	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (CompletionFunc, error)
 	// GetLogs retrieves the logs of a container.
-	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
+	GetLogs(ctx context.Context, containerName string, follow bool, lines int) (string, error)
 	// GetProxyLogs retrieves the proxy logs from the filesystem.
-	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
+	GetProxyLogs(ctx context.Context, workloadName string, lines int) (string, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
@@ -569,7 +576,10 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
 	// This will be addressed in a future re-think of the secrets manager interface.
 	if d.needSecretsPassword(runConfig.Secrets) {
-		password, err := secrets.GetSecretsPassword("")
+		// Get the password but don't store it yet - the detached process will validate
+		// and store the password after successful decryption. This prevents caching
+		// wrong passwords before validation.
+		password, _, err := secrets.GetSecretsPassword("")
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %w", err)
 		}
@@ -617,9 +627,11 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 }
 
 // GetLogs retrieves the logs of a container.
-func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
-	// Get the logs from the runtime
-	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow)
+// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+// If lines is 0, all logs are returned.
+func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error) {
+	// Get the logs from the runtime with line limiting
+	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow, lines)
 	if err != nil {
 		// Propagate the error if the container is not found
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
@@ -631,8 +643,10 @@ func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follo
 	return logs, nil
 }
 
-// GetProxyLogs retrieves proxy logs from the filesystem
-func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (string, error) {
+// GetProxyLogs retrieves proxy logs from the filesystem.
+// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+// If lines is 0, all logs are returned.
+func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string, lines int) (string, error) {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -647,13 +661,31 @@ func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string) (str
 		return "", fmt.Errorf("proxy logs not found for workload %s", workloadName)
 	}
 
-	// Read and return the entire log file
-	content, err := os.ReadFile(cleanLogFilePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+	// If lines is 0, read the entire file
+	if lines == 0 {
+		content, err := os.ReadFile(cleanLogFilePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+		}
+		return string(content), nil
 	}
 
-	return string(content), nil
+	// Read only the last N lines using tail command to avoid loading entire file
+	return readLastNLines(cleanLogFilePath, lines)
+}
+
+// readLastNLines reads the last N lines from a file efficiently using the tail command.
+// This avoids loading the entire file into memory.
+// The filePath is already validated and cleaned by the caller using filepath.Clean.
+func readLastNLines(filePath string, lines int) (string, error) {
+	// Use tail command which efficiently reads from the end of the file
+	// #nosec G204 - filePath is validated by caller, lines is an integer parameter
+	cmd := exec.Command("tail", "-n", fmt.Sprintf("%d", lines), filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read last %d lines: %w", lines, err)
+	}
+	return string(output), nil
 }
 
 // deleteWorkload handles deletion of a single workload
@@ -720,28 +752,37 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
 	}
 
+	// Determine baseName and isAuxiliary for cleanup (needed even if container doesn't exist)
+	var baseName string
+	var isAuxiliary bool
+
 	if container != nil {
 		containerLabels := container.Labels
-		baseName := labels.GetContainerBaseName(containerLabels)
+		baseName = labels.GetContainerBaseName(containerLabels)
+		isAuxiliary = labels.IsAuxiliaryWorkload(containerLabels)
 
-		// Stop proxy if running (skip for auxiliary workloads like inspector)
-		if container.IsRunning() {
-			// Skip proxy stopping for auxiliary workloads that don't use proxy processes
-			if labels.IsAuxiliaryWorkload(containerLabels) {
-				logger.Debugf("Skipping proxy stop for auxiliary workload %s", name)
-			} else {
-				d.stopProxyIfNeeded(ctx, name, baseName)
-			}
-		}
-
-		// Remove the container
+		// Remove the container first
 		if err := d.removeContainer(ctx, name); err != nil {
 			return err
 		}
-
-		// Clean up associated resources
-		d.cleanupWorkloadResources(ctx, name, baseName, labels.IsAuxiliaryWorkload(containerLabels))
+	} else {
+		// Container doesn't exist, but we still need to clean up state
+		// Use the workload name as baseName (they're typically the same)
+		baseName = name
+		isAuxiliary = false
+		logger.Debugf("Container not found for workload %s, proceeding with state cleanup", name)
 	}
+
+	// Stop proxy-runner process AFTER container removal to prevent recreation
+	// Skip for auxiliary workloads like inspector that don't use proxy processes
+	if !isAuxiliary {
+		d.stopProxyIfNeeded(ctx, name, baseName)
+	} else {
+		logger.Debugf("Skipping proxy-runner stop for auxiliary workload %s", name)
+	}
+
+	// Clean up associated resources (must happen even if container doesn't exist)
+	d.cleanupWorkloadResources(ctx, name, baseName, isAuxiliary)
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
@@ -800,21 +841,21 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 	// Try to read the PID and kill the process
 	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
-		logger.Errorf("No PID file found for %s, proxy may not be running in detached mode", name)
+		logger.Debugf("No PID file found for %s, proxy may not be running in detached mode", name)
 		return
 	}
 
 	// PID file found, try to kill the process
 	logger.Infof("Stopping proxy process (PID: %d)...", pid)
 	if err := process.KillProcess(pid); err != nil {
-		logger.Warnf("Warning: Failed to kill proxy process: %v", err)
+		logger.Debugf("Warning: Failed to kill proxy process: %v", err)
 	} else {
-		logger.Info("Proxy process stopped")
+		logger.Debugf("Proxy process stopped")
 	}
 
 	// Clean up PID file after successful kill
 	if err := process.RemovePIDFile(name); err != nil {
-		logger.Warnf("Warning: Failed to remove PID file: %v", err)
+		logger.Debugf("Warning: Failed to remove PID file: %v", err)
 	}
 }
 
@@ -835,7 +876,33 @@ func (d *DefaultManager) removeContainer(ctx context.Context, name string) error
 		}
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
-	return nil
+
+	// Wait for the container to actually be removed from the runtime
+	// This ensures deletion is complete before we return
+	const maxRetries = 30
+	const retryDelay = 100 * time.Millisecond
+	for range maxRetries {
+		_, err := d.runtime.GetWorkloadInfo(ctx, name)
+		if err != nil {
+			if errors.Is(err, rt.ErrWorkloadNotFound) {
+				// Container is gone, deletion complete
+				logger.Debugf("Container %s successfully removed from runtime", name)
+				return nil
+			}
+			// Some other error occurred
+			logger.Warnf("Error checking container status during removal: %v", err)
+			return fmt.Errorf("failed to verify container removal: %w", err)
+		}
+		// Container still exists, wait and retry
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for container removal: %w", ctx.Err())
+		case <-time.After(retryDelay):
+			continue
+		}
+	}
+
+	return fmt.Errorf("timed out waiting for container %s to be removed", name)
 }
 
 // cleanupWorkloadResources cleans up all resources associated with a workload

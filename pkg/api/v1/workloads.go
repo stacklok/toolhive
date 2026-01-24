@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -16,6 +19,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
+)
+
+const (
+	// maxAPILogLines is the maximum number of log lines returned by API endpoints
+	maxAPILogLines = 1000
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -167,8 +175,15 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) er
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
+
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
+	// Use background context since this is async operation
+	_, err = s.workloadManager.StopWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -187,11 +202,19 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) er
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/restart [post]
 func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
 
 	// Use the bulk method with a single workload
 	// Note: In the API, we always assume that the restart is a background operation
-	_, err := s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
+	// Use background context since this is async operation
+	_, err = s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -213,8 +236,15 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
+
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
+	// Use background context since this is an async operation
+	_, err = s.workloadManager.DeleteWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -242,6 +272,20 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
+	}
+
+	// Validate that image or URL is provided
+	if req.Image == "" && req.URL == "" {
+		return thverrors.WithCode(
+			fmt.Errorf("either 'image' or 'url' field is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Validate workload name (strict validation, no sanitization)
+	// The JSON decoder sets req.Name to "" by default, so we need to validate it
+	if err := wt.ValidateWorkloadName(req.Name); err != nil {
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
 	// check if the workload already exists
@@ -315,6 +359,10 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
+	// UpdateWorkloadFromRequest uses the request context for synchronous operations
+	// (validation, building config). The manager's UpdateWorkload method creates its own
+	// background context with timeout for the async operation, so we don't need to create
+	// one here.
 	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq, existingWorkload.Port)
 	if err != nil {
 		return err // ErrImageNotFound (404) and ErrInvalidRunConfig (400) already have status codes
@@ -364,7 +412,8 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.StopWorkloads(ctx, workloadNames)
+	// Use background context since this is async operation (handles partial failures gracefully)
+	_, err = s.workloadManager.StopWorkloads(context.Background(), workloadNames)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -405,6 +454,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	// Note: In the API, we always assume that the restart is a background operation.
+	// Use background context since this is async operation (handles partial failures gracefully)
 	_, err = s.workloadManager.RestartWorkloads(context.Background(), workloadNames, false)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
@@ -445,7 +495,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.DeleteWorkloads(ctx, workloadNames)
+	_, err = s.workloadManager.DeleteWorkloads(context.Background(), workloadNames)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -456,7 +506,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // getLogsForWorkload
 //
 // @Summary      Get logs for a specific workload
-// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Description  Retrieve at most 1000 lines of logs for a specific workload by name.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -473,10 +523,11 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetLogs(ctx, name, false)
+	logs, err := s.workloadManager.GetLogs(ctx, name, false, maxAPILogLines)
 	if err != nil {
 		return err // ErrWorkloadNotFound (404) already has status code
 	}
+
 	w.Header().Set("Content-Type", "text/plain")
 	if _, err = w.Write([]byte(logs)); err != nil {
 		return fmt.Errorf("failed to write logs response: %w", err)
@@ -487,7 +538,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 // getProxyLogsForWorkload
 //
 // @Summary      Get proxy logs for a specific workload
-// @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Description  Retrieve at most 1000 lines of proxy logs for a specific workload by name from the file system.
 // @Tags         logs
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
@@ -504,7 +555,7 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
-	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
+	logs, err := s.workloadManager.GetProxyLogs(ctx, name, maxAPILogLines)
 	if err != nil {
 		return thverrors.WithCode(
 			fmt.Errorf("proxy logs not found for workload: %w", err),

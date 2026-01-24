@@ -30,18 +30,25 @@ Do NOT invoke for:
 - **ToolHive Architecture**: Components, design patterns, and system interactions
 - **Codebase Navigation**: Package structure, key files, and code organization
 - **Container Runtimes**: Docker, Colima, Podman, Kubernetes abstractions
-- **Security Model**: Cedar policies, auth/authz, secret management, container isolation
+- **Virtual MCP Server**: Backend aggregation, routing, composite tools, two-boundary auth
+- **Security Model**: Cedar policies, auth/authz, secret management, container isolation, OAuth2
 - **Development Workflows**: Build commands, testing strategies, debugging approaches
-- **Implementation Patterns**: Factory pattern, interface segregation, middleware
+- **Implementation Patterns**: Factory pattern, interface segregation, middleware, adapter
 
 ## ToolHive Components
 
-### Three Main Components
+### Six Main Binaries (`cmd/`)
 
 **CLI (`cmd/thv/`)** - Main command-line interface:
 - Entry point: `main.go`
 - Commands: `app/` directory (using Cobra framework)
 - Key commands: run, list, stop, rm, proxy, restart, serve, version, logs, secret, inspector, mcp
+
+**Virtual MCP Server (`cmd/vmcp/`)** - MCP server aggregator:
+- Aggregates multiple MCP backends into a unified endpoint
+- Two-boundary authentication model (incoming client auth, outgoing backend auth)
+- Supports composite tool workflows and capability routing
+- See `cmd/vmcp/README.md` for quick start
 
 **Kubernetes Operator (`cmd/thv-operator/`)**:
 - CRD definitions: `api/v1alpha1/`
@@ -53,26 +60,60 @@ Do NOT invoke for:
 - Handles proxy functionality for MCP server communication
 - Enables networked access to MCP servers
 
+**Registry Utility (`cmd/regup/`)** - Registry management tool
+
+**Help Generator (`cmd/help/`)** - CLI documentation generator
+
 ### Core Packages (`pkg/`)
 
 **Runtime & Execution**:
-- `container/`: Container runtime abstraction (Docker/Kubernetes)
-- `runner/`: MCP server execution logic and lifecycle management
-- `workloads/`: Workload lifecycle management
+- `container/`: Container runtime abstraction (Docker/Podman/Colima/Kubernetes)
+- `runner/`: MCP server execution logic, RunConfig schema, lifecycle management
+- `workloads/`: Workload lifecycle management (deploy, stop, restart, delete)
+
+**Virtual MCP Server** (`pkg/vmcp/`):
+- `aggregator/`: Backend discovery, capability querying, conflict resolution
+- `router/`: Routes MCP requests (tools/resources/prompts) to backends
+- `auth/`: Two-boundary auth model (incoming: clients→vMCP; outgoing: vMCP→backends)
+- `composer/`: Multi-step workflow execution with DAG-based parallel/sequential support
+- `config/`: Platform-agnostic config model (works for CLI YAML and K8s CRDs)
+- `server/`: HTTP server with session management and auth middleware
+- `client/`: Backend MCP client using mark3labs/mcp-go SDK
+- `cache/`: Token caching with pluggable backends (Redis/memory)
+- `discovery/`: Backend workload discovery
+- `health/`: Health monitoring and circuit breakers
+- `session/`: MCP protocol session tracking
+- `schema/`: Schema definitions
+- `k8s/`: Kubernetes integration for vMCP
+- `workloads/`: vMCP-specific workload management
 
 **Communication**:
-- `transport/`: MCP transport protocols (stdio, HTTP, SSE, streamable)
-- `api/`: REST API server and handlers
+- `transport/`: MCP transport protocols (stdio, sse, streamable-http)
+- `api/`: REST API server and handlers (Chi router)
 
 **Security & Access Control**:
-- `auth/`: Authentication (anonymous, local, OAuth/OIDC)
+- `auth/`: Authentication providers (anonymous, local, OIDC, GitHub, token exchange)
+- `authserver/`: OAuth2 authorization server (Ory Fosite, PKCE, JWT/JWKS)
 - `authz/`: Authorization using Cedar policy language
-- `secrets/`: Secret management (1Password, encrypted storage)
+- `secrets/`: Secret management (1Password, encrypted storage, environment)
+- `permissions/`: Permission profiles and network isolation
 
 **Configuration & State**:
 - `client/`: Client configuration and management
-- `registry/`: MCP server registry management
-- `store/`: State persistence
+- `registry/`: MCP server registry management (built-in + custom)
+- `groups/`: Group management (workload collections)
+- `state/`: State persistence
+- `config/`: Configuration management (Viper-based)
+- `migration/`: Database/config migrations
+
+**Infrastructure**:
+- `audit/`: Audit logging and event tracking
+- `telemetry/`: OpenTelemetry metrics/traces
+- `k8s/`: Kubernetes client utilities
+- `mcp/`: MCP protocol utilities
+- `networking/`: Network configuration (egress proxies)
+- `errors/`: Typed error system with HTTP status codes
+- `logger/`: Logging utilities (Zap-based)
 
 ## Architecture Patterns
 
@@ -99,15 +140,48 @@ HTTP middleware chain:
 ### Observer Pattern
 Event system for audit logging and telemetry
 
+### Adapter Pattern
+- Transport bridge adapts stdio to HTTP MCP
+- Workload adapter converts ContainerInfo → domain Workload
+
+## Kubernetes CRDs
+
+CRDs are defined in `cmd/thv-operator/api/v1alpha1/`:
+
+**Core Workload CRDs**:
+- `MCPServer`: Individual MCP server workload (container-based)
+- `MCPRegistry`: MCP server registry (curated catalog with sync)
+- `MCPGroup`: Collection of related backend workloads
+- `MCPRemoteProxy`: Proxy to remote MCP servers (non-containerized)
+
+**Virtual MCP CRDs**:
+- `VirtualMCPServer`: Aggregates MCPGroup into unified endpoint with two-boundary auth
+- `VirtualMCPCompositeToolDefinition`: Reusable composite tool workflows (DAG-based)
+
+**Configuration CRDs**:
+- `MCPExternalAuthConfig`: External auth for backends (K8s-native secret refs)
+- `MCPToolConfig`: Tool-level configuration (override names/descriptions)
+
 ## Key Design Decisions
 
 ### Container Runtime Detection
 Automatic detection order: Podman → Colima → Docker
 
-Override with environment variables:
+**Runtime Override Variables**:
+- `TOOLHIVE_RUNTIME=kubernetes`: Force Kubernetes runtime
 - `TOOLHIVE_PODMAN_SOCKET`: Custom Podman socket
 - `TOOLHIVE_COLIMA_SOCKET`: Custom Colima socket (default: `~/.colima/default/docker.sock`)
 - `TOOLHIVE_DOCKER_SOCKET`: Custom Docker socket
+- `TOOLHIVE_KUBERNETES_ALL_NAMESPACES`: Watch all namespaces
+
+**Secrets & Auth Variables**:
+- `TOOLHIVE_SECRETS_PROVIDER`: Provider type (encrypted, 1password, environment)
+- `TOOLHIVE_OIDC_CLIENT_SECRET`: OIDC client secret
+- `TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET`: Token exchange client secret
+- `TOOLHIVE_REMOTE_AUTH_BEARER_TOKEN`: Remote server bearer token
+
+**Container Image Variables**:
+- `TOOLHIVE_EGRESS_IMAGE`: Custom egress proxy image
 
 ### Colima Support
 Fully supported as Docker-compatible runtime on macOS and Linux.
@@ -124,6 +198,22 @@ Fully supported as Docker-compatible runtime on macOS and Linux.
 - Certificate validation for container images
 - Secret management with multiple backends
 - OIDC/OAuth2 authentication support
+
+### Two-Boundary Authentication (vMCP)
+Virtual MCP Server uses a two-boundary authentication model:
+
+```
+MCP Client → [Incoming Auth] → vMCP → [Outgoing Auth] → Backend MCP Servers
+```
+
+**Incoming Auth** (client → vMCP):
+- OIDC/Anonymous authentication for MCP clients
+- ToolHive can act as OAuth2 authorization server (mints tokens for clients)
+
+**Outgoing Auth** (vMCP → backends):
+- RFC 8693 Token Exchange for service-to-service auth
+- Per-backend auth configuration (discovered or inline)
+- Token caching with pluggable backends
 
 ## Code Organization
 
@@ -149,22 +239,32 @@ Fully supported as Docker-compatible runtime on macOS and Linux.
 
 **Essential Tasks**:
 ```bash
-task build          # Build main binary
-task install        # Install to GOPATH/bin
+task build          # Build thv CLI binary
+task build-vmcp     # Build vmcp binary
+task install        # Install thv to GOPATH/bin
+task install-vmcp   # Install vmcp to GOPATH/bin
 task lint-fix       # Fix linting issues (preferred over lint)
 task test           # Unit tests only
 task test-coverage  # Tests with coverage
 task test-e2e       # End-to-end tests (requires build first)
 task test-all       # All tests
 task gen            # Generate mocks
-task docs           # Generate CLI documentation
+task docs           # Generate CLI + API swagger + Helm docs
+task all            # lint + test + build
+task all-with-coverage  # lint + test-coverage + build
 ```
 
 **Container Images**:
 ```bash
-task build-image           # Build main image
+task build-image           # Build main image (ko)
 task build-egress-proxy    # Build proxy image
-task build-all-images      # Build all images
+task build-all-images      # Build all images (thv, vmcp, egress-proxy)
+```
+
+**Documentation Tools**:
+```bash
+task swagger-install   # Install swag for OpenAPI
+task helm-docs-install # Install helm-docs
 ```
 
 ## Common Development Workflows
@@ -205,14 +305,18 @@ task build-all-images      # Build all images
 ## Dependencies
 
 **Key Libraries**:
-- Container runtime: Docker API
-- Web framework: Chi router
-- CLI framework: Cobra
+- MCP Protocol: `github.com/mark3labs/mcp-go`
+- OAuth2 Framework: `github.com/ory/fosite`
+- Container Runtime: Docker API (`github.com/docker/docker`)
+- Web Framework: Chi router (`github.com/go-chi/chi/v5`)
+- CLI Framework: Cobra
 - Configuration: Viper
-- Testing: Ginkgo/Gomega
-- Kubernetes: controller-runtime
-- Telemetry: OpenTelemetry
-- Authorization: Cedar policy language
+- Testing: Ginkgo/Gomega, `go.uber.org/mock`
+- Kubernetes: controller-runtime (`sigs.k8s.io/controller-runtime`)
+- Telemetry: OpenTelemetry (`go.opentelemetry.io/otel/*`)
+- Authorization: Cedar (`github.com/cedar-policy/cedar-go`)
+- JWT/JOSE: `github.com/lestrrat-go/jwx/v3`, `github.com/go-jose/go-jose/v4`
+- Secrets: `github.com/1password/onepassword-sdk-go`
 
 ## Your Approach
 
@@ -263,16 +367,29 @@ When encountering specialized domains, suggest involving the appropriate expert:
 - `CLAUDE.md`: Developer guidance for Claude Code
 - `CONTRIBUTING.md`: Commit and contribution guidelines
 - `cmd/thv-operator/DESIGN.md`: Operator design decisions
+- `cmd/vmcp/README.md`: vMCP quick start and features
+- `docs/arch/10-virtual-mcp-architecture.md`: vMCP architecture
 
 **Core Interfaces**:
 - `pkg/container/runtime/types.go`: Container runtime interface
-- `pkg/transport/types.go`: Transport interface
-- `pkg/runner/types.go`: Runner interface
+- `pkg/transport/types/`: Transport type definitions
+- `pkg/runner/config.go`: RunConfig schema
+- `pkg/workloads/types/types.go`: Workload domain model
+- `pkg/vmcp/types.go`: Virtual MCP types
 
 **Main Entry Points**:
 - `cmd/thv/main.go`: CLI entry point
+- `cmd/vmcp/main.go`: Virtual MCP server entry point
 - `cmd/thv-operator/main.go`: Operator entry point
 - `cmd/thv-proxyrunner/main.go`: Proxy runner entry point
+
+**OAuth2 Authorization Server** (`pkg/authserver/`):
+- `server/`: Ory Fosite OAuth2 handlers
+  - `crypto/`: PKCE, JWT signing, key management
+  - `registration/`: Dynamic client registration (DCR)
+  - `session/`: Session management
+- `storage/`: JWKS/token storage interfaces
+- `upstream/`: Upstream OIDC provider integration
 
 ## Important Constraints
 
@@ -312,7 +429,7 @@ Be honest about uncertainty and investigate before providing guidance. Never gue
 
 **Scenario 2 - Adding New Feature:**
 "I want to add a new transport type. Where do I start?"
-→ Guide through: `pkg/transport/types.go` interface, factory registration, runner config, testing
+→ Guide through: `pkg/transport/types/` interface, factory registration, runner config, testing
 
 **Scenario 3 - Debugging:**
 "The server won't start. Where should I look?"
@@ -321,3 +438,11 @@ Be honest about uncertainty and investigate before providing guidance. Never gue
 **Scenario 4 - Design Decision:**
 "Should this be a CRD attribute or in PodTemplateSpec?"
 → Defer to kubernetes-expert for operator-specific guidance
+
+**Scenario 5 - Virtual MCP:**
+"How do I aggregate multiple MCP backends?"
+→ Explore `pkg/vmcp/aggregator/` for discovery and capability querying, `pkg/vmcp/router/` for request routing
+
+**Scenario 6 - Authentication:**
+"How does vMCP authenticate to backend servers?"
+→ Check `pkg/vmcp/auth/` for two-boundary model, `pkg/authserver/` for OAuth2 server implementation

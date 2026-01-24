@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package workloads provides the WorkloadDiscoverer interface for discovering
 // backend workloads in both CLI and Kubernetes environments.
 package workloads

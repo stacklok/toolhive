@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package groups provides functionality for managing logical groupings of MCP servers.
 // It includes types and interfaces for creating, retrieving, listing, and deleting groups.
 package groups

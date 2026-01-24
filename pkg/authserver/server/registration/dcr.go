@@ -43,6 +43,9 @@ const (
 
 	// MaxRedirectURICount is the maximum number of redirect URIs allowed per client.
 	MaxRedirectURICount = 10
+
+	// MaxClientNameLength is the maximum allowed length for a client name.
+	MaxClientNameLength = 256
 )
 
 // DCRRequest represents an OAuth 2.0 Dynamic Client Registration request
@@ -104,11 +107,22 @@ type DCRError struct {
 	ErrorDescription string `json:"error_description,omitempty"`
 }
 
-// DefaultGrantTypes are the default grant types for registered clients.
-var DefaultGrantTypes = []string{"authorization_code", "refresh_token"}
+// defaultGrantTypes are the default grant types for registered clients.
+var defaultGrantTypes = []string{"authorization_code", "refresh_token"}
 
-// DefaultResponseTypes are the default response types for registered clients.
-var DefaultResponseTypes = []string{"code"}
+// allowedGrantTypes defines the grant types permitted for public clients.
+var allowedGrantTypes = map[string]bool{
+	"authorization_code": true,
+	"refresh_token":      true,
+}
+
+// defaultResponseTypes are the default response types for registered clients.
+var defaultResponseTypes = []string{"code"}
+
+// allowedResponseTypes defines the response types permitted for public clients.
+var allowedResponseTypes = map[string]bool{
+	"code": true,
+}
 
 // ValidateDCRRequest validates a DCR request according to RFC 7591
 // and the server's security policy (loopback-only public clients).
@@ -137,7 +151,15 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		}
 	}
 
-	// 4. Validate/default token_endpoint_auth_method
+	// 4. Validate client_name length
+	if len(req.ClientName) > MaxClientNameLength {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "client_name too long (maximum 256 characters)",
+		}
+	}
+
+	// 5. Validate/default token_endpoint_auth_method
 	authMethod := req.TokenEndpointAuthMethod
 	if authMethod == "" {
 		authMethod = "none"
@@ -149,28 +171,16 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		}
 	}
 
-	// 5. Validate/default grant_types
-	grantTypes := req.GrantTypes
-	if len(grantTypes) == 0 {
-		grantTypes = DefaultGrantTypes
-	}
-	if !slices.Contains(grantTypes, "authorization_code") {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "grant_types must include 'authorization_code'",
-		}
+	// 6. Validate/default grant_types
+	grantTypes, err := validateGrantTypes(req.GrantTypes)
+	if err != nil {
+		return nil, err
 	}
 
-	// 6. Validate/default response_types
-	responseTypes := req.ResponseTypes
-	if len(responseTypes) == 0 {
-		responseTypes = DefaultResponseTypes
-	}
-	if !slices.Contains(responseTypes, "code") {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "response_types must include 'code'",
-		}
+	// 7. Validate/default response_types
+	responseTypes, err := validateResponseTypes(req.ResponseTypes)
+	if err != nil {
+		return nil, err
 	}
 
 	// Return validated request with defaults applied
@@ -181,6 +191,52 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		GrantTypes:              grantTypes,
 		ResponseTypes:           responseTypes,
 	}, nil
+}
+
+func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	if len(grantTypes) == 0 {
+		grantTypes = defaultGrantTypes
+	}
+	// Require authorization_code explicitly - provides a clearer error for the
+	// "refresh_token only" case that would otherwise pass the allowlist.
+	if !slices.Contains(grantTypes, "authorization_code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "grant_types must include 'authorization_code'",
+		}
+	}
+	for _, gt := range grantTypes {
+		if !allowedGrantTypes[gt] {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "unsupported grant_type: " + gt,
+			}
+		}
+	}
+	return grantTypes, nil
+}
+
+func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	if len(responseTypes) == 0 {
+		responseTypes = defaultResponseTypes
+	}
+	// Require "code" explicitly - purely defense-in-depth since the allowlist
+	// currently only contains "code", but provides a clearer error message.
+	if !slices.Contains(responseTypes, "code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "response_types must include 'code'",
+		}
+	}
+	for _, rt := range responseTypes {
+		if !allowedResponseTypes[rt] {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "unsupported response_type: " + rt,
+			}
+		}
+	}
+	return responseTypes, nil
 }
 
 // ValidateRedirectURI validates a redirect URI per RFC 8252:

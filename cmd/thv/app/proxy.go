@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -413,7 +416,7 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			}
 		}
 		*middlewares = append(*middlewares, types.NamedMiddleware{
-			Name:     "token-exchange",
+			Name:     tokenexchange.MiddlewareType,
 			Function: tokenExchangeMiddleware,
 		})
 	} else if tokenSource != nil {

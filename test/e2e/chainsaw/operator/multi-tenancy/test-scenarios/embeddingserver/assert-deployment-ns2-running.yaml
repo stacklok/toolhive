@@ -1,0 +1,7 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mt-embedding
+  namespace: toolhive-test-ns-2
+status:
+  replicas: 1

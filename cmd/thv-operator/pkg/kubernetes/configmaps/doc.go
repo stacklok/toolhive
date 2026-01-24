@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package configmaps provides convenience methods for working with Kubernetes ConfigMaps.
 //
 // This package provides a Client that wraps the controller-runtime client

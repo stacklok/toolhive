@@ -29,10 +29,34 @@
     "io.modelcontextprotocol.registry/publisher-provided": {
       "io.github.stacklok": {
         "https://api.example.com/mcp": {
+          "env_vars": [
+            {
+              "name": "API_ENDPOINT",
+              "description": "Base URL for API calls",
+              "required": false,
+              "default": "https://api.example.com"
+            },
+            {
+              "name": "CLIENT_SECRET",
+              "description": "Client secret for OAuth",
+              "required": true,
+              "secret": true
+            }
+          ],
           "metadata": {
             "last_updated": "2025-10-20T10:00:00Z",
             "pulls": 500,
             "stars": 150
+          },
+          "oauth_config": {
+            "issuer": "https://auth.example.com",
+            "client_id": "example-client",
+            "scopes": ["openid", "profile"]
+          },
+          "custom_metadata": {
+            "provider": "Example Corp",
+            "api_version": "v2",
+            "rate_limit": 1000
           },
           "status": "active",
           "tags": [

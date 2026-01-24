@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package secrets_test
 
 import (
@@ -164,38 +167,8 @@ func TestEnvironmentProvider_IntegrationTests(t *testing.T) { //nolint:parallelt
 func TestFactoryIntegration(t *testing.T) { //nolint:paralleltest
 	ctx := context.Background()
 
-	t.Run("fallback disabled creates direct provider", func(t *testing.T) { //nolint:paralleltest
-		// Disable fallback
-		err := os.Setenv("TOOLHIVE_DISABLE_ENV_FALLBACK", "true")
-		require.NoError(t, err)
-		defer os.Unsetenv("TOOLHIVE_DISABLE_ENV_FALLBACK")
-
-		// Set up environment variable that should NOT be accessible
-		secretName := "disabled_fallback_test"
-		secretValue := "should_not_be_accessible"
-		envVar := secrets.EnvVarPrefix + secretName
-
-		err = os.Setenv(envVar, secretValue)
-		require.NoError(t, err)
-		defer os.Unsetenv(envVar)
-
-		// Create none provider (should not have fallback)
-		provider, err := secrets.CreateSecretProvider(secrets.NoneType)
-		require.NoError(t, err)
-
-		// Should not be able to access environment variable
-		result, err := provider.GetSecret(ctx, secretName)
-		assert.Error(t, err)
-		assert.Empty(t, result)
-		assert.Contains(t, err.Error(), "none provider doesn't store secrets")
-	})
-
-	t.Run("fallback enabled allows environment access", func(t *testing.T) { //nolint:paralleltest
-		// Ensure fallback is enabled
-		os.Unsetenv("TOOLHIVE_DISABLE_ENV_FALLBACK")
-
-		// Set up environment variable
-		secretName := "enabled_fallback_test"
+	t.Run("environment provider reads from env vars", func(t *testing.T) { //nolint:paralleltest
+		secretName := "enabled_env_provider_test"
 		secretValue := "should_be_accessible"
 		envVar := secrets.EnvVarPrefix + secretName
 
@@ -203,11 +176,9 @@ func TestFactoryIntegration(t *testing.T) { //nolint:paralleltest
 		require.NoError(t, err)
 		defer os.Unsetenv(envVar)
 
-		// Create none provider (should have fallback)
-		provider, err := secrets.CreateSecretProvider(secrets.NoneType)
+		provider, err := secrets.CreateSecretProvider(secrets.EnvironmentType)
 		require.NoError(t, err)
 
-		// Should be able to access environment variable via fallback
 		result, err := provider.GetSecret(ctx, secretName)
 		assert.NoError(t, err)
 		assert.Equal(t, secretValue, result)

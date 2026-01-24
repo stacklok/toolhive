@@ -1,5 +1,5 @@
 ---
-name: PR Review Reply
+name: pr-review-reply
 description: Reply to and resolve GitHub PR review comments using the GitHub CLI and GraphQL API.
 ---
 

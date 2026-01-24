@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -100,7 +103,7 @@ func init() {
 		"allow-private-ip",
 		"p",
 		false,
-		"Allow setting the registry URL or API endpoint, even if it references a private IP address",
+		"Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)",
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)

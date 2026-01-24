@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -51,7 +54,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name),
+					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            "toolhive",

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
@@ -10,6 +13,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -173,6 +177,18 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
 }
 
+// hasTokenExchangeMiddleware checks if any middleware in the slice is a token exchange middleware.
+// When token exchange is configured, it handles its own Authorization header injection,
+// so the oauth-token-injection middleware should be skipped to avoid overwriting the exchanged token.
+func hasTokenExchangeMiddleware(middlewares []types.NamedMiddleware) bool {
+	for _, mw := range middlewares {
+		if mw.Name == tokenexchange.MiddlewareType {
+			return true
+		}
+	}
+	return false
+}
+
 // Mode returns the transport mode.
 func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
@@ -246,8 +262,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 	isRemote := t.remoteURL != ""
 
-	// Add OAuth token injection middleware for remote authentication if we have a token source
-	if isRemote && t.tokenSource != nil {
+	// Add OAuth token injection middleware for remote authentication if we have a token source.
+	// Skip if token exchange is configured (it handles its own Authorization header injection).
+	if isRemote && t.tokenSource != nil && !hasTokenExchangeMiddleware(t.middlewares) {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1alpha1
 
 import (
@@ -55,6 +58,11 @@ type MCPRemoteProxySpec struct {
 	// Resources defines the resource requirements for the proxy container
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
+
+	// ServiceAccount is the name of an already existing service account to use by the proxy.
+	// If not specified, a ServiceAccount will be created automatically and used by the proxy.
+	// +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,

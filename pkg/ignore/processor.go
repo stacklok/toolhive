@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package ignore provides functionality for processing .thvignore files
 // to filter bind mount contents using tmpfs overlays.
 package ignore

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package oauth provides OAuth 2.0 and OIDC authentication functionality.
 package oauth
 
@@ -13,22 +16,11 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // ToolHiveMCPClientName is the name of the ToolHive MCP client
 const ToolHiveMCPClientName = "ToolHive MCP Client"
-
-// AuthorizationCode is the grant type for authorization code
-const AuthorizationCode = "authorization_code"
-
-// RefreshToken is the grant type for refresh token
-const RefreshToken = "refresh_token"
-
-// ResponseTypeCode is the response type for code
-const ResponseTypeCode = "code"
-
-// TokenEndpointAuthMethodNone is the token endpoint auth method for none
-const TokenEndpointAuthMethodNone = "none"
 
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
 type DynamicClientRegistrationRequest struct {
@@ -52,9 +44,9 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	registrationRequest := &DynamicClientRegistrationRequest{
 		ClientName:              ToolHiveMCPClientName,
 		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: "none", // For PKCE flow
-		GrantTypes:              []string{AuthorizationCode, RefreshToken},
-		ResponseTypes:           []string{ResponseTypeCode},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone, // For PKCE flow
+		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
+		ResponseTypes:           []string{oauthproto.ResponseTypeCode},
 		Scopes:                  scopes,
 	}
 	return registrationRequest
@@ -206,13 +198,13 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ClientName = ToolHiveMCPClientName
 	}
 	if len(request.GrantTypes) == 0 {
-		request.GrantTypes = []string{AuthorizationCode, RefreshToken}
+		request.GrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
 	}
 	if len(request.ResponseTypes) == 0 {
-		request.ResponseTypes = []string{ResponseTypeCode}
+		request.ResponseTypes = []string{oauthproto.ResponseTypeCode}
 	}
 	if request.TokenEndpointAuthMethod == "" {
-		request.TokenEndpointAuthMethod = TokenEndpointAuthMethodNone // For PKCE flow
+		request.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodNone // For PKCE flow
 	}
 
 	return nil

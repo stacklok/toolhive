@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package docker
 
 import (
@@ -125,7 +128,8 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 				// Container has exited, get logs and info
 				// Create a short timeout context for these operations, derived from parent
 				infoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerName, false)
+				// Get last 50 lines of logs for error reporting
+				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerName, false, 50)
 				info, _ := m.runtime.GetWorkloadInfo(infoCtx, m.containerName)
 				cancel() // Always cancel the context to avoid leaks
 

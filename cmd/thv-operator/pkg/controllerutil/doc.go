@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllerutil provides shared utility functions for ToolHive Kubernetes controllers.
 //
 // This package contains helper functions extracted from the controllers package to improve
@@ -8,6 +11,7 @@
 //   - resources.go: Resource limit and request calculation utilities
 //   - authz.go: Authorization (Cedar policy) configuration helpers
 //   - oidc.go: OIDC (OpenID Connect) configuration helpers
+//   - oidc_volumes.go: OIDC CA bundle volume and mount helpers
 //   - tokenexchange.go: Token exchange configuration for external auth
 //   - config.go: General configuration merging and validation utilities
 //   - podtemplatespec_builder.go: PodTemplateSpec builder for constructing pod template patches

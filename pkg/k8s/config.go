@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package k8s provides common Kubernetes utilities for creating clients,
 // configs, and namespace detection that can be shared across packages.
 package k8s

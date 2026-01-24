@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package core provides the core domain model for the ToolHive system.
 package core
 
@@ -43,6 +46,8 @@ type Workload struct {
 	ToolsFilter []string `json:"tools,omitempty"`
 	// Remote indicates whether this is a remote workload (true) or a container workload (false).
 	Remote bool `json:"remote,omitempty"`
+	// StartedAt is when the container was last started (changes on restart)
+	StartedAt time.Time `json:"started_at"`
 }
 
 // SortWorkloadsByName sorts a slice of Workload by the Name field in ascending alphabetical order.

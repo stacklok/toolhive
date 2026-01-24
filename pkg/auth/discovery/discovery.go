@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package discovery provides authentication discovery utilities for detecting
 // authentication requirements from remote servers.
 //
@@ -26,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Default timeout constants for authentication operations
@@ -189,10 +193,10 @@ func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
 		// Endpoint-specific: /.well-known/oauth-protected-resource/<original-path>
 		// Remove leading slash from original path to avoid double slashes
 		cleanPath := strings.TrimPrefix(parsedURL.Path, "/")
-		baseURL.Path = path.Join(auth.WellKnownOAuthResourcePath, cleanPath)
+		baseURL.Path = path.Join(oauthproto.WellKnownOAuthResourcePath, cleanPath)
 	} else {
 		// Root-level: /.well-known/oauth-protected-resource
-		baseURL.Path = auth.WellKnownOAuthResourcePath
+		baseURL.Path = oauthproto.WellKnownOAuthResourcePath
 	}
 
 	return baseURL.String()
@@ -501,6 +505,11 @@ type OAuthFlowConfig struct {
 type OAuthFlowResult struct {
 	TokenSource oauth2.TokenSource
 	Config      *oauth.Config
+
+	// Token details for persistence across restarts
+	AccessToken  string
+	RefreshToken string
+	Expiry       time.Time
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -583,15 +592,21 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 }
 
 // getDiscoveryDocument retrieves the OIDC discovery document
-func getDiscoveryDocument(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.OIDCDiscoveryDocument, error) {
+func getDiscoveryDocument(
+	ctx context.Context,
+	issuer string,
+	config *OAuthFlowConfig,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// If we already have the registration endpoint from earlier discovery, use it
 	if config.RegistrationEndpoint != "" && config.AuthorizeURL != "" && config.TokenURL != "" {
 		logger.Debugf("Using pre-discovered OAuth endpoints for dynamic registration")
-		return &oauth.OIDCDiscoveryDocument{
-			Issuer:                issuer,
-			AuthorizationEndpoint: config.AuthorizeURL,
-			TokenEndpoint:         config.TokenURL,
-			RegistrationEndpoint:  config.RegistrationEndpoint,
+		return &oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                issuer,
+				AuthorizationEndpoint: config.AuthorizeURL,
+				TokenEndpoint:         config.TokenURL,
+				RegistrationEndpoint:  config.RegistrationEndpoint,
+			},
 		}, nil
 	}
 
@@ -671,15 +686,18 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 
 	source := flow.TokenSource()
 	return &OAuthFlowResult{
-		TokenSource: source,
-		Config:      oauthConfig,
+		TokenSource:  source,
+		Config:       oauthConfig,
+		AccessToken:  tokenResult.AccessToken,
+		RefreshToken: tokenResult.RefreshToken,
+		Expiry:       tokenResult.Expiry,
 	}, nil
 }
 
 func registerDynamicClient(
 	ctx context.Context,
 	config *OAuthFlowConfig,
-	discoveredDoc *oauth.OIDCDiscoveryDocument,
+	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
 ) (*oauth.DynamicClientRegistrationResponse, error) {
 
 	// Check if the provider supports Dynamic Client Registration

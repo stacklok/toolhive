@@ -18,14 +18,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGeneratePKCEVerifier(t *testing.T) {
 	t.Parallel()
 
-	verifier, err := GeneratePKCEVerifier()
-	require.NoError(t, err)
+	verifier := GeneratePKCEVerifier()
 
 	// RFC 7636: code_verifier must be 43-128 characters
 	assert.GreaterOrEqual(t, len(verifier), 43)

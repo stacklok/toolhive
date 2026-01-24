@@ -235,6 +235,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the virtual MCP server name. |  |  |
 | `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
+| `backends` _[vmcp.config.StaticBackendConfig](#vmcpconfigstaticbackendconfig) array_ | Backends defines pre-configured backend servers for static mode.<br />When OutgoingAuth.Source is "inline", this field contains the full list of backend<br />servers with their URLs and transport types, eliminating the need for K8s API access.<br />When OutgoingAuth.Source is "discovered", this field is empty and backends are<br />discovered at runtime via Kubernetes API. |  |  |
 | `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  |  |
 | `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  |  |
 | `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies.<br />Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references. |  |  |
@@ -244,6 +245,7 @@ _Appears in:_
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  |  |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  |  |
+| `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  |  |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -342,7 +344,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `issuer` _string_ | Issuer is the OIDC issuer URL. |  |  |
+| `issuer` _string_ | Issuer is the OIDC issuer URL. |  | Pattern: `^https?://` <br /> |
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
@@ -369,6 +371,24 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />The only valid value is "debug" to enable debug logging.<br />When omitted or empty, the server uses info level logging. |  | Enum: [debug] <br /> |
 | `timeouts` _[vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)_ | Timeouts configures timeout settings. |  |  |
 | `failureHandling` _[vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)_ | FailureHandling configures failure handling behavior. |  |  |
+
+
+#### vmcp.config.OptimizerConfig
+
+
+
+OptimizerConfig configures the MCP optimizer.
+When enabled, vMCP exposes only find_tool and call_tool operations to clients
+instead of all backend tools directly.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides the embedding service<br />for semantic tool discovery. The service must implement the optimizer embedding API. |  | Required: \{\} <br /> |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -438,6 +458,27 @@ _Appears in:_
 | `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  |  |
 | `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br /> |
 | `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br /> |
+
+
+#### vmcp.config.StaticBackendConfig
+
+
+
+StaticBackendConfig defines a pre-configured backend server for static mode.
+This allows vMCP to operate without Kubernetes API access by embedding all backend
+information directly in the configuration.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the backend identifier.<br />Must match the backend name from the MCPGroup for auth config resolution. |  | Required: \{\} <br /> |
+| `url` _string_ | URL is the backend's MCP server base URL. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
+| `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 
 
 #### vmcp.config.StepErrorHandling
@@ -604,6 +645,8 @@ _Appears in:_
 
 ## toolhive.stacklok.dev/v1alpha1
 ### Resource Types
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+- [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
 - [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
 - [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
 - [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
@@ -735,6 +778,41 @@ _Appears in:_
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
+#### api.v1alpha1.BearerTokenConfig
+
+
+
+BearerTokenConfig holds configuration for bearer token authentication.
+This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets.
+For security reasons, only secret references are supported (no plaintext values).
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | TokenSecretRef references a Kubernetes Secret containing the bearer token |  | Required: \{\} <br /> |
+
+
+#### api.v1alpha1.CABundleSource
+
+
+
+CABundleSource defines a source for CA certificate bundles.
+
+
+
+_Appears in:_
+- [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
+- [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef references a ConfigMap containing the CA certificate bundle.<br />If Key is not specified, it defaults to "ca.crt". |  |  |
+
+
 #### api.v1alpha1.ConfigMapAuthzRef
 
 
@@ -767,27 +845,156 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json |  |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence. |  |  |
 
 
-#### api.v1alpha1.DiscoveredBackend
+
+
+#### api.v1alpha1.EmbeddingResourceOverrides
 
 
 
-DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
+EmbeddingResourceOverrides defines overrides for annotations and labels on created resources
 
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerStatus](#apiv1alpha1virtualmcpserverstatus)
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the backend MCPServer |  |  |
-| `authConfigRef` _string_ | AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any) |  |  |
-| `authType` _string_ | AuthType is the type of authentication configured |  |  |
-| `status` _string_ | Status is the current status of the backend (ready, degraded, unavailable) |  |  |
-| `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
-| `url` _string_ | URL is the URL of the backend MCPServer |  |  |
+| `statefulSet` _[api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)_ | StatefulSet defines overrides for the StatefulSet resource |  |  |
+| `service` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | Service defines overrides for the Service resource |  |  |
+| `persistentVolumeClaim` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PersistentVolumeClaim defines overrides for the PVC resource |  |  |
+
+
+#### api.v1alpha1.EmbeddingServer
+
+
+
+EmbeddingServer is the Schema for the embeddingservers API
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServer` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)_ |  |  |  |
+| `status` _[api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.EmbeddingServerList
+
+
+
+EmbeddingServerList contains a list of EmbeddingServer
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServerList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver) array_ |  |  |  |
+
+
+#### api.v1alpha1.EmbeddingServerPhase
+
+_Underlying type:_ _string_
+
+EmbeddingServerPhase is the phase of the EmbeddingServer
+
+_Validation:_
+- Enum: [Pending Downloading Running Failed Terminating]
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)
+
+| Field | Description |
+| --- | --- |
+| `Pending` | EmbeddingServerPhasePending means the EmbeddingServer is being created<br /> |
+| `Downloading` | EmbeddingServerPhaseDownloading means the model is being downloaded<br /> |
+| `Running` | EmbeddingServerPhaseRunning means the EmbeddingServer is running and ready<br /> |
+| `Failed` | EmbeddingServerPhaseFailed means the EmbeddingServer failed to start<br /> |
+| `Terminating` | EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted<br /> |
+
+
+#### api.v1alpha1.EmbeddingServerSpec
+
+
+
+EmbeddingServerSpec defines the desired state of EmbeddingServer
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") |  | Required: \{\} <br /> |
+| `hfTokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  |  |
+| `image` _string_ | Image is the container image for huggingface-embedding-inference | ghcr.io/huggingface/text-embeddings-inference:latest | Required: \{\} <br /> |
+| `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br /> |
+| `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  |  |
+| `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the container |  |  |
+| `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines compute resources for the embedding server |  |  |
+| `modelCache` _[api.v1alpha1.ModelCacheConfig](#apiv1alpha1modelcacheconfig)_ | ModelCache configures persistent storage for downloaded models<br />When enabled, models are cached in a PVC and reused across pod restarts |  |  |
+| `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec allows customizing the pod (node selection, tolerations, etc.)<br />This field accepts a PodTemplateSpec object as JSON/YAML.<br />Note that to modify the specific container the embedding server runs in, you must specify<br />the 'embedding' container name in the PodTemplateSpec. |  | Type: object <br /> |
+| `resourceOverrides` _[api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
+| `replicas` _integer_ | Replicas is the number of embedding server replicas to run | 1 | Minimum: 1 <br /> |
+
+
+#### api.v1alpha1.EmbeddingServerStatus
+
+
+
+EmbeddingServerStatus defines the observed state of EmbeddingServer
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the EmbeddingServer's state |  |  |
+| `phase` _[api.v1alpha1.EmbeddingServerPhase](#apiv1alpha1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Running Failed Terminating] <br /> |
+| `message` _string_ | Message provides additional information about the current phase |  |  |
+| `url` _string_ | URL is the URL where the embedding service can be accessed |  |  |
+| `readyReplicas` _integer_ | ReadyReplicas is the number of ready replicas |  |  |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  |  |
+
+
+#### api.v1alpha1.EmbeddingStatefulSetOverrides
+
+
+
+EmbeddingStatefulSetOverrides defines overrides specific to the embedding statefulset
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
+| `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
+| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  |  |
 
 
 #### api.v1alpha1.EnvVar
@@ -799,6 +1006,7 @@ EnvVar represents an environment variable in a container
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 - [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
 
@@ -842,6 +1050,7 @@ _Appears in:_
 | --- | --- |
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
+| `bearerToken` | ExternalAuthTypeBearerToken is the type for bearer token authentication<br />This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
 
 
@@ -939,7 +1148,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OIDC client ID |  |  |
 | `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional)<br />Deprecated: Use ClientSecretRef instead for better security |  |  |
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret<br />If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence |  |  |
-| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
+| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.<br />Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to<br />already exist in the proxy runner container (e.g., Kubernetes service account CA at<br />/var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,<br />use CABundleRef which automatically mounts the ConfigMap and computes the path.<br />This field will be removed when the API graduates to v1beta1. |  |  |
+| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef. |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing | false |  |
@@ -1029,9 +1239,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated] <br />Required: \{\} <br /> |
+| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
+| `bearerToken` _[api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  |  |
 
 
 #### api.v1alpha1.MCPExternalAuthConfigStatus
@@ -1473,6 +1684,7 @@ _Appears in:_
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  |  |
 | `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines observability configuration for the proxy |  |  |
 | `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  |  |
+| `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  |  |
 | `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
@@ -1706,6 +1918,25 @@ _Appears in:_
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  |  |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  |  |
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
+
+
+#### api.v1alpha1.ModelCacheConfig
+
+
+
+ModelCacheConfig configures persistent storage for model caching
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether model caching is enabled | true |  |
+| `storageClassName` _string_ | StorageClassName is the storage class to use for the PVC<br />If not specified, uses the cluster's default storage class |  |  |
+| `size` _string_ | Size is the size of the PVC for model caching (e.g., "10Gi") | 10Gi |  |
+| `accessMode` _string_ | AccessMode is the access mode for the PVC | ReadWriteOnce | Enum: [ReadWriteOnce ReadWriteMany ReadOnlyMany] <br /> |
 
 
 #### api.v1alpha1.NameFilter
@@ -1970,6 +2201,8 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+- [api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)
 - [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
 - [api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)
 
@@ -2006,6 +2239,7 @@ ResourceRequirements describes the compute resource requirements
 
 
 _Appears in:_
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
@@ -2024,6 +2258,8 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
+- [api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)
+- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
@@ -2411,6 +2647,7 @@ _Appears in:_
 | `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
 | `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
+| `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  |  |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br /> |
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package client provides utilities for managing client configurations
 // and interacting with MCP servers.
 package client
@@ -395,8 +398,9 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// YAML configuration
 		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
-			"enabled": true,
-			"timeout": 60,
+			"enabled":     true,
+			"timeout":     60,
+			"description": "",
 		},
 	},
 	{

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -68,9 +71,12 @@ func init() {
 
 // AddBuildFlags adds all the build flags to a command
 func AddBuildFlags(cmd *cobra.Command, config *BuildFlags) {
-	cmd.Flags().StringVarP(&config.Tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format for the built image")
-	cmd.Flags().StringVarP(&config.Output, "output", "o", "", "Write the Dockerfile to the specified file instead of building")
-	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set)")
+	cmd.Flags().StringVarP(&config.Tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format for the built image "+
+		"(default generates a unique image name based on the package and transport type)")
+	cmd.Flags().StringVarP(&config.Output, "output", "o", "", "Write the Dockerfile to the specified file instead of building "+
+		"(default builds an image instead of generating a Dockerfile)")
+	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set) "+
+		"(default false)")
 }
 
 func buildCmdFunc(cmd *cobra.Command, args []string) error {

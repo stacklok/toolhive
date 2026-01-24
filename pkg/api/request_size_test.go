@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package api
 
 import (
@@ -81,8 +84,18 @@ func TestRequestBodySizeLimitMiddleware(t *testing.T) {
 
 	t.Run("MaxBytesReader converts handler 400 to 413", func(t *testing.T) {
 		t.Parallel()
-		// Create oversized body
-		oversizedBody := make([]byte, maxBodySize+100)
+		// Create valid JSON that's larger than the limit to ensure decoder reads past limit
+		// Use a large array of objects to make the decoder read the entire body
+		largeArray := "["
+		for i := 0; i < 100000; i++ {
+			if i > 0 {
+				largeArray += ","
+			}
+			largeArray += `{"key":"value"}`
+		}
+		largeArray += "]"
+
+		oversizedBody := []byte(largeArray)
 		body := bytes.NewBuffer(oversizedBody)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1beta/test", body)
 
@@ -93,7 +106,7 @@ func TestRequestBodySizeLimitMiddleware(t *testing.T) {
 
 		// Simulate a REAL handler that tries to decode JSON and returns 400 on error
 		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var data map[string]interface{}
+			var data []map[string]interface{}
 			// This will fail because MaxBytesReader limits the read
 			if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 				// Real handlers return 400 Bad Request on decode errors
@@ -124,5 +137,39 @@ func TestRequestBodySizeLimitMiddleware(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("Validation errors return 400, not 413", func(t *testing.T) {
+		t.Parallel()
+		// This test verifies the bug fix: validation errors (400) should NOT be converted to 413
+		// Create a small, valid JSON body (well within the limit)
+		validationBody := []byte(`{"name":""}`)
+		body := bytes.NewBuffer(validationBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1beta/workloads", body)
+		rec := httptest.NewRecorder()
+
+		// Simulate a handler that validates input and returns 400 for validation errors
+		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var data map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+				http.Error(w, "Failed to decode request", http.StatusBadRequest)
+				return
+			}
+			// Validate the name field (simulate validation logic)
+			name, ok := data["name"].(string)
+			if !ok || name == "" {
+				// Return 400 for validation error (empty name)
+				http.Error(w, "Validation failed: name cannot be empty", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := createHandler(nextHandler)
+		handler.ServeHTTP(rec, req)
+
+		// Validation errors should remain 400, NOT be converted to 413
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), "Validation failed")
 	})
 }

@@ -1,0 +1,20 @@
+# Basic EmbeddingServer example with minimal configuration
+# This creates an embedding server using the default text-embeddings-inference image
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: basic-embedding
+  namespace: toolhive-system
+spec:
+  # Required: HuggingFace model to use
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+
+  # Optional: Container image (defaults to ghcr.io/huggingface/text-embeddings-inference:latest)
+  image: "text-embeddings-inference:latest"
+  imagePullPolicy: IfNotPresent
+
+  # Optional: Port to expose (defaults to 8080)
+  port: 8080
+
+  # Optional: Number of replicas (defaults to 1)
+  replicas: 1

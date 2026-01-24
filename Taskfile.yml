@@ -38,6 +38,25 @@ tasks:
     cmds:
       - go generate ./...
 
+  addlicense-install:
+    desc: Install the addlicense tool for license header management
+    status:
+      - which addlicense
+    cmds:
+      - go install github.com/google/addlicense@latest
+
+  license-check:
+    desc: Check that all Go files have proper SPDX license headers
+    deps: [addlicense-install]
+    cmds:
+      - addlicense -check -f .github/license-header.txt -ignore '**/mocks/**' -ignore '**/testdata/**' -ignore 'vendor/**' -ignore '**/*.pb.go' -ignore '**/zz_generated*.go' $(find . -name '*.go' -type f)
+
+  license-fix:
+    desc: Add SPDX license headers to Go files that are missing them
+    deps: [addlicense-install]
+    cmds:
+      - addlicense -f .github/license-header.txt -ignore '**/mocks/**' -ignore '**/testdata/**' -ignore 'vendor/**' -ignore '**/*.pb.go' -ignore '**/zz_generated*.go' $(find . -name '*.go' -type f)
+
   lint:
     desc: Run linting tools
     cmds:
@@ -87,6 +106,9 @@ tasks:
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
+      # Clean build cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries
+      - cmd: go clean -cache
+        platforms: [linux, darwin]
       # Only install gotestfmt if not already installed
       - cmd: which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
         platforms: [linux, darwin]
@@ -107,6 +129,8 @@ tasks:
     cmds:
       - cmd: cmd.exe /c mkdir coverage
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
+      # Clean build cache to prevent "inconsistent NumStmt" errors from stale instrumented binaries
+      - go clean -cache
       - go test -race -coverpkg=./... -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"

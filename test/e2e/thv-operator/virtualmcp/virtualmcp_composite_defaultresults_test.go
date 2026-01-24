@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -81,19 +84,19 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 										"input": "{{ .params.message }}",
 									}),
 									// When skipped, use this default value
-									// Uses "text" key to match backend output format
+									// Uses "output" key to match yardstick 1.1.1 EchoResponse format
 									DefaultResults: thvjson.NewMap(map[string]any{
-										"text": "default_value_when_skipped",
+										"output": "default_value_when_skipped",
 									}),
 								},
 							},
-							// Output references the conditional step's output.text
+							// Output references the conditional step's output.output
 							Output: &vmcpconfig.OutputConfig{
 								Properties: map[string]vmcpconfig.OutputProperty{
 									"result": {
 										Type:        "string",
 										Description: "Result from conditional step",
-										Value:       "{{.steps.conditional_step.output.text}}",
+										Value:       "{{.steps.conditional_step.output.output}}",
 									},
 								},
 							},

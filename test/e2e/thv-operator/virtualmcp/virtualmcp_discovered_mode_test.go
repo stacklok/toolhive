@@ -1,8 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +23,13 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
+
+// ReadinessResponse represents the /readyz endpoint response
+type ReadinessResponse struct {
+	Status string `json:"status"`
+	Mode   string `json:"mode"`
+	Reason string `json:"reason,omitempty"`
+}
 
 var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 	var (
@@ -400,6 +412,376 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				backendNames[i] = backend.Name
 			}
 			Expect(backendNames).To(ContainElements(backend1Name, backend2Name))
+		})
+	})
+
+	Context("when dynamically adding a new backend", func() {
+		var (
+			backend3Name     = "backend-dynamic-fetch"
+			initialToolCount int
+		)
+
+		AfterAll(func() {
+			// Clean up the dynamic backend
+			backend3 := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backend3Name,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, backend3)
+		})
+
+		It("should record initial tool count", func() {
+			By("Creating MCP client to get initial tool count")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			Eventually(func() error {
+				err = mcpClient.Start(testCtx)
+				if err != nil {
+					return err
+				}
+
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-initial-count",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(testCtx, initRequest)
+				return err
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			var tools *mcp.ListToolsResult
+			Eventually(func() error {
+				var err error
+				tools, err = mcpClient.ListTools(testCtx, mcp.ListToolsRequest{})
+				return err
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			initialToolCount = len(tools.Tools)
+			GinkgoWriter.Printf("Initial tool count: %d\n", initialToolCount)
+		})
+
+		It("should detect new backend and update tool list", func() {
+			By("Adding third backend MCPServer")
+			backend3 := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backend3Name,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					GroupRef:  mcpGroupName,
+					Image:     images.GofetchServerImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+				},
+			}
+			Expect(k8sClient.Create(ctx, backend3)).To(Succeed())
+
+			By("Waiting for new backend to be ready")
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend3Name,
+					Namespace: testNamespace,
+				}, server)
+				if err != nil {
+					return err
+				}
+				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+					return fmt.Errorf("backend not ready, phase: %s", server.Status.Phase)
+				}
+				return nil
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Verifying group now has three backends")
+			Eventually(func() int {
+				backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
+				if err != nil {
+					return 0
+				}
+				return len(backends)
+			}, 30*time.Second, 2*time.Second).Should(Equal(3))
+
+			By("Verifying tool count increased with new session")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+
+			Eventually(func() error {
+				mcpClient, err := client.NewStreamableHttpClient(serverURL)
+				if err != nil {
+					return err
+				}
+				defer mcpClient.Close()
+
+				testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				err = mcpClient.Start(testCtx)
+				if err != nil {
+					return err
+				}
+
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-after-add",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(testCtx, initRequest)
+				if err != nil {
+					return err
+				}
+
+				tools, err := mcpClient.ListTools(testCtx, mcp.ListToolsRequest{})
+				if err != nil {
+					return err
+				}
+
+				if len(tools.Tools) <= initialToolCount {
+					return fmt.Errorf("expected more tools, got %d (was %d)", len(tools.Tools), initialToolCount)
+				}
+				return nil
+			}, 1*time.Minute, 10*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("when dynamically removing a backend", func() {
+		It("should detect backend removal and update tool list", func() {
+			By("Getting current tool count")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			Eventually(func() error {
+				err = mcpClient.Start(testCtx)
+				if err != nil {
+					return err
+				}
+
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-before-remove",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(testCtx, initRequest)
+				return err
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			var toolsBeforeRemoval *mcp.ListToolsResult
+			Eventually(func() error {
+				var err error
+				toolsBeforeRemoval, err = mcpClient.ListTools(testCtx, mcp.ListToolsRequest{})
+				return err
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			toolCountBefore := len(toolsBeforeRemoval.Tools)
+			GinkgoWriter.Printf("Before removal: %d tools\n", toolCountBefore)
+
+			By("Removing backend2 (osv)")
+			backend2 := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backend2Name,
+					Namespace: testNamespace,
+				},
+			}
+			Expect(k8sClient.Delete(ctx, backend2)).To(Succeed())
+
+			By("Waiting for backend deletion")
+			Eventually(func() bool {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend2Name,
+					Namespace: testNamespace,
+				}, server)
+				return err != nil
+			}, timeout, pollingInterval).Should(BeTrue())
+
+			By("Verifying group now has fewer backends")
+			Eventually(func() int {
+				backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
+				if err != nil {
+					return -1
+				}
+				return len(backends)
+			}, 30*time.Second, 2*time.Second).Should(BeNumerically("<", 3))
+
+			By("Verifying tool count decreased with new session")
+			Eventually(func() error {
+				mcpClient2, err := client.NewStreamableHttpClient(serverURL)
+				if err != nil {
+					return err
+				}
+				defer mcpClient2.Close()
+
+				testCtx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel2()
+
+				err = mcpClient2.Start(testCtx2)
+				if err != nil {
+					return err
+				}
+
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-after-remove",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient2.Initialize(testCtx2, initRequest)
+				if err != nil {
+					return err
+				}
+
+				tools, err := mcpClient2.ListTools(testCtx2, mcp.ListToolsRequest{})
+				if err != nil {
+					return err
+				}
+
+				if len(tools.Tools) >= toolCountBefore {
+					return fmt.Errorf("expected fewer tools, got %d (was %d)", len(tools.Tools), toolCountBefore)
+				}
+				return nil
+			}, 1*time.Minute, 10*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("when testing health and readiness endpoints", func() {
+		It("should expose /health endpoint that always returns 200", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /health endpoint")
+			resp, err := http.Get(vmcpURL + "/health")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var health map[string]string
+			err = json.NewDecoder(resp.Body).Decode(&health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(health["status"]).To(Equal("ok"))
+		})
+
+		It("should expose /readyz endpoint", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /readyz endpoint is accessible")
+			resp, err := http.Get(vmcpURL + "/readyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				Fail(fmt.Sprintf("unexpected status code: %d, body: %s", resp.StatusCode, string(body)))
+			}
+
+			By("Parsing readiness response")
+			var readiness ReadinessResponse
+			err = json.NewDecoder(resp.Body).Decode(&readiness)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying readiness status")
+			Expect(readiness.Status).To(Equal("ready"), "Status should be ready")
+		})
+
+		It("should distinguish between /health and /readyz", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting /health response")
+			healthResp, err := http.Get(vmcpURL + "/health")
+			Expect(err).NotTo(HaveOccurred())
+			defer healthResp.Body.Close()
+
+			By("Getting /readyz response")
+			readyResp, err := http.Get(vmcpURL + "/readyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer readyResp.Body.Close()
+
+			// Both should return 200 when ready
+			Expect(healthResp.StatusCode).To(Equal(http.StatusOK))
+			Expect(readyResp.StatusCode).To(Equal(http.StatusOK))
+
+			// Parse both responses
+			var health map[string]string
+			err = json.NewDecoder(healthResp.Body).Decode(&health)
+			Expect(err).NotTo(HaveOccurred())
+
+			var readiness ReadinessResponse
+			err = json.NewDecoder(readyResp.Body).Decode(&readiness)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Health is simple status
+			Expect(health).To(HaveKey("status"))
+			Expect(health).NotTo(HaveKey("mode"))
+
+			// Readiness includes status
+			Expect(readiness.Status).To(Equal("ready"))
+		})
+	})
+
+	Context("when testing status endpoint", func() {
+		It("should expose /status endpoint with group reference", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Checking /status endpoint")
+			resp, err := http.Get(vmcpURL + "/status")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			var status map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&status)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying group_ref is present")
+			Expect(status).To(HaveKey("group_ref"))
+			groupRef, ok := status["group_ref"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(groupRef).To(ContainSubstring(mcpGroupName))
+		})
+
+		It("should list discovered backends in status", func() {
+			vmcpURL := fmt.Sprintf("http://localhost:%d", vmcpNodePort)
+
+			By("Getting /status response")
+			resp, err := http.Get(vmcpURL + "/status")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			var status map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&status)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying backends are listed")
+			Expect(status).To(HaveKey("backends"))
+			backends, ok := status["backends"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(backends).NotTo(BeEmpty(), "Should have at least one backend")
+
+			// Verify backend structure
+			backend, ok := backends[0].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "backend should be a map")
+			Expect(backend).To(HaveKey("name"))
+			Expect(backend).To(HaveKey("health"))
+			Expect(backend).To(HaveKey("transport"))
 		})
 	})
 })

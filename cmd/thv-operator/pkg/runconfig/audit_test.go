@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runconfig provides functions to build RunConfigBuilder options for audit configuration.
 // Given the size of this file, it's probably better suited to merge with another. This can be
 // done when the runconfig has been fully moved into this package.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package workloads
 
 import (
@@ -347,7 +350,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "test-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false).Return("test log content", nil)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false, 0).Return("test log content", nil)
 			},
 			expectedLogs: "test log content",
 			expectError:  false,
@@ -357,7 +360,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "missing-workload",
 			follow:       false,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false).Return("", runtime.ErrWorkloadNotFound)
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false, 0).Return("", runtime.ErrWorkloadNotFound)
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -368,7 +371,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			workloadName: "error-workload",
 			follow:       true,
 			setupMocks: func(rt *runtimeMocks.MockRuntime) {
-				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true).Return("", errors.New("runtime failure"))
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true, 0).Return("", errors.New("runtime failure"))
 			},
 			expectedLogs: "",
 			expectError:  true,
@@ -391,7 +394,8 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow)
+			// Pass 0 for unlimited logs in these tests
+			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow, 0)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -402,6 +406,82 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDefaultManager_GetLogs_WithLineLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		lines        int
+		expectedLogs string
+	}{
+		{
+			name:         "limit to 3 lines",
+			workloadName: "test-workload",
+			lines:        3,
+			expectedLogs: "line3\nline4\nline5",
+		},
+		{
+			name:         "no limit (0)",
+			workloadName: "test-workload",
+			lines:        0,
+			expectedLogs: "line1\nline2\nline3",
+		},
+		{
+			name:         "fewer lines than limit",
+			workloadName: "test-workload",
+			lines:        10,
+			expectedLogs: "line1\nline2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			// Mock expects the lines parameter and returns already-limited logs
+			mockRuntime.EXPECT().GetWorkloadLogs(gomock.Any(), tt.workloadName, false, tt.lines).Return(tt.expectedLogs, nil)
+
+			manager := &DefaultManager{
+				runtime: mockRuntime,
+			}
+
+			ctx := context.Background()
+			logs, err := manager.GetLogs(ctx, tt.workloadName, false, tt.lines)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedLogs, logs)
+		})
+	}
+}
+
+func TestDefaultManager_GetLogs_FollowWithLimitError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+	// Expect the runtime to return an error when both follow and lines are set
+	mockRuntime.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", true, 100).
+		Return("", errors.New("cannot use both follow and line limit"))
+
+	manager := &DefaultManager{
+		runtime: mockRuntime,
+	}
+
+	ctx := context.Background()
+	logs, err := manager.GetLogs(ctx, "test-workload", true, 100)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot use both follow and line limit")
+	assert.Empty(t, logs)
 }
 
 func TestDefaultManager_StopWorkloads(t *testing.T) {
@@ -1146,6 +1226,8 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 			workloadName: "test-workload",
 			setupMocks: func(rt *runtimeMocks.MockRuntime, _ *statusMocks.MockStatusManager) {
 				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+				// After removal, verification check should confirm container is gone
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 			},
 			expectError: false,
 		},
@@ -1576,6 +1658,9 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
 					Return(runtime.ContainerInfo{Name: "test-workload"}, nil)
 				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+				// After removal, verification check should confirm container is gone
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 
 				// Mock status updates for stop and delete phases
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)

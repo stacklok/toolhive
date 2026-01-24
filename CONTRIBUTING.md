@@ -13,6 +13,8 @@ get started. You can find some hints for starting development in ToolHive's
 - [How to contribute](#how-to-contribute)
   - [Using GitHub Issues](#using-github-issues)
   - [Not sure how to start contributing?](#not-sure-how-to-start-contributing)
+  - [Claiming an issue](#claiming-an-issue)
+  - [What to expect](#what-to-expect)
   - [Pull request process](#pull-request-process)
   - [Contributing to docs](#contributing-to-docs)
   - [Contributing to design proposals](#contributing-to-design-proposals)
@@ -50,6 +52,24 @@ sample project that reproduces the problem.
 PRs to resolve existing issues are greatly appreciated, and issues labeled as
 ["good first issue"](https://github.com/stacklok/toolhive/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22)
 are a great place to start!
+
+### Claiming an issue
+
+If you'd like to work on an existing issue:
+
+1. Leave a comment saying "I'd like to work on this"
+2. Wait for a team member to assign you before starting work
+
+This helps us avoid situations where multiple people work on the same thing.
+If you create an issue with the intent to implement it yourself, mention that
+in the description so we know you're planning to submit a PR.
+
+### What to expect
+
+Reviews of external contributions are on a best effort basis. ToolHive moves
+fast, so priorities can shift. We may occasionally
+need to pick up urgent issues ourselves, but we'll always coordinate
+with active contributors first.
 
 ### Pull request process
 
@@ -101,35 +121,21 @@ documentation.
 
 ### Contributing to design proposals
 
-Design proposals for ToolHive should be placed in the `docs/proposals/` directory
-and follow a specific naming convention to ensure proper organization and tracking.
+Design proposals for ToolHive have been moved to a dedicated repository:
 
-#### Proposal file naming format
+**[github.com/stacklok/toolhive-rfcs](https://github.com/stacklok/toolhive-rfcs)**
 
-All proposal files must follow this naming pattern:
-```
-THV-{PR_NUMBER}-{descriptive-name}.md
-```
+This RFC repository serves the entire ToolHive ecosystem, including the CLI, Studio, Registry, and Cloud UI.
 
-Where:
-- `THV-` is the required prefix
-- `{PR_NUMBER}` is the pull request number (4 digits)
-- `{descriptive-name}` is a descriptive name in kebab-case
+#### How to submit an RFC
 
-#### Examples of valid proposal names:
-- `THV-1234-new-feature-proposal.md`
-- `THV-5678-api-improvements.md`
-- `THV-9012-authentication-enhancement.md`
+1. Start a thread on [Discord](https://discord.gg/stacklok) to gather initial feedback (optional but recommended)
+2. Fork the [toolhive-rfcs](https://github.com/stacklok/toolhive-rfcs) repository
+3. Copy `rfcs/0000-template.md` to `rfcs/THV-XXXX-descriptive-name.md` (use the next available PR number)
+4. Fill in the RFC template with your proposal
+5. Submit a pull request
 
-#### Proposal content guidelines:
-- Use clear, descriptive titles
-- Include a problem statement at the beginning
-- Add examples where applicable
-- Consider backward compatibility
-- Include migration strategies if needed
-
-The CI system will automatically validate that proposal files follow the correct
-naming convention when they are added or modified in pull requests.
+For detailed guidelines on writing and submitting RFCs, see the [CONTRIBUTING.md](https://github.com/stacklok/toolhive-rfcs/blob/main/CONTRIBUTING.md) in the toolhive-rfcs repository.
 
 ### Commit message guidelines
 

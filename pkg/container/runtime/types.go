@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runtime provides interfaces and types for container runtimes,
 // including creating, starting, stopping, and monitoring containers.
 package runtime
@@ -160,9 +163,11 @@ type Runtime interface {
 
 	// GetWorkloadLogs retrieves logs from the primary container of the workload.
 	// If follow is true, the logs will be streamed continuously.
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
 	// For workloads with multiple containers, this returns logs from the
 	// main MCP server container.
-	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error)
+	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error)
 
 	// GetWorkloadInfo retrieves detailed information about a workload.
 	// This includes status, resource usage, network configuration,

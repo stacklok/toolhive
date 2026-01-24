@@ -53,7 +53,7 @@ metadata:
   namespace: default
 spec:
   groupRef: my-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
   - name: TRANSPORT

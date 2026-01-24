@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package app provides the entry point for the vmcp command-line application.
 package app
 
@@ -24,8 +27,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -228,17 +233,28 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}
 
-	// Initialize managers for backend discovery
-	logger.Info("Initializing group manager")
-	groupsManager, err := groups.NewManager()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
-	}
+	// Create backend discoverer based on configuration mode
+	var discoverer aggregator.BackendDiscoverer
+	if len(cfg.Backends) > 0 {
+		// Static mode: Use pre-configured backends from config (no K8s API access needed)
+		logger.Infof("Static mode: using %d pre-configured backends", len(cfg.Backends))
+		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
+			cfg.Backends,
+			cfg.OutgoingAuth,
+			cfg.Group,
+		)
+	} else {
+		// Dynamic mode: Discover backends at runtime from K8s API
+		logger.Info("Dynamic mode: initializing group manager for backend discovery")
+		groupsManager, err := groups.NewManager()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
+		}
 
-	// Create backend discoverer based on runtime environment
-	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+		discoverer, err = aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+		}
 	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)
@@ -402,6 +418,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Create logging status reporter for CLI mode (always logs)
+	statusReporter := vmcpstatus.NewLoggingReporter()
+
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,
 		Version:             getVersion(),
@@ -414,6 +433,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuditConfig:         cfg.Audit,
 		HealthMonitorConfig: healthMonitorConfig,
 		Watcher:             backendWatcher,
+		StatusReporter:      statusReporter,
+	}
+
+	if cfg.Optimizer != nil {
+		// TODO: update this with the real optimizer.
+		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizer
 	}
 
 	// Convert composite tool configurations to workflow definitions

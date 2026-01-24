@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package health provides health monitoring for vMCP backend MCP servers.
 //
 // This package implements the HealthChecker interface and provides periodic

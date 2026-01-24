@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runner provides functionality for running MCP servers
 package runner
 
@@ -15,6 +18,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -555,8 +559,53 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 		return nil, nil
 	}
 
+	// Get the secret manager for token storage
+	secretManager, err := authsecrets.GetSecretsManager()
+	if err != nil {
+		// Secret manager not available - log warning but continue
+		// OAuth will work but tokens won't be persisted across restarts
+		logger.Warnf("Secret manager not available, OAuth tokens will not be persisted: %v", err)
+	}
+
 	// Create remote authentication handler
 	authHandler := remote.NewHandler(r.Config.RemoteAuthConfig)
+
+	// Set the secret provider for retrieving cached tokens
+	if secretManager != nil {
+		authHandler.SetSecretProvider(secretManager)
+	}
+
+	// Set up token persister to save tokens across restarts
+	if secretManager != nil {
+		authHandler.SetTokenPersister(func(refreshToken string, expiry time.Time) error {
+			// Generate a unique secret name for this workload's refresh token
+			secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
+				r.Config.Name,
+				"OAUTH_REFRESH_TOKEN_",
+				secretManager,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to generate secret name: %w", err)
+			}
+
+			// Store the refresh token in the secret manager
+			if err := authsecrets.StoreSecretInManagerWithProvider(ctx, secretName, refreshToken, secretManager); err != nil {
+				return fmt.Errorf("failed to store refresh token: %w", err)
+			}
+
+			// Store the secret reference (not the actual token) in the config
+			r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
+			r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+
+			// Save the updated config to persist the reference
+			if err := r.Config.SaveState(ctx); err != nil {
+				return fmt.Errorf("failed to save config with token reference: %w", err)
+			}
+
+			logger.Debugf("Stored OAuth refresh token in secret manager as %s", secretName)
+			return nil
+		})
+	}
 
 	// Perform authentication
 	tokenSource, err := authHandler.Authenticate(ctx, r.Config.RemoteURL)

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-23T00:20:04Z",
+  "last_updated": "2026-01-24T00:19:03Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -130,9 +130,9 @@
         "example_GetAstronautsCurrentlyInSpace"
       ],
       "metadata": {
-        "stars": 239,
+        "stars": 252,
         "pulls": 0,
-        "last_updated": "2025-12-17T02:34:40Z"
+        "last_updated": "2026-01-23T02:40:40Z"
       },
       "repository_url": "https://github.com/apollographql/apollo-mcp-server",
       "tags": [
@@ -1483,7 +1483,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.25.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.26.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1964,7 +1964,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.25.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.26.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2224,9 +2224,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 826,
-        "pulls": 43891,
-        "last_updated": "2025-12-17T02:34:40Z"
+        "stars": 940,
+        "pulls": 54059,
+        "last_updated": "2026-01-23T02:40:41Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -4384,9 +4384,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 75,
+        "stars": 76,
         "pulls": 0,
-        "last_updated": "2025-12-16T02:36:33Z"
+        "last_updated": "2026-01-23T02:40:39Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4454,7 +4454,7 @@
         "security-scanning",
         "vulnerability-detection"
       ],
-      "image": "ghcr.io/stackloklabs/osv-mcp/server:0.0.7",
+      "image": "ghcr.io/stackloklabs/osv-mcp/server:0.1.0",
       "target_port": 8080,
       "permissions": {
         "network": {
@@ -4659,9 +4659,9 @@
         "upsert-prompt"
       ],
       "metadata": {
-        "stars": 7935,
+        "stars": 8337,
         "pulls": 0,
-        "last_updated": "2025-12-16T02:36:33Z"
+        "last_updated": "2026-01-23T02:40:40Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -5749,6 +5749,7 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "attach_policy_set_to_workspaces",
         "attach_variable_set_to_workspaces",
         "create_no_code_workspace",
         "create_run",
@@ -5768,11 +5769,15 @@
         "get_provider_capabilities",
         "get_provider_details",
         "get_run_details",
+        "get_stack_details",
+        "get_token_permissions",
         "get_workspace_details",
         "list_runs",
+        "list_stacks",
         "list_terraform_orgs",
         "list_terraform_projects",
         "list_variable_sets",
+        "list_workspace_policy_sets",
         "list_workspace_variables",
         "list_workspaces",
         "read_workspace_tags",
@@ -5804,7 +5809,7 @@
         "policy",
         "registry"
       ],
-      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.3",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.4.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5974,7 +5979,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-12-17T02:34:41Z"
+        "last_updated": "2026-01-23T02:40:41Z"
       },
       "tags": [
         "remote",

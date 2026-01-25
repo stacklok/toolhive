@@ -18,11 +18,9 @@
 package registration
 
 import (
-	"context"
-	"net/url"
 	"slices"
 
-	"github.com/ory/fosite"
+	"github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // DCR error codes per RFC 7591 Section 3.2.2
@@ -38,9 +36,6 @@ const (
 
 // Validation limits to prevent DoS attacks via excessively large requests.
 const (
-	// MaxRedirectURILength is the maximum allowed length for a single redirect URI.
-	MaxRedirectURILength = 2048
-
 	// MaxRedirectURICount is the maximum number of redirect URIs allowed per client.
 	MaxRedirectURICount = 10
 
@@ -242,42 +237,13 @@ func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
 // ValidateRedirectURI validates a redirect URI per RFC 8252:
 // - HTTPS is allowed for any address (web-based redirects)
 // - HTTP is only allowed for loopback addresses (127.0.0.1, [::1], localhost)
+// Dynamic client registration uses the strict policy (no private-use schemes).
 func ValidateRedirectURI(uri string) *DCRError {
-	// Check length limit before parsing (DoS protection - fosite doesn't have this)
-	if len(uri) > MaxRedirectURILength {
+	if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyStrict); err != nil {
 		return &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "redirect_uri too long (maximum 2048 characters)",
+			ErrorDescription: err.Error(),
 		}
 	}
-
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return &DCRError{
-			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "invalid redirect_uri format",
-		}
-	}
-
-	// Delegate to fosite for RFC 6749 Section 3.1.2 validation:
-	// - URI must be absolute (have a scheme)
-	// - URI must not have a fragment component
-	if !fosite.IsValidRedirectURI(parsed) {
-		return &DCRError{
-			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "redirect_uri must be an absolute URI without a fragment",
-		}
-	}
-
-	// Delegate to fosite for scheme security check per RFC 8252:
-	// - HTTPS is allowed for any address
-	// - HTTP is only allowed for loopback addresses (127.0.0.1, [::1], localhost, *.localhost)
-	if !fosite.IsRedirectURISecureStrict(context.Background(), parsed) {
-		return &DCRError{
-			Error:            DCRErrorInvalidRedirectURI,
-			ErrorDescription: "redirect_uri must use http (for loopback) or https scheme",
-		}
-	}
-
 	return nil
 }

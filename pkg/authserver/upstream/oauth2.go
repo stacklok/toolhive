@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ory/fosite"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -162,22 +161,7 @@ func (c *OAuth2Config) Validate() error {
 // This is our own callback URL where upstream IDPs redirect back to us. The upstream
 // IDP validates this against their registered redirect URIs, so we only do basic checks.
 func validateRedirectURI(uri string) error {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return errors.New("redirect_uri must be an absolute URI without a fragment")
-	}
-
-	// Use fosite for RFC 6749 Section 3.1.2 validation (absolute URI, no fragment)
-	if !fosite.IsValidRedirectURI(parsed) {
-		return errors.New("redirect_uri must be an absolute URI without a fragment")
-	}
-
-	// Use fosite for RFC 8252 scheme security (HTTPS required, HTTP only for loopback)
-	if !fosite.IsRedirectURISecureStrict(context.Background(), parsed) {
-		return errors.New("redirect_uri must use http (for loopback) or https scheme")
-	}
-
-	return nil
+	return oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict)
 }
 
 // convertOAuth2Token converts an oauth2.Token to our Tokens type.

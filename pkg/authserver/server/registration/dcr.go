@@ -237,9 +237,9 @@ func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
 // ValidateRedirectURI validates a redirect URI per RFC 8252:
 // - HTTPS is allowed for any address (web-based redirects)
 // - HTTP is only allowed for loopback addresses (127.0.0.1, [::1], localhost)
-// Dynamic client registration uses the strict policy (no private-use schemes).
+// - Private-use URI schemes (e.g., cursor://, vscode://) are allowed for native apps
 func ValidateRedirectURI(uri string) *DCRError {
-	if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyStrict); err != nil {
+	if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyAllowPrivateSchemes); err != nil {
 		return &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: err.Error(),

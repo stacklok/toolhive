@@ -422,17 +422,17 @@ var _ = Describe("Workloads API", Label("api", "workloads", "e2e"), func() {
 				Expect(delResp.StatusCode).To(Equal(http.StatusAccepted),
 					"Should return 202 for async delete operation")
 
-			By("Verifying workload is removed from list")
-			Eventually(func() bool {
-				workloads := listWorkloads(apiServer, false) // Don't use all=true to filter out "removing" workloads
-				for _, w := range workloads {
-					if w.Name == workloadName {
-						return true
+				By("Verifying workload is removed from list")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, false) // Don't use all=true to filter out "removing" workloads
+					for _, w := range workloads {
+						if w.Name == workloadName {
+							return true
+						}
 					}
-				}
-				return false
-			}, 60*time.Second, 2*time.Second).Should(BeFalse(),
-				"Workload should be removed from list within 60 seconds")
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeFalse(),
+					"Workload should be removed from list within 60 seconds")
 			})
 
 			It("should successfully delete stopped workload", func() {

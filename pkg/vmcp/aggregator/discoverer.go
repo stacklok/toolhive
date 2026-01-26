@@ -14,6 +14,7 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -120,7 +121,20 @@ func NewBackendDiscovererWithManager(
 //
 // In static mode (when staticBackends are configured), this returns pre-configured backends
 // without any K8s API access. In dynamic mode, it discovers backends at runtime.
-func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vmcp.Backend, error) {
+//
+// Results are always sorted alphabetically by backend name to ensure deterministic ordering.
+// This prevents non-deterministic ConfigMap content that would cause unnecessary
+// deployment rollouts (pod cycling). See: https://github.com/stacklok/toolhive/issues/3448
+func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (backends []vmcp.Backend, err error) {
+	// Sort backends by name before returning to ensure deterministic ordering
+	defer func() {
+		if len(backends) > 1 {
+			sort.Slice(backends, func(i, j int) bool {
+				return backends[i].Name < backends[j].Name
+			})
+		}
+	}()
+
 	logger.Infof("Discovering backends in group %s", groupRef)
 
 	// Static mode: Use pre-configured backends if available
@@ -163,7 +177,6 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 	logger.Debugf("Found %d workloads in group %s, discovering backends", len(typedWorkloads), groupRef)
 
 	// Query each workload and convert to backend
-	var backends []vmcp.Backend
 	for _, workload := range typedWorkloads {
 		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {

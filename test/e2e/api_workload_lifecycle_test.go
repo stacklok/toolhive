@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -382,15 +383,627 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			})
 		})
 	})
+
+	Describe("POST /api/v1beta/workloads/{name}/edit - Update workload", func() {
+		var workloadName string
+
+		BeforeEach(func() {
+			workloadName = e2e.GenerateUniqueServerName("api-update-test")
+		})
+
+		AfterEach(func() {
+			deleteWorkload(apiServer, workloadName)
+		})
+
+		Context("when updating a workload", func() {
+			It("should successfully update workload environment variables", func() {
+				By("Creating a workload")
+				createReq := map[string]interface{}{
+					"name":  workloadName,
+					"image": "osv",
+				}
+				resp := createWorkload(apiServer, createReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for workload to be running")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
+							return true
+						}
+					}
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+
+				By("Updating the workload with environment variables")
+				updateReq := map[string]interface{}{
+					"image": "osv",
+					"env": map[string]string{
+						"TEST_VAR": "test-value",
+					},
+				}
+				updateResp := updateWorkload(apiServer, workloadName, updateReq)
+				defer updateResp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(updateResp.StatusCode).To(Equal(http.StatusOK),
+					"Should return 200 for successful update")
+
+				By("Verifying response contains workload details")
+				var result map[string]interface{}
+				err := json.NewDecoder(updateResp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result["name"]).To(Equal(workloadName))
+			})
+
+			It("should return 404 for non-existent workload", func() {
+				By("Attempting to update non-existent workload")
+				updateReq := map[string]interface{}{
+					"image": "osv",
+				}
+				resp := updateWorkload(apiServer, "non-existent-workload-12345", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+					"Should return 404 for non-existent workload")
+			})
+
+			It("should reject invalid JSON", func() {
+				By("Creating a workload first")
+				createReq := map[string]interface{}{
+					"name":  workloadName,
+					"image": "osv",
+				}
+				resp := createWorkload(apiServer, createReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for workload to be running")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						if w.Name == workloadName {
+							return true
+						}
+					}
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+
+				By("Attempting to update with malformed JSON")
+				updateResp := updateWorkloadRaw(apiServer, workloadName, []byte(`{"image": "osv"`))
+				defer updateResp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(updateResp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for malformed JSON")
+			})
+		})
+	})
+
+	Describe("GET /api/v1beta/workloads/{name}/logs - Get workload logs", func() {
+		var workloadName string
+
+		BeforeEach(func() {
+			workloadName = e2e.GenerateUniqueServerName("api-logs-test")
+		})
+
+		AfterEach(func() {
+			deleteWorkload(apiServer, workloadName)
+		})
+
+		Context("when getting workload logs", func() {
+			It("should return logs for running workload", func() {
+				By("Creating a workload")
+				createReq := map[string]interface{}{
+					"name":  workloadName,
+					"image": "osv",
+				}
+				resp := createWorkload(apiServer, createReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for workload to be running")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
+							return true
+						}
+					}
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+
+				By("Getting workload logs")
+				logsResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/logs", workloadName))
+				Expect(err).ToNot(HaveOccurred())
+				defer logsResp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(logsResp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Verifying content type is text/plain")
+				Expect(logsResp.Header.Get("Content-Type")).To(Equal("text/plain"))
+			})
+
+			It("should return 404 for non-existent workload", func() {
+				By("Attempting to get logs of non-existent workload")
+				resp, err := apiServer.Get("/api/v1beta/workloads/non-existent-workload-12345/logs")
+				Expect(err).ToNot(HaveOccurred())
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+			})
+		})
+	})
+
+	Describe("GET /api/v1beta/workloads/{name}/proxy-logs - Get proxy logs", func() {
+		var workloadName string
+
+		BeforeEach(func() {
+			workloadName = e2e.GenerateUniqueServerName("api-proxy-logs-test")
+		})
+
+		AfterEach(func() {
+			deleteWorkload(apiServer, workloadName)
+		})
+
+		Context("when getting proxy logs", func() {
+			It("should return 404 when workload has no proxy", func() {
+				By("Creating a workload without proxy")
+				createReq := map[string]interface{}{
+					"name":  workloadName,
+					"image": "osv",
+				}
+				resp := createWorkload(apiServer, createReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for workload to be running")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
+							return true
+						}
+					}
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+
+				By("Attempting to get proxy logs")
+				logsResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/proxy-logs", workloadName))
+				Expect(err).ToNot(HaveOccurred())
+				defer logsResp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(logsResp.StatusCode).To(Equal(http.StatusNotFound),
+					"Should return 404 when workload has no proxy logs")
+			})
+
+			It("should return 404 for non-existent workload", func() {
+				By("Attempting to get proxy logs of non-existent workload")
+				resp, err := apiServer.Get("/api/v1beta/workloads/non-existent-workload-12345/proxy-logs")
+				Expect(err).ToNot(HaveOccurred())
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+			})
+		})
+	})
+
+	Describe("GET /api/v1beta/workloads/{name}/export - Export workload", func() {
+		var workloadName string
+
+		BeforeEach(func() {
+			workloadName = e2e.GenerateUniqueServerName("api-export-test")
+		})
+
+		AfterEach(func() {
+			deleteWorkload(apiServer, workloadName)
+		})
+
+		Context("when exporting workload configuration", func() {
+			It("should export workload as RunConfig JSON", func() {
+				By("Creating a workload with environment variables")
+				createReq := map[string]interface{}{
+					"name":  workloadName,
+					"image": "osv",
+					"env": map[string]string{
+						"TEST_VAR": "test-value",
+					},
+				}
+				resp := createWorkload(apiServer, createReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for workload to be running")
+				Eventually(func() bool {
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						if w.Name == workloadName {
+							return true
+						}
+					}
+					return false
+				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+
+				By("Exporting the workload")
+				exportResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/export", workloadName))
+				Expect(err).ToNot(HaveOccurred())
+				defer exportResp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(exportResp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Verifying response is valid JSON")
+				var runConfig map[string]interface{}
+				err = json.NewDecoder(exportResp.Body).Decode(&runConfig)
+				Expect(err).ToNot(HaveOccurred(), "Response should be valid JSON")
+				Expect(runConfig).To(HaveKey("container_name"))
+			})
+
+			It("should return 404 for non-existent workload", func() {
+				By("Attempting to export non-existent workload")
+				resp, err := apiServer.Get("/api/v1beta/workloads/non-existent-workload-12345/export")
+				Expect(err).ToNot(HaveOccurred())
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+			})
+		})
+	})
+
+	Describe("POST /api/v1beta/workloads/stop - Bulk stop workloads", func() {
+		var workloadNames []string
+
+		BeforeEach(func() {
+			workloadNames = []string{
+				e2e.GenerateUniqueServerName("bulk-stop-1"),
+				e2e.GenerateUniqueServerName("bulk-stop-2"),
+				e2e.GenerateUniqueServerName("bulk-stop-3"),
+			}
+		})
+
+		AfterEach(func() {
+			for _, name := range workloadNames {
+				deleteWorkload(apiServer, name)
+			}
+		})
+
+		Context("when stopping workloads in bulk by names", func() {
+			It("should stop multiple workloads", func() {
+				By("Creating multiple workloads")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Stopping all workloads in bulk")
+				bulkReq := map[string]interface{}{
+					"names": workloadNames,
+				}
+				stopResp := bulkStopWorkloads(apiServer, bulkReq)
+				defer stopResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(stopResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads are stopped")
+				Eventually(func() int {
+					stoppedCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusStopped {
+								stoppedCount++
+							}
+						}
+					}
+					return stoppedCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+			})
+
+			It("should reject empty names array", func() {
+				By("Attempting bulk stop with empty names")
+				bulkReq := map[string]interface{}{
+					"names": []string{},
+				}
+				resp := bulkStopWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+
+			It("should reject request with both names and group", func() {
+				By("Attempting bulk stop with both names and group")
+				bulkReq := map[string]interface{}{
+					"names": []string{"workload1"},
+					"group": "test-group",
+				}
+				resp := bulkStopWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should reject requests specifying both names and group")
+			})
+		})
+	})
+
+	Describe("POST /api/v1beta/workloads/restart - Bulk restart workloads", func() {
+		var workloadNames []string
+
+		BeforeEach(func() {
+			workloadNames = []string{
+				e2e.GenerateUniqueServerName("bulk-restart-1"),
+				e2e.GenerateUniqueServerName("bulk-restart-2"),
+			}
+		})
+
+		AfterEach(func() {
+			for _, name := range workloadNames {
+				deleteWorkload(apiServer, name)
+			}
+		})
+
+		Context("when restarting workloads in bulk", func() {
+			It("should restart multiple workloads", func() {
+				By("Creating multiple workloads")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Restarting all workloads in bulk")
+				bulkReq := map[string]interface{}{
+					"names": workloadNames,
+				}
+				restartResp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer restartResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(restartResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads return to running state")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+			})
+
+			It("should reject empty names array", func() {
+				By("Attempting bulk restart with empty names")
+				bulkReq := map[string]interface{}{
+					"names": []string{},
+				}
+				resp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+		})
+	})
+
+	Describe("POST /api/v1beta/workloads/delete - Bulk delete workloads", func() {
+		var workloadNames []string
+
+		BeforeEach(func() {
+			workloadNames = []string{
+				e2e.GenerateUniqueServerName("bulk-delete-1"),
+				e2e.GenerateUniqueServerName("bulk-delete-2"),
+			}
+		})
+
+		Context("when deleting workloads in bulk", func() {
+			It("should delete multiple workloads", func() {
+				By("Creating multiple workloads")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Deleting all workloads in bulk")
+				bulkReq := map[string]interface{}{
+					"names": workloadNames,
+				}
+				deleteResp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer deleteResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(deleteResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads are deleted")
+				Eventually(func() int {
+					foundCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name {
+								foundCount++
+							}
+						}
+					}
+					return foundCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(0),
+					"All workloads should be deleted")
+			})
+
+			It("should reject empty names array", func() {
+				By("Attempting bulk delete with empty names")
+				bulkReq := map[string]interface{}{
+					"names": []string{},
+				}
+				resp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+
+			It("should reject malformed JSON", func() {
+				By("Attempting bulk delete with malformed JSON")
+				resp := bulkDeleteWorkloadsRaw(apiServer, []byte(`{"names": ["test"`))
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+		})
+	})
 })
 
-// Helper function for restarting workloads
+// Helper functions for workload lifecycle operations
+
 func restartWorkload(server *e2e.Server, name string) *http.Response {
 	req, err := http.NewRequest(http.MethodPost, server.BaseURL()+"/api/v1beta/workloads/"+name+"/restart", nil)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create restart request")
 
 	resp, err := http.DefaultClient.Do(req)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send restart request")
+
+	return resp
+}
+
+func updateWorkload(server *e2e.Server, name string, request map[string]interface{}) *http.Response {
+	reqBody, err := json.Marshal(request)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to marshal update request")
+
+	return updateWorkloadRaw(server, name, reqBody)
+}
+
+func updateWorkloadRaw(server *e2e.Server, name string, body []byte) *http.Response {
+	req, err := http.NewRequest(http.MethodPost,
+		server.BaseURL()+"/api/v1beta/workloads/"+name+"/edit",
+		bytes.NewReader(body))
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create HTTP request")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send HTTP request")
+
+	return resp
+}
+
+func bulkStopWorkloads(server *e2e.Server, request map[string]interface{}) *http.Response {
+	reqBody, err := json.Marshal(request)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to marshal bulk stop request")
+
+	req, err := http.NewRequest(http.MethodPost,
+		server.BaseURL()+"/api/v1beta/workloads/stop",
+		bytes.NewReader(reqBody))
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create HTTP request")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send HTTP request")
+
+	return resp
+}
+
+func bulkRestartWorkloads(server *e2e.Server, request map[string]interface{}) *http.Response {
+	reqBody, err := json.Marshal(request)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to marshal bulk restart request")
+
+	req, err := http.NewRequest(http.MethodPost,
+		server.BaseURL()+"/api/v1beta/workloads/restart",
+		bytes.NewReader(reqBody))
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create HTTP request")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send HTTP request")
+
+	return resp
+}
+
+func bulkDeleteWorkloads(server *e2e.Server, request map[string]interface{}) *http.Response {
+	reqBody, err := json.Marshal(request)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to marshal bulk delete request")
+
+	return bulkDeleteWorkloadsRaw(server, reqBody)
+}
+
+func bulkDeleteWorkloadsRaw(server *e2e.Server, body []byte) *http.Response {
+	req, err := http.NewRequest(http.MethodPost,
+		server.BaseURL()+"/api/v1beta/workloads/delete",
+		bytes.NewReader(body))
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create HTTP request")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send HTTP request")
 
 	return resp
 }

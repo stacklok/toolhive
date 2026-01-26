@@ -28,7 +28,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
-	vmcpoptimizer "github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -444,30 +443,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		HealthMonitorConfig: healthMonitorConfig,
 		Watcher:             backendWatcher,
 		StatusReporter:      statusReporter,
-	}
-
-	// Configure optimizer if enabled in YAML config
-	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
-		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
-		optimizerCfg := vmcpoptimizer.ConfigFromVMCPConfig(cfg.Optimizer)
-		serverCfg.OptimizerConfig = optimizerCfg
-		persistInfo := "in-memory"
-		if cfg.Optimizer.PersistPath != "" {
-			persistInfo = cfg.Optimizer.PersistPath
-		}
-		// FTS5 is always enabled with configurable semantic/BM25 ratio
-		ratio := 70 // Default (70%)
-		if cfg.Optimizer.HybridSearchRatio != nil {
-			ratio = *cfg.Optimizer.HybridSearchRatio
-		}
-		searchMode := fmt.Sprintf("hybrid (%d%% semantic, %d%% BM25)",
-			ratio,
-			100-ratio)
-		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s, search=%s",
-			cfg.Optimizer.EmbeddingBackend,
-			cfg.Optimizer.EmbeddingDimension,
-			persistInfo,
-			searchMode)
 	}
 
 	// Convert composite tool configurations to workflow definitions

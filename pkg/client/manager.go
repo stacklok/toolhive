@@ -127,7 +127,8 @@ func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, e
 	}
 
 	// Convert to slice for return
-	var registeredClients []RegisteredClient
+	// Initialize as empty slice to ensure JSON encodes as [] instead of null when empty
+	registeredClients := make([]RegisteredClient, 0)
 	for clientName := range allRegisteredClients {
 		registered := RegisteredClient{
 			Name:   MCPClient(clientName),

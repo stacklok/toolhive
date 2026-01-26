@@ -282,6 +282,364 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 					"Should return 404 for non-default registry name")
 			})
 		})
+
+		Context("URL-based updates", func() {
+			It("should return 400 for URL pointing to unreachable host", func() {
+				By("Sending request with URL to unreachable host")
+				updateReq := map[string]interface{}{
+					"url": "https://nonexistent-host-12345.invalid/registry.json",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for unreachable URL")
+			})
+
+			It("should return 400 for HTTP URL without allow_private_ip", func() {
+				By("Sending request with HTTP URL (not HTTPS) without allow_private_ip")
+				updateReq := map[string]interface{}{
+					"url": "http://example.com/registry.json",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for HTTP URL without allow_private_ip")
+			})
+
+			It("should return 400 for invalid URL format", func() {
+				By("Sending request with invalid URL format")
+				updateReq := map[string]interface{}{
+					"url": "not-a-valid-url",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for invalid URL format")
+			})
+		})
+
+		Context("API URL updates", func() {
+			It("should return 400 for api_url with HTTP when allow_private_ip is false", func() {
+				By("Sending request with HTTP api_url without allow_private_ip")
+				updateReq := map[string]interface{}{
+					"api_url": "http://example.com/api",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for HTTP api_url without allow_private_ip")
+			})
+
+			It("should return 400 for api_url with invalid URL format", func() {
+				By("Sending request with invalid api_url format")
+				updateReq := map[string]interface{}{
+					"api_url": "not-a-valid-url",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 for invalid api_url format")
+			})
+
+			It("should accept api_url even if host is unreachable", func() {
+				// Note: Unlike url updates, api_url only validates URL format and private IP
+				// It does NOT verify that the endpoint is reachable
+				By("Sending request with api_url to unreachable host")
+				updateReq := map[string]interface{}{
+					"api_url": "https://nonexistent-host-12345.invalid/api",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 200 OK (api_url doesn't verify reachability)")
+				Expect(resp.StatusCode).To(Equal(http.StatusOK),
+					"Should return 200 for api_url (reachability not validated)")
+			})
+
+			It("should return 400 when specifying both url and api_url", func() {
+				By("Sending request with both url and api_url")
+				updateReq := map[string]interface{}{
+					"url":     "https://example.com/registry.json",
+					"api_url": "https://example.com/api",
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should return 400 when specifying multiple sources")
+			})
+		})
+	})
+
+	Describe("Cross-endpoint state consistency", func() {
+		// Reset registry to default after each test
+		AfterEach(func() {
+			resetReq := map[string]interface{}{}
+			resp := updateRegistry(apiServer, "default", resetReq)
+			resp.Body.Close()
+		})
+
+		Context("after updating registry with local file", func() {
+			var testFile string
+			const testServerName = "e2e-test-server"
+
+			BeforeEach(func() {
+				By("Creating a test registry file with a unique server")
+				testFile = createTestRegistryFile(map[string]interface{}{
+					testServerName: map[string]interface{}{
+						"image":       "test/e2e-image:latest",
+						"description": "E2E Test server for state consistency",
+						"tier":        "Community",
+						"status":      "Active",
+						"transport":   "stdio",
+					},
+				})
+
+				By("Updating registry with the test file")
+				updateReq := map[string]interface{}{
+					"local_path": testFile,
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			})
+
+			It("should show type='file' in list registries", func() {
+				By("Listing registries")
+				registries := listRegistries(apiServer)
+
+				By("Verifying registry type is 'file'")
+				Expect(registries).To(HaveLen(1))
+				Expect(registries[0].Type).To(Equal(v1.RegistryTypeFile),
+					"Registry type should be 'file' after setting local file")
+				Expect(registries[0].Source).To(Equal(testFile),
+					"Registry source should match the test file path")
+			})
+
+			It("should show updated source in get registry", func() {
+				By("Getting default registry")
+				resp := getRegistry(apiServer, "default")
+				defer resp.Body.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Verifying registry details")
+				var result getRegistryResponse
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.Type).To(Equal(v1.RegistryTypeFile),
+					"Registry type should be 'file'")
+				Expect(result.Source).To(Equal(testFile),
+					"Registry source should match the test file path")
+			})
+
+			It("should return servers from the new file in list servers", func() {
+				By("Listing servers from default registry")
+				resp := listRegistryServers(apiServer, "default")
+				defer resp.Body.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Verifying test server appears in list")
+				var result listServersResponse
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Find our test server
+				found := false
+				for _, server := range result.Servers {
+					if server.Name == testServerName {
+						found = true
+						Expect(server.Description).To(Equal("E2E Test server for state consistency"))
+						break
+					}
+				}
+				Expect(found).To(BeTrue(), "Test server should appear in list servers")
+			})
+
+			It("should find the new server via get server endpoint", func() {
+				By("Getting the test server")
+				resp := getRegistryServer(apiServer, "default", testServerName)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(resp.StatusCode).To(Equal(http.StatusOK),
+					"Should find the test server")
+
+				By("Verifying server details")
+				var result getServerResponse
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.Server).ToNot(BeNil())
+				Expect(result.Server.Name).To(Equal(testServerName))
+				Expect(result.IsRemote).To(BeFalse())
+			})
+
+			It("should not find servers from original registry", func() {
+				By("Attempting to get 'osv' server from default registry")
+				resp := getRegistryServer(apiServer, "default", "osv")
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+					"osv server should not exist in custom registry")
+			})
+
+			It("should show correct server count", func() {
+				By("Listing registries")
+				registries := listRegistries(apiServer)
+
+				By("Verifying server count is 1")
+				Expect(registries[0].ServerCount).To(Equal(1),
+					"Server count should be 1 for test registry")
+			})
+		})
+
+		Context("after resetting to default", func() {
+			BeforeEach(func() {
+				By("First setting a custom registry")
+				testFile := createTestRegistryFile(map[string]interface{}{
+					"custom-server": map[string]interface{}{
+						"image":       "test/custom:latest",
+						"description": "Custom server",
+						"tier":        "Community",
+						"status":      "Active",
+						"transport":   "stdio",
+					},
+				})
+				setResp := updateRegistry(apiServer, "default", map[string]interface{}{
+					"local_path": testFile,
+				})
+				setResp.Body.Close()
+				Expect(setResp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Resetting to default")
+				resetReq := map[string]interface{}{}
+				resetResp := updateRegistry(apiServer, "default", resetReq)
+				resetResp.Body.Close()
+				Expect(resetResp.StatusCode).To(Equal(http.StatusOK))
+			})
+
+			It("should show type='default' in list registries", func() {
+				By("Listing registries")
+				registries := listRegistries(apiServer)
+
+				By("Verifying registry type is 'default'")
+				Expect(registries).To(HaveLen(1))
+				Expect(registries[0].Type).To(Equal(v1.RegistryTypeDefault),
+					"Registry type should be 'default' after reset")
+				Expect(registries[0].Source).To(BeEmpty(),
+					"Registry source should be empty for default")
+			})
+
+			It("should find osv server again", func() {
+				By("Getting 'osv' server")
+				resp := getRegistryServer(apiServer, "default", "osv")
+				defer resp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(resp.StatusCode).To(Equal(http.StatusOK),
+					"osv server should exist in default registry")
+			})
+
+			It("should not find custom server", func() {
+				By("Attempting to get 'custom-server'")
+				resp := getRegistryServer(apiServer, "default", "custom-server")
+				defer resp.Body.Close()
+
+				By("Verifying response status is 404 Not Found")
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+					"custom-server should not exist in default registry")
+			})
+		})
+
+		Context("with registry containing remote servers", func() {
+			var testFile string
+			const remoteServerName = "e2e-remote-server"
+
+			BeforeEach(func() {
+				By("Creating a test registry file with remote servers")
+				registryData := map[string]interface{}{
+					"version":      "1.0.0",
+					"last_updated": "2025-01-01T00:00:00Z",
+					"servers":      map[string]interface{}{},
+					"remote_servers": map[string]interface{}{
+						remoteServerName: map[string]interface{}{
+							"url":         "https://example.com/mcp",
+							"description": "E2E Test remote server",
+							"tier":        "Community",
+							"status":      "Active",
+							"transport":   "sse",
+						},
+					},
+				}
+				data, err := json.Marshal(registryData)
+				Expect(err).ToNot(HaveOccurred())
+				testFile = createTestRegistryFileWithContent(data)
+
+				By("Updating registry with the test file")
+				updateReq := map[string]interface{}{
+					"local_path": testFile,
+				}
+				resp := updateRegistry(apiServer, "default", updateReq)
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			})
+
+			It("should list remote servers in servers endpoint", func() {
+				By("Listing servers from default registry")
+				resp := listRegistryServers(apiServer, "default")
+				defer resp.Body.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+				By("Verifying remote server appears in list")
+				var result listServersResponse
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Remote server should be in the remote_servers array
+				found := false
+				for _, server := range result.RemoteServers {
+					if server.Name == remoteServerName {
+						found = true
+						Expect(server.Description).To(Equal("E2E Test remote server"))
+						break
+					}
+				}
+				Expect(found).To(BeTrue(), "Remote server should appear in remote_servers list")
+			})
+
+			It("should return remote server via get server endpoint with is_remote=true", func() {
+				By("Getting the remote test server")
+				resp := getRegistryServer(apiServer, "default", remoteServerName)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 200 OK")
+				Expect(resp.StatusCode).To(Equal(http.StatusOK),
+					"Should find the remote test server")
+
+				By("Verifying server details indicate remote")
+				var result getServerResponse
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.IsRemote).To(BeTrue(), "is_remote should be true")
+				Expect(result.RemoteServer).ToNot(BeNil(), "remote_server should be populated")
+				Expect(result.Server).To(BeNil(), "server should be nil for remote servers")
+				Expect(result.RemoteServer.Name).To(Equal(remoteServerName))
+			})
+		})
 	})
 
 	Describe("DELETE /api/v1beta/registry/{name} - Remove registry", func() {

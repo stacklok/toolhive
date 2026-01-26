@@ -1,0 +1,126 @@
+# vMCP Configuration with Optimizer Enabled
+# This configuration enables the optimizer for semantic tool discovery
+
+name: "vmcp-debug"
+
+# Reference to ToolHive group containing MCP servers
+groupRef: "default"
+
+# Client authentication (anonymous for local development)
+incomingAuth:
+  type: anonymous
+
+# Backend authentication (unauthenticated for local development)
+outgoingAuth:
+  source: inline
+  default:
+    type: unauthenticated
+
+# Tool aggregation settings
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+
+# Operational settings
+operational:
+  timeouts:
+    default: 30s
+  failureHandling:
+    healthCheckInterval: 30s
+    unhealthyThreshold: 3
+    partialFailureMode: fail
+
+# =============================================================================
+# OPTIMIZER CONFIGURATION
+# =============================================================================
+# When enabled, vMCP exposes optim.find_tool and optim.call_tool instead of
+# all backend tools directly. This reduces token usage by allowing LLMs to
+# discover relevant tools on demand via semantic search.
+#
+# The optimizer ingests tools from all backends in the group, generates
+# embeddings, and provides semantic search capabilities.
+
+optimizer:
+  # Enable the optimizer
+  enabled: true
+  
+  # Embedding backend: "ollama" (default), "openai-compatible", or "vllm"
+  # - "ollama": Uses local Ollama HTTP API for embeddings (default, requires 'ollama serve')
+  # - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
+  # - "vllm": Alias for OpenAI-compatible API
+  embeddingBackend: ollama
+  
+  # Embedding dimension (common values: 384, 768, 1536)
+  # 384 is standard for all-MiniLM-L6-v2 and nomic-embed-text
+  embeddingDimension: 384
+  
+  # Optional: Path for persisting the chromem-go database
+  # If omitted, the database will be in-memory only (ephemeral)
+  persistPath: /tmp/vmcp-optimizer-debug.db
+  
+  # Optional: Path for the SQLite FTS5 database (for hybrid search)
+  # Default: ":memory:" (in-memory) or "{persistPath}/fts.db" if persistPath is set
+  # Hybrid search (semantic + BM25) is ALWAYS enabled
+  ftsDBPath: /tmp/vmcp-optimizer-fts.db  # Uncomment to customize location
+  
+  # Optional: Hybrid search ratio (0-100, representing percentage)
+  # Default: 70 (70% semantic, 30% BM25)
+  # hybridSearchRatio: 70
+  
+  # =============================================================================
+  # PRODUCTION CONFIGURATIONS (Commented Examples)
+  # =============================================================================
+  
+  # Option 1: Local Ollama (good for development/testing)
+  # embeddingBackend: ollama
+  # embeddingURL: http://localhost:11434
+  # embeddingModel: all-minilm  # Default model (all-MiniLM-L6-v2)
+  # embeddingDimension: 384
+  
+  # Option 2: vLLM (recommended for production with GPU acceleration)
+  # embeddingBackend: openai-compatible
+  # embeddingURL: http://vllm-service:8000/v1
+  # embeddingModel: BAAI/bge-small-en-v1.5
+  # embeddingDimension: 768
+  
+  # Option 3: OpenAI API (cloud-based)
+  # embeddingBackend: openai-compatible
+  # embeddingURL: https://api.openai.com/v1
+  # embeddingModel: text-embedding-3-small
+  # embeddingDimension: 1536
+  # (requires OPENAI_API_KEY environment variable)
+  
+  # Option 4: Kubernetes in-cluster service (K8s deployments)
+  # embeddingURL: http://embedding-service-name.namespace.svc.cluster.local:port
+  # Use the full service DNS name with port for in-cluster services
+
+# =============================================================================
+# TELEMETRY CONFIGURATION (for Jaeger tracing)
+# =============================================================================
+# Configure OpenTelemetry to send traces to Jaeger
+telemetry:
+  endpoint: "localhost:4318"  # OTLP HTTP endpoint (Jaeger collector) - no http:// prefix needed with insecure: true
+  serviceName: "vmcp-optimizer"
+  serviceVersion: "1.0.0"  # Optional: service version
+  tracingEnabled: true
+  metricsEnabled: false  # Set to true if you want metrics too
+  samplingRate: "1.0"  # 100% sampling for development (use lower in production)
+  insecure: true  # Use HTTP instead of HTTPS
+
+# =============================================================================
+# USAGE
+# =============================================================================
+# 1. Start MCP backends in the group:
+#    thv run weather --group default
+#    thv run github --group default
+#
+# 2. Start vMCP with optimizer:
+#    thv vmcp serve --config examples/vmcp-config-optimizer.yaml
+#
+# 3. Connect MCP client to vMCP
+#
+# 4. Available tools from vMCP:
+#    - optim.find_tool: Search for tools by semantic query
+#    - optim.call_tool: Execute a tool by name
+#    - (backend tools are NOT directly exposed when optimizer is enabled)

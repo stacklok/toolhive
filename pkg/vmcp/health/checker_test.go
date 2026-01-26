@@ -40,11 +40,11 @@ func TestNewHealthChecker(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+		for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			checker := NewHealthChecker(mockClient, tt.timeout, 0)
+			checker := NewHealthChecker(mockClient, tt.timeout, 0, "")
 			require.NotNil(t, checker)
 
 			// Type assert to access internals for verification
@@ -68,7 +68,7 @@ func TestHealthChecker_CheckHealth_Success(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+	checker := NewHealthChecker(mockClient, 5*time.Second, 0, "")
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -95,7 +95,7 @@ func TestHealthChecker_CheckHealth_ContextCancellation(t *testing.T) {
 		}).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0)
+	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0, "")
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -123,7 +123,7 @@ func TestHealthChecker_CheckHealth_NoTimeout(t *testing.T) {
 		Times(1)
 
 	// Create checker with no timeout
-	checker := NewHealthChecker(mockClient, 0, 0)
+	checker := NewHealthChecker(mockClient, 0, 0, "")
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -213,7 +213,7 @@ func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
 				Return(nil, tt.err).
 				Times(1)
 
-			checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+			checker := NewHealthChecker(mockClient, 5*time.Second, 0, "")
 			target := &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
 				WorkloadName: "test-backend",
@@ -430,7 +430,7 @@ func TestHealthChecker_CheckHealth_Timeout(t *testing.T) {
 		}).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0)
+	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0, "")
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -467,7 +467,7 @@ func TestHealthChecker_CheckHealth_MultipleBackends(t *testing.T) {
 		}).
 		Times(4)
 
-	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+	checker := NewHealthChecker(mockClient, 5*time.Second, 0, "")
 
 	// Test healthy backend
 	status, err := checker.CheckHealth(context.Background(), &vmcp.BackendTarget{

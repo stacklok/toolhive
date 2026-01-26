@@ -6,6 +6,7 @@ package optimizer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -51,21 +52,35 @@ func (*mockBackendClientWithCallTool) ListCapabilities(_ context.Context, _ *vmc
 	return &vmcp.CapabilityList{}, nil
 }
 
-func (m *mockBackendClientWithCallTool) CallTool(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+func (m *mockBackendClientWithCallTool) CallTool(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any, _ map[string]any) (*vmcp.ToolCallResult, error) {
 	if m.callToolError != nil {
 		return nil, m.callToolError
 	}
-	return m.callToolResult, nil
+	// Convert map[string]any to ToolCallResult with JSON-marshaled content
+	jsonBytes, err := json.Marshal(m.callToolResult)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal call tool result: %w", err)
+	}
+	result := &vmcp.ToolCallResult{
+		Content: []vmcp.Content{
+			{
+				Type: "text",
+				Text: string(jsonBytes),
+			},
+		},
+		StructuredContent: m.callToolResult,
+	}
+	return result, nil
 }
 
 //nolint:revive // Receiver unused in mock implementation
-func (m *mockBackendClientWithCallTool) GetPrompt(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (string, error) {
-	return "", nil
+func (m *mockBackendClientWithCallTool) GetPrompt(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+	return &vmcp.PromptGetResult{}, nil
 }
 
 //nolint:revive // Receiver unused in mock implementation
-func (m *mockBackendClientWithCallTool) ReadResource(_ context.Context, _ *vmcp.BackendTarget, _ string) ([]byte, error) {
-	return nil, nil
+func (m *mockBackendClientWithCallTool) ReadResource(_ context.Context, _ *vmcp.BackendTarget, _ string) (*vmcp.ResourceReadResult, error) {
+	return &vmcp.ResourceReadResult{}, nil
 }
 
 // TestCreateFindToolHandler_InvalidArguments tests error handling for invalid arguments

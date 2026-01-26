@@ -35,18 +35,18 @@ func (m *mockBackendClient) ListCapabilities(_ context.Context, _ *vmcp.BackendT
 }
 
 //nolint:revive // Receiver unused in mock implementation
-func (m *mockBackendClient) CallTool(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
-	return nil, nil
+func (m *mockBackendClient) CallTool(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any, _ map[string]any) (*vmcp.ToolCallResult, error) {
+	return &vmcp.ToolCallResult{}, nil
 }
 
 //nolint:revive // Receiver unused in mock implementation
-func (m *mockBackendClient) GetPrompt(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (string, error) {
-	return "", nil
+func (m *mockBackendClient) GetPrompt(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (*vmcp.PromptGetResult, error) {
+	return &vmcp.PromptGetResult{}, nil
 }
 
 //nolint:revive // Receiver unused in mock implementation
-func (m *mockBackendClient) ReadResource(_ context.Context, _ *vmcp.BackendTarget, _ string) ([]byte, error) {
-	return nil, nil
+func (m *mockBackendClient) ReadResource(_ context.Context, _ *vmcp.BackendTarget, _ string) (*vmcp.ResourceReadResult, error) {
+	return &vmcp.ResourceReadResult{}, nil
 }
 
 // mockSession implements server.ClientSession for testing

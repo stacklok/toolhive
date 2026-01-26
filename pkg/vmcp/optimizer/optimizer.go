@@ -723,7 +723,7 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 			"workload_name", target.WorkloadName)
 
 		// Call the tool on the backend using the backend client
-		result, err := o.backendClient.CallTool(ctx, target, backendToolName, parameters)
+		result, err := o.backendClient.CallTool(ctx, target, backendToolName, parameters, nil)
 		if err != nil {
 			logger.Errorw("Tool call failed",
 				"error", err,
@@ -733,18 +733,37 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError(fmt.Sprintf("tool call failed: %v", err)), nil
 		}
 
-		// Convert result to JSON
-		resultJSON, err := json.Marshal(result)
-		if err != nil {
-			logger.Errorw("Failed to marshal tool result", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal result: %v", err)), nil
+		// Convert vmcp.Content array to MCP content array
+		mcpContent := make([]mcp.Content, len(result.Content))
+		for i, content := range result.Content {
+			switch content.Type {
+			case "text":
+				mcpContent[i] = mcp.NewTextContent(content.Text)
+			case "image":
+				mcpContent[i] = mcp.NewImageContent(content.Data, content.MimeType)
+			case "audio":
+				mcpContent[i] = mcp.NewAudioContent(content.Data, content.MimeType)
+			case "resource":
+				// Handle embedded resources - convert to text for now
+				logger.Warnw("Converting resource content to text - embedded resources not yet supported")
+				mcpContent[i] = mcp.NewTextContent("")
+			default:
+				logger.Warnw("Converting unknown content type to text", "type", content.Type)
+				mcpContent[i] = mcp.NewTextContent("")
+			}
+		}
+
+		// Create MCP tool result with _meta field preserved
+		mcpResult := &mcp.CallToolResult{
+			Content: mcpContent,
+			IsError: result.IsError,
 		}
 
 		logger.Infow("optim_call_tool completed successfully",
 			"backend_id", backendID,
 			"tool_name", toolName)
 
-		return mcp.NewToolResultText(string(resultJSON)), nil
+		return mcpResult, nil
 	}
 }
 

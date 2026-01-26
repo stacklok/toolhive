@@ -24,9 +24,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 const (
@@ -700,8 +700,8 @@ func (h *httpBackendClient) ReadResource(
 
 	return &vmcp.ResourceReadResult{
 		Contents: data,
-		MimeType:  mimeType,
-		Meta:      meta,
+		MimeType: mimeType,
+		Meta:     meta,
 	}, nil
 }
 

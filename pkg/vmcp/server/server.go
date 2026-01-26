@@ -370,28 +370,6 @@ func New(
 		logger.Info("Health monitoring disabled")
 	}
 
-	// Initialize optimizer integration if configured
-	var optimizerInteg optimizer.Integration
-	if cfg.OptimizerIntegration != nil {
-		optimizerInteg = cfg.OptimizerIntegration
-	} else if cfg.OptimizerConfig != nil && cfg.OptimizerConfig.Enabled {
-		// Create optimizer integration from config (for backward compatibility)
-		var err error
-		optimizerInteg, err = optimizer.NewIntegration(ctx, cfg.OptimizerConfig, mcpServer, backendClient, sessionManager)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create optimizer integration: %w", err)
-		}
-	}
-
-	// Initialize optimizer if configured (registers tools and ingests backends)
-	if optimizerInteg != nil {
-		if err := optimizerInteg.Initialize(ctx, mcpServer, backendRegistry); err != nil {
-			return nil, fmt.Errorf("failed to initialize optimizer: %w", err)
-		}
-		// Store optimizer integration in config for cleanup during Stop()
-		cfg.OptimizerIntegration = optimizerInteg
-	}
-
 	// Create Server instance
 	srv := &Server{
 		config:            cfg,
@@ -569,6 +547,23 @@ func (s *Server) Start(ctx context.Context) error {
 			s.healthMonitorMu.Unlock()
 		} else {
 			logger.Info("Health monitor started")
+		}
+	}
+
+	// Initialize optimizer integration if configured
+	if s.config.OptimizerIntegration == nil && s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
+		// Create optimizer integration from config (for backward compatibility)
+		optimizerInteg, err := optimizer.NewIntegration(ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer integration: %w", err)
+		}
+		s.config.OptimizerIntegration = optimizerInteg
+	}
+
+	// Initialize optimizer if configured (registers tools and ingests backends)
+	if s.config.OptimizerIntegration != nil {
+		if err := s.config.OptimizerIntegration.Initialize(ctx, s.mcpServer, s.backendRegistry); err != nil {
+			return fmt.Errorf("failed to initialize optimizer: %w", err)
 		}
 	}
 

@@ -954,6 +954,10 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 			"env1": "value1",
 			"env2": "value2",
 		},
+		HeaderForward: &HeaderForwardConfig{
+			AddPlaintextHeaders:  map[string]string{"X-Static": "static-val"},
+			AddHeadersFromSecret: map[string]string{"X-Secret": "my-secret-name"},
+		},
 	}
 
 	// Write the config to a buffer
@@ -977,6 +981,9 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	assert.Equal(t, originalConfig.Debug, readConfig.Debug, "Debug should match")
 	assert.Equal(t, originalConfig.ContainerLabels, readConfig.ContainerLabels, "ContainerLabels should match")
 	assert.Equal(t, originalConfig.EnvVars, readConfig.EnvVars, "EnvVars should match")
+	require.NotNil(t, readConfig.HeaderForward, "HeaderForward should not be nil")
+	assert.Equal(t, originalConfig.HeaderForward.AddPlaintextHeaders, readConfig.HeaderForward.AddPlaintextHeaders, "AddPlaintextHeaders should match")
+	assert.Equal(t, originalConfig.HeaderForward.AddHeadersFromSecret, readConfig.HeaderForward.AddHeadersFromSecret, "AddHeadersFromSecret should match")
 }
 
 func TestCommaSeparatedEnvVars(t *testing.T) {
@@ -1765,6 +1772,162 @@ func TestRunConfig_WithPorts_PortReuse(t *testing.T) {
 		assert.Equal(t, config, result, "WithPorts should return the same config instance")
 		assert.Greater(t, config.Port, 0, "Port should be auto-selected")
 	})
+}
+
+func TestHeaderForwardConfig_HasHeaders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		config *HeaderForwardConfig
+		want   bool
+	}{
+		{
+			name:   "nil receiver",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "empty struct",
+			config: &HeaderForwardConfig{},
+			want:   false,
+		},
+		{
+			name:   "empty maps",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{}, AddHeadersFromSecret: map[string]string{}},
+			want:   false,
+		},
+		{
+			name:   "plaintext only",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Key": "val"}},
+			want:   true,
+		},
+		{
+			name:   "secret only",
+			config: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{"X-Key": "secret-name"}},
+			want:   true,
+		},
+		{
+			name: "both set",
+			config: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-A": "a"},
+				AddHeadersFromSecret: map[string]string{"X-B": "secret-b"},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.config.HasHeaders())
+		})
+	}
+}
+
+func TestRunConfig_resolveHeaderForwardSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		headerForward *HeaderForwardConfig
+		mockSecrets   map[string]string
+		mockErrors    map[string]error
+		wantErr       bool
+		wantResolved  map[string]string
+		wantPlaintext map[string]string // verifies AddPlaintextHeaders is NOT mutated
+	}{
+		{
+			name:          "nil HeaderForward",
+			headerForward: nil,
+			wantErr:       false,
+		},
+		{
+			name:          "empty AddHeadersFromSecret",
+			headerForward: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{}},
+			wantErr:       false,
+		},
+		{
+			name: "single secret resolved",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"Authorization": "my-api-key"},
+			},
+			mockSecrets:  map[string]string{"my-api-key": "Bearer token123"},
+			wantErr:      false,
+			wantResolved: map[string]string{"Authorization": "Bearer token123"},
+		},
+		{
+			name: "multiple secrets",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-Api-Key": "api-secret",
+					"X-Token":   "token-secret",
+				},
+			},
+			mockSecrets: map[string]string{
+				"api-secret":   "key-value",
+				"token-secret": "token-value",
+			},
+			wantErr:      false,
+			wantResolved: map[string]string{"X-Api-Key": "key-value", "X-Token": "token-value"},
+		},
+		{
+			name: "secret resolution error",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Key": "missing-secret"},
+			},
+			mockErrors: map[string]error{"missing-secret": fmt.Errorf("secret not found")},
+			wantErr:    true,
+		},
+		{
+			name: "merges into existing plaintext headers without mutating them",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Existing": "existing-value"},
+				AddHeadersFromSecret: map[string]string{"X-New": "new-secret"},
+			},
+			mockSecrets:   map[string]string{"new-secret": "resolved-value"},
+			wantErr:       false,
+			wantResolved:  map[string]string{"X-Existing": "existing-value", "X-New": "resolved-value"},
+			wantPlaintext: map[string]string{"X-Existing": "existing-value"},
+		},
+		{
+			name: "secret overrides plaintext for same header name",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Auth": "plaintext"},
+				AddHeadersFromSecret: map[string]string{"X-Auth": "auth-secret"},
+			},
+			mockSecrets:  map[string]string{"auth-secret": "secret-value"},
+			wantResolved: map[string]string{"X-Auth": "secret-value"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+
+			secretManager := secretsmocks.NewMockProvider(ctrl)
+			for name, val := range tc.mockSecrets {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return(val, nil)
+			}
+			for name, retErr := range tc.mockErrors {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return("", retErr)
+			}
+
+			cfg := &RunConfig{HeaderForward: tc.headerForward}
+			err := cfg.resolveHeaderForwardSecrets(context.Background(), secretManager)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantResolved != nil {
+				require.NotNil(t, cfg.HeaderForward)
+				assert.Equal(t, tc.wantResolved, cfg.HeaderForward.ResolvedHeaders())
+			}
+			if tc.wantPlaintext != nil {
+				assert.Equal(t, tc.wantPlaintext, cfg.HeaderForward.AddPlaintextHeaders,
+					"AddPlaintextHeaders should not be mutated by secret resolution")
+			}
+		})
+	}
 }
 
 // TestWithExistingPort tests the WithExistingPort builder option

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ory/fosite"
@@ -63,6 +64,12 @@ func TestRegisterClientHandler(t *testing.T) {
 			expectedStatus:  http.StatusInternalServerError,
 			expectedError:   "server_error",
 			expectedErrDesc: "failed to register client",
+		},
+		{
+			name:           "oversized body rejected",
+			requestBody:    strings.Repeat("x", 65*1024), // 65KB exceeds 64KB limit
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  registration.DCRErrorInvalidClientMetadata,
 		},
 	}
 

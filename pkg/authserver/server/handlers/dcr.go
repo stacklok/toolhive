@@ -6,6 +6,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,16 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Limit request body size to prevent DoS attacks
 	req.Body = http.MaxBytesReader(w, req.Body, maxDCRBodySize)
+
+	// Validate Content-Type header (RFC 7591 requires application/json)
+	contentType := req.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "application/json") {
+		writeDCRError(w, http.StatusBadRequest, &registration.DCRError{
+			Error:            registration.DCRErrorInvalidClientMetadata,
+			ErrorDescription: "Content-Type must be application/json",
+		})
+		return
+	}
 
 	// Parse request body
 	var dcrReq registration.DCRRequest

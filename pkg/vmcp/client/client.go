@@ -629,7 +629,10 @@ func (h *httpBackendClient) CallTool(
 }
 
 // ReadResource retrieves a resource from the backend MCP server.
-func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) ([]byte, error) {
+// Returns the complete resource result including _meta field.
+func (h *httpBackendClient) ReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
 	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
 
 	// Create a client for this backend
@@ -667,10 +670,14 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 	// Concatenate all resource contents
 	// MCP resources can have multiple contents (text or blob)
 	var data []byte
-	for _, content := range result.Contents {
+	var mimeType string
+	for i, content := range result.Contents {
 		// Try to convert to TextResourceContents
 		if textContent, ok := mcp.AsTextResourceContents(content); ok {
 			data = append(data, []byte(textContent.Text)...)
+			if i == 0 && textContent.MIMEType != "" {
+				mimeType = textContent.MIMEType
+			}
 		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
 			// Blob is base64-encoded per MCP spec, decode it to bytes
 			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
@@ -682,10 +689,20 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 			} else {
 				data = append(data, decoded...)
 			}
+			if i == 0 && blobContent.MIMEType != "" {
+				mimeType = blobContent.MIMEType
+			}
 		}
 	}
 
-	return data, nil
+	// Extract _meta field from backend response
+	meta := conversion.FromMCPMeta(result.Meta)
+
+	return &vmcp.ResourceReadResult{
+		Contents: data,
+		MimeType:  mimeType,
+		Meta:      meta,
+	}, nil
 }
 
 // GetPrompt retrieves a prompt from the backend MCP server.

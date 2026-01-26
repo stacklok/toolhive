@@ -89,8 +89,9 @@ func checkPodsReady(ctx context.Context, c client.Client, namespace string, labe
 	}
 
 	for _, pod := range podList.Items {
+		// Skip pods that are not running (e.g., Succeeded, Failed from old deployments)
 		if pod.Status.Phase != corev1.PodRunning {
-			return fmt.Errorf("pod %s is in phase %s", pod.Name, pod.Status.Phase)
+			continue
 		}
 
 		containerReady := false
@@ -113,6 +114,17 @@ func checkPodsReady(ctx context.Context, c client.Client, namespace string, labe
 		if !podReady {
 			return fmt.Errorf("pod %s not ready", pod.Name)
 		}
+	}
+
+	// After filtering, ensure we found at least one running pod
+	runningPods := 0
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			runningPods++
+		}
+	}
+	if runningPods == 0 {
+		return fmt.Errorf("no running pods found with labels %v", labels)
 	}
 	return nil
 }

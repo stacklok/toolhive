@@ -20,7 +20,11 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
+// TODO: This test requires an external embedding service (ollama, vllm, openai) to be deployed
+// There is no mock/placeholder backend available for testing. Re-enable when we have:
+// 1. A test embedding service deployed in the cluster, OR
+// 2. A mock embedding backend for testing
+var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, Pending, func() {
 	var (
 		testNamespace  = "default"
 		mcpGroupName   = "test-optimizer-group"

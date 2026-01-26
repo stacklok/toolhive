@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -65,14 +66,16 @@ func TestNew_OptimizerEnabled(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       0,
 		SessionTTL: 5 * time.Minute,
-		OptimizerConfig: &OptimizerConfig{
-			Enabled:            true,
-			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:   "ollama",
-			EmbeddingURL:       "http://localhost:11434",
-			EmbeddingModel:     "all-minilm",
-			EmbeddingDimension: 384,
-			HybridSearchRatio:  70,
+		OptimizerConfig: &optimizer.Config{
+			Enabled:           true,
+			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
+			HybridSearchRatio: 70,
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: "ollama",
+				BaseURL:     "http://localhost:11434",
+				Model:       "all-minilm",
+				Dimension:   384,
+			},
 		},
 	}
 
@@ -113,7 +116,7 @@ func TestNew_OptimizerDisabled(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       0,
 		SessionTTL: 5 * time.Minute,
-		OptimizerConfig: &OptimizerConfig{
+		OptimizerConfig: &optimizer.Config{
 			Enabled: false, // Disabled
 		},
 	}
@@ -197,13 +200,15 @@ func TestNew_OptimizerIngestionError(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       0,
 		SessionTTL: 5 * time.Minute,
-		OptimizerConfig: &OptimizerConfig{
-			Enabled:            true,
-			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:   "ollama",
-			EmbeddingURL:       "http://localhost:11434",
-			EmbeddingModel:     "all-minilm",
-			EmbeddingDimension: 384,
+		OptimizerConfig: &optimizer.Config{
+			Enabled:     true,
+			PersistPath: filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: "ollama",
+				BaseURL:     "http://localhost:11434",
+				Model:       "all-minilm",
+				Dimension:   384,
+			},
 		},
 	}
 
@@ -267,14 +272,16 @@ func TestNew_OptimizerHybridRatio(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       0,
 		SessionTTL: 5 * time.Minute,
-		OptimizerConfig: &OptimizerConfig{
-			Enabled:            true,
-			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:   "ollama",
-			EmbeddingURL:       "http://localhost:11434",
-			EmbeddingModel:     "all-minilm",
-			EmbeddingDimension: 384,
-			HybridSearchRatio:  50, // Custom ratio
+		OptimizerConfig: &optimizer.Config{
+			Enabled:           true,
+			PersistPath:       filepath.Join(tmpDir, "optimizer-db"),
+			HybridSearchRatio: 50, // Custom ratio
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: "ollama",
+				BaseURL:     "http://localhost:11434",
+				Model:       "all-minilm",
+				Dimension:   384,
+			},
 		},
 	}
 
@@ -330,13 +337,15 @@ func TestServer_Stop_OptimizerCleanup(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       0,
 		SessionTTL: 5 * time.Minute,
-		OptimizerConfig: &OptimizerConfig{
-			Enabled:            true,
-			PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
-			EmbeddingBackend:   "ollama",
-			EmbeddingURL:       "http://localhost:11434",
-			EmbeddingModel:     "all-minilm",
-			EmbeddingDimension: 384,
+		OptimizerConfig: &optimizer.Config{
+			Enabled:     true,
+			PersistPath: filepath.Join(tmpDir, "optimizer-db"),
+			EmbeddingConfig: &embeddings.Config{
+				BackendType: "ollama",
+				BaseURL:     "http://localhost:11434",
+				Model:       "all-minilm",
+				Dimension:   384,
+			},
 		},
 	}
 

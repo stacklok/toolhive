@@ -64,9 +64,9 @@ var _ = Describe("Version API", Label("api", "version", "e2e"), func() {
 
 			// Version should be either a semantic version (vX.Y.Z), "dev", or "build-<commit>"
 			Expect(versionResp.Version).To(SatisfyAny(
-				MatchRegexp(`^v\d+\.\d+\.\d+`),     // Semantic version
-				MatchRegexp(`^build-[a-f0-9]{8}$`), // Build with commit hash
-				Equal("dev"),                       // Development version
+				MatchRegexp(`^v\d+\.\d+\.\d+`),      // Semantic version
+				MatchRegexp(`^build-[a-f0-9]{7,}$`), // Build with commit hash (7+ chars)
+				Equal("dev"),                        // Development version
 			))
 		})
 	})

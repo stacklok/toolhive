@@ -69,14 +69,14 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 					Source: "discovered",
 				},
 
-			Config: vmcpconfig.Config{
-				Group: mcpGroupName,
-				Optimizer: &vmcpconfig.OptimizerConfig{
-					Enabled: true,
-					// EmbeddingURL is required for optimizer configuration
-					// For in-cluster services, use the full service DNS name with port
-					EmbeddingURL: "http://dummy-embedding-service.default.svc.cluster.local:11434",
-				},
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Optimizer: &vmcpconfig.OptimizerConfig{
+						Enabled: true,
+						// EmbeddingURL is required for optimizer configuration
+						// For in-cluster services, use the full service DNS name with port
+						EmbeddingURL: "http://dummy-embedding-service.default.svc.cluster.local:11434",
+					},
 					// Define a composite tool that calls fetch twice
 					CompositeTools: []vmcpconfig.CompositeToolConfig{
 						{

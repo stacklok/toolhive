@@ -8,12 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Config represents the audit logging configuration.
@@ -129,28 +127,6 @@ func (c *Config) ShouldAuditEvent(eventType string) bool {
 	}
 
 	return true
-}
-
-// CreateMiddlewareWithTransport creates an HTTP middleware from the audit configuration with transport information.
-func (c *Config) CreateMiddlewareWithTransport(transportType string) (types.MiddlewareFunction, error) {
-	auditor, err := NewAuditorWithTransport(c, transportType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create auditor: %w", err)
-	}
-	return auditor.Middleware, nil
-}
-
-// GetMiddlewareFromFile loads the audit configuration from a file and creates an HTTP middleware.
-// Note: This function requires a transport type to be provided separately.
-func GetMiddlewareFromFile(path string, transportType string) (func(http.Handler) http.Handler, error) {
-	// Load the configuration
-	config, err := LoadFromFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load audit config: %w", err)
-	}
-
-	// Create the middleware with transport information
-	return config.CreateMiddlewareWithTransport(transportType)
 }
 
 // Validate validates the audit configuration.

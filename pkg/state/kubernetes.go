@@ -38,6 +38,12 @@ func (*KubernetesStore) GetWriter(_ context.Context, _ string) (io.WriteCloser, 
 	return &noopWriteCloser{}, nil
 }
 
+// CreateExclusive returns a no-op writer for Kubernetes stores.
+// In Kubernetes, state management is handled by the cluster, not local files.
+func (*KubernetesStore) CreateExclusive(_ context.Context, _ string) (io.WriteCloser, error) {
+	return &noopWriteCloser{}, nil
+}
+
 // Delete is a no-op for Kubernetes stores.
 func (*KubernetesStore) Delete(_ context.Context, _ string) error {
 	return nil

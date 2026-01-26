@@ -22,6 +22,11 @@ type Store interface {
 	// This is useful for streaming large state data
 	GetWriter(ctx context.Context, name string) (io.WriteCloser, error)
 
+	// CreateExclusive creates a new state entry exclusively, returning an error if it already exists.
+	// This provides atomic check-and-create semantics to prevent race conditions.
+	// Returns a writer for the new state data, or an error with http.StatusConflict if the entry exists.
+	CreateExclusive(ctx context.Context, name string) (io.WriteCloser, error)
+
 	// Delete removes the data for the given name
 	Delete(ctx context.Context, name string) error
 

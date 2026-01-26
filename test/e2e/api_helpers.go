@@ -208,6 +208,16 @@ func (s *Server) BaseURL() string {
 	return s.baseURL
 }
 
+// GetStderr returns the accumulated stderr output from the server process.
+func (s *Server) GetStderr() string {
+	return s.stderr.String()
+}
+
+// GetStdout returns the accumulated stdout output from the server process.
+func (s *Server) GetStdout() string {
+	return s.stdout.String()
+}
+
 // StartServer is a helper function that creates and starts an API server
 // and registers cleanup in the Ginkgo AfterEach
 func StartServer(config *ServerConfig) *Server {

@@ -140,7 +140,7 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 	// Static mode: Use pre-configured backends if available
 	if len(d.staticBackends) > 0 {
 		logger.Infof("Using %d pre-configured static backends (no K8s API access)", len(d.staticBackends))
-		return d.discoverFromStaticConfig()
+		return d.discoverFromStaticConfig(), nil
 	}
 
 	// If staticBackends was explicitly set (even if empty), but groupsManager is nil,
@@ -260,7 +260,7 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 
 // discoverFromStaticConfig converts pre-configured static backends into vmcp.Backend objects
 // for use in static mode where no K8s API access is available.
-func (d *backendDiscoverer) discoverFromStaticConfig() ([]vmcp.Backend, error) {
+func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 	backends := make([]vmcp.Backend, 0, len(d.staticBackends))
 
 	for _, staticBackend := range d.staticBackends {
@@ -292,5 +292,5 @@ func (d *backendDiscoverer) discoverFromStaticConfig() ([]vmcp.Backend, error) {
 			staticBackend.Name, staticBackend.URL, staticBackend.Transport)
 	}
 
-	return backends, nil
+	return backends
 }

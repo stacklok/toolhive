@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, Pending, func() {
+var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 	var (
 		testNamespace  = "default"
 		mcpGroupName   = "test-optimizer-group"
@@ -72,8 +72,9 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, Pending, func() {
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Optimizer: &vmcpconfig.OptimizerConfig{
-						Enabled:          true,
-						EmbeddingBackend: "placeholder", // Use placeholder backend for testing (no external service needed)
+						Enabled:            true,
+						EmbeddingBackend:   "placeholder", // Use placeholder backend for testing (no external service needed)
+						EmbeddingDimension: 384,           // Required dimension for placeholder backend
 					},
 					// Define a composite tool that calls fetch twice
 					CompositeTools: []vmcpconfig.CompositeToolConfig{

@@ -340,8 +340,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 			It("should stop the streamable-http server successfully [Serial]", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() string {
@@ -356,8 +355,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 			It("should restart the streamable-http server successfully [Serial]", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)

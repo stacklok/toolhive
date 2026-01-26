@@ -399,7 +399,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Infof("Using target port: %d", selectedTargetPort)
+		logger.Debugf("Using target port: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 

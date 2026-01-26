@@ -118,16 +118,16 @@ func (t telemetryBackendClient) record(
 }
 
 func (t telemetryBackendClient) CallTool(
-	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any,
-) (_ map[string]any, retErr error) {
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
+) (_ *vmcp.ToolCallResult, retErr error) {
 	ctx, done := t.record(ctx, target, "call_tool", &retErr)
 	defer done()
-	return t.backendClient.CallTool(ctx, target, toolName, arguments)
+	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
 
 func (t telemetryBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
-) (_ []byte, retErr error) {
+) (_ *vmcp.ResourceReadResult, retErr error) {
 	ctx, done := t.record(ctx, target, "read_resource", &retErr)
 	defer done()
 	return t.backendClient.ReadResource(ctx, target, uri)
@@ -135,7 +135,7 @@ func (t telemetryBackendClient) ReadResource(
 
 func (t telemetryBackendClient) GetPrompt(
 	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
-) (_ string, retErr error) {
+) (_ *vmcp.PromptGetResult, retErr error) {
 	ctx, done := t.record(ctx, target, "get_prompt", &retErr)
 	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)

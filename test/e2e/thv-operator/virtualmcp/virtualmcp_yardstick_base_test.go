@@ -233,6 +233,95 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			// Use shared helper to test tool listing and calling
 			TestToolListingAndCall(vmcpNodePort, "toolhive-yardstick-test", "echo", "hello123")
 		})
+
+		It("should preserve metadata when calling tools through vMCP", func() {
+			By("Creating and initializing MCP client")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-metadata-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Listing tools from VirtualMCPServer")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty())
+
+			// Find an echo tool to call
+			var toolToCall string
+			for _, tool := range tools.Tools {
+				if strings.Contains(tool.Name, "echo") {
+					toolToCall = tool.Name
+					break
+				}
+			}
+			Expect(toolToCall).ToNot(BeEmpty(), "Should find an echo tool")
+
+			By(fmt.Sprintf("Calling tool: %s with metadata", toolToCall))
+			// Yardstick server echoes back metadata from requests to responses
+			// This tests the full round-trip: client → vMCP → backend → vMCP → client
+			testTraceID := "test-trace-123"
+			testRequestID := "req-456"
+			callRequest := mcp.CallToolRequest{}
+			callRequest.Params.Name = toolToCall
+			callRequest.Params.Arguments = map[string]interface{}{
+				"input": "testmetadatapreservation",
+			}
+			callRequest.Params.Meta = &mcp.Meta{
+				AdditionalFields: map[string]interface{}{
+					"traceId":   testTraceID,
+					"requestId": testRequestID,
+				},
+			}
+
+			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+			Expect(err).ToNot(HaveOccurred(), "Tool call should succeed")
+			Expect(result).ToNot(BeNil())
+
+			By("Verifying metadata preservation through vMCP")
+			// Yardstick echoes back _meta fields from the request
+			// This validates the full metadata preservation path:
+			// 1. vMCP accepts _meta in client requests
+			// 2. vMCP forwards _meta to backend (yardstick)
+			// 3. Backend echoes _meta in response
+			// 4. vMCP preserves _meta from backend response back to client
+
+			GinkgoWriter.Printf("Tool call result - IsError: %v\n", result.IsError)
+
+			if result.Meta == nil {
+				GinkgoWriter.Printf("[DEBUG] Result.Meta is nil - metadata was not preserved\n")
+				GinkgoWriter.Printf("[DEBUG] This could indicate:\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not forwarded from vMCP to backend\n")
+				GinkgoWriter.Printf("[DEBUG]   - Backend not returning metadata (check yardstick logs)\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not preserved from backend response to client\n")
+			}
+
+			Expect(result.Meta).ToNot(BeNil(),
+				"Yardstick should echo back metadata from request. "+
+					"Check: 1) vMCP forwarding _meta to backend, 2) backend echoing _meta, 3) vMCP preserving _meta from response")
+
+			GinkgoWriter.Printf("Metadata preserved through vMCP:\n")
+			if result.Meta.ProgressToken != nil {
+				GinkgoWriter.Printf("  progressToken: %v\n", result.Meta.ProgressToken)
+			}
+
+			Expect(result.Meta.AdditionalFields).ToNot(BeEmpty(),
+				"Yardstick should preserve additional metadata fields from request")
+
+			// Verify the custom fields we sent are echoed back
+			traceID, hasTraceID := result.Meta.AdditionalFields["traceId"]
+			Expect(hasTraceID).To(BeTrue(), "Should preserve traceId field")
+			Expect(traceID).To(Equal(testTraceID), "TraceId value should match what was sent")
+
+			requestID, hasRequestID := result.Meta.AdditionalFields["requestId"]
+			Expect(hasRequestID).To(BeTrue(), "Should preserve requestId field")
+			Expect(requestID).To(Equal(testRequestID), "RequestId value should match what was sent")
+
+			for key, value := range result.Meta.AdditionalFields {
+				GinkgoWriter.Printf("  %s: %v\n", key, value)
+			}
+
+			GinkgoWriter.Printf("[PASS] vMCP correctly preserves metadata end-to-end\n")
+		})
 	})
 
 	Context("when verifying VirtualMCPServer status", func() {

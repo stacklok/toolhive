@@ -312,6 +312,10 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
+- Use very large numbers for unit tests which need port numbers.
+  - Using common port ranges leads to a likelihood that you will clash with a
+    port which is already in use. Pick math.MaxInt16 as a sample port to reduce
+    the changes of hitting this problem.
 
 ### Go Coding Style
 

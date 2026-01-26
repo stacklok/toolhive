@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
+var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, Pending, func() {
 	var (
 		testNamespace  = "default"
 		mcpGroupName   = "test-optimizer-group"

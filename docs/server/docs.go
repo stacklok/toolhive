@@ -2161,7 +2161,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Register a new client",
@@ -2215,7 +2215,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Register multiple clients",
@@ -2259,7 +2259,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Unregister multiple clients",
@@ -2294,7 +2294,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Unregister a client",
@@ -2338,7 +2338,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     },
                     "404": {
                         "content": {

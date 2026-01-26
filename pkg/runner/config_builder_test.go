@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"testing"
 
@@ -20,6 +21,8 @@ import (
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+const testPort = math.MaxInt16
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
@@ -1059,11 +1062,11 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  8976,
-				TargetPort: 8976,
+				ProxyPort:  testPort,
+				TargetPort: testPort,
 			},
 			cliProxyPort:      0,
-			expectedProxyPort: 8976,
+			expectedProxyPort: testPort,
 		},
 		{
 			name: "CLI proxy_port overrides registry",
@@ -1073,8 +1076,8 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  8976,
-				TargetPort: 8976,
+				ProxyPort:  testPort,
+				TargetPort: testPort,
 			},
 			cliProxyPort:      9999,
 			expectedProxyPort: 9999,

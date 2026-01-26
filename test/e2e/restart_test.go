@@ -67,7 +67,7 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 
 				By("Verifying the server is functional after restart")
 				// List server to verify it's operational
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})

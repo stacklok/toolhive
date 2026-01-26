@@ -1887,6 +1887,15 @@ func TestRunConfig_resolveHeaderForwardSecrets(t *testing.T) {
 			wantResolved:  map[string]string{"X-Existing": "existing-value", "X-New": "resolved-value"},
 			wantPlaintext: map[string]string{"X-Existing": "existing-value"},
 		},
+		{
+			name: "secret overrides plaintext for same header name",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Auth": "plaintext"},
+				AddHeadersFromSecret: map[string]string{"X-Auth": "auth-secret"},
+			},
+			mockSecrets:  map[string]string{"auth-secret": "secret-value"},
+			wantResolved: map[string]string{"X-Auth": "secret-value"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

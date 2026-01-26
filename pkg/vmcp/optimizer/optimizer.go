@@ -663,58 +663,17 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logger.Debugw("optim_call_tool called", "request", request)
 
-		// Extract parameters from request arguments
-		args, ok := request.Params.Arguments.(map[string]any)
-		if !ok {
-			return mcp.NewToolResultError("invalid arguments: expected object"), nil
+		// Parse and validate request arguments
+		backendID, toolName, parameters, err := parseCallToolRequest(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		// Extract backend_id (required)
-		backendID, ok := args["backend_id"].(string)
-		if !ok || backendID == "" {
-			return mcp.NewToolResultError("backend_id is required and must be a non-empty string"), nil
+		// Resolve target backend
+		target, backendToolName, err := o.resolveToolTarget(ctx, backendID, toolName)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
-
-		// Extract tool_name (required)
-		toolName, ok := args["tool_name"].(string)
-		if !ok || toolName == "" {
-			return mcp.NewToolResultError("tool_name is required and must be a non-empty string"), nil
-		}
-
-		// Extract parameters (required)
-		parameters, ok := args["parameters"].(map[string]any)
-		if !ok {
-			return mcp.NewToolResultError("parameters is required and must be an object"), nil
-		}
-
-		// Get routing table from context via discovered capabilities
-		capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-		if !ok || capabilities == nil {
-			return mcp.NewToolResultError("routing information not available in context"), nil
-		}
-
-		if capabilities.RoutingTable == nil || capabilities.RoutingTable.Tools == nil {
-			return mcp.NewToolResultError("routing table not initialized"), nil
-		}
-
-		// Find the tool in the routing table
-		target, exists := capabilities.RoutingTable.Tools[toolName]
-		if !exists {
-			return mcp.NewToolResultError(fmt.Sprintf("tool not found in routing table: %s", toolName)), nil
-		}
-
-		// Verify the tool belongs to the specified backend
-		if target.WorkloadID != backendID {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"tool %s belongs to backend %s, not %s",
-				toolName,
-				target.WorkloadID,
-				backendID,
-			)), nil
-		}
-
-		// Get the backend capability name (handles renamed tools)
-		backendToolName := target.GetBackendCapabilityName(toolName)
 
 		logger.Infow("Calling tool via optimizer",
 			"backend_id", backendID,
@@ -722,7 +681,7 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 			"backend_tool_name", backendToolName,
 			"workload_name", target.WorkloadName)
 
-		// Call the tool on the backend using the backend client
+		// Call the tool on the backend
 		result, err := o.backendClient.CallTool(ctx, target, backendToolName, parameters, nil)
 		if err != nil {
 			logger.Errorw("Tool call failed",
@@ -733,37 +692,97 @@ func (o *OptimizerIntegration) createCallToolHandler() func(context.Context, mcp
 			return mcp.NewToolResultError(fmt.Sprintf("tool call failed: %v", err)), nil
 		}
 
-		// Convert vmcp.Content array to MCP content array
-		mcpContent := make([]mcp.Content, len(result.Content))
-		for i, content := range result.Content {
-			switch content.Type {
-			case "text":
-				mcpContent[i] = mcp.NewTextContent(content.Text)
-			case "image":
-				mcpContent[i] = mcp.NewImageContent(content.Data, content.MimeType)
-			case "audio":
-				mcpContent[i] = mcp.NewAudioContent(content.Data, content.MimeType)
-			case "resource":
-				// Handle embedded resources - convert to text for now
-				logger.Warnw("Converting resource content to text - embedded resources not yet supported")
-				mcpContent[i] = mcp.NewTextContent("")
-			default:
-				logger.Warnw("Converting unknown content type to text", "type", content.Type)
-				mcpContent[i] = mcp.NewTextContent("")
-			}
-		}
-
-		// Create MCP tool result with _meta field preserved
-		mcpResult := &mcp.CallToolResult{
-			Content: mcpContent,
-			IsError: result.IsError,
-		}
+		// Convert result to MCP format
+		mcpResult := convertToolResult(result)
 
 		logger.Infow("optim_call_tool completed successfully",
 			"backend_id", backendID,
 			"tool_name", toolName)
 
 		return mcpResult, nil
+	}
+}
+
+// parseCallToolRequest extracts and validates parameters from the request.
+func parseCallToolRequest(request mcp.CallToolRequest) (backendID, toolName string, parameters map[string]any, err error) {
+	args, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return "", "", nil, fmt.Errorf("invalid arguments: expected object")
+	}
+
+	backendID, ok = args["backend_id"].(string)
+	if !ok || backendID == "" {
+		return "", "", nil, fmt.Errorf("backend_id is required and must be a non-empty string")
+	}
+
+	toolName, ok = args["tool_name"].(string)
+	if !ok || toolName == "" {
+		return "", "", nil, fmt.Errorf("tool_name is required and must be a non-empty string")
+	}
+
+	parameters, ok = args["parameters"].(map[string]any)
+	if !ok {
+		return "", "", nil, fmt.Errorf("parameters is required and must be an object")
+	}
+
+	return backendID, toolName, parameters, nil
+}
+
+// resolveToolTarget finds and validates the target backend for a tool.
+func (*OptimizerIntegration) resolveToolTarget(
+	ctx context.Context, backendID, toolName string,
+) (*vmcp.BackendTarget, string, error) {
+	capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || capabilities == nil {
+		return nil, "", fmt.Errorf("routing information not available in context")
+	}
+
+	if capabilities.RoutingTable == nil || capabilities.RoutingTable.Tools == nil {
+		return nil, "", fmt.Errorf("routing table not initialized")
+	}
+
+	target, exists := capabilities.RoutingTable.Tools[toolName]
+	if !exists {
+		return nil, "", fmt.Errorf("tool not found in routing table: %s", toolName)
+	}
+
+	if target.WorkloadID != backendID {
+		return nil, "", fmt.Errorf("tool %s belongs to backend %s, not %s",
+			toolName, target.WorkloadID, backendID)
+	}
+
+	backendToolName := target.GetBackendCapabilityName(toolName)
+	return target, backendToolName, nil
+}
+
+// convertToolResult converts vmcp.ToolCallResult to mcp.CallToolResult.
+func convertToolResult(result *vmcp.ToolCallResult) *mcp.CallToolResult {
+	mcpContent := make([]mcp.Content, len(result.Content))
+	for i, content := range result.Content {
+		mcpContent[i] = convertVMCPContent(content)
+	}
+
+	return &mcp.CallToolResult{
+		Content: mcpContent,
+		IsError: result.IsError,
+	}
+}
+
+// convertVMCPContent converts a vmcp.Content to mcp.Content.
+func convertVMCPContent(content vmcp.Content) mcp.Content {
+	switch content.Type {
+	case "text":
+		return mcp.NewTextContent(content.Text)
+	case "image":
+		return mcp.NewImageContent(content.Data, content.MimeType)
+	case "audio":
+		return mcp.NewAudioContent(content.Data, content.MimeType)
+	case "resource":
+		logger.Warnw("Converting resource content to text - embedded resources not yet supported")
+		return mcp.NewTextContent("")
+	default:
+		logger.Warnw("Converting unknown content type to text", "type", content.Type)
+		return mcp.NewTextContent("")
 	}
 }
 

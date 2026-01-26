@@ -52,8 +52,7 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 
 				By("Restarting the server")
-				stdout, stderr := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)

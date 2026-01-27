@@ -169,6 +169,8 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
+	logger.Debugf("Applied authentication strategy %q to backend %s", authStrategy.Name(), target.WorkloadID)
+
 	// Add authentication layer with pre-resolved strategy
 	baseTransport = &authRoundTripper{
 		base:         baseTransport,

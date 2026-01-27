@@ -37,7 +37,7 @@ import (
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
-// and ensures the associated pods are actually running and ready
+// and ensures at least one associated pod is actually running and ready
 func WaitForVirtualMCPServerReady(
 	ctx context.Context,
 	c client.Client,
@@ -58,7 +58,7 @@ func WaitForVirtualMCPServerReady(
 		for _, condition := range vmcpServer.Status.Conditions {
 			if condition.Type == "Ready" {
 				if condition.Status == "True" {
-					// Also check that the pods are actually running and ready
+					// Also check that at least one pod is actually running and ready
 					labels := map[string]string{
 						"app.kubernetes.io/name":     "virtualmcpserver",
 						"app.kubernetes.io/instance": name,
@@ -75,7 +75,9 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
-// checkPodsReady checks if all pods matching the given labels are ready
+// checkPodsReady checks if at least one pod matching the given labels is ready.
+// This is typically used when checking for a single expected pod (e.g., one replica deployment).
+// Pods not in Running phase are skipped (e.g., Succeeded, Failed from previous deployments).
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
 	podList := &corev1.PodList{}
 	if err := c.List(ctx, podList,
@@ -246,7 +248,7 @@ func GetVirtualMCPServerPods(ctx context.Context, c client.Client, vmcpServerNam
 	return podList, err
 }
 
-// WaitForPodsReady waits for all pods matching labels to be ready
+// WaitForPodsReady waits for at least one pod matching labels to be ready
 func WaitForPodsReady(
 	ctx context.Context,
 	c client.Client,

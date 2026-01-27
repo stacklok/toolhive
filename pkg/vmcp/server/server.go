@@ -340,9 +340,7 @@ func New(
 	if cfg.HealthMonitorConfig != nil {
 		// Get initial backends list from registry for health monitoring setup
 		initialBackends := backendRegistry.List(ctx)
-		// Construct selfURL to prevent health checker from checking itself
-		selfURL := fmt.Sprintf("http://%s:%d%s", cfg.Host, cfg.Port, cfg.EndpointPath)
-		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig, selfURL)
+		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}

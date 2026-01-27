@@ -108,14 +108,12 @@ func DefaultConfig() MonitorConfig {
 //   - client: BackendClient for communicating with backend MCP servers
 //   - backends: List of backends to monitor
 //   - config: Configuration for health monitoring
-//   - selfURL: Optional server's own URL. If provided, health checks targeting this URL are short-circuited.
 //
 // Returns (monitor, error). Error is returned if configuration is invalid.
 func NewMonitor(
 	client vmcp.BackendClient,
 	backends []vmcp.Backend,
 	config MonitorConfig,
-	selfURL string,
 ) (*Monitor, error) {
 	// Validate configuration
 	if config.CheckInterval <= 0 {
@@ -125,8 +123,8 @@ func NewMonitor(
 		return nil, fmt.Errorf("unhealthy threshold must be >= 1, got %d", config.UnhealthyThreshold)
 	}
 
-	// Create health checker with degraded threshold and self URL
-	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold, selfURL)
+	// Create health checker with degraded threshold
+	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
 
 	// Create status tracker
 	statusTracker := newStatusTracker(config.UnhealthyThreshold)

@@ -119,6 +119,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		mockBackendClient,
 		conflictResolver,
 		nil, // no tool configs
+		nil, // no tracer provider in tests
 	)
 
 	// Step 3: Run aggregation on mock backends
@@ -311,7 +312,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Create discovery manager
 	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
-	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil)
+	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil)
 	discoveryMgr, err := discovery.NewManager(agg)
 	require.NoError(t, err)
 
@@ -501,7 +502,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 			Times(2)
 
 		resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -539,7 +540,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 
 		resolver, err := aggregator.NewPriorityConflictResolver([]string{"backend1", "backend2"})
 		require.NoError(t, err)
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -659,7 +660,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
 			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 			return agg.AggregateCapabilities(ctx, backends)
 		}).
 		AnyTimes()

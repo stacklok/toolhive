@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"sync"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -31,10 +31,12 @@ type defaultAggregator struct {
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
 // workloadConfigs specifies per-backend tool filtering and overrides.
+// tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
 	workloadConfigs []*config.WorkloadToolConfig,
+	tracerProvider trace.TracerProvider,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
@@ -44,23 +46,37 @@ func NewDefaultAggregator(
 		}
 	}
 
+	// Create tracer from provider (use noop tracer if provider is nil)
+	var tracer trace.Tracer
+	if tracerProvider != nil {
+		tracer = tracerProvider.Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
+	} else {
+		tracer = noop.NewTracerProvider().Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
+	}
+
 	return &defaultAggregator{
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
-		tracer:           otel.Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator"),
+		tracer:           tracer,
 	}
 }
 
 // QueryCapabilities queries a single backend for its MCP capabilities.
 // Returns the raw capabilities (tools, resources, prompts) from the backend.
-func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*BackendCapabilities, error) {
+func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (_ *BackendCapabilities, retErr error) {
 	ctx, span := a.tracer.Start(ctx, "aggregator.QueryCapabilities",
 		trace.WithAttributes(
 			attribute.String("backend.id", backend.ID),
 		),
 	)
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	logger.Debugf("Querying capabilities from backend %s", backend.ID)
 
@@ -71,8 +87,6 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	// Query capabilities using the backend client
 	capabilities, err := a.backendClient.ListCapabilities(ctx, target)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("%w: %s: %w", ErrBackendQueryFailed, backend.ID, err)
 	}
 
@@ -106,13 +120,19 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 func (a *defaultAggregator) QueryAllCapabilities(
 	ctx context.Context,
 	backends []vmcp.Backend,
-) (map[string]*BackendCapabilities, error) {
+) (_ map[string]*BackendCapabilities, retErr error) {
 	ctx, span := a.tracer.Start(ctx, "aggregator.QueryAllCapabilities",
 		trace.WithAttributes(
 			attribute.Int("backends.count", len(backends)),
 		),
 	)
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	logger.Infof("Querying capabilities from %d backends", len(backends))
 
@@ -146,16 +166,11 @@ func (a *defaultAggregator) QueryAllCapabilities(
 
 	// Wait for all queries to complete
 	if err := g.Wait(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("capability queries failed: %w", err)
 	}
 
 	if len(capabilities) == 0 {
-		err := fmt.Errorf("no backends returned capabilities")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, err
+		return nil, fmt.Errorf("no backends returned capabilities")
 	}
 
 	span.SetAttributes(
@@ -171,13 +186,19 @@ func (a *defaultAggregator) QueryAllCapabilities(
 func (a *defaultAggregator) ResolveConflicts(
 	ctx context.Context,
 	capabilities map[string]*BackendCapabilities,
-) (*ResolvedCapabilities, error) {
+) (_ *ResolvedCapabilities, retErr error) {
 	ctx, span := a.tracer.Start(ctx, "aggregator.ResolveConflicts",
 		trace.WithAttributes(
 			attribute.Int("backends.count", len(capabilities)),
 		),
 	)
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	logger.Debugf("Resolving conflicts across %d backends", len(capabilities))
 
@@ -194,8 +215,6 @@ func (a *defaultAggregator) ResolveConflicts(
 	if a.conflictResolver != nil {
 		resolvedTools, err = a.conflictResolver.ResolveToolConflicts(ctx, toolsByBackend)
 		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("conflict resolution failed: %w", err)
 		}
 	} else {
@@ -383,13 +402,22 @@ func (a *defaultAggregator) MergeCapabilities(
 // 2. Query all backends
 // 3. Resolve conflicts
 // 4. Merge into final view with full backend information
-func (a *defaultAggregator) AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error) {
+func (a *defaultAggregator) AggregateCapabilities(
+	ctx context.Context,
+	backends []vmcp.Backend,
+) (_ *AggregatedCapabilities, retErr error) {
 	ctx, span := a.tracer.Start(ctx, "aggregator.AggregateCapabilities",
 		trace.WithAttributes(
 			attribute.Int("backends.count", len(backends)),
 		),
 	)
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	logger.Infof("Starting capability aggregation for %d backends", len(backends))
 
@@ -400,24 +428,18 @@ func (a *defaultAggregator) AggregateCapabilities(ctx context.Context, backends 
 	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to query backends: %w", err)
 	}
 
 	// Step 3: Resolve conflicts
 	resolved, err := a.ResolveConflicts(ctx, capabilities)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to resolve conflicts: %w", err)
 	}
 
 	// Step 4: Merge into final view with full backend information
 	aggregated, err := a.MergeCapabilities(ctx, resolved, registry)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 

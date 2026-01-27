@@ -188,8 +188,8 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				require.NoError(t, err)
 				return `{"local_path":"` + tempFile + `"}`
 			},
-			expectedCode: http.StatusBadRequest,
-			description:  "Local file with invalid registry structure should return 400",
+			expectedCode: http.StatusBadGateway,
+			description:  "Local file with invalid registry structure should return 502 (validation failure)",
 		},
 		{
 			name: "invalid URL - unreachable",

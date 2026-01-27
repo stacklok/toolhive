@@ -59,6 +59,21 @@ func isConnectivityError(err error) bool {
 	return false
 }
 
+// isValidationError checks if an error is related to validation failure
+func isValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if this is a RegistryError with validation failure
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		return errors.Is(regErr.Err, config.ErrRegistryValidationFailed)
+	}
+
+	return false
+}
+
 // RegistryType represents the type of registry
 type RegistryType string
 
@@ -279,6 +294,11 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		var connErr *connectivityError
 		if errors.As(err, &connErr) {
 			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		// Check if it's a validation error - return 502 Bad Gateway
+		if isValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		// Other errors - return 400 Bad Request

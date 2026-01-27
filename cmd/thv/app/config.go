@@ -228,7 +228,10 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-// enhanceRegistryError enhances registry errors with helpful user-facing messages
+// enhanceRegistryError enhances registry errors with helpful user-facing messages.
+// Error type mapping (matches API HTTP status codes):
+//   - Timeout/Unreachable errors → 504 Gateway Timeout
+//   - Validation errors → 502 Bad Gateway
 func enhanceRegistryError(err error, url, registryType string) error {
 	if err == nil {
 		return nil
@@ -237,9 +240,9 @@ func enhanceRegistryError(err error, url, registryType string) error {
 	// Check if this is a RegistryError with structured error information
 	var regErr *config.RegistryError
 	if errors.As(err, &regErr) {
-		// Check for timeout errors
+		// Check for timeout errors (504 Gateway Timeout)
 		if errors.Is(regErr.Err, config.ErrRegistryTimeout) {
-			return fmt.Errorf("registry validation timed out after 5 seconds\n"+
+			return fmt.Errorf("connection timed out after 5 seconds\n"+
 				"The %s at %s is not responding.\n"+
 				"Possible causes:\n"+
 				"  - The URL is incorrect\n"+
@@ -248,23 +251,27 @@ func enhanceRegistryError(err error, url, registryType string) error {
 				"Original error: %v", registryType, url, regErr.Err)
 		}
 
-		// Check for unreachable errors
+		// Check for unreachable errors (504 Gateway Timeout)
 		if errors.Is(regErr.Err, config.ErrRegistryUnreachable) {
-			return fmt.Errorf("failed to connect to %s\n"+
+			return fmt.Errorf("connection failed\n"+
 				"The %s at %s is not reachable.\n"+
 				"Please check:\n"+
 				"  - The URL is correct: %s\n"+
 				"  - The registry server is running and accessible\n"+
 				"  - Your network connection\n"+
 				"  - Firewall or proxy settings\n"+
-				"Original error: %v", registryType, registryType, url, url, regErr.Err)
+				"Original error: %v", registryType, url, url, regErr.Err)
 		}
 
-		// Check for validation errors
+		// Check for validation errors (502 Bad Gateway)
 		if errors.Is(regErr.Err, config.ErrRegistryValidationFailed) {
-			return fmt.Errorf("failed to validate %s\n"+
-				"The %s at %s does not appear to be a valid registry.\n"+
-				"Original error: %v", registryType, registryType, url, regErr.Err)
+			return fmt.Errorf("validation failed\n"+
+				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n"+
+				"Please verify:\n"+
+				"  - The URL points to a valid MCP registry\n"+
+				"  - The registry format is correct\n"+
+				"  - The registry contains at least one server\n"+
+				"Original error: %v", registryType, url, regErr.Err)
 		}
 	}
 

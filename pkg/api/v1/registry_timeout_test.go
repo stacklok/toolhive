@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRegistryTimeout_InvalidJSON tests that invalid JSON returns 400 (not 504)
+// TestRegistryTimeout_InvalidJSON tests that invalid JSON returns 502 Bad Gateway (not 504 Gateway Timeout)
 func TestRegistryTimeout_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
@@ -54,9 +54,9 @@ func TestRegistryTimeout_InvalidJSON(t *testing.T) {
 	// Execute request
 	routes.updateRegistry(recorder, req)
 
-	// Verify response - should be 400 for invalid format (not 504)
-	assert.Equal(t, http.StatusBadRequest, recorder.Code,
-		"Expected 400 Bad Request for invalid registry format")
+	// Verify response - validation failures return 502 Bad Gateway
+	assert.Equal(t, http.StatusBadGateway, recorder.Code,
+		"Expected 502 Bad Gateway for invalid registry format (validation failure)")
 	assert.NotContains(t, recorder.Body.String(), "timeout",
-		"Error message should not mention timeout for format errors")
+		"Error message should not mention timeout for validation errors")
 }

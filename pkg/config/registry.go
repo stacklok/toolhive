@@ -279,12 +279,20 @@ func setRegistryFile(provider Provider, registryPath string) error {
 
 	// Validate JSON file
 	if err := validateJSONFile(cleanPath); err != nil {
-		return fmt.Errorf("registry file: %w", err)
+		return &RegistryError{
+			Type: RegistryTypeFile,
+			URL:  registryPath,
+			Err:  fmt.Errorf("%w: %v", ErrRegistryValidationFailed, err),
+		}
 	}
 
 	// Validate registry structure
 	if err := validateRegistryFileStructure(cleanPath); err != nil {
-		return fmt.Errorf("registry file: %w", err)
+		return &RegistryError{
+			Type: RegistryTypeFile,
+			URL:  registryPath,
+			Err:  fmt.Errorf("%w: %v", ErrRegistryValidationFailed, err),
+		}
 	}
 
 	// Make the path absolute

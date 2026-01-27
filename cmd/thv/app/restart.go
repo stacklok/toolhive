@@ -87,7 +87,6 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to restart workload %s: %w", workloadName, err)
 	}
 
-	fmt.Printf("Workload %s restarted successfully\n", workloadName)
 	return nil
 }
 
@@ -152,8 +151,6 @@ func restartMultipleWorkloads(
 	restartedCount := 0
 	failedCount := 0
 	var errors []string
-
-	fmt.Printf("Restarting %d workload(s)...\n", len(workloadNames))
 
 	var restartRequests []workloads.CompletionFunc
 	// First, trigger the restarts concurrently.

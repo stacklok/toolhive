@@ -91,7 +91,7 @@ func (*compositeProvider) logProviderSelection(providerName string) {
 		}
 	}()
 
-	logger.Info(fmt.Sprintf("Using keyring provider: %s", providerName))
+	logger.Debugf("Using keyring provider: %s", providerName)
 }
 
 func (c *compositeProvider) Set(service, key, value string) error {

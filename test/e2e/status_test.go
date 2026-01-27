@@ -101,16 +101,14 @@ var _ = Describe("Status Command", Label("core", "status", "e2e"), func() {
 		Context("when getting status of a stopped server", func() {
 			It("should display stopped status", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Stopping the server")
-				stdout, _ = e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be stopped")
 				Eventually(func() bool {
@@ -125,7 +123,7 @@ var _ = Describe("Status Command", Label("core", "status", "e2e"), func() {
 				}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Server should be stopped")
 
 				By("Getting the status of the stopped server")
-				stdout, _ = e2e.NewTHVCommand(config, "status", serverName).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "status", serverName).ExpectSuccess()
 
 				By("Verifying the status shows stopped")
 				Expect(stdout).To(ContainSubstring("Name:"), "Output should contain Name field")

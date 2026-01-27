@@ -44,7 +44,7 @@ func (h *Handler) SetSecretProvider(provider secrets.Provider) {
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 	// Priority 1: Bearer token authentication (if configured)
 	if h.config.BearerToken != "" {
-		logger.Infof("Using bearer token authentication")
+		logger.Debug("Using bearer token authentication")
 		return NewBearerTokenSource(h.config.BearerToken), nil
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		return nil, nil // No authentication required
 	}
 
-	logger.Infof("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
+	logger.Debugf("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
 		authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
 
 	// Check if we need to handle Bearer token requirement
@@ -69,7 +69,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 
 	// Only proceed with OAuth if the auth type supports it
 	if authInfo.Type != "OAuth" && authInfo.Type != "Bearer" {
-		logger.Infof("Unsupported authentication type: %s", authInfo.Type)
+		logger.Errorf("Unsupported authentication type: %s", authInfo.Type)
 		return nil, nil
 	}
 
@@ -87,7 +87,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 			// Clear invalid cached tokens
 			h.config.ClearCachedTokens()
 		} else if tokenSource != nil {
-			logger.Infof("Successfully restored OAuth session from cached tokens")
+			logger.Debugf("Successfully restored OAuth session from cached tokens")
 			return tokenSource, nil
 		}
 	}
@@ -105,7 +105,7 @@ func (*Handler) validateBearerRequirement(authInfo *discovery.AuthInfo) error {
 	// For backward compatibility, fall back to OAuth flow if realm or resource_metadata is present
 	// Many servers use Bearer header but support OAuth flow
 	if authInfo.Realm != "" || authInfo.ResourceMetadata != "" {
-		logger.Infof("Server returned Bearer header but no bearer token configured. " +
+		logger.Warnf("Server returned Bearer header but no bearer token configured. " +
 			"Attempting OAuth flow for backward compatibility (realm or resource_metadata present)")
 		return nil
 	}
@@ -122,7 +122,7 @@ func (h *Handler) performOAuthFlow(
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
 ) (oauth2.TokenSource, error) {
-	logger.Infof("Starting OAuth authentication flow with issuer: %s", issuer)
+	logger.Debugf("Starting OAuth authentication flow with issuer: %s", issuer)
 
 	// Create OAuth flow config
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
@@ -157,7 +157,7 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 		flowConfig.AuthorizeURL = authServerInfo.AuthorizationURL
 		flowConfig.TokenURL = authServerInfo.TokenURL
 		flowConfig.RegistrationEndpoint = authServerInfo.RegistrationEndpoint
-		logger.Infof("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
+		logger.Debugf("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
 			authServerInfo.AuthorizationURL, authServerInfo.TokenURL, authServerInfo.RegistrationEndpoint)
 	}
 
@@ -171,7 +171,7 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 		if err := h.tokenPersister(result.RefreshToken, result.Expiry); err != nil {
 			logger.Warnf("Failed to persist OAuth tokens: %v", err)
 		} else {
-			logger.Infof("Successfully persisted OAuth tokens for future restarts")
+			logger.Debugf("Successfully persisted OAuth tokens for future restarts")
 		}
 	}
 
@@ -236,7 +236,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)
 	}
 
-	logger.Infof("Restored OAuth session from cached tokens (issuer: %s)", issuer)
+	logger.Debugf("Restored OAuth session from cached tokens (issuer: %s)", issuer)
 
 	// Wrap with persisting token source to save refreshed tokens
 	if h.tokenPersister != nil {
@@ -264,7 +264,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	if authInfo.Realm != "" {
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
-			logger.Infof("Derived issuer from realm: %s", derivedIssuer)
+			logger.Debugf("Derived issuer from realm: %s", derivedIssuer)
 			return derivedIssuer, h.config.Scopes, nil, nil
 		}
 	}
@@ -285,7 +285,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	// Priority 5: Last resort - derive issuer from URL without discovery
 	derivedIssuer := discovery.DeriveIssuerFromURL(remoteURL)
 	if derivedIssuer != "" {
-		logger.Infof("Using derived issuer from URL: %s", derivedIssuer)
+		logger.Debugf("Using derived issuer from URL: %s", derivedIssuer)
 		return derivedIssuer, h.config.Scopes, nil, nil
 	}
 
@@ -299,7 +299,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	ctx context.Context,
 	resourceMetadataURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
-	logger.Infof("Fetching resource metadata from: %s", resourceMetadataURL)
+	logger.Debugf("Fetching resource metadata from: %s", resourceMetadataURL)
 
 	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL)
 	if err != nil {
@@ -325,7 +325,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	scopes := h.config.Scopes
 	if len(scopes) == 0 && len(metadata.ScopesSupported) > 0 {
 		scopes = metadata.ScopesSupported
-		logger.Infof("Using scopes from resource metadata: %v", scopes)
+		logger.Debugf("Using scopes from resource metadata: %v", scopes)
 	}
 
 	return issuer, scopes, authServerInfo, nil
@@ -346,7 +346,7 @@ func (*Handler) findValidAuthServer(
 		}
 
 		// Found a valid authorization server
-		logger.Infof("Using validated authorization server: %s (actual issuer: %s)",
+		logger.Debugf("Using validated authorization server: %s (actual issuer: %s)",
 			authServer, authServerInfo.Issuer)
 		return authServerInfo, authServerInfo.Issuer
 	}
@@ -376,7 +376,7 @@ func (h *Handler) tryDiscoverFromWellKnown(
 
 	// Successfully discovered the actual issuer
 	if authServerInfo.Issuer != derivedURL {
-		logger.Infof("Discovered actual issuer: %s (differs from server URL: %s)",
+		logger.Debugf("Discovered actual issuer: %s (differs from server URL: %s)",
 			authServerInfo.Issuer, derivedURL)
 	}
 

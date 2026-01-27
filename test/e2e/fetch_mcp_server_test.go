@@ -333,8 +333,7 @@ var _ = Describe("FetchMcpServer", Label("mcp", "e2e"), func() {
 
 			It("should stop the server successfully", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() bool {
@@ -352,8 +351,7 @@ var _ = Describe("FetchMcpServer", Label("mcp", "e2e"), func() {
 
 			It("should restart the server successfully", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -362,8 +360,7 @@ var _ = Describe("FetchMcpServer", Label("mcp", "e2e"), func() {
 
 			It("should remove the server successfully", func() {
 				By("Removing the server")
-				stdout, _ := e2e.NewTHVCommand(config, "rm", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "rm", serverName).ExpectSuccess()
 
 				By("Verifying the server is no longer listed")
 				Eventually(func() string {
@@ -419,14 +416,6 @@ var _ = Describe("FetchMcpServer", Label("mcp", "e2e"), func() {
 					"--transport", "invalid-transport",
 					"fetch").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail with invalid transport")
-			})
-		})
-
-		Context("when managing non-existent servers", func() {
-			It("should handle stopping non-existent server gracefully", func() {
-				By("Trying to stop a non-existent server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", "non-existent-server-12345").ExpectSuccess()
-				Expect(stdout).To(ContainSubstring("stopped successfully"), "Should indicate server has stopped successfully")
 			})
 		})
 	})

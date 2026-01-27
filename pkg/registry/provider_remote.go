@@ -42,6 +42,7 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*Remote
 }
 
 // validateConnectivity checks if the registry is reachable with a 5-second timeout
+// and returns valid registry JSON
 func (p *RemoteRegistryProvider) validateConnectivity() error {
 	// Build HTTP client with 5-second timeout for validation
 	builder := networking.NewHttpClientBuilder().
@@ -67,6 +68,24 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("registry returned status %d from %s", resp.StatusCode, p.registryURL)
+	}
+
+	// Read and validate the response body contains valid registry JSON
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read registry response: %w", err)
+	}
+
+	registry := &types.Registry{}
+	if err := json.Unmarshal(data, registry); err != nil {
+		return fmt.Errorf("registry returned invalid JSON from %s: %w", p.registryURL, err)
+	}
+
+	// Validate the registry has at least the required structure
+	// (we don't require servers/groups to exist, but the structure must be valid)
+	if registry.Servers == nil && registry.RemoteServers == nil && registry.Groups == nil {
+		return fmt.Errorf("registry at %s returned invalid structure: "+
+			"missing servers, remote_servers, and groups fields", p.registryURL)
 	}
 
 	return nil

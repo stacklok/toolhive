@@ -4,6 +4,8 @@
 package registry
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -167,6 +169,109 @@ func TestRemoteRegistryProvider_CreationError(t *testing.T) {
 				assert.NotNil(t, provider)
 				// Test that it implements the interface
 				var _ Provider = provider
+			}
+		})
+	}
+}
+
+func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		responseBody   string
+		responseStatus int
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name: "valid registry JSON",
+			responseBody: `{
+				"version": "1.0.0",
+				"last_updated": "2023-01-01T00:00:00Z",
+				"servers": {
+					"test-server": {
+						"image": "test/image:latest",
+						"description": "Test server"
+					}
+				}
+			}`,
+			responseStatus: 200,
+			expectError:    false,
+		},
+		{
+			name:           "invalid JSON",
+			responseBody:   `{"not valid json`,
+			responseStatus: 200,
+			expectError:    true,
+			errorContains:  "invalid JSON",
+		},
+		{
+			name:           "valid JSON but not registry structure",
+			responseBody:   `{"some": "other", "data": "here"}`,
+			responseStatus: 200,
+			expectError:    true,
+			errorContains:  "invalid structure",
+		},
+		{
+			name: "registry with only remote servers",
+			responseBody: `{
+				"version": "1.0.0",
+				"last_updated": "2023-01-01T00:00:00Z",
+				"remote_servers": {
+					"test-remote": {
+						"url": "https://example.com",
+						"description": "Test remote server"
+					}
+				}
+			}`,
+			responseStatus: 200,
+			expectError:    false,
+		},
+		{
+			name: "registry with groups",
+			responseBody: `{
+				"version": "1.0.0",
+				"last_updated": "2023-01-01T00:00:00Z",
+				"groups": [
+					{
+						"name": "test-group",
+						"servers": {}
+					}
+				]
+			}`,
+			responseStatus: 200,
+			expectError:    false,
+		},
+		{
+			name:           "non-200 status code",
+			responseBody:   "Not Found",
+			responseStatus: 404,
+			expectError:    true,
+			errorContains:  "status 404",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a test HTTP server that returns the specified response
+			server := createTestServer(tt.responseBody, tt.responseStatus)
+			defer server.Close()
+
+			// Create provider with test server URL (allow private IPs for localhost)
+			provider, err := NewRemoteRegistryProvider(server.URL, true)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, provider)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, provider)
 			}
 		})
 	}
@@ -497,4 +602,15 @@ func TestLocalRegistryProvider_FileReadError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, registry)
 	assert.Contains(t, err.Error(), "failed to read local registry file")
+}
+
+// createTestServer creates a test HTTP server that returns the specified response
+func createTestServer(responseBody string, statusCode int) *httptest.Server {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(responseBody))
+	})
+
+	return httptest.NewServer(handler)
 }

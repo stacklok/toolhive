@@ -172,11 +172,11 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 			backendName, previousStatus, status, state.consecutiveFailures, t.unhealthyThreshold, err)
 	} else if thresholdReached {
 		// Already at threshold with same status - no transition needed
-		logger.Debugf("Backend %s remains %s (%d consecutive failures, incoming: %s): %v",
+		logger.Warnf("Backend %s remains %s (%d consecutive failures, incoming: %s): %v",
 			backendName, state.status, state.consecutiveFailures, status, err)
 	} else {
 		// Below threshold - accumulating failures but not yet unhealthy
-		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, current status: %s, incoming: %s): %v",
+		logger.Warnf("Backend %s health check failed (%d/%d consecutive failures, current status: %s, incoming: %s): %v",
 			backendName, state.consecutiveFailures, t.unhealthyThreshold, state.status, status, err)
 	}
 }

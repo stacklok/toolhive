@@ -63,6 +63,11 @@ type Monitor struct {
 	// wg tracks running health check goroutines.
 	wg sync.WaitGroup
 
+	// initialCheckWg tracks the initial health check for each backend.
+	// This allows callers to wait for all initial health checks to complete
+	// before relying on health status.
+	initialCheckWg sync.WaitGroup
+
 	// mu protects the started and stopped flags.
 	mu sync.Mutex
 
@@ -174,10 +179,21 @@ func (m *Monitor) Start(ctx context.Context) error {
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
 		m.wg.Add(1)
+		m.initialCheckWg.Add(1) // Track initial health check
 		go m.monitorBackend(m.ctx, backend)
 	}
 
 	return nil
+}
+
+// WaitForInitialHealthChecks blocks until all backends have completed their initial health check.
+// This is useful for ensuring that health status is accurate before relying on it (e.g., before
+// reporting initial status to an external system).
+//
+// If the monitor was not started, this returns immediately (no initial checks to wait for).
+// This method is safe to call multiple times and from multiple goroutines.
+func (m *Monitor) WaitForInitialHealthChecks() {
+	m.initialCheckWg.Wait()
 }
 
 // Stop gracefully stops health monitoring.
@@ -219,6 +235,7 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend) {
 
 	// Perform initial health check immediately
 	m.performHealthCheck(ctx, backend)
+	m.initialCheckWg.Done() // Signal that initial check is complete
 
 	// Periodic health check loop
 	for {
@@ -235,6 +252,8 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend) {
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
+	logger.Debugf("Performing health check for backend %s (%s)", backend.Name, backend.BaseURL)
+
 	// Create BackendTarget from Backend
 	target := &vmcp.BackendTarget{
 		WorkloadID:    backend.ID,
@@ -255,10 +274,12 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 
 	// Record result in status tracker
 	if err != nil {
+		logger.Debugf("Health check failed for backend %s: %v (status: %s)", backend.Name, err, status)
 		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
+		logger.Debugf("Health check succeeded for backend %s with status %s", backend.Name, status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
 	}
 }
@@ -539,6 +560,22 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	}
 
 	conditions = append(conditions, readyCondition)
+
+	// BackendsDiscovered condition - indicates whether backend discovery completed
+	// This is always true once the health monitor is running, as backends are discovered
+	// during aggregator initialization before the monitor starts.
+	backendsDiscoveredCondition := metav1.Condition{
+		Type:               vmcp.ConditionTypeBackendsDiscovered,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: now,
+		Reason:             "BackendsDiscovered",
+		Message:            fmt.Sprintf("Discovered %d backends", configuredBackendCount),
+	}
+	if configuredBackendCount == 0 {
+		// No backends configured (cold start is valid)
+		backendsDiscoveredCondition.Message = "No backends configured"
+	}
+	conditions = append(conditions, backendsDiscoveredCondition)
 
 	// Degraded condition - true if any backends are degraded
 	if summary.Degraded > 0 {

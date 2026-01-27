@@ -52,10 +52,23 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 
 	logger.Infof("Starting periodic status reporting (interval: %v)", interval)
 
+	// Wait for initial health checks to complete before first status report
+	// This ensures that the first status report has accurate health information
+	// rather than reporting with backendCount=0 before checks complete
+	s.healthMonitorMu.RLock()
+	if s.healthMonitor != nil {
+		logger.Debug("Waiting for initial health checks to complete before first status report")
+		s.healthMonitorMu.RUnlock()
+		s.healthMonitor.WaitForInitialHealthChecks()
+		logger.Debug("Initial health checks complete, proceeding with status reporting")
+	} else {
+		s.healthMonitorMu.RUnlock()
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Report status immediately on startup
+	// Report status immediately after initial health checks complete
 	s.reportStatus(ctx, config.Reporter)
 
 	for {
@@ -87,6 +100,10 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 		}
 	}
 	s.healthMonitorMu.RUnlock()
+
+	// Log status at debug level
+	logger.Debugf("Reporting status: phase=%s, backendCount=%d, discoveredBackends=%d",
+		status.Phase, status.BackendCount, len(status.DiscoveredBackends))
 
 	// Report status
 	if err := reporter.ReportStatus(ctx, status); err != nil {

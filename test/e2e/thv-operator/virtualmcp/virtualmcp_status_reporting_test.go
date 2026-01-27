@@ -9,6 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -263,20 +264,19 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 	})
 
 	It("should handle backend failure and update status accordingly", func() {
-		By("Scaling down one backend to simulate failure")
-		backend1 := &mcpv1alpha1.MCPServer{}
+		By("Deleting backend pod to simulate temporary failure")
+		// Delete the StatefulSet pod for backend1
+		// The StatefulSet controller will recreate it, but there will be a gap during which
+		// the backend is unavailable and health checks should fail
+		backend1PodName := backend1Name + "-0" // StatefulSet pod naming convention
+		backend1Pod := &corev1.Pod{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name:      backend1Name,
+			Name:      backend1PodName,
 			Namespace: testNamespace,
-		}, backend1)).To(Succeed())
+		}, backend1Pod)).To(Succeed())
 
-		// Scale down by setting replicas to 0 in the underlying deployment
-		// This simulates a backend becoming unavailable
-		backend1Deployment := GetMCPServerDeployment(ctx, k8sClient, backend1Name, testNamespace)
-		Expect(backend1Deployment).NotTo(BeNil())
-		replicas := int32(0)
-		backend1Deployment.Spec.Replicas = &replicas
-		Expect(k8sClient.Update(ctx, backend1Deployment)).To(Succeed())
+		// Delete the pod
+		Expect(k8sClient.Delete(ctx, backend1Pod)).To(Succeed())
 
 		By("Waiting for vMCP runtime to detect backend failure and update status")
 		Eventually(func() error {
@@ -315,12 +315,28 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Restoring backend and verifying recovery")
-		backend1Deployment = GetMCPServerDeployment(ctx, k8sClient, backend1Name, testNamespace)
-		Expect(backend1Deployment).NotTo(BeNil())
-		replicas = int32(1)
-		backend1Deployment.Spec.Replicas = &replicas
-		Expect(k8sClient.Update(ctx, backend1Deployment)).To(Succeed())
+		By("Waiting for backend pod to be recreated by StatefulSet controller")
+		// The StatefulSet controller will automatically recreate the deleted pod
+		// Wait for the pod to be running again
+		Eventually(func() error {
+			pod := &corev1.Pod{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend1PodName,
+				Namespace: testNamespace,
+			}, pod); err != nil {
+				return err
+			}
+			if pod.Status.Phase != corev1.PodRunning {
+				return fmt.Errorf("pod not running yet: %s", pod.Status.Phase)
+			}
+			// Check if pod is ready
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					return nil
+				}
+			}
+			return fmt.Errorf("pod not ready yet")
+		}, timeout, pollingInterval).Should(Succeed())
 
 		Eventually(func() error {
 			server := &mcpv1alpha1.VirtualMCPServer{}

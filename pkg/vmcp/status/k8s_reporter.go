@@ -159,7 +159,7 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 	}
 
 	// Remove known condition types that are no longer present (e.g., Degraded after recovery)
-	knownConditionTypes := []string{"Ready", "Degraded"}
+	knownConditionTypes := []string{"Ready", "Degraded", "BackendsDiscovered"}
 	for _, condType := range knownConditionTypes {
 		if !newConditionTypes[condType] {
 			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)

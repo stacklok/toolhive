@@ -536,6 +536,20 @@ func GetMCPServerDeployment(ctx context.Context, c client.Client, serverName, na
 	return deployment
 }
 
+// GetMCPServerStatefulSet retrieves the StatefulSet for an MCPServer by name.
+// MCPServer StatefulSets use the same name as the MCPServer resource for the workload pods.
+func GetMCPServerStatefulSet(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.StatefulSet {
+	statefulset := &appsv1.StatefulSet{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      serverName,
+		Namespace: namespace,
+	}, statefulset)
+	if err != nil {
+		return nil
+	}
+	return statefulset
+}
+
 // WaitForPodDeletion waits for a pod to be fully deleted from the cluster.
 // This is useful in AfterAll cleanup to ensure pods are gone before tests repeat.
 func WaitForPodDeletion(ctx context.Context, c client.Client, name, namespace string, timeout, pollingInterval time.Duration) {

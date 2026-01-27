@@ -44,7 +44,7 @@ func NewReporter() (Reporter, error) {
 func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 	// Check if we're in Kubernetes mode
 	if vmcpName != "" && vmcpNamespace != "" {
-		logger.Infof("Kubernetes mode detected (VMCP_NAME=%s, VMCP_NAMESPACE=%s), creating K8sReporter", vmcpName, vmcpNamespace)
+		logger.Debugf("Kubernetes mode detected (VMCP_NAME=%s, VMCP_NAMESPACE=%s), creating K8sReporter", vmcpName, vmcpNamespace)
 
 		// Get in-cluster REST config
 		restConfig, err := rest.InClusterConfig()
@@ -58,7 +58,7 @@ func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 			return nil, fmt.Errorf("failed to create K8sReporter: %w", err)
 		}
 
-		logger.Infof("K8sReporter created for %s/%s", vmcpNamespace, vmcpName)
+		logger.Debugf("K8sReporter created for %s/%s", vmcpNamespace, vmcpName)
 		return k8sReporter, nil
 	}
 

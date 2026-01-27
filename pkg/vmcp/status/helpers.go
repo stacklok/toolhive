@@ -10,9 +10,10 @@ import (
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// validateStatus checks if status is nil and returns true if it should be skipped.
+// shouldSkipStatus checks if status is nil and returns true if it should be skipped.
+// Returns true when status is nil (invalid/should skip), false otherwise.
 // This is a common validation used by all reporter implementations.
-func validateStatus(status *vmcptypes.Status) bool {
+func shouldSkipStatus(status *vmcptypes.Status) bool {
 	return status == nil
 }
 

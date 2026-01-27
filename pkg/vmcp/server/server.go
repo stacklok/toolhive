@@ -207,6 +207,11 @@ type Server struct {
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
 
+	// statusReportingCtx controls the lifecycle of the periodic status reporting goroutine.
+	// Created in Start(), cancelled in Stop() or on Start() error paths.
+	statusReportingCtx    context.Context
+	statusReportingCancel context.CancelFunc
+
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
@@ -541,10 +546,14 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.shutdownFuncs = append(s.shutdownFuncs, shutdown)
 
-		// Start periodic status reporting in background
+		// Create internal context for status reporting goroutine lifecycle
+		// This ensures the goroutine is cleaned up on all exit paths
+		s.statusReportingCtx, s.statusReportingCancel = context.WithCancel(ctx)
+
+		// Start periodic status reporting in background with internal context
 		statusConfig := DefaultStatusReportingConfig()
 		statusConfig.Reporter = s.statusReporter
-		go s.periodicStatusReporting(ctx, statusConfig)
+		go s.periodicStatusReporting(s.statusReportingCtx, statusConfig)
 	}
 
 	// Wait for either context cancellation or server error
@@ -553,6 +562,12 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("Context cancelled, shutting down server")
 		return s.Stop(context.Background())
 	case err := <-errCh:
+		// HTTP server error - log and tear down cleanly
+		logger.Errorf("HTTP server error: %v", err)
+		if stopErr := s.Stop(context.Background()); stopErr != nil {
+			// Combine errors if Stop() also fails
+			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
+		}
 		return err
 	}
 }
@@ -595,6 +610,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
 		}
+	}
+
+	// Cancel status reporting goroutine if running
+	if s.statusReportingCancel != nil {
+		s.statusReportingCancel()
 	}
 
 	// Run shutdown functions (e.g., status reporter, future components)

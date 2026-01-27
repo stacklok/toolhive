@@ -23,7 +23,7 @@ func NewLoggingReporter() *LoggingReporter {
 
 // ReportStatus logs the status update (non-persistent).
 func (*LoggingReporter) ReportStatus(_ context.Context, status *vmcptypes.Status) error {
-	if validateStatus(status) {
+	if shouldSkipStatus(status) {
 		return nil
 	}
 

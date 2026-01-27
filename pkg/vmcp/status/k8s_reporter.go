@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,15 +48,22 @@ func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReport
 		return nil, fmt.Errorf("namespace cannot be empty")
 	}
 
-	// Create scheme and register VirtualMCPServer types
-	scheme := runtime.NewScheme()
-	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+	// Create scheme and register Kubernetes core types and custom CRD types
+	runtimeScheme := runtime.NewScheme()
+
+	// Register standard Kubernetes types (Pods, Services, etc.)
+	if err := clientgoscheme.AddToScheme(runtimeScheme); err != nil {
+		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
+	}
+
+	// Register VirtualMCPServer CRD types
+	if err := mcpv1alpha1.AddToScheme(runtimeScheme); err != nil {
 		return nil, fmt.Errorf("failed to add VirtualMCPServer types to scheme: %w", err)
 	}
 
 	// Create Kubernetes client
 	k8sClient, err := client.New(restConfig, client.Options{
-		Scheme: scheme,
+		Scheme: runtimeScheme,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
@@ -70,7 +79,7 @@ func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReport
 // ReportStatus sends a status update to the VirtualMCPServer/status subresource.
 // This method uses optimistic concurrency control with automatic retries on conflicts.
 func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status) error {
-	if validateStatus(status) {
+	if shouldSkipStatus(status) {
 		return nil
 	}
 
@@ -139,8 +148,28 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 			mcpv1alpha1.DiscoveredBackend(backend))
 	}
 
-	// Update conditions
-	vmcpServer.Status.Conditions = status.Conditions
+	// Update conditions using meta.SetStatusCondition to preserve LastTransitionTime
+	// when the condition Status hasn't changed. This is important for Kubernetes-style
+	// condition semantics - LastTransitionTime should only update on Status transitions.
+	//
+	// First, identify which condition types are present in the new status
+	newConditionTypes := make(map[string]bool)
+	for _, cond := range status.Conditions {
+		newConditionTypes[cond.Type] = true
+	}
+
+	// Remove known condition types that are no longer present (e.g., Degraded after recovery)
+	knownConditionTypes := []string{"Ready", "Degraded"}
+	for _, condType := range knownConditionTypes {
+		if !newConditionTypes[condType] {
+			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
+		}
+	}
+
+	// Now set/update the conditions from the new status
+	for _, newCondition := range status.Conditions {
+		meta.SetStatusCondition(&vmcpServer.Status.Conditions, newCondition)
+	}
 
 	// Update observed generation
 	vmcpServer.Status.ObservedGeneration = vmcpServer.Generation

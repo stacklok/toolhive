@@ -33,18 +33,26 @@ func DefaultStatusReportingConfig() StatusReportingConfig {
 // vMCP runtime status to the configured reporter (K8s API or CLI logging).
 //
 // It pulls health information from the health monitor and converts it to vmcp.Status
-// format, then sends it to the reporter.
+// format, then sends it to the reporter. Reporting errors are logged but do not stop
+// the goroutine - status reporting continues with a best-effort approach.
 //
-// The goroutine runs until the context is cancelled or an unrecoverable error occurs.
+// The goroutine runs until the context is cancelled.
 func (s *Server) periodicStatusReporting(ctx context.Context, config StatusReportingConfig) {
 	if config.Reporter == nil {
 		logger.Debug("Status reporting disabled (no reporter configured)")
 		return
 	}
 
-	logger.Infof("Starting periodic status reporting (interval: %v)", config.Interval)
+	// Validate interval to prevent panic from time.NewTicker
+	interval := config.Interval
+	if interval <= 0 {
+		logger.Warnf("Invalid status reporting interval %v, defaulting to 30s", interval)
+		interval = 30 * time.Second
+	}
 
-	ticker := time.NewTicker(config.Interval)
+	logger.Infof("Starting periodic status reporting (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Report status immediately on startup

@@ -181,7 +181,7 @@ tasks:
     deps: [gen]
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -200,7 +200,7 @@ tasks:
     desc: Install the thv binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -212,7 +212,7 @@ tasks:
     deps: [gen]
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -231,7 +231,7 @@ tasks:
     desc: Install the vmcp binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'

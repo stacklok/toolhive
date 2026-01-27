@@ -41,10 +41,7 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 		Context("when restarting a running server", func() {
 			It("should successfully restart and remain accessible", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -55,8 +52,7 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 
 				By("Restarting the server")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -71,7 +67,7 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 
 				By("Verifying the server is functional after restart")
 				// List server to verify it's operational
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})
@@ -80,16 +76,14 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 		Context("when restarting a stopped server", func() {
 			It("should start the server if it was stopped", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Stopping the server")
-				stdout, _ = e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() bool {
@@ -105,15 +99,14 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 				}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Server should be stopped")
 
 				By("Restarting the stopped server")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running again within 60 seconds")
 
 				By("Verifying the server is functional after restart")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})

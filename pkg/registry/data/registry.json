@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-26T00:20:52Z",
+  "last_updated": "2026-01-27T00:20:47Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3857,
+        "stars": 4076,
         "pulls": 12849,
-        "last_updated": "2025-12-28T02:45:46Z"
+        "last_updated": "2026-01-26T02:48:40Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -691,9 +691,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 7742,
+        "stars": 7957,
         "pulls": 8179,
-        "last_updated": "2025-12-30T02:37:53Z"
+        "last_updated": "2026-01-26T02:48:41Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1820,9 +1820,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 75209,
+        "stars": 77164,
         "pulls": 20619,
-        "last_updated": "2025-12-30T02:37:53Z"
+        "last_updated": "2026-01-26T02:48:41Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1861,9 +1861,9 @@
         "firecrawl_search"
       ],
       "metadata": {
-        "stars": 5145,
+        "stars": 5334,
         "pulls": 12644,
-        "last_updated": "2025-12-30T02:37:53Z"
+        "last_updated": "2026-01-26T02:48:41Z"
       },
       "repository_url": "https://github.com/firecrawl/firecrawl-mcp-server",
       "tags": [
@@ -2083,7 +2083,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.29.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.30.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -3641,7 +3641,7 @@
         "gateway",
         "intelligent"
       ],
-      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.2.3",
+      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.2.4",
       "target_port": 9900,
       "permissions": {
         "network": {
@@ -4750,7 +4750,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.58",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.59",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -5648,9 +5648,9 @@
         "search_docs"
       ],
       "metadata": {
-        "stars": 2348,
+        "stars": 2421,
         "pulls": 102,
-        "last_updated": "2025-12-28T02:45:46Z"
+        "last_updated": "2026-01-26T02:48:40Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [

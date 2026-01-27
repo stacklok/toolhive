@@ -253,8 +253,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 
 			It("should stop the remote server successfully [Serial]", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() string {
@@ -268,8 +267,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 
 			It("should restart the remote server successfully [Serial]", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)

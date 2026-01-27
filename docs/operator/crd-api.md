@@ -2671,7 +2671,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  |  |
 | `discoveredBackends` _[api.v1alpha1.DiscoveredBackend](#apiv1alpha1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  |  |
-| `backendCount` _integer_ | BackendCount is the number of discovered backends |  |  |
+| `backendCount` _integer_ | BackendCount is the number of healthy/ready backends<br />(excludes unavailable, degraded, and unknown backends) |  |  |
 
 
 #### api.v1alpha1.Volume

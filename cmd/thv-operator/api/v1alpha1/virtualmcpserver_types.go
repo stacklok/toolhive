@@ -153,7 +153,8 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
-	// BackendCount is the number of discovered backends
+	// BackendCount is the number of healthy/ready backends
+	// (excludes unavailable, degraded, and unknown backends)
 	// +optional
 	BackendCount int `json:"backendCount,omitempty"`
 }

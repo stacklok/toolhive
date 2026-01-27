@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -45,29 +44,16 @@ func isConnectivityError(err error) bool {
 		return false
 	}
 
-	// Check for context deadline exceeded (timeout)
+	// Check if this is a RegistryError with timeout or unreachable errors
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		return errors.Is(regErr.Err, config.ErrRegistryTimeout) ||
+			errors.Is(regErr.Err, config.ErrRegistryUnreachable)
+	}
+
+	// Check for context deadline exceeded (timeout) - direct check for legacy support
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
-	}
-
-	// Check error message for common connectivity issues
-	errStr := err.Error()
-	connectivityKeywords := []string{
-		"timeout",
-		"unreachable",
-		"connection refused",
-		"connection reset",
-		"connection timed out",
-		"no route to host",
-		"network is unreachable",
-		"validation failed",
-		"failed to fetch",
-	}
-
-	for _, keyword := range connectivityKeywords {
-		if strings.Contains(strings.ToLower(errStr), keyword) {
-			return true
-		}
 	}
 
 	return false

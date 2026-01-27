@@ -197,8 +197,8 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				t.Helper()
 				return `{"url":"https://invalid-url-that-does-not-exist-12345.example.com/test.json"}`
 			},
-			expectedCode: http.StatusBadRequest,
-			description:  "Unreachable URL should return 400",
+			expectedCode: http.StatusGatewayTimeout,
+			description:  "Unreachable URL should return 504 Gateway Timeout",
 		},
 		{
 			name: "invalid JSON",

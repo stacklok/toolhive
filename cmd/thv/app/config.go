@@ -4,10 +4,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -234,34 +234,38 @@ func enhanceRegistryError(err error, url, registryType string) error {
 		return nil
 	}
 
-	errStr := err.Error()
+	// Check if this is a RegistryError with structured error information
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		// Check for timeout errors
+		if errors.Is(regErr.Err, config.ErrRegistryTimeout) {
+			return fmt.Errorf("registry validation timed out after 5 seconds\n"+
+				"The %s at %s is not responding.\n"+
+				"Possible causes:\n"+
+				"  - The URL is incorrect\n"+
+				"  - The registry server is down or slow to respond\n"+
+				"  - Network connectivity issues\n"+
+				"Original error: %v", registryType, url, regErr.Err)
+		}
 
-	// Check for common connectivity issues and provide helpful messages
-	if strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "timed out") ||
-		strings.Contains(errStr, "deadline exceeded") {
-		return fmt.Errorf("registry validation timed out after 5 seconds\n"+
-			"The %s at %s is not responding.\n"+
-			"Possible causes:\n"+
-			"  - The URL is incorrect\n"+
-			"  - The registry server is down or slow to respond\n"+
-			"  - Network connectivity issues\n"+
-			"Original error: %v", registryType, url, err)
-	}
+		// Check for unreachable errors
+		if errors.Is(regErr.Err, config.ErrRegistryUnreachable) {
+			return fmt.Errorf("failed to connect to %s\n"+
+				"The %s at %s is not reachable.\n"+
+				"Please check:\n"+
+				"  - The URL is correct: %s\n"+
+				"  - The registry server is running and accessible\n"+
+				"  - Your network connection\n"+
+				"  - Firewall or proxy settings\n"+
+				"Original error: %v", registryType, registryType, url, url, regErr.Err)
+		}
 
-	if strings.Contains(errStr, "unreachable") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no route to host") ||
-		strings.Contains(errStr, "network is unreachable") ||
-		strings.Contains(errStr, "validation failed") {
-		return fmt.Errorf("failed to connect to %s\n"+
-			"The %s at %s is not reachable.\n"+
-			"Please check:\n"+
-			"  - The URL is correct: %s\n"+
-			"  - The registry server is running and accessible\n"+
-			"  - Your network connection\n"+
-			"  - Firewall or proxy settings\n"+
-			"Original error: %v", registryType, registryType, url, url, err)
+		// Check for validation errors
+		if errors.Is(regErr.Err, config.ErrRegistryValidationFailed) {
+			return fmt.Errorf("failed to validate %s\n"+
+				"The %s at %s does not appear to be a valid registry.\n"+
+				"Original error: %v", registryType, registryType, url, regErr.Err)
+		}
 	}
 
 	// For other errors, return the original error with minimal enhancement

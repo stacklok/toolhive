@@ -342,12 +342,17 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 			}
 
 			// Check that backend1 is back to ready
+			backend1Found := false
 			for _, backend := range server.Status.DiscoveredBackends {
 				if backend.Name == backend1Name {
+					backend1Found = true
 					if backend.Status != mcpv1alpha1.BackendStatusReady {
 						return fmt.Errorf("backend1 should be ready, got %s", backend.Status)
 					}
 				}
+			}
+			if !backend1Found {
+				return fmt.Errorf("backend1 not found in discovered backends after restoration")
 			}
 
 			return nil

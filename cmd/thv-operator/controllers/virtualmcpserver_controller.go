@@ -492,10 +492,12 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures RBAC resources for VirtualMCPServer in dynamic mode.
-// In static mode, RBAC creation is skipped. When switching dynamic→static, existing RBAC
-// resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
-// This follows standard Kubernetes garbage collection patterns.
+// ensureRBACResources ensures RBAC resources for VirtualMCPServer.
+// RBAC resources are created in all modes (discovered and inline) to support:
+// - Backend discovery (discovered mode only)
+// - Status reporting via K8sReporter (all modes)
+//
+// When a custom ServiceAccount is provided, RBAC creation is skipped.
 //
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
@@ -503,21 +505,15 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
-	// Determine the outgoing auth source mode
-	source := outgoingAuthSource(vmcp)
-
-	// Static mode (inline): Skip RBAC creation/deletion
-	// Existing resources from dynamic mode persist until VirtualMCPServer deletion
-	if source == OutgoingAuthSourceInline {
-		return nil
-	}
-
 	// If a service account is specified, we don't need to create one
 	if vmcp.Spec.ServiceAccount != nil {
 		return nil
 	}
 
-	// Dynamic mode (discovered): Ensure RBAC resources exist
+	// Always ensure RBAC resources exist for status reporting
+	// Status reporting (via K8sReporter) runs in ALL modes (discovered and inline),
+	// so the vMCP runtime needs permissions to update VirtualMCPServer status
+	// regardless of the outgoing auth source mode.
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
@@ -1234,25 +1230,17 @@ func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 	return OutgoingAuthSourceDiscovered
 }
 
-// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer
-// based on its outgoing auth source mode.
+// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer.
 // - User-provided service account: Returns the user-specified service account name
-// - Dynamic mode (discovered): Returns the dedicated service account name
-// - Static mode (inline): Returns empty string (uses default service account)
+// - All other modes: Returns the dedicated service account name (for status reporting)
 func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 	// If a service account is specified, use it
 	if vmcp.Spec.ServiceAccount != nil {
 		return *vmcp.Spec.ServiceAccount
 	}
 
-	source := outgoingAuthSource(vmcp)
-
-	// Static mode: Use default service account (no RBAC resources)
-	if source == OutgoingAuthSourceInline {
-		return ""
-	}
-
-	// Dynamic mode: Use dedicated service account with K8s API permissions
+	// Use dedicated service account with K8s API permissions for status reporting
+	// (required in all modes - discovered and inline)
 	return vmcpServiceAccountName(vmcp.Name)
 }
 

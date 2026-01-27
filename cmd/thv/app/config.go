@@ -165,69 +165,47 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 
 func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
-	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateRegistryIp)
 
-	provider := config.NewDefaultProvider()
-
-	switch registryType {
-	case config.RegistryTypeURL:
-		err := provider.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
-		if err != nil {
-			return enhanceRegistryError(err, cleanPath, "remote registry")
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set a remote registry file: %s\n", cleanPath)
-		if allowPrivateRegistryIp {
-			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
-			fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
-				"Make sure you trust any remote registries you configure with ToolHive.\n")
-		} else {
-			fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
-				" as it's not needed for the provided registry.\n")
-		}
-		return nil
-	case config.RegistryTypeAPI:
-		err := provider.SetRegistryAPI(cleanPath, allowPrivateRegistryIp)
-		if err != nil {
-			return enhanceRegistryError(err, cleanPath, "registry API")
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set registry API endpoint: %s\n", cleanPath)
-		if allowPrivateRegistryIp {
-			fmt.Print("Successfully enabled use of private IP addresses for the registry API\n")
-			fmt.Print("Caution: allowing registry API URLs containing private IP addresses may decrease your security.\n" +
-				"Make sure you trust any registry APIs you configure with ToolHive.\n")
-		}
-		return nil
-	case config.RegistryTypeFile:
-		err := provider.SetRegistryFile(cleanPath)
-		if err != nil {
-			return err
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set local registry file: %s\n", cleanPath)
-		return nil
-	default:
-		return fmt.Errorf("unsupported registry type")
+	service := config.NewRegistryConfigService()
+	registryType, message, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
+	if err != nil {
+		// Enhance error message for better user experience
+		return enhanceRegistryError(err, input, string(registryType))
 	}
+
+	// Reset the registry provider cache to pick up the new configuration
+	registry.ResetDefaultProvider()
+
+	// Print success message
+	fmt.Println(message)
+
+	// Add additional security warnings for private IP usage
+	if allowPrivateRegistryIp {
+		fmt.Print("Successfully enabled use of private IP addresses for the registry\n")
+		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any registries you configure with ToolHive.\n")
+	} else if registryType != config.RegistryTypeFile {
+		// Only show this message for URL/API types
+		fmt.Print("Use of private IP addresses for the registry has been disabled" +
+			" as it's not needed for the provided registry.\n")
+	}
+
+	return nil
 }
 
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	provider := config.NewDefaultProvider()
-	url, localPath, _, registryType := provider.GetRegistryConfig()
+	service := config.NewRegistryConfigService()
+	registryType, source := service.GetRegistryInfo()
 
 	switch registryType {
 	case config.RegistryTypeAPI:
-		fmt.Printf("Current registry: %s (API endpoint)\n", url)
+		fmt.Printf("Current registry: %s (API endpoint)\n", source)
 	case config.RegistryTypeURL:
-		fmt.Printf("Current registry: %s (remote file)\n", url)
+		fmt.Printf("Current registry: %s (remote file)\n", source)
 	case config.RegistryTypeFile:
-		fmt.Printf("Current registry: %s (local file)\n", localPath)
+		fmt.Printf("Current registry: %s (local file)\n", source)
 		// Check if the file still exists
-		if _, err := os.Stat(localPath); err != nil {
+		if _, err := os.Stat(source); err != nil {
 			fmt.Printf("Warning: The configured local registry file is not accessible: %v\n", err)
 		}
 	default:
@@ -237,28 +215,16 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	provider := config.NewDefaultProvider()
-	url, localPath, _, registryType := provider.GetRegistryConfig()
-
-	if registryType == "default" {
-		fmt.Println("No custom registry is currently configured.")
-		return nil
-	}
-
-	err := provider.UnsetRegistry()
+	service := config.NewRegistryConfigService()
+	message, err := service.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	// Reset the cached provider so it re-initializes with the new config
+	// Reset the registry provider cache to pick up the default configuration
 	registry.ResetDefaultProvider()
 
-	if url != "" {
-		fmt.Printf("Successfully removed registry URL: %s\n", url)
-	} else if localPath != "" {
-		fmt.Printf("Successfully removed local registry file: %s\n", localPath)
-	}
-	fmt.Println("Will use built-in registry.")
+	fmt.Println(message)
 	return nil
 }
 

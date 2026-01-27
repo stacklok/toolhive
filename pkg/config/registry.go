@@ -25,6 +25,8 @@ const (
 	RegistryTypeURL = "url"
 	// RegistryTypeAPI represents an MCP Registry API endpoint
 	RegistryTypeAPI = "api"
+	// RegistryTypeDefault represents a built-in registry
+	RegistryTypeDefault = "default"
 )
 
 // DetectRegistryType determines if input is a URL or file path and returns cleaned path

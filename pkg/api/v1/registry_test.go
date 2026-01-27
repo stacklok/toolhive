@@ -107,8 +107,9 @@ func TestGetRegistryInfo(t *testing.T) {
 			configProvider, cleanup := CreateTestConfigProvider(t, tt.config)
 			defer cleanup()
 
-			registryType, source := getRegistryInfoWithProvider(configProvider)
-			assert.Equal(t, tt.expectedType, registryType, "Registry type should match expected")
+			service := config.NewRegistryConfigServiceWithProvider(configProvider)
+			registryType, source := service.GetRegistryInfo()
+			assert.Equal(t, string(tt.expectedType), registryType, "Registry type should match expected")
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -191,7 +193,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
-	if remoteAuthFlags.EnableRemoteAuth || shouldDetectAuth() {
+	if shouldHandleOutgoingAuth() {
 		var result *discovery.OAuthFlowResult
 		result, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
@@ -291,15 +293,36 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	return proxy.Stop(shutdownCtx)
 }
 
-// shouldDetectAuth determines if we should try to detect authentication requirements
-func shouldDetectAuth() bool {
-	// Only try to detect auth if OAuth client ID is provided
-	// This prevents unnecessary requests when no OAuth config is available
-	return remoteAuthFlags.RemoteAuthClientID != ""
+// shouldHandleOutgoingAuth determines if outgoing authentication should be attempted.
+// This is true when:
+// - Remote auth is explicitly enabled via --remote-auth flag
+// - OAuth client ID is provided (allows auto-detection of auth requirements)
+// - Bearer token is configured via flag, file, or environment variable
+func shouldHandleOutgoingAuth() bool {
+	return remoteAuthFlags.EnableRemoteAuth ||
+		remoteAuthFlags.RemoteAuthClientID != "" ||
+		remoteAuthFlags.RemoteAuthBearerToken != "" ||
+		remoteAuthFlags.RemoteAuthBearerTokenFile != "" ||
+		os.Getenv(remote.BearerTokenEnvVarName) != ""
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
 func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResult, error) {
+	bearerToken, err := resolveSecret(
+		remoteAuthFlags.RemoteAuthBearerToken,
+		remoteAuthFlags.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	if bearerToken != "" {
+		logger.Debug("Using bearer token authentication for remote server")
+		return &discovery.OAuthFlowResult{
+			TokenSource: remote.NewBearerTokenSource(bearerToken),
+		}, nil
+	}
+
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {

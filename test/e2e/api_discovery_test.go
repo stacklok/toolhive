@@ -21,6 +21,15 @@ var _ = Describe("Discovery API", Label("api", "discovery", "e2e"), func() {
 	BeforeEach(func() {
 		config := e2e.NewServerConfig()
 		apiServer = e2e.StartServer(config)
+
+		// Clean up any pre-existing client registrations from previous tests
+		// Since API tests share config state, we need to ensure a clean slate
+		existingClients := listClients(apiServer)
+		for _, client := range existingClients {
+			// Unregister each client globally (not just from a group)
+			resp := unregisterClient(apiServer, string(client.Name))
+			resp.Body.Close()
+		}
 	})
 
 	Describe("GET /api/v1beta/discovery/clients", func() {
@@ -321,5 +330,17 @@ type clientStatusResponse struct {
 func discoverClients(server *e2e.Server) *http.Response {
 	resp, err := http.Get(server.BaseURL() + "/api/v1beta/discovery/clients")
 	Expect(err).NotTo(HaveOccurred())
+	return resp
+}
+
+// unregisterClient removes a client globally (from all groups)
+func unregisterClient(server *e2e.Server, clientName string) *http.Response {
+	url := server.BaseURL() + "/api/v1beta/clients/" + clientName
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to create unregister request")
+
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to send unregister request")
+
 	return resp
 }

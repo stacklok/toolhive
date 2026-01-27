@@ -625,6 +625,99 @@ func TestResponseWriter(t *testing.T) {
 	assert.Equal(t, string(data), rec.Body.String())
 }
 
+func TestResponseWriter_DuplicateWriteHeader(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	rw := &responseWriter{
+		ResponseWriter: rec,
+		statusCode:     http.StatusOK,
+		bytesWritten:   0,
+	}
+
+	// First WriteHeader call
+	firstStatus := http.StatusCreated
+	rw.WriteHeader(firstStatus)
+	assert.Equal(t, firstStatus, rw.statusCode)
+	assert.Equal(t, firstStatus, rec.Code)
+	assert.True(t, rw.headerWritten, "headerWritten should be true after first WriteHeader call")
+
+	// Second WriteHeader call - should be silently ignored
+	secondStatus := http.StatusBadRequest
+	rw.WriteHeader(secondStatus)
+
+	// Verify that the status code remains from the first call
+	assert.Equal(t, firstStatus, rw.statusCode, "Status code should remain from first WriteHeader call")
+	assert.Equal(t, firstStatus, rec.Code, "Underlying ResponseWriter should keep first status code")
+
+	// Verify that headerWritten is still true
+	assert.True(t, rw.headerWritten, "headerWritten should remain true after duplicate WriteHeader call")
+}
+
+func TestResponseWriter_WriteThenWriteHeader(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	rw := &responseWriter{
+		ResponseWriter: rec,
+		statusCode:     http.StatusOK,
+		bytesWritten:   0,
+	}
+
+	// Call Write() first - this will implicitly call WriteHeader(200) on underlying ResponseWriter
+	data := []byte("test response")
+	n, err := rw.Write(data)
+	assert.NoError(t, err)
+	assert.Equal(t, len(data), n)
+	assert.Equal(t, int64(len(data)), rw.bytesWritten)
+	assert.Equal(t, string(data), rec.Body.String())
+
+	// Verify that headers were marked as written
+	assert.True(t, rw.headerWritten, "headerWritten should be true after Write() call")
+	assert.Equal(t, http.StatusOK, rw.statusCode, "Status code should be 200 after Write()")
+	assert.Equal(t, http.StatusOK, rec.Code, "Underlying ResponseWriter should have status 200")
+
+	// Now try to call WriteHeader() - should be silently ignored
+	// because Write() already wrote headers
+	rw.WriteHeader(http.StatusCreated)
+
+	// Verify that the status code remains 200 (from Write())
+	assert.Equal(t, http.StatusOK, rw.statusCode, "Status code should remain 200 from Write() call")
+	assert.Equal(t, http.StatusOK, rec.Code, "Underlying ResponseWriter should keep status 200")
+	assert.True(t, rw.headerWritten, "headerWritten should remain true")
+}
+
+func TestResponseWriter_WriteHeaderThenWrite(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	rw := &responseWriter{
+		ResponseWriter: rec,
+		statusCode:     http.StatusOK,
+		bytesWritten:   0,
+	}
+
+	// Call WriteHeader() first with a non-200 status code
+	statusCode := http.StatusNotFound
+	rw.WriteHeader(statusCode)
+	assert.Equal(t, statusCode, rw.statusCode, "Status code should be set correctly")
+	assert.Equal(t, statusCode, rec.Code, "Underlying ResponseWriter should have the correct status code")
+	assert.True(t, rw.headerWritten, "headerWritten should be true after WriteHeader() call")
+
+	// Now call Write() - should work correctly and preserve the status code
+	data := []byte("not found response")
+	n, err := rw.Write(data)
+	assert.NoError(t, err)
+	assert.Equal(t, len(data), n)
+	assert.Equal(t, int64(len(data)), rw.bytesWritten)
+	assert.Equal(t, string(data), rec.Body.String())
+
+	// Verify that the status code remains from WriteHeader() call
+	assert.Equal(t, statusCode, rw.statusCode, "Status code should remain from WriteHeader() call")
+	assert.Equal(t, statusCode, rec.Code, "Underlying ResponseWriter should keep the status code from WriteHeader()")
+	assert.True(t, rw.headerWritten, "headerWritten should remain true")
+}
+
 func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	t.Parallel()
 

@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -454,7 +455,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		logger.Debug("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
+	// (e.g., after laptop sleep where zombie processes may hold ports)
+	lc := socket.ListenConfig()
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}

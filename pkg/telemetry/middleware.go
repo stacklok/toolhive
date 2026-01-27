@@ -422,7 +422,23 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 }
 
 // Write captures the number of bytes written.
+// Note: Write() implicitly calls WriteHeader(200) on the underlying ResponseWriter
+// if headers haven't been written yet. This is standard HTTP behavior - once headers
+// are written, the status code cannot be changed. We track this to accurately record
+// what actually happened and to prevent subsequent WriteHeader() calls from panicking.
+//
+// Important: If a non-200 status code is needed, WriteHeader() MUST be called BEFORE Write().
+// Once Write() is called first, the status code is fixed at 200 and cannot be changed.
 func (rw *responseWriter) Write(data []byte) (int, error) {
+	// If headers haven't been written yet, Write() will implicitly write them with status 200.
+	// This is what the underlying ResponseWriter actually does - we're tracking what happened,
+	// not forcing a status code. Mark headers as written to prevent subsequent WriteHeader()
+	// calls from panicking.
+	if !rw.headerWritten {
+		rw.headerWritten = true
+		rw.statusCode = http.StatusOK // Write() implicitly uses 200 - this is what actually happened
+	}
+	
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 	return n, err

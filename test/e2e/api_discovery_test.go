@@ -235,9 +235,19 @@ var _ = Describe("Discovery API", Label("api", "discovery", "e2e"), func() {
 					}
 				}
 
+				// Collect any errors that occurred
+				close(errors)
+				var collectedErrors []error
+				for err := range errors {
+					collectedErrors = append(collectedErrors, err)
+				}
+
 				// All requests should succeed
-				Expect(successCount).To(Equal(numRequests))
-				Expect(errors).To(BeEmpty())
+				Expect(successCount).To(Equal(numRequests),
+					"Expected all %d requests to succeed, but only %d succeeded",
+					numRequests, successCount)
+				Expect(collectedErrors).To(BeEmpty(),
+					"Expected no errors but got: %v", collectedErrors)
 			})
 		})
 
@@ -328,7 +338,7 @@ type clientStatusResponse struct {
 // -----------------------------------------------------------------------------
 
 func discoverClients(server *e2e.Server) *http.Response {
-	resp, err := http.Get(server.BaseURL() + "/api/v1beta/discovery/clients")
+	resp, err := server.Get("/api/v1beta/discovery/clients")
 	Expect(err).NotTo(HaveOccurred())
 	return resp
 }

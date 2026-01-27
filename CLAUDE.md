@@ -225,6 +225,16 @@ ToolHive automatically detects available container runtimes in the following ord
 
 **Colima Support**: Colima is fully supported as a Docker-compatible runtime. ToolHive will automatically detect Colima installations on macOS and Linux systems.
 
+### Remote Workload Health Checks
+
+ToolHive performs health checks on workloads to verify they are running and responding correctly. The behavior differs based on workload type:
+
+- **Local workloads**: Health checks are always enabled
+- **Remote workloads**: Health checks are disabled by default (to avoid unnecessary network traffic), but can be enabled with:
+  - `TOOLHIVE_REMOTE_HEALTHCHECKS`: Set to `true` or `1` to enable health checks for remote MCP server proxies
+
+Health check implementation: `pkg/transport/http.go:shouldEnableHealthCheck`
+
 ## Development Guidelines
 
 ### Code Organization

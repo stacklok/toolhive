@@ -310,6 +310,31 @@ Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 | **Start/Stop/Restart** | Yes | Yes (proxy only) |
 | **Logs** | Container logs | N/A |
 | **Permission Profile** | Yes | N/A |
+| **Health Checks** | Always enabled | Disabled by default (opt-in via env var) |
+
+### Health Checks for Remote Workloads
+
+**Implementation**: `pkg/transport/http.go:shouldEnableHealthCheck`
+
+ToolHive performs health checks to verify that workloads are running and responding correctly. The behavior differs based on workload type:
+
+**Local workloads (containers):**
+- Health checks are **always enabled**
+- Verifies container is running and responding
+- Critical for detecting container failures
+
+**Remote workloads:**
+- Health checks are **disabled by default**
+- Rationale: Avoid unnecessary network traffic to remote servers
+- Can be enabled with environment variable: `TOOLHIVE_REMOTE_HEALTHCHECKS=true` or `TOOLHIVE_REMOTE_HEALTHCHECKS=1`
+- Useful when you want to monitor remote server availability through ToolHive
+
+**Usage example:**
+```bash
+# Enable health checks for remote workloads
+export TOOLHIVE_REMOTE_HEALTHCHECKS=true
+thv proxy --remote-url https://example.com/mcp my-remote-server
+```
 
 ### Kubernetes Support for Remote MCPs
 

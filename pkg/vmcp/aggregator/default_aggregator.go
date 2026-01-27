@@ -274,7 +274,7 @@ func (a *defaultAggregator) MergeCapabilities(
 	ctx context.Context,
 	resolved *ResolvedCapabilities,
 	registry vmcp.BackendRegistry,
-) (*AggregatedCapabilities, error) {
+) (_ *AggregatedCapabilities, retErr error) {
 	ctx, span := a.tracer.Start(ctx, "aggregator.MergeCapabilities",
 		trace.WithAttributes(
 			attribute.Int("resolved.tools", len(resolved.Tools)),
@@ -282,7 +282,13 @@ func (a *defaultAggregator) MergeCapabilities(
 			attribute.Int("resolved.prompts", len(resolved.Prompts)),
 		),
 	)
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	logger.Debugf("Merging capabilities into final view")
 

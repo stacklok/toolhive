@@ -450,6 +450,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
 		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
 		optimizerCfg := vmcpoptimizer.ConfigFromVMCPConfig(cfg.Optimizer)
+		serverCfg.OptimizerFactory = vmcpoptimizer.NewEmbeddingOptimizer
 		serverCfg.OptimizerConfig = optimizerCfg
 		persistInfo := "in-memory"
 		if cfg.Optimizer.PersistPath != "" {

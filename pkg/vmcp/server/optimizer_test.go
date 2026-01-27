@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"

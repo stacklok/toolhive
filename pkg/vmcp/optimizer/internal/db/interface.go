@@ -6,7 +6,7 @@ package db
 import (
 	"context"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 // Database is the main interface for optimizer database operations.

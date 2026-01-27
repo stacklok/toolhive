@@ -9,7 +9,7 @@ import (
 
 	"github.com/philippgille/chromem-go"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 // databaseImpl implements the Database interface

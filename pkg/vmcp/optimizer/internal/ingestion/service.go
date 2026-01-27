@@ -17,10 +17,10 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/db"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/tokens"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/db"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokens"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -80,7 +80,7 @@ func NewService(config *Config) (*Service, error) {
 	tokenCounter := tokens.NewCounter()
 
 	// Initialize tracer
-	tracer := otel.Tracer("github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/ingestion")
+	tracer := otel.Tracer("github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/ingestion")
 
 	svc := &Service{
 		config:             config,

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/embeddings"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 // TestDatabase_ServerOperations tests the full lifecycle of server operations through the Database interface

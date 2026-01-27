@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/optimizer/models"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 

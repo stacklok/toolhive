@@ -125,14 +125,18 @@ type Config struct {
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
 
-	// OptimizerIntegration is the optional optimizer integration.
+	// Optimizer is the optional optimizer for semantic tool discovery.
 	// If nil, optimizer is disabled and backend tools are exposed directly.
-	// If set, this takes precedence over OptimizerConfig.
-	OptimizerIntegration optimizer.Integration
+	// If set, this takes precedence over OptimizerFactory.
+	Optimizer optimizer.Optimizer
 
-	// OptimizerConfig is the optional optimizer configuration (for backward compatibility).
-	// If OptimizerIntegration is set, this is ignored.
+	// OptimizerFactory creates an optimizer instance at startup.
+	// If Optimizer is already set, this is ignored.
 	// If both are nil, optimizer is disabled.
+	OptimizerFactory optimizer.Factory
+
+	// OptimizerConfig is the optimizer configuration used by OptimizerFactory.
+	// Only used if OptimizerFactory is set and Optimizer is nil.
 	OptimizerConfig *optimizer.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
@@ -550,20 +554,24 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	// Initialize optimizer integration if configured
-	if s.config.OptimizerIntegration == nil && s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
-		// Create optimizer integration from config (for backward compatibility)
-		optimizerInteg, err := optimizer.NewIntegration(ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
+	// Create optimizer instance if factory is provided
+	if s.config.Optimizer == nil && s.config.OptimizerFactory != nil && s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
+		opt, err := s.config.OptimizerFactory(ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
 		if err != nil {
-			return fmt.Errorf("failed to create optimizer integration: %w", err)
+			return fmt.Errorf("failed to create optimizer: %w", err)
 		}
-		s.config.OptimizerIntegration = optimizerInteg
+		s.config.Optimizer = opt
 	}
 
 	// Initialize optimizer if configured (registers tools and ingests backends)
-	if s.config.OptimizerIntegration != nil {
-		if err := s.config.OptimizerIntegration.Initialize(ctx, s.mcpServer, s.backendRegistry); err != nil {
-			return fmt.Errorf("failed to initialize optimizer: %w", err)
+	if s.config.Optimizer != nil {
+		// Type assert to get Initialize method (part of EmbeddingOptimizer but not base interface)
+		if initializer, ok := s.config.Optimizer.(interface {
+			Initialize(context.Context, *server.MCPServer, vmcp.BackendRegistry) error
+		}); ok {
+			if err := initializer.Initialize(ctx, s.mcpServer, s.backendRegistry); err != nil {
+				return fmt.Errorf("failed to initialize optimizer: %w", err)
+			}
 		}
 	}
 
@@ -967,9 +975,9 @@ func (s *Server) handleSessionRegistration(
 		"resource_count", len(caps.RoutingTable.Resources),
 		"prompt_count", len(caps.RoutingTable.Prompts))
 
-	// Delegate to optimizer integration if enabled
-	if s.config.OptimizerIntegration != nil {
-		handled, err := s.config.OptimizerIntegration.HandleSessionRegistration(
+	// Delegate to optimizer if enabled
+	if s.config.Optimizer != nil {
+		handled, err := s.config.Optimizer.HandleSessionRegistration(
 			ctx,
 			sessionID,
 			caps,

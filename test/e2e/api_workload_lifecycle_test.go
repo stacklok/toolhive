@@ -847,6 +847,12 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			}
 		})
 
+		AfterEach(func() {
+			for _, name := range workloadNames {
+				deleteWorkload(apiServer, name)
+			}
+		})
+
 		Context("when deleting workloads in bulk", func() {
 			It("should delete multiple workloads", func() {
 				By("Creating multiple workloads")

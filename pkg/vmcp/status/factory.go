@@ -35,7 +35,13 @@ const (
 func NewReporter() (Reporter, error) {
 	vmcpName := os.Getenv(EnvVMCPName)
 	vmcpNamespace := os.Getenv(EnvVMCPNamespace)
+	return newReporterFromEnv(vmcpName, vmcpNamespace)
+}
 
+// newReporterFromEnv creates a Reporter based on the provided environment variable values.
+// This function is extracted for testability - tests can call this directly with different
+// values without manipulating global environment state, enabling parallel test execution.
+func newReporterFromEnv(vmcpName, vmcpNamespace string) (Reporter, error) {
 	// Check if we're in Kubernetes mode
 	if vmcpName != "" && vmcpNamespace != "" {
 		logger.Infof("Kubernetes mode detected (VMCP_NAME=%s, VMCP_NAMESPACE=%s), creating K8sReporter", vmcpName, vmcpNamespace)

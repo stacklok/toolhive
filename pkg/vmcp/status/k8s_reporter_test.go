@@ -139,7 +139,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			// Add backends if specified
 			for i := 0; i < tt.backendCount; i++ {
 				status.DiscoveredBackends = append(status.DiscoveredBackends, vmcptypes.DiscoveredBackend{
-					Name:            "backend-" + string(rune(i+1)),
+					Name:            fmt.Sprintf("backend-%d", i+1),
 					URL:             "http://backend:8080",
 					Status:          vmcptypes.BackendHealthy.ToCRDStatus(),
 					LastHealthCheck: metav1.Now(),
@@ -151,7 +151,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			// Add conditions if specified
 			for i := 0; i < tt.conditionCount; i++ {
 				status.Conditions = append(status.Conditions, metav1.Condition{
-					Type:               "Condition" + string(rune(i+1)),
+					Type:               fmt.Sprintf("Condition%d", i+1),
 					Status:             metav1.ConditionTrue,
 					LastTransitionTime: metav1.Now(),
 					Reason:             "TestReason",

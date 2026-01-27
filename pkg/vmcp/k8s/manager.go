@@ -24,6 +24,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -60,6 +61,10 @@ type BackendWatcher struct {
 	// registry is the DynamicRegistry to update when backends change
 	registry vmcp.DynamicRegistry
 
+	// healthMonitor is the optional health monitor to notify of backend changes.
+	// Nil if health monitoring is disabled.
+	healthMonitor *health.Monitor
+
 	// mu protects the started field for thread-safe access
 	mu sync.Mutex
 
@@ -78,6 +83,7 @@ type BackendWatcher struct {
 //   - namespace: Namespace to watch for resources
 //   - groupRef: MCPGroup reference in "namespace/name" format
 //   - registry: DynamicRegistry to update when backends change
+//   - healthMonitor: Optional health monitor to notify of backend changes (nil if disabled)
 //
 // Returns:
 //   - *BackendWatcher: Configured watcher ready to Start()
@@ -87,7 +93,7 @@ type BackendWatcher struct {
 //
 //	restConfig, _ := rest.InClusterConfig()
 //	registry := vmcp.NewDynamicRegistry(initialBackends)
-//	watcher, err := k8s.NewBackendWatcher(restConfig, "default", "default/my-group", registry)
+//	watcher, err := k8s.NewBackendWatcher(restConfig, "default", "default/my-group", registry, healthMonitor)
 //	if err != nil {
 //	    return err
 //	}
@@ -100,6 +106,7 @@ func NewBackendWatcher(
 	namespace string,
 	groupRef string,
 	registry vmcp.DynamicRegistry,
+	healthMonitor *health.Monitor,
 ) (*BackendWatcher, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("rest config cannot be nil")
@@ -150,11 +157,12 @@ func NewBackendWatcher(
 	}
 
 	return &BackendWatcher{
-		ctrlManager: ctrlManager,
-		namespace:   namespace,
-		groupRef:    groupRef,
-		registry:    registry,
-		started:     false,
+		ctrlManager:   ctrlManager,
+		namespace:     namespace,
+		groupRef:      groupRef,
+		registry:      registry,
+		healthMonitor: healthMonitor,
+		started:       false,
 	}, nil
 }
 
@@ -267,6 +275,23 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 	return true
 }
 
+// SetHealthMonitor sets the health monitor for the watcher.
+// This must be called before Start() if health monitoring support is desired.
+// This method exists because the health monitor is created inside Server.New(),
+// which happens after the BackendWatcher is instantiated.
+func (w *BackendWatcher) SetHealthMonitor(monitor *health.Monitor) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.started {
+		logger.Warn("Cannot set health monitor on already-started watcher")
+		return
+	}
+
+	w.healthMonitor = monitor
+	logger.Debug("Health monitor configured for BackendWatcher")
+}
+
 // addBackendWatchController registers the BackendReconciler with the controller manager.
 //
 // This method creates and registers a reconciler that watches MCPServer and MCPRemoteProxy
@@ -292,13 +317,14 @@ func (w *BackendWatcher) addBackendWatchController() error {
 		w.namespace,
 	)
 
-	// Create backend reconciler with references to namespace, groupRef, and registry
+	// Create backend reconciler with references to namespace, groupRef, registry, and health monitor
 	reconciler := &BackendReconciler{
-		Client:     w.ctrlManager.GetClient(),
-		Namespace:  w.namespace,
-		GroupRef:   w.groupRef,
-		Registry:   w.registry,
-		Discoverer: discoverer,
+		Client:        w.ctrlManager.GetClient(),
+		Namespace:     w.namespace,
+		GroupRef:      w.groupRef,
+		Registry:      w.registry,
+		Discoverer:    discoverer,
+		HealthMonitor: w.healthMonitor,
 	}
 
 	// Register reconciler with manager

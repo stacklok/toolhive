@@ -56,6 +56,27 @@ type VirtualMCPServerSpec struct {
 	// The telemetry and audit config from here are also supported, but not required.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// HealthMonitoring configures backend health check behavior
+	// +optional
+	HealthMonitoring *HealthMonitoringConfig `json:"healthMonitoring,omitempty"`
+}
+
+// HealthMonitoringConfig configures backend health check behavior
+type HealthMonitoringConfig struct {
+	// CheckInterval is how often to perform health checks, in seconds
+	// Default: 30 seconds
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	CheckInterval *int32 `json:"checkInterval,omitempty"`
+
+	// UnhealthyThreshold is the number of consecutive failures before marking unhealthy
+	// Default: 3 failures
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	UnhealthyThreshold *int32 `json:"unhealthyThreshold,omitempty"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
@@ -153,7 +174,8 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
-	// BackendCount is the number of discovered backends
+	// BackendCount is the number of healthy/ready backends
+	// (excludes unavailable, degraded, and unknown backends)
 	// +optional
 	BackendCount int `json:"backendCount,omitempty"`
 }

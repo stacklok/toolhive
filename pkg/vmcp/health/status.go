@@ -244,6 +244,16 @@ func (t *statusTracker) IsHealthy(backendID string) bool {
 	return exists && status == vmcp.BackendHealthy
 }
 
+// RemoveBackend removes a backend's health state from tracking.
+// This is called when a backend is removed from the monitor.
+// If the backend doesn't exist, this is a no-op (idempotent).
+func (t *statusTracker) RemoveBackend(backendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	delete(t.states, backendID)
+}
+
 // State is an immutable snapshot of a backend's health state.
 // This is returned by GetState and GetAllStates to provide thread-safe access
 // to health information without holding locks.

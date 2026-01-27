@@ -939,6 +939,26 @@ spec:
                 - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              healthMonitoring:
+                description: HealthMonitoring configures backend health check behavior
+                properties:
+                  checkInterval:
+                    description: |-
+                      CheckInterval is how often to perform health checks, in seconds
+                      Default: 30 seconds
+                    format: int32
+                    maximum: 3600
+                    minimum: 1
+                    type: integer
+                  unhealthyThreshold:
+                    description: |-
+                      UnhealthyThreshold is the number of consecutive failures before marking unhealthy
+                      Default: 3 failures
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                type: object
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -1340,7 +1360,9 @@ spec:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
               backendCount:
-                description: BackendCount is the number of discovered backends
+                description: |-
+                  BackendCount is the number of healthy/ready backends
+                  (excludes unavailable, degraded, and unknown backends)
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations

@@ -227,6 +227,7 @@ type Status struct {
 	Message            string              `json:"message,omitempty"`
 	Conditions         []Condition         `json:"conditions,omitempty"`
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+	BackendCount       int                 `json:"backendCount,omitempty"`
 	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 	Timestamp          time.Time           `json:"timestamp"`
 }
@@ -252,6 +253,12 @@ type Backend struct {
 	// The actual authentication is handled by OutgoingAuthRegistry interface.
 	// If nil, the backend requires no authentication.
 	AuthConfig *authtypes.BackendAuthStrategy
+
+	// AuthConfigRef is the name of the MCPExternalAuthConfig resource (if any).
+	// This field is populated during backend discovery and is useful for
+	// debugging and status reporting.
+	// +optional
+	AuthConfigRef string
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string

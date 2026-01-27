@@ -23,6 +23,7 @@ import (
 // Implementations:
 //   - K8sReporter: Updates VirtualMCPServer.Status in Kubernetes cluster (requires RBAC)
 //   - LoggingReporter: Logs status at debug level for CLI mode (no persistent status)
+//   - NoOpReporter: No-op implementation for CLI mode (no status reporting needed)
 //
 // The reporter is designed to be called by vMCP runtime during:
 //   - Backend discovery (report discovered backends)

@@ -17,6 +17,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -62,6 +63,12 @@ type BackendReconciler struct {
 
 	// Discoverer converts K8s resources to vmcp.Backend (reuses existing code)
 	Discoverer workloads.Discoverer
+
+	// HealthMonitor is the optional health monitor to notify of backend changes.
+	// When set, the reconciler will call AddBackend/RemoveBackend to enable
+	// dynamic health monitoring for backends discovered at runtime.
+	// Nil if health monitoring is disabled.
+	HealthMonitor *health.Monitor
 }
 
 // Reconcile handles MCPServer and MCPRemoteProxy events, updating the DynamicRegistry.
@@ -179,6 +186,14 @@ func (r *BackendReconciler) removeBackendFromRegistry(ctx context.Context, backe
 		return ctrl.Result{}, err
 	}
 
+	// Notify health monitor if enabled
+	if r.HealthMonitor != nil {
+		if err := r.HealthMonitor.RemoveBackend(backendID); err != nil {
+			ctxLogger.Error(err, "Failed to remove backend from health monitor")
+			// Continue - registry removal succeeded, health monitor failure is not critical
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -219,6 +234,14 @@ func (r *BackendReconciler) convertAndUpsertBackend(
 	if err := r.Registry.Upsert(*backend); err != nil {
 		ctxLogger.Error(err, "Failed to upsert backend to registry", "backendID", backend.ID)
 		return ctrl.Result{}, err
+	}
+
+	// Notify health monitor if enabled
+	if r.HealthMonitor != nil {
+		if err := r.HealthMonitor.AddBackend(*backend); err != nil {
+			ctxLogger.Error(err, "Failed to add backend to health monitor", "backendID", backend.ID)
+			// Continue - registry upsert succeeded, health monitor failure is not critical
+		}
 	}
 
 	ctxLogger.Info(

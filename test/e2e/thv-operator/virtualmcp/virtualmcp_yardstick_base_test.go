@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -122,6 +123,13 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
+				// Configure fast health checks for E2E testing
+				// This reduces health check time from ~90s (30s * 3) to ~20s (10s * 2)
+				// We use 10s interval with 2 failures to allow one retry for transient errors
+				HealthMonitoring: &mcpv1alpha1.HealthMonitoringConfig{
+					CheckInterval:      ptr.To(int32(10)), // Check every 10 seconds
+					UnhealthyThreshold: ptr.To(int32(2)),  // Mark unhealthy after 2 failures (1 retry)
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())

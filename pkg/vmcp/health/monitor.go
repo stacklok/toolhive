@@ -39,6 +39,11 @@ func IsHealthCheck(ctx context.Context) bool {
 // It runs background goroutines for each backend, tracking their health status
 // and consecutive failure counts. The monitor supports graceful shutdown and
 // provides thread-safe access to backend health information.
+//
+// Dynamic Backend Support:
+// The monitor supports adding and removing backends at runtime via AddBackend()
+// and RemoveBackend() methods. This enables health monitoring for dynamically
+// discovered backends in Kubernetes mode without requiring server restarts.
 type Monitor struct {
 	// checker performs health checks on backends.
 	checker vmcp.HealthChecker
@@ -49,8 +54,10 @@ type Monitor struct {
 	// checkInterval is how often to perform health checks.
 	checkInterval time.Duration
 
-	// backends is the list of backends to monitor.
-	backends []vmcp.Backend
+	// backends maps backend ID to backend information.
+	// Protected by backendsMu for thread-safe dynamic updates.
+	backends   map[string]*backendState
+	backendsMu sync.RWMutex
 
 	// ctx is the context for the monitor's lifecycle.
 	ctx context.Context
@@ -69,6 +76,13 @@ type Monitor struct {
 
 	// stopped indicates if the monitor has been stopped (cannot be restarted).
 	stopped bool
+}
+
+// backendState tracks the state of a monitored backend
+type backendState struct {
+	backend vmcp.Backend
+	// cancelFunc cancels the health check goroutine for this backend
+	cancelFunc context.CancelFunc
 }
 
 // MonitorConfig contains configuration for the health monitor.
@@ -129,11 +143,22 @@ func NewMonitor(
 	// Create status tracker
 	statusTracker := newStatusTracker(config.UnhealthyThreshold)
 
+	// Initialize backends map from initial backends list
+	backendsMap := make(map[string]*backendState, len(backends))
+	for i := range backends {
+		// Copy backend to avoid capturing loop variable
+		backend := backends[i]
+		backendsMap[backend.ID] = &backendState{
+			backend:    backend,
+			cancelFunc: nil, // Will be set when monitoring starts
+		}
+	}
+
 	return &Monitor{
 		checker:       checker,
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
-		backends:      backends,
+		backends:      backendsMap,
 	}, nil
 }
 
@@ -165,15 +190,27 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
 
-	logger.Infof("Starting health monitor for %d backends (interval: %v, threshold: %d)",
-		len(m.backends), m.checkInterval, m.statusTracker.unhealthyThreshold)
+	m.backendsMu.RLock()
+	backendCount := len(m.backends)
+	m.backendsMu.RUnlock()
 
-	// Start health check goroutine for each backend
-	for i := range m.backends {
-		backend := &m.backends[i] // Capture backend pointer for this iteration
+	logger.Infof("Starting health monitor for %d backends (interval: %v, threshold: %d)",
+		backendCount, m.checkInterval, m.statusTracker.unhealthyThreshold)
+
+	// Start health check goroutine for each existing backend
+	m.backendsMu.Lock()
+	for backendID, state := range m.backends {
+		// Create per-backend context for individual goroutine cancellation
+		backendCtx, backendCancel := context.WithCancel(m.ctx)
+		state.cancelFunc = backendCancel
+
+		// Copy backend for goroutine capture
+		backend := state.backend
 		m.wg.Add(1)
-		go m.monitorBackend(m.ctx, backend)
+		// No initial delay for backends present at startup
+		go m.monitorBackend(backendCtx, &backend, backendID, false)
 	}
+	m.backendsMu.Unlock()
 
 	return nil
 }
@@ -190,8 +227,12 @@ func (m *Monitor) Stop() error {
 		return fmt.Errorf("monitor not started")
 	}
 
+	m.backendsMu.RLock()
+	backendCount := len(m.backends)
+	m.backendsMu.RUnlock()
+
 	// Cancel all health check goroutines
-	logger.Infof("Stopping health monitor for %d backends", len(m.backends))
+	logger.Infof("Stopping health monitor for %d backends", backendCount)
 	m.cancel()
 	m.started = false
 	m.stopped = true
@@ -206,23 +247,32 @@ func (m *Monitor) Stop() error {
 
 // monitorBackend performs periodic health checks for a single backend.
 // This runs in a background goroutine and continues until the context is cancelled.
-func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend) {
+// The backendID is passed separately to ensure correct identification even if backend is updated.
+// If initialDelay is true, waits one check interval before performing the first health check
+// to allow dynamically added backends time to initialize.
+func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, backendID string, initialDelay bool) {
 	defer m.wg.Done()
 
-	logger.Debugf("Starting health monitoring for backend %s", backend.Name)
+	logger.Debugf("Starting health monitoring for backend %s (ID: %s)", backend.Name, backendID)
 
 	// Create ticker for periodic checks
 	ticker := time.NewTicker(m.checkInterval)
 	defer ticker.Stop()
 
-	// Perform initial health check immediately
-	m.performHealthCheck(ctx, backend)
+	// If initial delay requested (for dynamically added backends), wait before first check
+	// This gives backends time to complete initialization before health checking begins
+	if !initialDelay {
+		// Perform initial health check immediately for backends present at startup
+		m.performHealthCheck(ctx, backend)
+	} else {
+		logger.Debugf("Delaying initial health check for backend %s by %v to allow initialization", backend.Name, m.checkInterval)
+	}
 
 	// Periodic health check loop
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debugf("Stopping health monitoring for backend %s", backend.Name)
+			logger.Debugf("Stopping health monitoring for backend %s (ID: %s)", backend.Name, backendID)
 			return
 
 		case <-ticker.C:
@@ -323,6 +373,121 @@ func (m *Monitor) GetHealthSummary() Summary {
 	}
 
 	return summary
+}
+
+// AddBackend adds a new backend to the monitor and starts health checking it.
+// This method is safe to call while the monitor is running, enabling dynamic
+// backend discovery in Kubernetes mode.
+//
+// If the monitor is not started, the backend is added but monitoring won't
+// begin until Start() is called. If the backend already exists, it is updated.
+//
+// Parameters:
+//   - backend: The backend to add to health monitoring
+//
+// Returns:
+//   - error: Returns error if monitor has been stopped
+//
+// Example:
+//
+//	err := monitor.AddBackend(vmcp.Backend{
+//	    ID: "new-backend",
+//	    Name: "New Backend",
+//	    BaseURL: "http://new-backend:8080",
+//	})
+func (m *Monitor) AddBackend(backend vmcp.Backend) error {
+	m.mu.Lock()
+	stopped := m.stopped
+	started := m.started
+	ctx := m.ctx
+	m.mu.Unlock()
+
+	if stopped {
+		return fmt.Errorf("cannot add backend to stopped monitor")
+	}
+
+	if backend.ID == "" {
+		return fmt.Errorf("backend ID cannot be empty")
+	}
+
+	m.backendsMu.Lock()
+	defer m.backendsMu.Unlock()
+
+	// Check if backend already exists
+	if existingState, exists := m.backends[backend.ID]; exists {
+		// Update existing backend
+		existingState.backend = backend
+		logger.Debugf("Updated existing backend %s (ID: %s) in health monitor", backend.Name, backend.ID)
+		return nil
+	}
+
+	// Add new backend to map
+	state := &backendState{
+		backend:    backend,
+		cancelFunc: nil,
+	}
+	m.backends[backend.ID] = state
+
+	// If monitor is started, start health checking this backend immediately
+	if started && ctx != nil {
+		// Create per-backend context for individual goroutine cancellation
+		backendCtx, backendCancel := context.WithCancel(ctx)
+		state.cancelFunc = backendCancel
+
+		// Copy backend for goroutine capture
+		backendCopy := backend
+		m.wg.Add(1)
+		// Add initial delay for dynamically added backends to allow initialization
+		go m.monitorBackend(backendCtx, &backendCopy, backend.ID, true)
+
+		logger.Infof("Added and started monitoring backend %s (ID: %s)", backend.Name, backend.ID)
+	} else {
+		logger.Debugf("Added backend %s (ID: %s) to monitor (not started yet)", backend.Name, backend.ID)
+	}
+
+	return nil
+}
+
+// RemoveBackend removes a backend from the monitor and stops health checking it.
+// This method is safe to call while the monitor is running, enabling dynamic
+// backend discovery in Kubernetes mode.
+//
+// The health check goroutine for this backend will be gracefully stopped.
+// If the backend doesn't exist, this operation is a no-op (idempotent).
+//
+// Parameters:
+//   - backendID: The ID of the backend to remove
+//
+// Returns:
+//   - error: Always returns nil (operation is always successful)
+//
+// Example:
+//
+//	err := monitor.RemoveBackend("old-backend")
+func (m *Monitor) RemoveBackend(backendID string) error {
+	m.backendsMu.Lock()
+	defer m.backendsMu.Unlock()
+
+	state, exists := m.backends[backendID]
+	if !exists {
+		// Already removed, no-op
+		return nil
+	}
+
+	// Cancel the health check goroutine if it's running
+	if state.cancelFunc != nil {
+		state.cancelFunc()
+		logger.Debugf("Stopped health monitoring for backend ID: %s", backendID)
+	}
+
+	// Remove backend from map
+	delete(m.backends, backendID)
+
+	// Remove from status tracker
+	m.statusTracker.RemoveBackend(backendID)
+
+	logger.Infof("Removed backend ID %s from health monitor", backendID)
+	return nil
 }
 
 // Summary provides aggregate health statistics for all backends.

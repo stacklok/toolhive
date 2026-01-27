@@ -671,7 +671,7 @@ func TestResponseWriter_WriteThenWriteHeader(t *testing.T) {
 	assert.Equal(t, len(data), n)
 	assert.Equal(t, int64(len(data)), rw.bytesWritten)
 	assert.Equal(t, string(data), rec.Body.String())
-	
+
 	// Verify that headers were marked as written
 	assert.True(t, rw.headerWritten, "headerWritten should be true after Write() call")
 	assert.Equal(t, http.StatusOK, rw.statusCode, "Status code should be 200 after Write()")

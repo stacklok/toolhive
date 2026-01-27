@@ -438,7 +438,7 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 		rw.headerWritten = true
 		rw.statusCode = http.StatusOK // Write() implicitly uses 200 - this is what actually happened
 	}
-	
+
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 	return n, err

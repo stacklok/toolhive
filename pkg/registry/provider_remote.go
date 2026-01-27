@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -22,7 +23,7 @@ type RemoteRegistryProvider struct {
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider.
-// Validates the registry is reachable before returning.
+// Validates the registry is reachable before returning with a 5-second timeout.
 func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*RemoteRegistryProvider, error) {
 	p := &RemoteRegistryProvider{
 		registryURL:    registryURL,
@@ -32,12 +33,43 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*Remote
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the registry is reachable
-	if _, err := p.GetRegistry(); err != nil {
-		return nil, err
+	// Validate the registry is reachable with 5-second timeout
+	if err := p.validateConnectivity(); err != nil {
+		return nil, fmt.Errorf("registry validation failed: %w", err)
 	}
 
 	return p, nil
+}
+
+// validateConnectivity checks if the registry is reachable with a 5-second timeout
+func (p *RemoteRegistryProvider) validateConnectivity() error {
+	// Build HTTP client with 5-second timeout for validation
+	builder := networking.NewHttpClientBuilder().
+		WithPrivateIPs(p.allowPrivateIp).
+		WithTimeout(5 * time.Second)
+	if p.allowPrivateIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	client, err := builder.Build()
+	if err != nil {
+		return fmt.Errorf("failed to build http client: %w", err)
+	}
+
+	resp, err := client.Get(p.registryURL)
+	if err != nil {
+		return fmt.Errorf("registry unreachable at %s: %w", p.registryURL, err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("Failed to close response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("registry returned status %d from %s", resp.StatusCode, p.registryURL)
+	}
+
+	return nil
 }
 
 // GetRegistry returns the remote registry data

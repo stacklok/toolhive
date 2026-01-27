@@ -4,10 +4,13 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,6 +24,54 @@ const (
 	// defaultRegistryName is the name of the default registry
 	defaultRegistryName = "default"
 )
+
+// connectivityError represents a registry connectivity/timeout error
+type connectivityError struct {
+	URL string
+	Err error
+}
+
+func (e *connectivityError) Error() string {
+	return fmt.Sprintf("registry at %s is unreachable: %v", e.URL, e.Err)
+}
+
+func (e *connectivityError) Unwrap() error {
+	return e.Err
+}
+
+// isConnectivityError checks if an error is related to connectivity/timeout
+func isConnectivityError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for context deadline exceeded (timeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// Check error message for common connectivity issues
+	errStr := err.Error()
+	connectivityKeywords := []string{
+		"timeout",
+		"unreachable",
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"no route to host",
+		"network is unreachable",
+		"validation failed",
+		"failed to fetch",
+	}
+
+	for _, keyword := range connectivityKeywords {
+		if strings.Contains(strings.ToLower(errStr), keyword) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // RegistryType represents the type of registry
 type RegistryType string
@@ -255,6 +306,13 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Process the registry update
 	responseType, message, err := rr.processRegistryUpdate(&req)
 	if err != nil {
+		// Check if it's a connectivity error - return 504 Gateway Timeout
+		var connErr *connectivityError
+		if errors.As(err, &connErr) {
+			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		// Other errors - return 400 Bad Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -322,6 +380,13 @@ func (rr *RegistryRoutes) handleRegistryURL(registryURL string, allowPrivateIP *
 
 	if err := rr.configProvider.SetRegistryURL(registryURL, allow); err != nil {
 		logger.Errorf("Failed to set registry URL: %v", err)
+		// Check if error is connectivity/timeout related
+		if isConnectivityError(err) {
+			return "", "", &connectivityError{
+				URL: registryURL,
+				Err: err,
+			}
+		}
 		return "", "", fmt.Errorf("failed to set registry URL: %w", err)
 	}
 	return "url", fmt.Sprintf("Successfully set registry URL: %s", registryURL), nil
@@ -336,6 +401,13 @@ func (rr *RegistryRoutes) handleRegistryAPIURL(apiURL string, allowPrivateIP *bo
 
 	if err := rr.configProvider.SetRegistryAPI(apiURL, allow); err != nil {
 		logger.Errorf("Failed to set registry API URL: %v", err)
+		// Check if error is connectivity/timeout related
+		if isConnectivityError(err) {
+			return "", "", &connectivityError{
+				URL: apiURL,
+				Err: err,
+			}
+		}
 		return "", "", fmt.Errorf("failed to set registry API URL: %w", err)
 	}
 	return "api", fmt.Sprintf("Successfully set registry API URL: %s", apiURL), nil

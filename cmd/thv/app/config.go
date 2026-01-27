@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -172,7 +173,7 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	case config.RegistryTypeURL:
 		err := provider.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
 		if err != nil {
-			return err
+			return enhanceRegistryError(err, cleanPath, "remote registry")
 		}
 		// Reset the cached provider so it re-initializes with the new config
 		registry.ResetDefaultProvider()
@@ -189,7 +190,7 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	case config.RegistryTypeAPI:
 		err := provider.SetRegistryAPI(cleanPath, allowPrivateRegistryIp)
 		if err != nil {
-			return err
+			return enhanceRegistryError(err, cleanPath, "registry API")
 		}
 		// Reset the cached provider so it re-initializes with the new config
 		registry.ResetDefaultProvider()
@@ -259,6 +260,46 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 	fmt.Println("Will use built-in registry.")
 	return nil
+}
+
+// enhanceRegistryError enhances registry errors with helpful user-facing messages
+func enhanceRegistryError(err error, url, registryType string) error {
+	if err == nil {
+		return nil
+	}
+
+	errStr := err.Error()
+
+	// Check for common connectivity issues and provide helpful messages
+	if strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "timed out") ||
+		strings.Contains(errStr, "deadline exceeded") {
+		return fmt.Errorf("registry validation timed out after 5 seconds\n"+
+			"The %s at %s is not responding.\n"+
+			"Possible causes:\n"+
+			"  - The URL is incorrect\n"+
+			"  - The registry server is down or slow to respond\n"+
+			"  - Network connectivity issues\n"+
+			"Original error: %v", registryType, url, err)
+	}
+
+	if strings.Contains(errStr, "unreachable") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no route to host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "validation failed") {
+		return fmt.Errorf("failed to connect to %s\n"+
+			"The %s at %s is not reachable.\n"+
+			"Please check:\n"+
+			"  - The URL is correct: %s\n"+
+			"  - The registry server is running and accessible\n"+
+			"  - Your network connection\n"+
+			"  - Firewall or proxy settings\n"+
+			"Original error: %v", registryType, registryType, url, url, err)
+	}
+
+	// For other errors, return the original error with minimal enhancement
+	return fmt.Errorf("failed to set %s: %w", registryType, err)
 }
 
 func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {

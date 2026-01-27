@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -51,10 +52,13 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
 // by checking if the MCP Registry API endpoint (/v0.1/servers) exists and returns valid API responses.
+// Uses a 5-second timeout for connectivity check.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
-	// Create HTTP client for probing with user's private IP preference
+	// Create HTTP client for probing with user's private IP preference and 5-second timeout
 	// If private IPs are allowed, also allow HTTP (for localhost testing)
-	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs)
+	builder := networking.NewHttpClientBuilder().
+		WithPrivateIPs(allowPrivateIPs).
+		WithTimeout(5 * time.Second)
 	if allowPrivateIPs {
 		builder = builder.WithInsecureAllowHTTP(true)
 	}
@@ -165,6 +169,7 @@ func isValidRegistryJSON(client *http.Client, url string) bool {
 }
 
 // setRegistryURL validates and sets a registry URL using the provided provider
+// Validates connectivity with a 5-second timeout.
 func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryIp bool) error {
 	// Validate URL scheme
 	_, err := validateURLScheme(registryURL, allowPrivateRegistryIp)
@@ -172,8 +177,10 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}
 
-	// Build HTTP client with appropriate security settings
-	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateRegistryIp)
+	// Build HTTP client with appropriate security settings and 5-second timeout
+	builder := networking.NewHttpClientBuilder().
+		WithPrivateIPs(allowPrivateRegistryIp).
+		WithTimeout(5 * time.Second)
 	if allowPrivateRegistryIp {
 		builder = builder.WithInsecureAllowHTTP(true)
 	}
@@ -290,6 +297,7 @@ func validateRegistryFileStructure(path string) error {
 }
 
 // setRegistryAPI validates and sets an MCP Registry API URL using the provided provider
+// Validates connectivity with a 5-second timeout.
 func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp bool) error {
 	parsedURL, err := neturl.Parse(apiURL)
 	if err != nil {
@@ -308,9 +316,11 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 		}
 	}
 
-	// Validate that the URL is accessible if not allowing private IPs
+	// Validate that the URL is accessible with 5-second timeout
 	if !allowPrivateRegistryIp {
-		registryClient, err := networking.NewHttpClientBuilder().Build()
+		registryClient, err := networking.NewHttpClientBuilder().
+			WithTimeout(5 * time.Second).
+			Build()
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}

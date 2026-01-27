@@ -4,7 +4,6 @@
 package adapter
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -14,17 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
-
-// OptimizerHandlerProvider provides handlers for optimizer tools.
-// This interface allows the adapter to create optimizer tools without
-// depending on the optimizer package implementation.
-type OptimizerHandlerProvider interface {
-	// CreateFindToolHandler returns the handler for optim_find_tool
-	CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
-
-	// CreateCallToolHandler returns the handler for optim_call_tool
-	CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
-}
 
 // CapabilityAdapter converts aggregator domain models to SDK types.
 //

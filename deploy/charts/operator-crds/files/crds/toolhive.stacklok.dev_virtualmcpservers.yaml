@@ -683,14 +683,16 @@ spec:
                     properties:
                       embeddingBackend:
                         description: |-
-                          EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".
+                          EmbeddingBackend specifies the embedding provider: "ollama", "vllm", "unified", or "openai".
                           - "ollama": Uses local Ollama HTTP API for embeddings
-                          - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
-                          - "placeholder": Uses deterministic hash-based embeddings (for testing/development)
+                          - "vllm": Uses vLLM OpenAI-compatible API (recommended for production Kubernetes deployments)
+                          - "unified": Uses generic OpenAI-compatible API (works with both vLLM and OpenAI)
+                          - "openai": Uses OpenAI-compatible API
                         enum:
                         - ollama
-                        - openai-compatible
-                        - placeholder
+                        - vllm
+                        - unified
+                        - openai
                         type: string
                       embeddingDimension:
                         description: |-

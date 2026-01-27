@@ -7,6 +7,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,7 +82,7 @@ func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) er
 
 // buildDockerImage builds a Docker image using the Docker client API
 func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextDir, imageName string) error {
-	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
+	logger.Debugf("Building image %s from context directory %s", imageName, contextDir)
 
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
@@ -96,8 +97,11 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 	}()
 	defer func() {
 		if err := tarFile.Close(); err != nil {
-			// Non-fatal: file cleanup failure
-			logger.Warnf("Failed to close tar file: %v", err)
+			// Docker client closes the reader on success, so ignore "already closed" errors
+			if !errors.Is(err, os.ErrClosed) {
+				// Non-fatal: file cleanup failure
+				logger.Debugf("Failed to close tar file: %v", err)
+			}
 		}
 	}()
 
@@ -144,7 +148,7 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 	defer func() {
 		if err := tw.Close(); err != nil {
 			// Non-fatal: tar writer cleanup failure
-			logger.Warnf("Failed to close tar writer: %v", err)
+			logger.Debugf("Failed to close tar writer: %v", err)
 		}
 	}()
 
@@ -189,7 +193,7 @@ func createTarFromDir(srcDir string, writer io.Writer) error {
 			defer func() {
 				if err := file.Close(); err != nil {
 					// Non-fatal: file cleanup failure
-					logger.Warnf("Failed to close file: %v", err)
+					logger.Debugf("Failed to close file: %v", err)
 				}
 			}()
 

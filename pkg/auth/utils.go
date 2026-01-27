@@ -65,7 +65,7 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
-		logger.Info("OIDC validation enabled")
+		logger.Debug("OIDC validation enabled")
 
 		// Create JWT validator
 		jwtValidator, err := NewTokenValidator(ctx, *oidcConfig)
@@ -77,7 +77,7 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 
-	logger.Info("OIDC validation disabled, using local user authentication")
+	logger.Debug("OIDC validation disabled, using local user authentication")
 
 	// Get current OS user
 	currentUser, err := user.Current()
@@ -86,7 +86,7 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 		return LocalUserMiddleware("local"), nil, nil
 	}
 
-	logger.Infof("Using local user authentication for user: %s", currentUser.Username)
+	logger.Debugf("Using local user authentication for user: %s", currentUser.Username)
 	return LocalUserMiddleware(currentUser.Username), nil, nil
 }
 

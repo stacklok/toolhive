@@ -109,7 +109,7 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 	if _, err := fmt.Fprintf(os.Stdout, "Successfully pulled %s\n", imageName); err != nil {
 		logger.Debugf("Failed to write success message: %v", err)
 	}
-	logger.Infof("Pull complete for image: %s, response: %s", imageName, response)
+	logger.Debugf("Pull complete for image: %s, response: %s", imageName, response)
 
 	return nil
 }

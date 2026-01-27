@@ -12,8 +12,8 @@ import (
 
 	"github.com/philippgille/chromem-go"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 // backendServerOps provides operations for backend servers in chromem-go

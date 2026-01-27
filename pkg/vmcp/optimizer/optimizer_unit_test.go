@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -127,14 +127,12 @@ func TestNewIntegration_Enabled(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 768,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -169,14 +167,12 @@ func TestOnRegisterSession(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 768,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -247,14 +243,12 @@ func TestRegisterTools(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 768,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -306,14 +300,12 @@ func TestClose(t *testing.T) {
 	_ = embeddingManager.Close()
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 768,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

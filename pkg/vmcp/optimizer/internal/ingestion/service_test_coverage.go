@@ -40,12 +40,10 @@ func TestService_GetTotalToolTokens(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -96,12 +94,10 @@ func TestService_GetTotalToolTokens_NoFTS(t *testing.T) {
 			PersistPath: "", // In-memory
 			FTSDBPath:   "", // Will default to :memory:
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -136,12 +132,10 @@ func TestService_GetDatabase(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -175,12 +169,10 @@ func TestService_GetEmbeddingManager(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -215,12 +207,10 @@ func TestService_IngestServer_ErrorHandling(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -264,12 +254,10 @@ func TestService_Close_ErrorHandling(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)

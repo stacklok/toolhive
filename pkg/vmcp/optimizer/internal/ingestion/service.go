@@ -17,11 +17,11 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/db"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokens"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Config holds configuration for the ingestion service
@@ -29,8 +29,11 @@ type Config struct {
 	// Database configuration
 	DBConfig *db.Config
 
-	// Embedding configuration
-	EmbeddingConfig *embeddings.Config
+	// Embedding configuration (flattened from embeddings.Config)
+	EmbeddingBackend   string
+	EmbeddingURL       string
+	EmbeddingModel     string
+	EmbeddingDimension int
 
 	// MCP timeout in seconds
 	MCPTimeout int
@@ -70,8 +73,16 @@ func NewService(config *Config) (*Service, error) {
 		config.SkippedWorkloads = []string{"inspector", "mcp-optimizer"}
 	}
 
+	// Construct embeddings.Config from individual fields
+	embeddingConfig := &embeddings.Config{
+		BackendType: config.EmbeddingBackend,
+		BaseURL:     config.EmbeddingURL,
+		Model:       config.EmbeddingModel,
+		Dimension:   config.EmbeddingDimension,
+	}
+
 	// Initialize embedding manager first (needed for database)
-	embeddingManager, err := embeddings.NewManager(config.EmbeddingConfig)
+	embeddingManager, err := embeddings.NewManager(embeddingConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize embedding manager: %w", err)
 	}

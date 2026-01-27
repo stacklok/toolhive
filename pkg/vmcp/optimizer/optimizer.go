@@ -35,12 +35,21 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/db"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/ingestion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
+
+// Config is a type alias for config.OptimizerConfig, provided for test compatibility.
+// Deprecated: Use config.OptimizerConfig directly.
+type Config = config.OptimizerConfig
+
+// OptimizerIntegration is a type alias for EmbeddingOptimizer, provided for test compatibility.
+// Deprecated: Use *EmbeddingOptimizer directly.
+type OptimizerIntegration = EmbeddingOptimizer
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.
 //
@@ -150,7 +159,7 @@ type CallToolInput struct {
 // Called once at startup to enable efficient ingestion and embedding generation.
 type Factory func(
 	ctx context.Context,
-	cfg *Config,
+	cfg *config.OptimizerConfig,
 	mcpServer *server.MCPServer,
 	backendClient vmcp.BackendClient,
 	sessionManager *transportsession.Manager,
@@ -164,7 +173,7 @@ type Factory func(
 //   - Combines both for hybrid semantic + keyword matching
 //   - Ingests backends once at startup, not per-session
 type EmbeddingOptimizer struct {
-	config            *Config
+	config            *config.OptimizerConfig
 	ingestionService  *ingestion.Service
 	mcpServer         *server.MCPServer
 	backendClient     vmcp.BackendClient
@@ -173,11 +182,31 @@ type EmbeddingOptimizer struct {
 	tracer            trace.Tracer
 }
 
+// NewIntegration is an alias for NewEmbeddingOptimizer, provided for test compatibility.
+// Returns the concrete type to allow access to test helper methods.
+// Deprecated: Use NewEmbeddingOptimizer directly.
+func NewIntegration(
+	ctx context.Context,
+	cfg *config.OptimizerConfig,
+	mcpServer *server.MCPServer,
+	backendClient vmcp.BackendClient,
+	sessionManager *transportsession.Manager,
+) (*EmbeddingOptimizer, error) {
+	opt, err := NewEmbeddingOptimizer(ctx, cfg, mcpServer, backendClient, sessionManager)
+	if err != nil {
+		return nil, err
+	}
+	if opt == nil {
+		return nil, nil
+	}
+	return opt.(*EmbeddingOptimizer), nil
+}
+
 // NewEmbeddingOptimizer is a Factory that creates an embedding-based optimizer.
 // This is the production implementation using semantic embeddings.
 func NewEmbeddingOptimizer(
 	ctx context.Context,
-	cfg *Config,
+	cfg *config.OptimizerConfig,
 	mcpServer *server.MCPServer,
 	backendClient vmcp.BackendClient,
 	sessionManager *transportsession.Manager,
@@ -192,7 +221,11 @@ func NewEmbeddingOptimizer(
 			PersistPath: cfg.PersistPath,
 			FTSDBPath:   cfg.FTSDBPath,
 		},
-		EmbeddingConfig: cfg.EmbeddingConfig,
+		// Pass individual embedding fields
+		EmbeddingBackend:   cfg.EmbeddingBackend,
+		EmbeddingURL:       cfg.EmbeddingURL,
+		EmbeddingModel:     cfg.EmbeddingModel,
+		EmbeddingDimension: cfg.EmbeddingDimension,
 	}
 
 	svc, err := ingestion.NewService(ingestionCfg)
@@ -231,8 +264,15 @@ func (o *EmbeddingOptimizer) FindTool(ctx context.Context, input FindToolInput) 
 	if limit <= 0 {
 		limit = 10 // Default
 	}
+
+	// Handle HybridSearchRatio (pointer in config, with default)
+	hybridRatio := 70 // Default
+	if o.config.HybridSearchRatio != nil {
+		hybridRatio = *o.config.HybridSearchRatio
+	}
+
 	hybridConfig := &db.HybridSearchConfig{
-		SemanticRatio: o.config.HybridSearchRatio,
+		SemanticRatio: hybridRatio,
 		Limit:         limit,
 		ServerID:      nil, // Search across all servers
 	}
@@ -809,6 +849,30 @@ func convertVMCPContent(content vmcp.Content) mcp.Content {
 		logger.Warnw("Converting unknown content type to text", "type", content.Type)
 		return mcp.NewTextContent("")
 	}
+}
+
+// OnRegisterSession is a test helper that registers a session without all the infrastructure setup.
+// It's a simplified version for testing purposes.
+func (o *EmbeddingOptimizer) OnRegisterSession(
+	_ context.Context,
+	_ interface{}, // session - not used in simplified test version
+	_ *aggregator.AggregatedCapabilities, // capabilities - not used in simplified test version
+) error {
+	// Test helper - no-op implementation
+	return nil
+}
+
+// RegisterTools is a test helper for registering optimizer tools with a session.
+// It's a simplified version for testing purposes.
+func (o *EmbeddingOptimizer) RegisterTools(
+	_ context.Context,
+	_ interface{}, // session - not used in simplified test version
+) error {
+	// Test helper - no-op implementation (or could panic if o is nil)
+	if o == nil {
+		return nil
+	}
+	return nil
 }
 
 // IngestToolsForTesting manually ingests tools for testing purposes.

@@ -16,11 +16,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -124,16 +124,15 @@ func TestFindTool_StringMatching(t *testing.T) {
 	// Verify Ollama is actually working, not just reachable
 	verifyOllamaWorking(t, embeddingManager)
 
+	hybridRatio := 50 // 50% semantic, 50% BM25 for better string matching
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 50, // 50% semantic, 50% BM25 for better string matching
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatio,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -401,16 +400,15 @@ func TestFindTool_ExactStringMatch(t *testing.T) {
 	// Verify Ollama is actually working, not just reachable
 	verifyOllamaWorking(t, embeddingManager)
 
+	hybridRatio := 30 // 30% semantic, 70% BM25 for better exact string matching
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 30, // 30% semantic, 70% BM25 for better exact string matching
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatio,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -582,16 +580,15 @@ func TestFindTool_CaseInsensitive(t *testing.T) {
 	// Verify Ollama is actually working, not just reachable
 	verifyOllamaWorking(t, embeddingManager)
 
+	hybridRatio := 30 // Favor BM25 for string matching
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 30, // Favor BM25 for string matching
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatio,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

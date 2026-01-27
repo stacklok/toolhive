@@ -14,10 +14,10 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -131,14 +131,12 @@ func TestOptimizerIntegration_WithVMCP(t *testing.T) {
 
 	// Configure optimizer
 	optimizerConfig := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
 	}
 
 	// Create optimizer integration
@@ -232,14 +230,12 @@ func TestOptimizerIntegration_EmbeddingTimeTracking(t *testing.T) {
 
 	// Configure optimizer
 	optimizerConfig := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
 	}
 
 	// Create optimizer integration
@@ -351,14 +347,12 @@ func TestOptimizerIntegration_TokenMetrics(t *testing.T) {
 
 	// Configure optimizer
 	optimizerConfig := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddings.BackendTypeOllama,
-			BaseURL:     "http://localhost:11434",
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddings.BackendTypeOllama,
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
 	}
 
 	// Create optimizer integration

@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -83,16 +83,15 @@ func TestFindTool_SemanticSearch(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	hybridRatio := 90 // 90% semantic, 10% BM25 to test semantic search
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddingBackend,
-			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddingConfig.Model,
-			Dimension:   embeddingConfig.Dimension,
-		},
-		HybridSearchRatio: 90, // 90% semantic, 10% BM25 to test semantic search
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddingBackend,
+		EmbeddingURL:       embeddingConfig.BaseURL,
+		EmbeddingModel:     embeddingConfig.Model,
+		EmbeddingDimension: embeddingConfig.Dimension,
+		HybridSearchRatio:  &hybridRatio,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -383,16 +382,15 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	// Test with high semantic ratio
+	hybridRatioSemantic := 90 // 90% semantic
 	configSemantic := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db-semantic"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddingBackend,
-			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 90, // 90% semantic
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db-semantic"),
+		EmbeddingBackend:   embeddingBackend,
+		EmbeddingURL:       embeddingConfig.BaseURL,
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatioSemantic,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -401,16 +399,15 @@ func TestFindTool_SemanticVsKeyword(t *testing.T) {
 	defer func() { _ = integrationSemantic.Close() }()
 
 	// Test with low semantic ratio (high BM25)
+	hybridRatioKeyword := 10 // 10% semantic, 90% BM25
 	configKeyword := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db-keyword"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddingBackend,
-			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 10, // 10% semantic, 90% BM25
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db-keyword"),
+		EmbeddingBackend:   embeddingBackend,
+		EmbeddingURL:       embeddingConfig.BaseURL,
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatioKeyword,
 	}
 
 	integrationKeyword, err := NewIntegration(ctx, configKeyword, mcpServer, mockClient, sessionMgr)
@@ -577,16 +574,15 @@ func TestFindTool_SemanticSimilarityScores(t *testing.T) {
 	mcpServer := server.NewMCPServer("test-server", "1.0")
 	mockClient := &mockBackendClient{}
 
+	hybridRatio := 90 // High semantic ratio
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: embeddingBackend,
-			BaseURL:     embeddingConfig.BaseURL,
-			Model:       embeddings.DefaultModelAllMiniLM,
-			Dimension:   384,
-		},
-		HybridSearchRatio: 90, // High semantic ratio
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   embeddingBackend,
+		EmbeddingURL:       embeddingConfig.BaseURL,
+		EmbeddingModel:     embeddings.DefaultModelAllMiniLM,
+		EmbeddingDimension: 384,
+		HybridSearchRatio:  &hybridRatio,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 //go:embed schema_fts.sql

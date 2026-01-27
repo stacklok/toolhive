@@ -16,11 +16,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/embeddings"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -108,14 +108,12 @@ func TestCreateFindToolHandler_InvalidArguments(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -204,14 +202,12 @@ func TestCreateFindToolHandler_WithKeywords(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -287,14 +283,12 @@ func TestCreateFindToolHandler_Limit(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -387,14 +381,12 @@ func TestCreateCallToolHandler_InvalidArguments(t *testing.T) {
 	mockClient := &mockBackendClientWithCallTool{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -519,14 +511,12 @@ func TestCreateCallToolHandler_NoRoutingTable(t *testing.T) {
 	mockClient := &mockBackendClientWithCallTool{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -578,14 +568,12 @@ func TestCreateCallToolHandler_ToolNotFound(t *testing.T) {
 	mockClient := &mockBackendClientWithCallTool{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -647,14 +635,12 @@ func TestCreateCallToolHandler_BackendMismatch(t *testing.T) {
 	mockClient := &mockBackendClientWithCallTool{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -725,14 +711,12 @@ func TestCreateCallToolHandler_Success(t *testing.T) {
 	}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -815,14 +799,12 @@ func TestCreateCallToolHandler_CallToolError(t *testing.T) {
 	}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -890,14 +872,12 @@ func TestCreateFindToolHandler_InputSchemaUnmarshalError(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -948,14 +928,12 @@ func TestOnRegisterSession_DuplicateSession(t *testing.T) {
 	mockClient := &mockBackendClient{}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
@@ -1002,14 +980,12 @@ func TestIngestInitialBackends_ErrorHandling(t *testing.T) {
 	}
 
 	config := &Config{
-		Enabled:     true,
-		PersistPath: filepath.Join(tmpDir, "optimizer-db"),
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		Enabled:            true,
+		PersistPath:        filepath.Join(tmpDir, "optimizer-db"),
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())

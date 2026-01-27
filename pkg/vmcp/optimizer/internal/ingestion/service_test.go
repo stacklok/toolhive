@@ -51,12 +51,10 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   768,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 768,
 	}
 
 	svc, err := NewService(config)
@@ -156,12 +154,10 @@ func TestService_EmbeddingTimeTracking(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "test-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "all-minilm",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "all-minilm",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)
@@ -220,12 +216,10 @@ func TestServiceWithOllama(t *testing.T) {
 		DBConfig: &db.Config{
 			PersistPath: filepath.Join(tmpDir, "ollama-db"),
 		},
-		EmbeddingConfig: &embeddings.Config{
-			BackendType: "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "nomic-embed-text",
-			Dimension:   384,
-		},
+		EmbeddingBackend:   "ollama",
+		EmbeddingURL:       "http://localhost:11434",
+		EmbeddingModel:     "nomic-embed-text",
+		EmbeddingDimension: 384,
 	}
 
 	svc, err := NewService(config)

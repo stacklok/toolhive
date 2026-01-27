@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -137,7 +138,7 @@ type Config struct {
 
 	// OptimizerConfig is the optimizer configuration used by OptimizerFactory.
 	// Only used if OptimizerFactory is set and Optimizer is nil.
-	OptimizerConfig *optimizer.Config
+	OptimizerConfig *config.OptimizerConfig
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)

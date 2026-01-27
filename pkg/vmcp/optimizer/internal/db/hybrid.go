@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/models"
 )
 
 // HybridSearchConfig configures hybrid search behavior

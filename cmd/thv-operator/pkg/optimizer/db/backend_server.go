@@ -16,23 +16,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// BackendServerOps provides operations for backend servers in chromem-go
-type BackendServerOps struct {
-	db            *DB
+// backendServerOps provides operations for backend servers in chromem-go
+// This is a private implementation detail. Use the Database interface instead.
+type backendServerOps struct {
+	db            *chromemDB
 	embeddingFunc chromem.EmbeddingFunc
 }
 
-// NewBackendServerOps creates a new BackendServerOps instance
-func NewBackendServerOps(db *DB, embeddingFunc chromem.EmbeddingFunc) *BackendServerOps {
-	return &BackendServerOps{
+// newBackendServerOps creates a new backendServerOps instance
+func newBackendServerOps(db *chromemDB, embeddingFunc chromem.EmbeddingFunc) *backendServerOps {
+	return &backendServerOps{
 		db:            db,
 		embeddingFunc: embeddingFunc,
 	}
 }
 
-// Create adds a new backend server to the collection
-func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendServer) error {
-	collection, err := ops.db.GetOrCreateCollection(ctx, BackendServerCollection, ops.embeddingFunc)
+// create adds a new backend server to the collection
+func (ops *backendServerOps) create(ctx context.Context, server *models.BackendServer) error {
+	collection, err := ops.db.getOrCreateCollection(ctx, BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("failed to get backend server collection: %w", err)
 	}
@@ -69,7 +70,7 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 
 	// Also add to FTS5 database if available (for keyword filtering)
 	// Use background context to avoid cancellation issues - FTS5 is supplementary
-	if ftsDB := ops.db.GetFTSDB(); ftsDB != nil {
+	if ftsDB := ops.db.getFTSDB(); ftsDB != nil {
 		// Use background context with timeout for FTS operations
 		// This ensures FTS operations complete even if the original context is canceled
 		ftsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -84,47 +85,21 @@ func (ops *BackendServerOps) Create(ctx context.Context, server *models.BackendS
 	return nil
 }
 
-// Get retrieves a backend server by ID
-func (ops *BackendServerOps) Get(ctx context.Context, serverID string) (*models.BackendServer, error) {
-	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
-	if err != nil {
-		return nil, fmt.Errorf("backend server collection not found: %w", err)
-	}
-
-	// Query by ID with exact match
-	results, err := collection.Query(ctx, serverID, 1, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query server: %w", err)
-	}
-
-	if len(results) == 0 {
-		return nil, fmt.Errorf("server not found: %s", serverID)
-	}
-
-	// Deserialize from metadata
-	server, err := deserializeServerMetadata(results[0].Metadata)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize server: %w", err)
-	}
-
-	return server, nil
-}
-
-// Update updates an existing backend server
-func (ops *BackendServerOps) Update(ctx context.Context, server *models.BackendServer) error {
+// update updates an existing backend server (creates if not exists)
+func (ops *backendServerOps) update(ctx context.Context, server *models.BackendServer) error {
 	// chromem-go doesn't have an update operation, so we delete and re-create
-	err := ops.Delete(ctx, server.ID)
+	err := ops.delete(ctx, server.ID)
 	if err != nil {
 		// If server doesn't exist, that's fine
 		logger.Debugf("Server %s not found for update, will create new", server.ID)
 	}
 
-	return ops.Create(ctx, server)
+	return ops.create(ctx, server)
 }
 
-// Delete removes a backend server
-func (ops *BackendServerOps) Delete(ctx context.Context, serverID string) error {
-	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
+// delete removes a backend server
+func (ops *backendServerOps) delete(ctx context.Context, serverID string) error {
+	collection, err := ops.db.getCollection(BackendServerCollection, ops.embeddingFunc)
 	if err != nil {
 		// Collection doesn't exist, nothing to delete
 		return nil
@@ -136,7 +111,7 @@ func (ops *BackendServerOps) Delete(ctx context.Context, serverID string) error 
 	}
 
 	// Also delete from FTS5 database if available
-	if ftsDB := ops.db.GetFTSDB(); ftsDB != nil {
+	if ftsDB := ops.db.getFTSDB(); ftsDB != nil {
 		if err := ftsDB.DeleteServer(ctx, serverID); err != nil {
 			// Log but don't fail
 			logger.Warnf("Failed to delete server from FTS5: %v", err)
@@ -145,74 +120,6 @@ func (ops *BackendServerOps) Delete(ctx context.Context, serverID string) error 
 
 	logger.Debugf("Deleted backend server: %s (chromem-go + FTS5)", serverID)
 	return nil
-}
-
-// List returns all backend servers
-func (ops *BackendServerOps) List(ctx context.Context) ([]*models.BackendServer, error) {
-	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
-	if err != nil {
-		// Collection doesn't exist yet, return empty list
-		return []*models.BackendServer{}, nil
-	}
-
-	// Get count to determine nResults
-	count := collection.Count()
-	if count == 0 {
-		return []*models.BackendServer{}, nil
-	}
-
-	// Query with a generic term to get all servers
-	// Using "server" as a generic query that should match all servers
-	results, err := collection.Query(ctx, "server", count, nil, nil)
-	if err != nil {
-		return []*models.BackendServer{}, nil
-	}
-
-	servers := make([]*models.BackendServer, 0, len(results))
-	for _, result := range results {
-		server, err := deserializeServerMetadata(result.Metadata)
-		if err != nil {
-			logger.Warnf("Failed to deserialize server: %v", err)
-			continue
-		}
-		servers = append(servers, server)
-	}
-
-	return servers, nil
-}
-
-// Search performs semantic search for backend servers
-func (ops *BackendServerOps) Search(ctx context.Context, query string, limit int) ([]*models.BackendServer, error) {
-	collection, err := ops.db.GetCollection(BackendServerCollection, ops.embeddingFunc)
-	if err != nil {
-		return []*models.BackendServer{}, nil
-	}
-
-	// Get collection count and adjust limit if necessary
-	count := collection.Count()
-	if count == 0 {
-		return []*models.BackendServer{}, nil
-	}
-	if limit > count {
-		limit = count
-	}
-
-	results, err := collection.Query(ctx, query, limit, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search servers: %w", err)
-	}
-
-	servers := make([]*models.BackendServer, 0, len(results))
-	for _, result := range results {
-		server, err := deserializeServerMetadata(result.Metadata)
-		if err != nil {
-			logger.Warnf("Failed to deserialize server: %v", err)
-			continue
-		}
-		servers = append(servers, server)
-	}
-
-	return servers, nil
 }
 
 // Helper functions for metadata serialization

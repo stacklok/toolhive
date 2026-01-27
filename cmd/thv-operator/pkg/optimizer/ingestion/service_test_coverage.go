@@ -113,8 +113,8 @@ func TestService_GetTotalToolTokens_NoFTS(t *testing.T) {
 	assert.GreaterOrEqual(t, totalTokens, 0, "Total tokens should be non-negative")
 }
 
-// TestService_GetBackendToolOps tests backend tool ops accessor
-func TestService_GetBackendToolOps(t *testing.T) {
+// TestService_GetDatabase tests database accessor
+func TestService_GetDatabase(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
@@ -148,8 +148,8 @@ func TestService_GetBackendToolOps(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = svc.Close() }()
 
-	toolOps := svc.GetBackendToolOps()
-	require.NotNil(t, toolOps)
+	database := svc.GetDatabase()
+	require.NotNil(t, database)
 }
 
 // TestService_GetEmbeddingManager tests embedding manager accessor

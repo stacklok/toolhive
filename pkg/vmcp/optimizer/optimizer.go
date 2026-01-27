@@ -507,11 +507,11 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 
 		// Perform hybrid search using database operations
 		if o.ingestionService == nil {
-			return mcp.NewToolResultError("backend tool operations not initialized"), nil
+			return mcp.NewToolResultError("database not initialized"), nil
 		}
-		backendToolOps := o.ingestionService.GetBackendToolOps()
-		if backendToolOps == nil {
-			return mcp.NewToolResultError("backend tool operations not initialized"), nil
+		database := o.ingestionService.GetDatabase()
+		if database == nil {
+			return mcp.NewToolResultError("database not initialized"), nil
 		}
 
 		// Configure hybrid search
@@ -526,7 +526,7 @@ func (o *OptimizerIntegration) createFindToolHandler() func(context.Context, mcp
 		if toolKeywords != "" {
 			queryText = toolDescription + " " + toolKeywords
 		}
-		results, err2 := backendToolOps.SearchHybrid(ctx, queryText, hybridConfig)
+		results, err2 := database.SearchToolsHybrid(ctx, queryText, hybridConfig)
 		if err2 != nil {
 			logger.Errorw("Hybrid search failed",
 				"error", err2,

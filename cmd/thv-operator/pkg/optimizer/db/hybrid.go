@@ -32,9 +32,9 @@ func DefaultHybridConfig() *HybridSearchConfig {
 	}
 }
 
-// SearchHybrid performs hybrid search combining semantic (chromem-go) and BM25 (FTS5) results
+// searchHybrid performs hybrid search combining semantic (chromem-go) and BM25 (FTS5) results
 // This matches the Python mcp-optimizer's hybrid search implementation
-func (ops *BackendToolOps) SearchHybrid(
+func (ops *backendToolOps) searchHybrid(
 	ctx context.Context,
 	queryText string,
 	config *HybridSearchConfig,
@@ -65,7 +65,7 @@ func (ops *BackendToolOps) SearchHybrid(
 
 	// Semantic search
 	go func() {
-		results, err := ops.Search(ctx, queryText, semanticLimit, config.ServerID)
+		results, err := ops.search(ctx, queryText, semanticLimit, config.ServerID)
 		semanticCh <- searchResult{results, err}
 	}()
 

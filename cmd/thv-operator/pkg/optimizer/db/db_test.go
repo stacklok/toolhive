@@ -32,10 +32,10 @@ func TestNewDB_CorruptedDatabase(t *testing.T) {
 	}
 
 	// Should recover from corruption
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 }
 
 // TestNewDB_CorruptedDatabase_RecoveryFailure tests when recovery fails
@@ -59,7 +59,7 @@ func TestNewDB_CorruptedDatabase_RecoveryFailure(t *testing.T) {
 		PersistPath: "/invalid/path/that/does/not/exist",
 	}
 
-	_, err = NewDB(config)
+	_, err = newChromemDB(config)
 	// Should return error for invalid path
 	assert.Error(t, err)
 }
@@ -73,9 +73,9 @@ func TestDB_GetOrCreateCollection(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
 	// Create a simple embedding function
 	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
@@ -83,12 +83,12 @@ func TestDB_GetOrCreateCollection(t *testing.T) {
 	}
 
 	// Get or create collection
-	collection, err := db.GetOrCreateCollection(ctx, "test-collection", embeddingFunc)
+	collection, err := db.getOrCreateCollection(ctx, "test-collection", embeddingFunc)
 	require.NoError(t, err)
 	require.NotNil(t, collection)
 
 	// Get existing collection
-	collection2, err := db.GetOrCreateCollection(ctx, "test-collection", embeddingFunc)
+	collection2, err := db.getOrCreateCollection(ctx, "test-collection", embeddingFunc)
 	require.NoError(t, err)
 	require.NotNil(t, collection2)
 	assert.Equal(t, collection, collection2)
@@ -103,24 +103,24 @@ func TestDB_GetCollection(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
 	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
 	// Get non-existent collection should fail
-	_, err = db.GetCollection("non-existent", embeddingFunc)
+	_, err = db.getCollection("non-existent", embeddingFunc)
 	assert.Error(t, err)
 
 	// Create collection first
-	_, err = db.GetOrCreateCollection(ctx, "test-collection", embeddingFunc)
+	_, err = db.getOrCreateCollection(ctx, "test-collection", embeddingFunc)
 	require.NoError(t, err)
 
 	// Now get it
-	collection, err := db.GetCollection("test-collection", embeddingFunc)
+	collection, err := db.getCollection("test-collection", embeddingFunc)
 	require.NoError(t, err)
 	require.NotNil(t, collection)
 }
@@ -134,23 +134,23 @@ func TestDB_DeleteCollection(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
 	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
 	// Create collection
-	_, err = db.GetOrCreateCollection(ctx, "test-collection", embeddingFunc)
+	_, err = db.getOrCreateCollection(ctx, "test-collection", embeddingFunc)
 	require.NoError(t, err)
 
 	// Delete collection
-	db.DeleteCollection("test-collection")
+	db.deleteCollection("test-collection")
 
 	// Verify it's deleted
-	_, err = db.GetCollection("test-collection", embeddingFunc)
+	_, err = db.getCollection("test-collection", embeddingFunc)
 	assert.Error(t, err)
 }
 
@@ -163,29 +163,29 @@ func TestDB_Reset(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
 	embeddingFunc := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{0.1, 0.2, 0.3}, nil
 	}
 
 	// Create collections
-	_, err = db.GetOrCreateCollection(ctx, BackendServerCollection, embeddingFunc)
+	_, err = db.getOrCreateCollection(ctx, BackendServerCollection, embeddingFunc)
 	require.NoError(t, err)
 
-	_, err = db.GetOrCreateCollection(ctx, BackendToolCollection, embeddingFunc)
+	_, err = db.getOrCreateCollection(ctx, BackendToolCollection, embeddingFunc)
 	require.NoError(t, err)
 
 	// Reset database
-	db.Reset()
+	db.reset()
 
 	// Verify collections are deleted
-	_, err = db.GetCollection(BackendServerCollection, embeddingFunc)
+	_, err = db.getCollection(BackendServerCollection, embeddingFunc)
 	assert.Error(t, err)
 
-	_, err = db.GetCollection(BackendToolCollection, embeddingFunc)
+	_, err = db.getCollection(BackendToolCollection, embeddingFunc)
 	assert.Error(t, err)
 }
 
@@ -197,11 +197,11 @@ func TestDB_GetChromemDB(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
-	chromemDB := db.GetChromemDB()
+	chromemDB := db.getChromemDB()
 	require.NotNil(t, chromemDB)
 }
 
@@ -213,11 +213,11 @@ func TestDB_GetFTSDB(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.close() }()
 
-	ftsDB := db.GetFTSDB()
+	ftsDB := db.getFTSDB()
 	require.NotNil(t, ftsDB)
 }
 
@@ -229,14 +229,14 @@ func TestDB_Close(t *testing.T) {
 		PersistPath: "", // In-memory
 	}
 
-	db, err := NewDB(config)
+	db, err := newChromemDB(config)
 	require.NoError(t, err)
 
-	err = db.Close()
+	err = db.close()
 	require.NoError(t, err)
 
 	// Multiple closes should be safe
-	err = db.Close()
+	err = db.close()
 	require.NoError(t, err)
 }
 
@@ -288,16 +288,16 @@ func TestNewDB_FTSDBPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			db, err := NewDB(tt.config)
+			db, err := newChromemDB(tt.config)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, db)
-				defer func() { _ = db.Close() }()
+				defer func() { _ = db.close() }()
 
 				// Verify FTS DB is accessible
-				ftsDB := db.GetFTSDB()
+				ftsDB := db.getFTSDB()
 				require.NotNil(t, ftsDB)
 			}
 		})

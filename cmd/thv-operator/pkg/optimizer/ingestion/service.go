@@ -50,11 +50,9 @@ type Config struct {
 // Service handles ingestion of MCP backends and their tools
 type Service struct {
 	config           *Config
-	database         *db.DB
+	database         db.Database
 	embeddingManager *embeddings.Manager
 	tokenCounter     *tokens.Counter
-	backendServerOps *db.BackendServerOps
-	backendToolOps   *db.BackendToolOps
 	tracer           trace.Tracer
 
 	// Embedding time tracking
@@ -72,21 +70,9 @@ func NewService(config *Config) (*Service, error) {
 		config.SkippedWorkloads = []string{"inspector", "mcp-optimizer"}
 	}
 
-	// Initialize database
-	database, err := db.NewDB(config.DBConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
-	}
-
-	// Clear database on startup to ensure fresh embeddings
-	// This is important when the embedding model changes or for consistency
-	database.Reset()
-	logger.Info("Cleared optimizer database on startup")
-
-	// Initialize embedding manager
+	// Initialize embedding manager first (needed for database)
 	embeddingManager, err := embeddings.NewManager(config.EmbeddingConfig)
 	if err != nil {
-		_ = database.Close()
 		return nil, fmt.Errorf("failed to initialize embedding manager: %w", err)
 	}
 
@@ -98,14 +84,13 @@ func NewService(config *Config) (*Service, error) {
 
 	svc := &Service{
 		config:             config,
-		database:           database,
 		embeddingManager:   embeddingManager,
 		tokenCounter:       tokenCounter,
 		tracer:             tracer,
 		totalEmbeddingTime: 0,
 	}
 
-	// Create chromem-go embeddingFunc from our embedding manager with tracing
+	// Create embedding function for database with tracing
 	embeddingFunc := func(ctx context.Context, text string) ([]float32, error) {
 		// Create a span for embedding calculation
 		_, span := svc.tracer.Start(ctx, "optimizer.ingestion.calculate_embedding",
@@ -143,8 +128,18 @@ func NewService(config *Config) (*Service, error) {
 		return embeddingsResult[0], nil
 	}
 
-	svc.backendServerOps = db.NewBackendServerOps(database, embeddingFunc)
-	svc.backendToolOps = db.NewBackendToolOps(database, embeddingFunc)
+	// Initialize database with embedding function
+	database, err := db.NewDatabase(config.DBConfig, embeddingFunc)
+	if err != nil {
+		_ = embeddingManager.Close()
+		return nil, fmt.Errorf("failed to initialize database: %w", err)
+	}
+	svc.database = database
+
+	// Clear database on startup to ensure fresh embeddings
+	// This is important when the embedding model changes or for consistency
+	database.Reset()
+	logger.Info("Cleared optimizer database on startup")
 
 	logger.Info("Ingestion service initialized for event-driven ingestion (chromem-go)")
 	return svc, nil
@@ -197,7 +192,7 @@ func (s *Service) IngestServer(
 	}
 
 	// Create or update server (chromem-go handles embeddings)
-	if err := s.backendServerOps.Update(ctx, backendServer); err != nil {
+	if err := s.database.CreateOrUpdateServer(ctx, backendServer); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to create/update server %s: %w", serverName, err)
@@ -240,7 +235,7 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 	logger.Debugf("syncBackendTools: server=%s, serverID=%s, tool_count=%d", serverName, serverID, len(tools))
 
 	// Delete existing tools
-	if err := s.backendToolOps.DeleteByServer(ctx, serverID); err != nil {
+	if err := s.database.DeleteToolsByServer(ctx, serverID); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, fmt.Errorf("failed to delete existing tools: %w", err)
@@ -274,7 +269,7 @@ func (s *Service) syncBackendTools(ctx context.Context, serverID string, serverN
 			LastUpdated: time.Now(),
 		}
 
-		if err := s.backendToolOps.Create(ctx, backendTool, serverName); err != nil {
+		if err := s.database.CreateTool(ctx, backendTool, serverName); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return 0, fmt.Errorf("failed to create tool %s: %w", tool.Name, err)
@@ -290,26 +285,19 @@ func (s *Service) GetEmbeddingManager() *embeddings.Manager {
 	return s.embeddingManager
 }
 
-// GetBackendToolOps returns the backend tool operations for search and retrieval
-func (s *Service) GetBackendToolOps() *db.BackendToolOps {
-	return s.backendToolOps
+// GetDatabase returns the database for search and retrieval operations
+func (s *Service) GetDatabase() db.Database {
+	return s.database
 }
 
 // GetTotalToolTokens returns the total token count across all tools in the database
 func (s *Service) GetTotalToolTokens(ctx context.Context) int {
-	// Use FTS database to efficiently count all tool tokens
-	if s.database.GetFTSDB() != nil {
-		totalTokens, err := s.database.GetFTSDB().GetTotalToolTokens(ctx)
-		if err != nil {
-			logger.Warnw("Failed to get total tool tokens from FTS", "error", err)
-			return 0
-		}
-		return totalTokens
+	totalTokens, err := s.database.GetTotalToolTokens(ctx)
+	if err != nil {
+		logger.Warnw("Failed to get total tool tokens", "error", err)
+		return 0
 	}
-
-	// Fallback: query all tools (less efficient but works)
-	logger.Warn("FTS database not available, using fallback for token counting")
-	return 0
+	return totalTokens
 }
 
 // GetTotalEmbeddingTime returns the total time spent calculating embeddings

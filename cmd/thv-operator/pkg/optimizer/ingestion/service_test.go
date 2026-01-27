@@ -95,7 +95,7 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	}
 
 	// Query tools
-	allTools, err := svc.backendToolOps.ListByServer(ctx, serverID)
+	allTools, err := svc.database.ListToolsByServer(ctx, serverID)
 	require.NoError(t, err)
 	require.Len(t, allTools, 2, "Expected 2 tools to be ingested")
 
@@ -108,7 +108,12 @@ func TestServiceCreationAndIngestion(t *testing.T) {
 	require.True(t, toolNames["search_web"], "search_web tool should be present")
 
 	// Search for similar tools
-	results, err := svc.backendToolOps.Search(ctx, "weather information", 5, &serverID)
+	hybridConfig := &db.HybridSearchConfig{
+		SemanticRatio: 70,
+		Limit:         5,
+		ServerID:      &serverID,
+	}
+	results, err := svc.database.SearchToolsHybrid(ctx, "weather information", hybridConfig)
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "Should find at least one similar tool")
 
@@ -244,7 +249,12 @@ func TestServiceWithOllama(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for weather-related tools
-	results, err := svc.backendToolOps.Search(ctx, "What's the temperature outside?", 5, nil)
+	hybridConfig := &db.HybridSearchConfig{
+		SemanticRatio: 70,
+		Limit:         5,
+		ServerID:      nil,
+	}
+	results, err := svc.database.SearchToolsHybrid(ctx, "What's the temperature outside?", hybridConfig)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 

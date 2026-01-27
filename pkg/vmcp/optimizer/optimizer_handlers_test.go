@@ -343,7 +343,7 @@ func TestCreateFindToolHandler_BackendToolOpsNil(t *testing.T) {
 	// Create integration with nil ingestion service to trigger error path
 	integration := &OptimizerIntegration{
 		config:           &Config{Enabled: true},
-		ingestionService: nil, // This will cause GetBackendToolOps to return nil
+		ingestionService: nil, // This will cause GetDatabase to return nil
 	}
 
 	handler := integration.CreateFindToolHandler()

@@ -15,23 +15,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// BackendToolOps provides operations for backend tools in chromem-go
-type BackendToolOps struct {
-	db            *DB
+// backendToolOps provides operations for backend tools in chromem-go
+// This is a private implementation detail. Use the Database interface instead.
+type backendToolOps struct {
+	db            *chromemDB
 	embeddingFunc chromem.EmbeddingFunc
 }
 
-// NewBackendToolOps creates a new BackendToolOps instance
-func NewBackendToolOps(db *DB, embeddingFunc chromem.EmbeddingFunc) *BackendToolOps {
-	return &BackendToolOps{
+// newBackendToolOps creates a new backendToolOps instance
+func newBackendToolOps(db *chromemDB, embeddingFunc chromem.EmbeddingFunc) *backendToolOps {
+	return &backendToolOps{
 		db:            db,
 		embeddingFunc: embeddingFunc,
 	}
 }
 
-// Create adds a new backend tool to the collection
-func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool, serverName string) error {
-	collection, err := ops.db.GetOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
+// create adds a new backend tool to the collection
+func (ops *backendToolOps) create(ctx context.Context, tool *models.BackendTool, serverName string) error {
+	collection, err := ops.db.getOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("failed to get backend tool collection: %w", err)
 	}
@@ -83,36 +84,10 @@ func (ops *BackendToolOps) Create(ctx context.Context, tool *models.BackendTool,
 	return nil
 }
 
-// Get retrieves a backend tool by ID
-func (ops *BackendToolOps) Get(ctx context.Context, toolID string) (*models.BackendTool, error) {
-	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
-	if err != nil {
-		return nil, fmt.Errorf("backend tool collection not found: %w", err)
-	}
-
-	// Query by ID with exact match
-	results, err := collection.Query(ctx, toolID, 1, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query tool: %w", err)
-	}
-
-	if len(results) == 0 {
-		return nil, fmt.Errorf("tool not found: %s", toolID)
-	}
-
-	// Deserialize from metadata
-	tool, err := deserializeToolMetadata(results[0].Metadata)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize tool: %w", err)
-	}
-
-	return tool, nil
-}
-
-// Update updates an existing backend tool in chromem-go
-// Note: This only updates chromem-go, not FTS5. Use Create to update both.
-func (ops *BackendToolOps) Update(ctx context.Context, tool *models.BackendTool) error {
-	collection, err := ops.db.GetOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
+// update updates an existing backend tool in chromem-go
+// Note: This only updates chromem-go, not FTS5. Use create to update both.
+func (ops *backendToolOps) update(ctx context.Context, tool *models.BackendTool) error {
+	collection, err := ops.db.getOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("failed to get backend tool collection: %w", err)
 	}
@@ -152,9 +127,9 @@ func (ops *BackendToolOps) Update(ctx context.Context, tool *models.BackendTool)
 	return nil
 }
 
-// Delete removes a backend tool
-func (ops *BackendToolOps) Delete(ctx context.Context, toolID string) error {
-	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
+// delete removes a backend tool
+func (ops *backendToolOps) delete(ctx context.Context, toolID string) error {
+	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		// Collection doesn't exist, nothing to delete
 		return nil
@@ -169,15 +144,15 @@ func (ops *BackendToolOps) Delete(ctx context.Context, toolID string) error {
 	return nil
 }
 
-// DeleteByServer removes all tools for a given server from both chromem-go and FTS5
-func (ops *BackendToolOps) DeleteByServer(ctx context.Context, serverID string) error {
-	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
+// deleteByServer removes all tools for a given server from both chromem-go and FTS5
+func (ops *backendToolOps) deleteByServer(ctx context.Context, serverID string) error {
+	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		// Collection doesn't exist, nothing to delete in chromem-go
 		logger.Debug("Backend tool collection not found, skipping chromem-go deletion")
 	} else {
 		// Query all tools for this server
-		tools, err := ops.ListByServer(ctx, serverID)
+		tools, err := ops.listByServer(ctx, serverID)
 		if err != nil {
 			return fmt.Errorf("failed to list tools for server: %w", err)
 		}
@@ -204,9 +179,9 @@ func (ops *BackendToolOps) DeleteByServer(ctx context.Context, serverID string) 
 	return nil
 }
 
-// ListByServer returns all tools for a given server
-func (ops *BackendToolOps) ListByServer(ctx context.Context, serverID string) ([]*models.BackendTool, error) {
-	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
+// listByServer returns all tools for a given server
+func (ops *backendToolOps) listByServer(ctx context.Context, serverID string) ([]*models.BackendTool, error) {
+	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		// Collection doesn't exist yet, return empty list
 		return []*models.BackendTool{}, nil
@@ -239,14 +214,15 @@ func (ops *BackendToolOps) ListByServer(ctx context.Context, serverID string) ([
 	return tools, nil
 }
 
-// Search performs semantic search for backend tools
-func (ops *BackendToolOps) Search(
+// search performs semantic search for backend tools
+// This is used internally by searchHybrid.
+func (ops *backendToolOps) search(
 	ctx context.Context,
 	query string,
 	limit int,
 	serverID *string,
 ) ([]*models.BackendToolWithMetadata, error) {
-	collection, err := ops.db.GetCollection(BackendToolCollection, ops.embeddingFunc)
+	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)
 	if err != nil {
 		return []*models.BackendToolWithMetadata{}, nil
 	}

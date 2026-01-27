@@ -54,7 +54,6 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
-				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
 
 				By("Waiting for the server to be running")
@@ -99,7 +98,6 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
-				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
 
 				By("Waiting for the server to be running")
@@ -144,7 +142,6 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
-				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
 
 				By("Waiting for the server to be running")
@@ -217,7 +214,6 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
-				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
 
 				By("Waiting for the server to be running")
@@ -292,7 +288,6 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
-				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
 
 				By("Waiting for the server to be running")

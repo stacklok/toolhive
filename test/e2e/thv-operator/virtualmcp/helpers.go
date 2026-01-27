@@ -522,6 +522,20 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+// GetMCPServerDeployment retrieves the deployment for an MCPServer by name.
+// MCPServer deployments use the same name as the MCPServer resource.
+func GetMCPServerDeployment(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.Deployment {
+	deployment := &appsv1.Deployment{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      serverName,
+		Namespace: namespace,
+	}, deployment)
+	if err != nil {
+		return nil
+	}
+	return deployment
+}
+
 // WaitForPodDeletion waits for a pod to be fully deleted from the cluster.
 // This is useful in AfterAll cleanup to ensure pods are gone before tests repeat.
 func WaitForPodDeletion(ctx context.Context, c client.Client, name, namespace string, timeout, pollingInterval time.Duration) {

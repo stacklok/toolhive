@@ -93,8 +93,8 @@ func TestWorkflowEngine_RetryCountCapping(t *testing.T) {
 	te.Router.EXPECT().RouteTool(gomock.Any(), "test.tool").Return(target, nil)
 
 	callCount := 0
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, "test.tool", gomock.Any()).
-		DoAndReturn(func(context.Context, *vmcp.BackendTarget, string, map[string]any) (map[string]any, error) {
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "test.tool", gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, *vmcp.BackendTarget, string, map[string]any, map[string]any) (*vmcp.ToolCallResult, error) {
 			callCount++
 			return nil, fmt.Errorf("fail")
 		}).MaxTimes(12) // 1 initial + 10 retries max

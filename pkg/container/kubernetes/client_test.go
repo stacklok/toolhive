@@ -29,7 +29,7 @@ func init() {
 }
 
 // mockWaitForStatefulSetReady is used to mock the waitForStatefulSetReady function in tests
-var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string) error {
+var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string, _ int64) error {
 	return nil
 }
 
@@ -965,6 +965,190 @@ func TestApplyPodTemplatePatchAnnotations(t *testing.T) {
 				assert.Equal(t, tc.expectedAnnotations, resultAnnotations,
 					"BUG: Annotations are not being applied from the patch")
 			}
+		})
+	}
+}
+
+// Test_isStatefulSetReady tests the isStatefulSetReady function.
+//
+// The function checks three conditions before returning ready:
+// 1. ObservedGeneration >= desiredGeneration (controller processed our spec)
+// 2. UpdatedReplicas == Replicas (all pods on new spec)
+// 3. ReadyReplicas == Replicas (all pods ready)
+func Test_isStatefulSetReady(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name            string
+		desiredGen      int64
+		observedGen     int64
+		updatedReplicas int32
+		readyReplicas   int32
+		replicas        int32
+		expectedReady   bool
+	}{
+		{
+			name:            "controller_not_caught_up_old_pod_ready",
+			desiredGen:      2,
+			observedGen:     1,
+			updatedReplicas: 0,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   false,
+		},
+		{
+			name:            "controller_caught_up_no_new_pods",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 0,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   false,
+		},
+		{
+			name:            "new_pod_starting_not_ready",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1,
+			readyReplicas:   0,
+			replicas:        1,
+			expectedReady:   false,
+		},
+		{
+			name:            "rolling_update_complete",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   true,
+		},
+		{
+			name:            "steady_state",
+			desiredGen:      1,
+			observedGen:     1,
+			updatedReplicas: 1,
+			readyReplicas:   1,
+			replicas:        1,
+			expectedReady:   true,
+		},
+		// Multi-replica tests
+		{
+			name:            "multi_replica_rolling_update_not_started",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 0, // no pods updated yet
+			readyReplicas:   3, // all old pods still ready
+			replicas:        3,
+			expectedReady:   false,
+		},
+		{
+			name:            "multi_replica_rolling_update_one_updated",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 1,
+			readyReplicas:   3,
+			replicas:        3,
+			expectedReady:   false,
+		},
+		{
+			name:            "multi_replica_rolling_update_two_updated",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 2,
+			readyReplicas:   3,
+			replicas:        3,
+			expectedReady:   false,
+		},
+		{
+			name:            "multi_replica_rolling_update_complete",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 3,
+			readyReplicas:   3,
+			replicas:        3,
+			expectedReady:   true,
+		},
+		{
+			name:            "multi_replica_last_pod_not_ready",
+			desiredGen:      2,
+			observedGen:     2,
+			updatedReplicas: 3,
+			readyReplicas:   2,
+			replicas:        3,
+			expectedReady:   false,
+		},
+		{
+			name:            "multi_replica_steady_state",
+			desiredGen:      1,
+			observedGen:     1,
+			updatedReplicas: 3,
+			readyReplicas:   3,
+			replicas:        3,
+			expectedReady:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ss := &appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &tc.replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: tc.observedGen,
+					UpdatedReplicas:    tc.updatedReplicas,
+					ReadyReplicas:      tc.readyReplicas,
+					Replicas:           tc.replicas,
+				},
+			}
+
+			result := isStatefulSetReady(tc.desiredGen, ss)
+			assert.Equal(t, tc.expectedReady, result)
+		})
+	}
+
+	// Test nil/zero value edge cases - all should return false
+	nilTests := []struct {
+		name  string
+		input *appsv1.StatefulSet
+	}{
+		{
+			name:  "nil_statefulset",
+			input: nil,
+		},
+		{
+			name:  "empty_statefulset",
+			input: &appsv1.StatefulSet{},
+		},
+		{
+			name: "spec_replicas_nil",
+			input: &appsv1.StatefulSet{
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 1,
+					UpdatedReplicas:    1,
+					ReadyReplicas:      1,
+				},
+			},
+		},
+		{
+			name: "status_all_zero",
+			input: &appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: func() *int32 { v := int32(1); return &v }(),
+				},
+			},
+		},
+	}
+
+	for _, tc := range nilTests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := isStatefulSetReady(1, tc.input)
+			assert.False(t, result)
 		})
 	}
 }

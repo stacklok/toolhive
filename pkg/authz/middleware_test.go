@@ -206,6 +206,165 @@ func TestMiddleware(t *testing.T) {
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
 		},
+		{
+			name:   "Resources subscribe requires authorization",
+			method: "resources/subscribe",
+			params: map[string]interface{}{
+				"uri": "data",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Resources unsubscribe requires authorization",
+			method: "resources/unsubscribe",
+			params: map[string]interface{}{
+				"uri": "secret",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Resources templates list is authorized and filtered",
+			method: "resources/templates/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Roots list is always allowed",
+			method: "roots/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Logging setLevel is always allowed",
+			method: "logging/setLevel",
+			params: map[string]interface{}{
+				"level": "debug",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Completion complete is always allowed",
+			method: "completion/complete",
+			params: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"name": "greeting",
+				},
+				"argument": map[string]interface{}{
+					"name":  "name",
+					"value": "Jo",
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Notifications are always allowed",
+			method: "notifications/message",
+			params: map[string]interface{}{
+				"method": "test",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Unknown method is denied by default",
+			method: "unknown/method",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Sampling createMessage is denied by default (security-sensitive)",
+			method: "sampling/createMessage",
+			params: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{
+						"role":    "user",
+						"content": map[string]interface{}{"type": "text", "text": "Hello"},
+					},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Elicitation create is denied by default",
+			method: "elicitation/create",
+			params: map[string]interface{}{
+				"message": "Enter your name",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Tasks list is denied by default",
+			method: "tasks/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Tasks get is denied by default",
+			method: "tasks/get",
+			params: map[string]interface{}{
+				"taskId": "task-123",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
 	}
 
 	// Run test cases

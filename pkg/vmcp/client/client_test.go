@@ -159,7 +159,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{})
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)

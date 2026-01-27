@@ -118,5 +118,12 @@
     "signer_identity": "/.github/workflows/docker-publish.yml",
     "runner_environment": "github-hosted",
     "cert_issuer": "https://token.actions.githubusercontent.com"
+  },
+  "docker_tags": ["v0.19.1", "v0.19.0", "latest"],
+  "proxy_port": 8080,
+  "custom_metadata": {
+    "maintainer": "GitHub",
+    "license": "MIT",
+    "homepage": "https://github.com/github/github-mcp-server"
   }
 }

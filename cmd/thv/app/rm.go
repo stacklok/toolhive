@@ -6,7 +6,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -105,12 +104,6 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete workloads: %w", err)
 	}
 
-	if len(workloadNames) == 1 {
-		fmt.Printf("Workload %s removed successfully\n", workloadNames[0])
-	} else {
-		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("Workloads %s removed successfully\n", formattedNames)
-	}
 	return nil
 }
 
@@ -149,7 +142,6 @@ func deleteAllWorkloads(ctx context.Context) error {
 		return fmt.Errorf("failed to delete all workloads: %w", err)
 	}
 
-	fmt.Println("All workloads deleted successfully")
 	return nil
 }
 
@@ -197,6 +189,5 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
-	fmt.Printf("Successfully removed %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }

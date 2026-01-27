@@ -1226,6 +1226,8 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 			workloadName: "test-workload",
 			setupMocks: func(rt *runtimeMocks.MockRuntime, _ *statusMocks.MockStatusManager) {
 				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+				// After removal, verification check should confirm container is gone
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 			},
 			expectError: false,
 		},
@@ -1656,6 +1658,9 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
 					Return(runtime.ContainerInfo{Name: "test-workload"}, nil)
 				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+				// After removal, verification check should confirm container is gone
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 
 				// Mock status updates for stop and delete phases
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)

@@ -42,8 +42,7 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "start", "e2
 		Context("when restarting a running server multiple times", func() {
 			It("should not accumulate supervisor processes", func() {
 				By("Starting an OSV MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+				e2e.NewTHVCommand(config, "run", "--name", serverName, "osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -55,8 +54,7 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "start", "e2
 				Expect(countBefore).To(Equal(1), "Should have exactly 1 supervisor process before restart")
 
 				By("Starting the server again")
-				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
+				e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -71,8 +69,7 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "start", "e2
 				Expect(countAfter).To(Equal(1), "Should still have exactly 1 supervisor process after restart")
 
 				By("Starting the server a second time")
-				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
+				e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -87,7 +84,7 @@ var _ = Describe("Restart Zombie Process Prevention", Label("core", "start", "e2
 				Expect(countAfterSecond).To(Equal(1), "Should still have exactly 1 supervisor process after second restart")
 
 				By("Verifying the server is functional after multiple restarts")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should be listed")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})

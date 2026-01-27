@@ -1,0 +1,121 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-embeddingserver-lifecycle
+spec:
+  description: Tests EmbeddingServer lifecycle operations (create, update, delete)
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 30s
+    delete: 60s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-embedding-lifecycle"
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../../setup/assert-operator-ready.yaml
+
+  - name: create-embeddingserver
+    description: Create initial EmbeddingServer
+    try:
+    - apply:
+        file: embeddingserver-initial.yaml
+    - assert:
+        file: embeddingserver-initial.yaml
+    - assert:
+        file: assert-embeddingserver-running.yaml
+    - assert:
+        file: assert-deployment-running.yaml
+    - assert:
+        file: assert-service-created.yaml
+
+  - name: update-embeddingserver-env
+    description: Update EmbeddingServer environment variables
+    try:
+    - apply:
+        file: embeddingserver-updated-env.yaml
+    - assert:
+        file: embeddingserver-updated-env.yaml
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+        content: |
+          # Verify environment variable update propagated to statefulset
+          STATEFULSET_NAME="$embeddingServerName"
+
+          # Wait for statefulset to be ready (still 1 replica)
+          kubectl wait --for=jsonpath='{.status.replicas}'=1 --timeout=120s statefulset/$STATEFULSET_NAME -n toolhive-system
+
+          # Check if the new environment variable is present
+          ENV_VALUE=$(kubectl get statefulset $STATEFULSET_NAME -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MAX_BATCH_TOKENS")].value}' 2>/dev/null || echo "")
+
+          if [ "$ENV_VALUE" != "16384" ]; then
+            echo "Environment variable not updated correctly. Expected: 16384, Got: $ENV_VALUE"
+            kubectl describe statefulset $STATEFULSET_NAME -n toolhive-system
+            exit 1
+          fi
+
+          echo "✓ Environment variable updated successfully"
+          exit 0
+
+  - name: delete-embeddingserver
+    description: Delete EmbeddingServer and verify cleanup
+    try:
+    - delete:
+        ref:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: EmbeddingServer
+          name: ($testPrefix)
+          namespace: toolhive-system
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+        content: |
+          # Wait for resources to be cleaned up
+          STATEFULSET_NAME="$embeddingServerName"
+          SERVICE_NAME="$embeddingServerName"
+
+          echo "Verifying resource cleanup..."
+
+          # Wait for statefulset to be deleted
+          timeout=30
+          while [ $timeout -gt 0 ]; do
+            if ! kubectl get statefulset $STATEFULSET_NAME -n toolhive-system 2>/dev/null; then
+              echo "✓ StatefulSet deleted"
+              break
+            fi
+            sleep 1
+            timeout=$((timeout - 1))
+          done
+
+          if [ $timeout -eq 0 ]; then
+            echo "StatefulSet was not deleted within timeout"
+            exit 1
+          fi
+
+          # Wait for service to be deleted
+          timeout=30
+          while [ $timeout -gt 0 ]; do
+            if ! kubectl get svc $SERVICE_NAME -n toolhive-system 2>/dev/null; then
+              echo "✓ Service deleted"
+              break
+            fi
+            sleep 1
+            timeout=$((timeout - 1))
+          done
+
+          if [ $timeout -eq 0 ]; then
+            echo "Service was not deleted within timeout"
+            exit 1
+          fi
+
+          echo "✅ EmbeddingServer lifecycle test passed!"
+          exit 0

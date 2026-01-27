@@ -257,6 +257,8 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.R
 				Description: header.Description,
 				Required:    header.IsRequired,
 				Secret:      header.IsSecret,
+				Default:     header.Default,
+				Choices:     header.Choices,
 			})
 		}
 	}
@@ -334,7 +336,7 @@ func extractImageMetadataField(extensions map[string]interface{}, imageMetadata 
 	}
 }
 
-// extractComplexImageFields extracts complex fields (args, permissions, provenance)
+// extractComplexImageFields extracts complex fields (args, permissions, provenance, docker_tags, proxy_port, custom_metadata)
 func extractComplexImageFields(extensions map[string]interface{}, imageMetadata *types.ImageMetadata) {
 	// Extract args (fallback if PackageArguments wasn't used)
 	if len(imageMetadata.Args) == 0 {
@@ -352,58 +354,85 @@ func extractComplexImageFields(extensions map[string]interface{}, imageMetadata 
 	if provData, ok := extensions["provenance"]; ok {
 		imageMetadata.Provenance = remarshalToType[*types.Provenance](provData)
 	}
+
+	// Extract docker_tags
+	if dockerTagsData, ok := extensions["docker_tags"].([]interface{}); ok {
+		imageMetadata.DockerTags = interfaceSliceToStringSlice(dockerTagsData)
+	}
+
+	// Extract proxy_port
+	if proxyPort, ok := extensions["proxy_port"].(float64); ok {
+		imageMetadata.ProxyPort = int(proxyPort)
+	}
+
+	// Extract custom_metadata using JSON round-trip
+	if customMetadataData, ok := extensions["custom_metadata"]; ok {
+		imageMetadata.CustomMetadata = remarshalToType[map[string]any](customMetadataData)
+	}
 }
 
 // extractRemoteExtensions extracts publisher-provided extensions into RemoteServerMetadata
 func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *types.RemoteServerMetadata) {
-	if serverJSON.Meta == nil || serverJSON.Meta.PublisherProvided == nil {
+	extensions := getStacklokExtensions(serverJSON)
+	if extensions == nil {
 		return
 	}
 
-	stacklokData, ok := serverJSON.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+	extractBasicRemoteFields(extensions, remoteMetadata)
+	extractRemoteMetadataField(extensions, remoteMetadata)
+	extractComplexRemoteFields(extensions, remoteMetadata)
+}
+
+// extractBasicRemoteFields extracts basic string and slice fields for remote servers
+func extractBasicRemoteFields(extensions map[string]interface{}, remoteMetadata *types.RemoteServerMetadata) {
+	if status, ok := extensions["status"].(string); ok {
+		remoteMetadata.Status = status
+	}
+	if tier, ok := extensions["tier"].(string); ok {
+		remoteMetadata.Tier = tier
+	}
+	if toolsData, ok := extensions["tools"].([]interface{}); ok {
+		remoteMetadata.Tools = interfaceSliceToStringSlice(toolsData)
+	}
+	if tagsData, ok := extensions["tags"].([]interface{}); ok {
+		remoteMetadata.Tags = interfaceSliceToStringSlice(tagsData)
+	}
+}
+
+// extractRemoteMetadataField extracts the metadata object for remote servers
+func extractRemoteMetadataField(extensions map[string]interface{}, remoteMetadata *types.RemoteServerMetadata) {
+	metadataData, ok := extensions["metadata"].(map[string]interface{})
 	if !ok {
 		return
 	}
 
-	// Find the extension data (keyed by URL)
-	for _, extensionsData := range stacklokData {
-		extensions, ok := extensionsData.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	remoteMetadata.Metadata = &types.Metadata{}
+	if stars, ok := metadataData["stars"].(float64); ok {
+		remoteMetadata.Metadata.Stars = int(stars)
+	}
+	if pulls, ok := metadataData["pulls"].(float64); ok {
+		remoteMetadata.Metadata.Pulls = int(pulls)
+	}
+	if lastUpdated, ok := metadataData["last_updated"].(string); ok {
+		remoteMetadata.Metadata.LastUpdated = lastUpdated
+	}
+}
 
-		// Extract fields
-		if status, ok := extensions["status"].(string); ok {
-			remoteMetadata.Status = status
-		}
-		if tier, ok := extensions["tier"].(string); ok {
-			remoteMetadata.Tier = tier
-		}
-		if toolsData, ok := extensions["tools"].([]interface{}); ok {
-			remoteMetadata.Tools = interfaceSliceToStringSlice(toolsData)
-		}
-		if tagsData, ok := extensions["tags"].([]interface{}); ok {
-			remoteMetadata.Tags = interfaceSliceToStringSlice(tagsData)
-		}
-		if metadataData, ok := extensions["metadata"].(map[string]interface{}); ok {
-			remoteMetadata.Metadata = &types.Metadata{}
-			if stars, ok := metadataData["stars"].(float64); ok {
-				remoteMetadata.Metadata.Stars = int(stars)
-			}
-			if pulls, ok := metadataData["pulls"].(float64); ok {
-				remoteMetadata.Metadata.Pulls = int(pulls)
-			}
-			if lastUpdated, ok := metadataData["last_updated"].(string); ok {
-				remoteMetadata.Metadata.LastUpdated = lastUpdated
-			}
-		}
+// extractComplexRemoteFields extracts complex fields (oauth_config, env_vars, custom_metadata) for remote servers
+func extractComplexRemoteFields(extensions map[string]interface{}, remoteMetadata *types.RemoteServerMetadata) {
+	// Extract OAuth config using JSON round-trip
+	if oauthData, ok := extensions["oauth_config"]; ok {
+		remoteMetadata.OAuthConfig = remarshalToType[*types.OAuthConfig](oauthData)
+	}
 
-		// Extract OAuth config using JSON round-trip
-		if oauthData, ok := extensions["oauth_config"]; ok {
-			remoteMetadata.OAuthConfig = remarshalToType[*types.OAuthConfig](oauthData)
-		}
+	// Extract env_vars using JSON round-trip
+	if envVarsData, ok := extensions["env_vars"]; ok {
+		remoteMetadata.EnvVars = remarshalToType[[]*types.EnvVar](envVarsData)
+	}
 
-		break // Only process first entry
+	// Extract custom_metadata using JSON round-trip
+	if customMetadataData, ok := extensions["custom_metadata"]; ok {
+		remoteMetadata.CustomMetadata = remarshalToType[map[string]any](customMetadataData)
 	}
 }
 

@@ -1319,6 +1319,11 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
+                  If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
+                type: string
               serviceType:
                 default: ClusterIP
                 description: ServiceType specifies the Kubernetes service type for
@@ -1335,7 +1340,9 @@ spec:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
               backendCount:
-                description: BackendCount is the number of discovered backends
+                description: |-
+                  BackendCount is the number of healthy/ready backends
+                  (excludes unavailable, degraded, and unknown backends)
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations
@@ -1399,8 +1406,9 @@ spec:
                 description: DiscoveredBackends lists discovered backend configurations
                   from the MCPGroup
                 items:
-                  description: DiscoveredBackend represents a discovered backend MCPServer
-                    in the MCPGroup
+                  description: |-
+                    DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                    This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
                   properties:
                     authConfigRef:
                       description: AuthConfigRef is the name of the discovered MCPExternalAuthConfig
@@ -1414,12 +1422,17 @@ spec:
                         check
                       format: date-time
                       type: string
+                    message:
+                      description: Message provides additional information about the
+                        backend status
+                      type: string
                     name:
                       description: Name is the name of the backend MCPServer
                       type: string
                     status:
-                      description: Status is the current status of the backend (ready,
-                        degraded, unavailable)
+                      description: |-
+                        Status is the current status of the backend (ready, degraded, unavailable, unknown).
+                        Use BackendHealthStatus.ToCRDStatus() to populate this field.
                       type: string
                     url:
                       description: URL is the URL of the backend MCPServer

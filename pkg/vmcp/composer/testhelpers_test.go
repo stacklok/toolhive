@@ -49,7 +49,13 @@ func (te *testEngine) expectToolCall(toolName string, args, output map[string]an
 		BaseURL:      "http://test:8080",
 	}
 	te.Router.EXPECT().RouteTool(gomock.Any(), toolName).Return(target, nil)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, args).Return(output, nil)
+	result := &vmcp.ToolCallResult{
+		StructuredContent: output,
+		Content:           []vmcp.Content{},
+		IsError:           false,
+		Meta:              nil,
+	}
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, args, gomock.Any()).Return(result, nil)
 }
 
 // expectToolCallWithError is a helper to set up failing tool call expectations.
@@ -59,7 +65,7 @@ func (te *testEngine) expectToolCallWithError(toolName string, args map[string]a
 		BaseURL:    "http://test:8080",
 	}
 	te.Router.EXPECT().RouteTool(gomock.Any(), toolName).Return(target, nil)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, args).Return(nil, err)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, args, gomock.Any()).Return(nil, err)
 }
 
 // expectToolCallWithAnyArgsAndError is a helper for failing calls with any args.
@@ -69,7 +75,7 @@ func (te *testEngine) expectToolCallWithAnyArgsAndError(toolName string, err err
 		BaseURL:    "http://test:8080",
 	}
 	te.Router.EXPECT().RouteTool(gomock.Any(), toolName).Return(target, nil)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, gomock.Any()).Return(nil, err)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, gomock.Any(), gomock.Any()).Return(nil, err)
 }
 
 // expectToolCallWithAnyArgs is a helper for calls where args are dynamically generated.
@@ -79,7 +85,13 @@ func (te *testEngine) expectToolCallWithAnyArgs(toolName string, output map[stri
 		BaseURL:    "http://test:8080",
 	}
 	te.Router.EXPECT().RouteTool(gomock.Any(), toolName).Return(target, nil)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, gomock.Any()).Return(output, nil)
+	result := &vmcp.ToolCallResult{
+		StructuredContent: output,
+		Content:           []vmcp.Content{},
+		IsError:           false,
+		Meta:              nil,
+	}
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, toolName, gomock.Any(), gomock.Any()).Return(result, nil)
 }
 
 // newWorkflowContext creates a test workflow context.

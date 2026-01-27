@@ -1,0 +1,182 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mt-embeddingserver
+spec:
+  description: Tests EmbeddingServer in multi-tenancy mode across namespaces
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 30s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "mt-embedding"
+    - name: namespace1
+      value: "toolhive-test-ns-1"
+    - name: namespace2
+      value: "toolhive-test-ns-2"
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: create-namespaces
+    description: Create test namespaces for multi-tenancy testing
+    try:
+    - apply:
+        file: namespace-1.yaml
+    - apply:
+        file: namespace-2.yaml
+    - assert:
+        file: namespace-1.yaml
+    - assert:
+        file: namespace-2.yaml
+
+  - name: deploy-embeddingserver-ns1
+    description: Deploy EmbeddingServer in namespace 1
+    try:
+    - apply:
+        file: embeddingserver-ns1.yaml
+    - assert:
+        file: embeddingserver-ns1.yaml
+    - assert:
+        file: assert-embeddingserver-ns1-running.yaml
+    - assert:
+        file: assert-deployment-ns1-running.yaml
+    - assert:
+        file: assert-service-ns1-created.yaml
+
+  - name: deploy-embeddingserver-ns2
+    description: Deploy EmbeddingServer in namespace 2
+    try:
+    - apply:
+        file: embeddingserver-ns2.yaml
+    - assert:
+        file: embeddingserver-ns2.yaml
+    - assert:
+        file: assert-embeddingserver-ns2-running.yaml
+    - assert:
+        file: assert-deployment-ns2-running.yaml
+    - assert:
+        file: assert-service-ns2-created.yaml
+
+  - name: verify-isolation
+    description: Verify that EmbeddingServers in different namespaces are isolated
+    try:
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+          - name: ns1
+            value: ($namespace1)
+          - name: ns2
+            value: ($namespace2)
+        content: |
+          echo "Verifying multi-tenancy isolation..."
+
+          # Verify EmbeddingServer exists in namespace 1
+          if ! kubectl get embeddingserver $embeddingServerName -n $ns1 >/dev/null 2>&1; then
+            echo "EmbeddingServer not found in namespace 1"
+            exit 1
+          fi
+          echo "✓ EmbeddingServer found in namespace 1"
+
+          # Verify EmbeddingServer exists in namespace 2
+          if ! kubectl get embeddingserver $embeddingServerName -n $ns2 >/dev/null 2>&1; then
+            echo "EmbeddingServer not found in namespace 2"
+            exit 1
+          fi
+          echo "✓ EmbeddingServer found in namespace 2"
+
+          # Verify statefulsets are in separate namespaces
+          STATEFULSET_NAME="$embeddingServerName"
+
+          NS1_STATEFULSET=$(kubectl get statefulset $STATEFULSET_NAME -n $ns1 -o name 2>/dev/null || echo "")
+          NS2_STATEFULSET=$(kubectl get statefulset $STATEFULSET_NAME -n $ns2 -o name 2>/dev/null || echo "")
+
+          if [ -z "$NS1_STATEFULSET" ]; then
+            echo "StatefulSet not found in namespace 1"
+            exit 1
+          fi
+          echo "✓ StatefulSet found in namespace 1"
+
+          if [ -z "$NS2_STATEFULSET" ]; then
+            echo "StatefulSet not found in namespace 2"
+            exit 1
+          fi
+          echo "✓ StatefulSet found in namespace 2"
+
+          # Verify services are in separate namespaces
+          SERVICE_NAME="$embeddingServerName"
+
+          NS1_SERVICE=$(kubectl get svc $SERVICE_NAME -n $ns1 -o name 2>/dev/null || echo "")
+          NS2_SERVICE=$(kubectl get svc $SERVICE_NAME -n $ns2 -o name 2>/dev/null || echo "")
+
+          if [ -z "$NS1_SERVICE" ]; then
+            echo "Service not found in namespace 1"
+            exit 1
+          fi
+          echo "✓ Service found in namespace 1"
+
+          if [ -z "$NS2_SERVICE" ]; then
+            echo "Service not found in namespace 2"
+            exit 1
+          fi
+          echo "✓ Service found in namespace 2"
+
+          # Get ClusterIPs to verify they are different
+          NS1_CLUSTERIP=$(kubectl get svc $SERVICE_NAME -n $ns1 -o jsonpath='{.spec.clusterIP}')
+          NS2_CLUSTERIP=$(kubectl get svc $SERVICE_NAME -n $ns2 -o jsonpath='{.spec.clusterIP}')
+
+          echo "Namespace 1 ClusterIP: $NS1_CLUSTERIP"
+          echo "Namespace 2 ClusterIP: $NS2_CLUSTERIP"
+
+          if [ "$NS1_CLUSTERIP" = "$NS2_CLUSTERIP" ]; then
+            echo "Services have the same ClusterIP - isolation may be compromised"
+            exit 1
+          fi
+          echo "✓ Services have different ClusterIPs"
+
+          echo "✅ Multi-tenancy isolation verified!"
+          exit 0
+
+  - name: test-embedding-endpoints
+    description: Test both embedding server endpoints
+    try:
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+          - name: ns1
+            value: ($namespace1)
+          - name: ns2
+            value: ($namespace2)
+        content: |
+          echo "Testing embedding server endpoints in both namespaces..."
+
+          SERVICE_NAME="$embeddingServerName"
+
+          # Test namespace 1
+          echo "Testing namespace 1..."
+          NS1_CLUSTERIP=$(kubectl get svc $SERVICE_NAME -n $ns1 -o jsonpath='{.spec.clusterIP}')
+
+          kubectl run test-curl-ns1-$RANDOM --image=curlimages/curl:latest --rm -i --restart=Never -n $ns1 -- \
+            curl -s -o /dev/null -w "%{http_code}" http://$NS1_CLUSTERIP:8080/health || true
+
+          echo "✓ Namespace 1 endpoint test completed"
+
+          # Test namespace 2
+          echo "Testing namespace 2..."
+          NS2_CLUSTERIP=$(kubectl get svc $SERVICE_NAME -n $ns2 -o jsonpath='{.spec.clusterIP}')
+
+          kubectl run test-curl-ns2-$RANDOM --image=curlimages/curl:latest --rm -i --restart=Never -n $ns2 -- \
+            curl -s -o /dev/null -w "%{http_code}" http://$NS2_CLUSTERIP:8080/health || true
+
+          echo "✓ Namespace 2 endpoint test completed"
+
+          echo "✅ Multi-tenancy embedding server tests passed!"
+          exit 0

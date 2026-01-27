@@ -475,6 +475,11 @@ spec:
                         type: string
                     type: object
                 type: object
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the proxy.
+                  If not specified, a ServiceAccount will be created automatically and used by the proxy.
+                type: string
               telemetry:
                 description: Telemetry defines observability configuration for the
                   proxy

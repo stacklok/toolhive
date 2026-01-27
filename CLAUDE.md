@@ -99,12 +99,14 @@ task build-all-images
 
 ### Running Tests
 
-- Unit tests: `task test`
-- E2E tests: `task test-e2e` (requires build first)
+- Unit tests: `task test` (primarily for `pkg/` business logic)
+- E2E tests: `task test-e2e` (requires build first, primary testing for CLI)
 - All tests: `task test-all`
 - With coverage: `task test-coverage`
 
 The test framework uses Ginkgo and Gomega for BDD-style testing.
+
+**When adding CLI features**: Always run E2E tests (`task test-e2e`) to verify the full user experience. Unit tests should primarily cover business logic in `pkg/` packages.
 
 ## Architecture Overview
 
@@ -177,9 +179,30 @@ ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol
 ### Test Organization
 
 - **Unit tests**: Located alongside source files (`*_test.go`)
+  - **`pkg/` packages**: Thorough unit test coverage (this is where business logic lives)
+  - **`cmd/thv/app/`**: Minimal unit tests (only for output formatting, flag validation helpers)
 - **Integration tests**: In individual package test files
 - **End-to-end tests**: Located in `test/e2e/`
+  - **Primary testing strategy for CLI commands**
+  - Tests the compiled binary with real user workflows
+  - Covers flag parsing, business logic execution, and output formatting in one test
 - **Operator tests**: Chainsaw tests in `test/e2e/chainsaw/operator/`
+
+### CLI Testing Philosophy
+
+**CLI commands should be tested primarily with E2E tests, not unit tests.**
+
+- Business logic in `pkg/` packages → Unit tests with mocks
+- CLI commands in `cmd/thv/app/` → E2E tests with compiled binary
+- Only write CLI unit tests for output formatting or validation helper functions
+
+Why?
+- CLI is a thin layer (just glue code calling `pkg/`)
+- E2E tests verify real user experience
+- Better coverage with less maintenance burden
+- Catches integration issues that unit tests miss
+
+See `docs/cli-best-practices.md` for detailed testing guidance.
 
 ### Mock Generation
 
@@ -213,6 +236,31 @@ ToolHive automatically detects available container runtimes in the following ord
 - In Go codefiles, keep public methods to the top half of the file, and private
   methods to the bottom half of the file.
 
+### CLI Architecture Principle
+
+**CRITICAL**: CLI commands in `cmd/thv/app/` must be thin wrappers that delegate to business logic in `pkg/`.
+
+The CLI layer is responsible ONLY for:
+- Parsing flags and arguments (using Cobra)
+- Calling business logic functions from `pkg/` packages
+- Formatting output (text tables or JSON)
+- Displaying errors to users
+
+Business logic MUST live in `pkg/` packages:
+- `pkg/workloads/`: Workload lifecycle management
+- `pkg/registry/`: Registry operations
+- `pkg/groups/`: Group management
+- `pkg/runner/`: Server execution logic
+- etc.
+
+**Why this matters**:
+- Business logic in `pkg/` is thoroughly unit tested
+- CLI layer is tested with E2E tests (testing real user workflows)
+- Separation makes code reusable (API can use same `pkg/` logic)
+- Easier to maintain and refactor
+
+**Example**: See `cmd/thv/app/list.go` which delegates to `pkg/workloads.Manager.ListWorkloads()`
+
 ### Operator Development
 
 When working on the Kubernetes operator:
@@ -234,9 +282,39 @@ When working on the Kubernetes operator:
 
 ### Adding New Commands
 
-1. Create command file in `cmd/thv/app/`
-2. Add command to `NewRootCmd()` in `commands.go`
-3. Update CLI documentation with `task docs`
+When adding new CLI commands, follow the comprehensive guide in `docs/cli-best-practices.md` which covers:
+- Command structure and design patterns
+- Flag naming conventions and common patterns
+- Output formatting (JSON/text)
+- Error messages with actionable hints
+- Shell completion
+- Testing requirements
+
+Quick steps:
+1. **Put business logic in `pkg/` first** - Create or use existing packages for the actual work
+2. Create command file in `cmd/thv/app/` as a thin wrapper
+3. Follow patterns from existing commands (e.g., `list.go`, `run.go`, `status.go`)
+4. Add command to `NewRootCmd()` in `commands.go`
+5. Add flags using helper functions (`AddFormatFlag`, `AddGroupFlag`, etc.)
+6. Implement validation in `PreRunE`
+7. CLI should only: parse flags, call `pkg/` functions, format output
+8. Support both text and JSON output formats
+9. **Write E2E tests** (primary testing strategy)
+10. Write minimal unit tests only for output formatting or validation helpers
+11. Update CLI documentation with `task docs`
+
+**CRITICAL PRINCIPLES**:
+- **Business logic MUST be in `pkg/` packages, NOT in CLI code**
+- CLI commands are thin wrappers (flag parsing → call pkg/ → format output)
+- Test business logic with unit tests in `pkg/`
+- Test CLI with E2E tests using the compiled binary
+- Minimal unit tests for CLI layer (only output formatting/validation)
+
+**Usability requirements** (see `docs/cli-best-practices.md`):
+- Silent success (no output unless there's an error or `--debug` is used)
+- Actionable error messages with hints pointing to relevant commands
+- Consistent flag names across commands
+- Support for `--format json` and `--format text`
 
 ### Adding New Transport
 
@@ -279,6 +357,7 @@ Update architecture docs when you:
 
 | Code Changes | Documentation Files |
 |--------------|---------------------|
+| CLI commands (`cmd/thv/app/`) | Follow `docs/cli-best-practices.md`; update generated docs with `task docs` |
 | Core packages (`pkg/workloads/`, `pkg/transport/`, `pkg/permissions/`, `pkg/registry/`, `pkg/groups/`) | `docs/arch/02-core-concepts.md` + topic-specific doc (e.g., `08-workloads-lifecycle.md`, `06-registry-system.md`) |
 | RunConfig schema (`pkg/runner/config.go`) | `docs/arch/05-runconfig-and-permissions.md` |
 | Middleware (`pkg/*/middleware.go`) | `docs/middleware.md` and `docs/arch/02-core-concepts.md` |
@@ -297,6 +376,13 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
 
 ## Development Best Practices
 
+- **CLI Commands**:
+  - **MUST** follow the guidelines in `docs/cli-best-practices.md` for all CLI command development
+  - Ensure silent success (no output on successful operations unless `--debug` is used)
+  - Provide actionable error messages with hints
+  - Support both `--format json` and `--format text` output
+  - Use helper functions for common flags (`AddFormatFlag`, `AddGroupFlag`, `AddAllFlag`)
+  - Include shell completion with `ValidArgsFunction`
 - **Linting**:
   - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.
 - **SPDX License Headers**:
@@ -312,6 +398,44 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
+- Use very large numbers for unit tests which need port numbers.
+  - Using common port ranges leads to a likelihood that you will clash with a
+    port which is already in use. Pick math.MaxInt16 as a sample port to reduce
+    the changes of hitting this problem.
+
+### Go Coding Style
+
+- **Prefer immutable variable assignment with anonymous functions**:
+  When you need to assign a variable based on complex conditional logic, prefer using an immediately-invoked anonymous function instead of mutating the variable across multiple branches:
+
+  ```go
+  // ✅ Good: Immutable assignment with anonymous function
+  phase := func() PhaseType {
+      if someCondition {
+          return PhaseA
+      }
+      if anotherCondition {
+          return PhaseB
+      }
+      return PhaseDefault
+  }()
+
+  // ❌ Avoid: Mutable variable across branches
+  var phase PhaseType
+  if someCondition {
+      phase = PhaseA
+  } else if anotherCondition {
+      phase = PhaseB
+  } else {
+      phase = PhaseDefault
+  }
+  ```
+
+  **Benefits**:
+  - The variable is immutable after assignment, reducing bugs from accidental modification
+  - All decision logic is in one place with explicit returns
+  - Clearer logic flow and easier to understand
+  - Reduces cognitive load from tracking which branch sets which value
 
 ## Error Handling Guidelines
 

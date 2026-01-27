@@ -105,8 +105,8 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 			},
 			expectedBackends: 2,
 			expectedStatuses: map[string]string{
-				"backend-1": "ready",
-				"backend-2": "ready",
+				"backend-1": mcpv1alpha1.BackendStatusReady,
+				"backend-2": mcpv1alpha1.BackendStatusReady,
 			},
 			expectedAuthConfigs: map[string]string{},
 			expectError:         false,
@@ -185,7 +185,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 			},
 			expectedBackends: 1,
 			expectedStatuses: map[string]string{
-				"backend-1": "ready",
+				"backend-1": mcpv1alpha1.BackendStatusReady,
 			},
 			expectedAuthConfigs: map[string]string{
 				"backend-1": "my-auth-config",
@@ -246,8 +246,8 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 			},
 			expectedBackends: 2,
 			expectedStatuses: map[string]string{
-				"backend-1": "ready",
-				"backend-2": "unavailable",
+				"backend-1": mcpv1alpha1.BackendStatusReady,
+				"backend-2": mcpv1alpha1.BackendStatusUnavailable,
 			},
 			expectedAuthConfigs: map[string]string{},
 			expectError:         false,
@@ -329,10 +329,10 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 			},
 			expectedBackends: 4,
 			expectedStatuses: map[string]string{
-				"healthy":   "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
-				"unhealthy": "unavailable", // MCPServerPhaseFailed -> BackendUnhealthy -> "unavailable"
-				"degraded":  "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
-				"unknown":   "unavailable", // MCPServerPhasePending -> BackendUnknown -> "unavailable" (controller override)
+				"healthy":   mcpv1alpha1.BackendStatusReady,       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
+				"unhealthy": mcpv1alpha1.BackendStatusUnavailable, // MCPServerPhaseFailed -> BackendUnhealthy -> "unavailable"
+				"degraded":  mcpv1alpha1.BackendStatusReady,       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
+				"unknown":   mcpv1alpha1.BackendStatusUnavailable, // MCPServerPhasePending -> BackendUnknown -> "unavailable" (controller override)
 			},
 			expectedAuthConfigs: map[string]string{},
 			expectError:         false,
@@ -402,7 +402,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 				assert.False(t, backend.LastHealthCheck.IsZero(), "backend %s should have LastHealthCheck set", backend.Name)
 
 				// Verify URL is set for accessible backends
-				if backend.Status == "ready" {
+				if backend.Status == mcpv1alpha1.BackendStatusReady {
 					assert.NotEmpty(t, backend.URL, "backend %s should have URL set", backend.Name)
 				}
 			}
@@ -462,14 +462,14 @@ func TestVirtualMCPServerStatusManagerDiscoveredBackends(t *testing.T) {
 
 	// Verify backend details
 	assert.Equal(t, "backend-1", vmcpStatus.DiscoveredBackends[0].Name)
-	assert.Equal(t, "ready", vmcpStatus.DiscoveredBackends[0].Status)
+	assert.Equal(t, mcpv1alpha1.BackendStatusReady, vmcpStatus.DiscoveredBackends[0].Status)
 	assert.Equal(t, "http://backend-1.default.svc.cluster.local:8080", vmcpStatus.DiscoveredBackends[0].URL)
 
 	assert.Equal(t, "backend-2", vmcpStatus.DiscoveredBackends[1].Name)
-	assert.Equal(t, "ready", vmcpStatus.DiscoveredBackends[1].Status)
+	assert.Equal(t, mcpv1alpha1.BackendStatusReady, vmcpStatus.DiscoveredBackends[1].Status)
 
 	assert.Equal(t, "backend-3", vmcpStatus.DiscoveredBackends[2].Name)
-	assert.Equal(t, "unavailable", vmcpStatus.DiscoveredBackends[2].Status)
+	assert.Equal(t, mcpv1alpha1.BackendStatusUnavailable, vmcpStatus.DiscoveredBackends[2].Status)
 	assert.Empty(t, vmcpStatus.DiscoveredBackends[2].URL, "unavailable backend should not have URL")
 }
 

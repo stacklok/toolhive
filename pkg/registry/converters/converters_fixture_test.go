@@ -169,6 +169,27 @@ func convertServerToRemote(t *testing.T, inputData []byte) []byte {
 
 // Validation functions - additional checks beyond JSON equality
 
+// getServerJSONExtensions extracts the stacklok extensions from a ServerJSON by key (image ref or URL)
+func getServerJSONExtensions(t *testing.T, serverJSON *upstream.ServerJSON, key string) map[string]interface{} {
+	t.Helper()
+
+	if serverJSON.Meta == nil || serverJSON.Meta.PublisherProvided == nil {
+		return nil
+	}
+
+	stacklokData, ok := serverJSON.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	extensions, ok := stacklokData[key].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	return extensions
+}
+
 func validateImageToServerConversion(t *testing.T, inputData, outputData []byte) {
 	t.Helper()
 	var input types.ImageMetadata
@@ -188,20 +209,29 @@ func validateImageToServerConversion(t *testing.T, inputData, outputData []byte)
 		"Environment variables count should match")
 
 	// Verify publisher extensions exist
-	require.NotNil(t, output.Meta, "Meta should not be nil")
-	require.NotNil(t, output.Meta.PublisherProvided, "PublisherProvided should not be nil")
-
-	stacklokData, ok := output.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
-	require.True(t, ok, "Should have io.github.stacklok namespace")
-
-	extensions, ok := stacklokData[input.Image].(map[string]interface{})
-	require.True(t, ok, "Should have image-specific extensions")
+	extensions := getServerJSONExtensions(t, &output, input.Image)
+	require.NotNil(t, extensions, "Extensions should exist for image")
 
 	// Verify key extension fields
 	assert.Equal(t, input.Status, extensions["status"], "Status should be in extensions")
 	assert.Equal(t, input.Tier, extensions["tier"], "Tier should be in extensions")
 	assert.NotNil(t, extensions["tools"], "Tools should be in extensions")
 	assert.NotNil(t, extensions["tags"], "Tags should be in extensions")
+
+	// Verify docker_tags if present
+	if len(input.DockerTags) > 0 {
+		assert.NotNil(t, extensions["docker_tags"], "docker_tags should be in extensions")
+	}
+
+	// Verify proxy_port if present
+	if input.ProxyPort > 0 {
+		assert.NotNil(t, extensions["proxy_port"], "proxy_port should be in extensions")
+	}
+
+	// Verify custom_metadata if present
+	if len(input.CustomMetadata) > 0 {
+		assert.NotNil(t, extensions["custom_metadata"], "custom_metadata should be in extensions")
+	}
 }
 
 func validateServerToImageConversion(t *testing.T, inputData, outputData []byte) {
@@ -221,6 +251,22 @@ func validateServerToImageConversion(t *testing.T, inputData, outputData []byte)
 	// Verify environment variables were extracted
 	assert.Len(t, output.EnvVars, len(input.Packages[0].EnvironmentVariables),
 		"Environment variables count should match")
+
+	// Verify new fields were extracted from extensions if present
+	extensions := getServerJSONExtensions(t, &input, output.Image)
+	if extensions != nil {
+		if _, hasDockerTags := extensions["docker_tags"]; hasDockerTags {
+			assert.NotNil(t, output.DockerTags, "DockerTags should be extracted from extensions")
+			assert.Greater(t, len(output.DockerTags), 0, "DockerTags should not be empty")
+		}
+		if _, hasProxyPort := extensions["proxy_port"]; hasProxyPort {
+			assert.Greater(t, output.ProxyPort, 0, "ProxyPort should be extracted from extensions")
+		}
+		if _, hasCustomMetadata := extensions["custom_metadata"]; hasCustomMetadata {
+			assert.NotNil(t, output.CustomMetadata, "CustomMetadata should be extracted from extensions")
+			assert.Greater(t, len(output.CustomMetadata), 0, "CustomMetadata should not be empty")
+		}
+	}
 }
 
 func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte) {
@@ -240,6 +286,27 @@ func validateRemoteToServerConversion(t *testing.T, inputData, outputData []byte
 	// Verify headers count
 	assert.Len(t, output.Remotes[0].Headers, len(input.Headers),
 		"Headers count should match")
+
+	// Get extensions once and verify all fields
+	extensions := getServerJSONExtensions(t, &output, input.URL)
+
+	// Verify env_vars if input has them
+	if len(input.EnvVars) > 0 {
+		require.NotNil(t, extensions, "Extensions should exist when env_vars are present")
+		assert.NotNil(t, extensions["env_vars"], "env_vars should be in extensions")
+	}
+
+	// Verify oauth_config if present
+	if input.OAuthConfig != nil {
+		require.NotNil(t, extensions, "Extensions should exist when oauth_config is present")
+		assert.NotNil(t, extensions["oauth_config"], "oauth_config should be in extensions")
+	}
+
+	// Verify custom_metadata if present
+	if len(input.CustomMetadata) > 0 {
+		require.NotNil(t, extensions, "Extensions should exist when custom_metadata is present")
+		assert.NotNil(t, extensions["custom_metadata"], "custom_metadata should be in extensions")
+	}
 }
 
 func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte) {
@@ -259,4 +326,20 @@ func validateServerToRemoteConversion(t *testing.T, inputData, outputData []byte
 	// Verify headers were extracted
 	assert.Len(t, output.Headers, len(input.Remotes[0].Headers),
 		"Headers count should match")
+
+	// Verify fields were extracted from extensions if present
+	extensions := getServerJSONExtensions(t, &input, output.URL)
+	if extensions != nil {
+		if _, hasEnvVars := extensions["env_vars"]; hasEnvVars {
+			assert.NotNil(t, output.EnvVars, "EnvVars should be extracted from extensions")
+			assert.Greater(t, len(output.EnvVars), 0, "EnvVars should not be empty")
+		}
+		if _, hasOAuth := extensions["oauth_config"]; hasOAuth {
+			assert.NotNil(t, output.OAuthConfig, "OAuthConfig should be extracted from extensions")
+		}
+		if _, hasCustomMetadata := extensions["custom_metadata"]; hasCustomMetadata {
+			assert.NotNil(t, output.CustomMetadata, "CustomMetadata should be extracted from extensions")
+			assert.Greater(t, len(output.CustomMetadata), 0, "CustomMetadata should not be empty")
+		}
+	}
 }

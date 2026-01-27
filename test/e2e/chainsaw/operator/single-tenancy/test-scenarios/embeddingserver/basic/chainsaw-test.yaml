@@ -1,0 +1,69 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-embeddingserver-basic
+spec:
+  description: Deploys basic EmbeddingServer and verifies it's running
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 30s
+    exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-embedding-basic"
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../../setup/assert-operator-ready.yaml
+  - name: deploy-embeddingserver
+    description: Deploy a basic EmbeddingServer instance and verify it's ready
+    try:
+    - apply:
+        file: embeddingserver.yaml
+    - assert:
+        file: embeddingserver.yaml
+    - assert:
+        file: assert-embeddingserver-running.yaml
+    - assert:
+        file: assert-deployment-running.yaml
+    - assert:
+        file: assert-service-created.yaml
+
+  - name: test-embedding-endpoint
+    description: Test the embedding server endpoint
+    try:
+    - script:
+        env:
+          - name: embeddingServerName
+            value: ($testPrefix)
+        content: |
+          # Get the service name for the embedding server
+          echo "Testing embedding server: $embeddingServerName"
+
+          # Get the service ClusterIP
+          SERVICE_NAME="$embeddingServerName"
+          CLUSTER_IP=$(kubectl get svc $SERVICE_NAME -n toolhive-system -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+
+          if [ -z "$CLUSTER_IP" ]; then
+            echo "Service not found or does not have ClusterIP"
+            kubectl describe svc $SERVICE_NAME -n toolhive-system
+            exit 1
+          fi
+
+          echo "Service ClusterIP: $CLUSTER_IP"
+
+          # Wait for the statefulset to be ready
+          echo "Waiting for statefulset to be ready..."
+          kubectl wait --for=jsonpath='{.status.replicas}'=1 --timeout=120s statefulset/$embeddingServerName -n toolhive-system
+
+          # Test the health endpoint using a test pod
+          echo "Testing health endpoint..."
+          kubectl run test-curl-$RANDOM --image=curlimages/curl:latest --rm -i --restart=Never -n toolhive-system -- \
+            curl -s -o /dev/null -w "%{http_code}" http://$CLUSTER_IP:8080/health || true
+
+          echo "✅ Basic embedding server test passed!"
+          exit 0

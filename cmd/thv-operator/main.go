@@ -267,6 +267,17 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
 
+	// Set up EmbeddingServer controller
+	if err := (&controllers.EmbeddingServerReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("embeddingserver-controller"),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		ImageValidation:  imageValidation,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
+	}
+
 	return nil
 }
 

@@ -20,6 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/oauth"
 )
 
 func TestValidateRedirectURI(t *testing.T) {
@@ -93,30 +95,27 @@ func TestValidateRedirectURI(t *testing.T) {
 			errorCode:   DCRErrorInvalidRedirectURI,
 		},
 
-		// Other schemes - not allowed
+		// Private-use URI schemes - allowed for native apps per RFC 8252 Section 7.1
 		{
-			name:        "ftp scheme not allowed",
-			uri:         "ftp://example.com/callback",
-			expectError: true,
-			errorCode:   DCRErrorInvalidRedirectURI,
-		},
-		{
-			name:        "file scheme not allowed",
-			uri:         "file:///callback",
-			expectError: true,
-			errorCode:   DCRErrorInvalidRedirectURI,
-		},
-		{
-			name:        "custom scheme not allowed",
+			name:        "custom scheme allowed for native apps",
 			uri:         "myapp://callback",
-			expectError: true,
-			errorCode:   DCRErrorInvalidRedirectURI,
+			expectError: false,
+		},
+		{
+			name:        "cursor scheme allowed",
+			uri:         "cursor://callback",
+			expectError: false,
+		},
+		{
+			name:        "vscode scheme allowed",
+			uri:         "vscode://callback",
+			expectError: false,
 		},
 
 		// Length validation
 		{
 			name:        "redirect URI exceeding max length is rejected",
-			uri:         "https://example.com/" + strings.Repeat("a", MaxRedirectURILength),
+			uri:         "https://example.com/" + strings.Repeat("a", oauth.MaxRedirectURILength),
 			expectError: true,
 			errorCode:   DCRErrorInvalidRedirectURI,
 		},

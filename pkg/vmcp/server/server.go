@@ -540,6 +540,11 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to start status reporter: %w", err)
 		}
 		s.shutdownFuncs = append(s.shutdownFuncs, shutdown)
+
+		// Start periodic status reporting in background
+		statusConfig := DefaultStatusReportingConfig()
+		statusConfig.Reporter = s.statusReporter
+		go s.periodicStatusReporting(ctx, statusConfig)
 	}
 
 	// Wait for either context cancellation or server error

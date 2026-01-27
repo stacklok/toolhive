@@ -23,7 +23,7 @@ func NewLoggingReporter() *LoggingReporter {
 
 // ReportStatus logs the status update (non-persistent).
 func (*LoggingReporter) ReportStatus(_ context.Context, status *vmcptypes.Status) error {
-	if status == nil {
+	if validateStatus(status) {
 		return nil
 	}
 
@@ -38,14 +38,8 @@ func (*LoggingReporter) ReportStatus(_ context.Context, status *vmcptypes.Status
 // Start initializes the reporter (no background processes in CLI mode).
 // Returns a shutdown function for cleanup (also a no-op in CLI mode).
 func (*LoggingReporter) Start(_ context.Context) (func(context.Context) error, error) {
-	logger.Debug("status reporter: starting (CLI mode - logging only)")
-
-	shutdown := func(_ context.Context) error {
-		logger.Debug("status reporter: stopping (CLI mode)")
-		return nil
-	}
-
-	return shutdown, nil
+	logReporterStart("CLI", "logging only")
+	return noOpShutdown("CLI"), nil
 }
 
 // Verify LoggingReporter implements Reporter interface

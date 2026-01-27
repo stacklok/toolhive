@@ -70,7 +70,7 @@ func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReport
 // ReportStatus sends a status update to the VirtualMCPServer/status subresource.
 // This method uses optimistic concurrency control with automatic retries on conflicts.
 func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status) error {
-	if status == nil {
+	if validateStatus(status) {
 		return nil
 	}
 
@@ -112,14 +112,8 @@ func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status
 // Start initializes the reporter.
 // Returns a shutdown function for cleanup (no-op for K8sReporter since it's stateless).
 func (*K8sReporter) Start(_ context.Context) (func(context.Context) error, error) {
-	logger.Debug("status reporter: starting (K8s mode - updates VirtualMCPServer/status)")
-
-	shutdown := func(_ context.Context) error {
-		logger.Debug("status reporter: stopping (K8s mode)")
-		return nil
-	}
-
-	return shutdown, nil
+	logReporterStart("K8s", "updates VirtualMCPServer/status")
+	return noOpShutdown("K8s"), nil
 }
 
 // updateStatus converts vmcp.Status to VirtualMCPServerStatus and updates the resource.

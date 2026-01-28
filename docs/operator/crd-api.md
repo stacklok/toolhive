@@ -1074,6 +1074,40 @@ _Appears in:_
 | `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
+#### api.v1alpha1.HeaderForwardConfig
+
+
+
+HeaderForwardConfig defines header forward configuration for remote servers.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `addPlaintextHeaders` _object (keys:string, values:string)_ | AddPlaintextHeaders is a map of header names to literal values to inject into requests.<br />WARNING: Values are stored in plaintext and visible via kubectl commands.<br />Use addHeadersFromSecret for sensitive data like API keys or tokens. |  |  |
+| `addHeadersFromSecret` _[api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret) array_ | AddHeadersFromSecret references Kubernetes Secrets for sensitive header values. |  |  |
+
+
+#### api.v1alpha1.HeaderFromSecret
+
+
+
+HeaderFromSecret defines a header whose value comes from a Kubernetes Secret.
+
+
+
+_Appears in:_
+- [api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `headerName` _string_ | HeaderName is the HTTP header name (e.g., "X-API-Key") |  | MaxLength: 255 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `valueSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ValueSecretRef references the Secret and key containing the header value |  | Required: \{\} <br /> |
+
+
 #### api.v1alpha1.HeaderInjectionConfig
 
 
@@ -1679,6 +1713,7 @@ _Appears in:_
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy<br />This validates incoming tokens from clients. Required for proxy mode. |  | Required: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  |  |
+| `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  |  |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  |  |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the proxy |  |  |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  |  |
@@ -2260,6 +2295,7 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)
 - [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+- [api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)

@@ -409,7 +409,7 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 								OAuth2Config: &OAuth2UpstreamConfig{
 									AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
 									TokenEndpoint:         "https://github.com/login/oauth/access_token",
-									UserInfoEndpoint:      "https://api.github.com/user",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://api.github.com/user"},
 									ClientID:              "github-client-id",
 									RedirectURI:           "https://auth.example.com/callback",
 								},
@@ -582,7 +582,7 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 								OAuth2Config: &OAuth2UpstreamConfig{
 									AuthorizationEndpoint: "https://example.com/auth",
 									TokenEndpoint:         "https://example.com/token",
-									UserInfoEndpoint:      "https://example.com/userinfo",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://example.com/userinfo"},
 									ClientID:              "client-id",
 									RedirectURI:           "https://auth.example.com/callback",
 								},
@@ -618,7 +618,7 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 								OAuth2Config: &OAuth2UpstreamConfig{
 									AuthorizationEndpoint: "https://example.com/auth",
 									TokenEndpoint:         "https://example.com/token",
-									UserInfoEndpoint:      "https://example.com/userinfo",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://example.com/userinfo"},
 									ClientID:              "client-id",
 									RedirectURI:           "https://auth.example.com/callback",
 								},

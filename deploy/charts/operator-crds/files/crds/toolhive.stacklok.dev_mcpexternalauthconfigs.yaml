@@ -119,6 +119,14 @@ spec:
                       Must be a valid HTTPS URL without a trailing slash (per RFC 8414).
                     pattern: ^https://\S+[^/]$
                     type: string
+                  scopesSupported:
+                    description: |-
+                      ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
+                      These are advertised in the .well-known/oauth-authorization-server metadata endpoint.
+                      If not specified, a default set of scopes is advertised.
+                    items:
+                      type: string
+                    type: array
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -225,18 +233,70 @@ spec:
                                 token endpoint.
                               pattern: ^https?://.*$
                               type: string
-                            userInfoEndpoint:
+                            userInfo:
                               description: |-
-                                UserInfoEndpoint is the URL for the userinfo endpoint.
+                                UserInfo contains configuration for fetching user information from the upstream provider.
                                 Required for OAuth2 providers to resolve user identity.
-                              pattern: ^https?://.*$
-                              type: string
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
                           required:
                           - authorizationEndpoint
                           - clientId
                           - redirectUri
                           - tokenEndpoint
-                          - userInfoEndpoint
+                          - userInfo
                           type: object
                         oidcConfig:
                           description: |-
@@ -279,6 +339,66 @@ spec:
                               items:
                                 type: string
                               type: array
+                            userInfoOverride:
+                              description: |-
+                                UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
+                                By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
+                                Use this to override the endpoint URL, HTTP method, or field mappings for providers
+                                that return non-standard claim names in their UserInfo response.
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
                           required:
                           - clientId
                           - issuerUrl

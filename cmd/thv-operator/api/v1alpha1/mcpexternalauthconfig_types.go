@@ -171,6 +171,12 @@ type EmbeddedAuthServerConfig struct {
 	// validated against this list.
 	// +optional
 	AllowedAudiences []string `json:"allowedAudiences,omitempty"`
+
+	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
+	// These are advertised in the .well-known/oauth-authorization-server metadata endpoint.
+	// If not specified, a default set of scopes is advertised.
+	// +optional
+	ScopesSupported []string `json:"scopesSupported,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -258,6 +264,13 @@ type OIDCUpstreamConfig struct {
 	// If not specified, defaults to ["openid", "offline_access"].
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
+	// By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
+	// Use this to override the endpoint URL, HTTP method, or field mappings for providers
+	// that return non-standard claim names in their UserInfo response.
+	// +optional
+	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -273,11 +286,10 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:Pattern=`^https?://.*$`
 	TokenEndpoint string `json:"tokenEndpoint"`
 
-	// UserInfoEndpoint is the URL for the userinfo endpoint.
+	// UserInfo contains configuration for fetching user information from the upstream provider.
 	// Required for OAuth2 providers to resolve user identity.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^https?://.*$`
-	UserInfoEndpoint string `json:"userInfoEndpoint"`
+	UserInfo *UserInfoConfig `json:"userInfo"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
 	// +kubebuilder:validation:Required
@@ -295,6 +307,63 @@ type OAuth2UpstreamConfig struct {
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+}
+
+// UserInfoConfig contains configuration for fetching user information from an upstream provider.
+// This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
+// like GitHub's /user API.
+type UserInfoConfig struct {
+	// EndpointURL is the URL of the userinfo endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://.*$`
+	EndpointURL string `json:"endpointUrl"`
+
+	// HTTPMethod is the HTTP method to use for the userinfo request.
+	// If not specified, defaults to GET.
+	// +kubebuilder:validation:Enum=GET;POST
+	// +optional
+	HTTPMethod string `json:"httpMethod,omitempty"`
+
+	// AdditionalHeaders contains extra headers to include in the userinfo request.
+	// Useful for providers that require specific headers (e.g., GitHub's Accept header).
+	// +optional
+	AdditionalHeaders map[string]string `json:"additionalHeaders,omitempty"`
+
+	// FieldMapping contains custom field mapping configuration for non-standard providers.
+	// If nil, standard OIDC field names are used ("sub", "name", "email").
+	// +optional
+	FieldMapping *UserInfoFieldMapping `json:"fieldMapping,omitempty"`
+}
+
+// UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
+// This allows adapting non-standard provider responses to the canonical UserInfo structure.
+// Each field supports an ordered list of claim names to try. The first non-empty value
+// found will be used.
+//
+// Example for GitHub:
+//
+//	fieldMapping:
+//	  subjectFields: ["id", "login"]
+//	  nameFields: ["name", "login"]
+//	  emailFields: ["email"]
+type UserInfoFieldMapping struct {
+	// SubjectFields is an ordered list of field names to try for the user ID.
+	// The first non-empty value found will be used.
+	// Default: ["sub"]
+	// +optional
+	SubjectFields []string `json:"subjectFields,omitempty"`
+
+	// NameFields is an ordered list of field names to try for the display name.
+	// The first non-empty value found will be used.
+	// Default: ["name"]
+	// +optional
+	NameFields []string `json:"nameFields,omitempty"`
+
+	// EmailFields is an ordered list of field names to try for the email address.
+	// The first non-empty value found will be used.
+	// Default: ["email"]
+	// +optional
+	EmailFields []string `json:"emailFields,omitempty"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

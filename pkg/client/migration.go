@@ -46,18 +46,13 @@ func performAutoDiscoveryMigration() {
 		return
 	}
 
-	// Get current config to see what's already registered
-	cfgprv := config.NewDefaultProvider()
-	appConfig := cfgprv.GetConfig()
-
 	var clientsToRegister []string
-	var alreadyRegistered = appConfig.Clients.RegisteredClients
 
 	// Find installed clients that aren't registered yet
 	for _, status := range clientStatuses {
 		if status.Installed && !status.Registered {
 			clientsToRegister = append(clientsToRegister, string(status.ClientType))
-			fmt.Println("Registering client", string(status.ClientType))
+			logger.Debugf("Registering client %s", string(status.ClientType))
 		}
 	}
 
@@ -87,11 +82,6 @@ func performAutoDiscoveryMigration() {
 		return
 	}
 
-	// Print success messages for newly registered clients
-	for _, clientName := range clientsToRegister {
-		fmt.Printf("  ✓ Automatically registered client: %s\n", clientName)
-	}
-
 	fmt.Println()
 	fmt.Println("NOTICE: Auto-discovery of MCP clients has been deprecated and is no longer supported.")
 	fmt.Println("Your existing clients have been automatically migrated to the new manual registration system.")
@@ -99,14 +89,4 @@ func performAutoDiscoveryMigration() {
 	fmt.Println("Going forward, use 'thv client setup' to discover and register new MCP clients.")
 	fmt.Println("This provides better control and security for your client configurations.")
 	fmt.Println()
-
-	// Show all registered clients (both newly registered and previously registered)
-	allRegisteredClients := append(alreadyRegistered, clientsToRegister...)
-	if len(allRegisteredClients) > 0 {
-		fmt.Println("Registered clients:")
-		for _, clientName := range allRegisteredClients {
-			fmt.Printf("  - %s\n", clientName)
-		}
-		fmt.Println()
-	}
 }

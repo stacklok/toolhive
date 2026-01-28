@@ -155,14 +155,14 @@ func (m *cliManager) RegisterClients(ctx context.Context, groupNames []string, c
 			}
 
 			if alreadyRegistered {
-				logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
+				logger.Debugf("Client %s is already registered with group %s, skipping", clientName, groupName)
 				continue
 			}
 
 			// Add the client to the group
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
-			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
+			logger.Debugf("Successfully registered client %s with group %s", clientName, groupName)
 		}
 
 		// Only save if the group was actually modified
@@ -194,7 +194,7 @@ func (m *cliManager) UnregisterClients(ctx context.Context, groupNames []string,
 					// Remove client from slice
 					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
 					groupModified = true
-					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
+					logger.Debugf("Successfully unregistered client %s from group %s", clientName, groupName)
 					break
 				}
 			}

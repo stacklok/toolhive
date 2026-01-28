@@ -208,18 +208,14 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 	clientID = h.config.ClientID
 	clientSecret = h.config.ClientSecret
 
-	// If we have cached DCR client credentials and a secret provider, use those instead
-	if h.config.HasCachedClientCredentials() && h.secretProvider != nil {
-		cachedClientID, err := h.secretProvider.GetSecret(ctx, h.config.CachedClientIDRef)
-		if err != nil {
-			logger.Warnf("Failed to retrieve cached client ID, falling back to config: %v", err)
-		} else {
-			clientID = cachedClientID
-			logger.Debugf("Using cached DCR client credentials (client_id: %s)", clientID)
-		}
+	// If we have cached DCR client credentials, use those instead
+	if h.config.HasCachedClientCredentials() {
+		// ClientID is stored as plain text (it's public information)
+		clientID = h.config.CachedClientID
+		logger.Debugf("Using cached DCR client credentials (client_id: %s)", clientID)
 
-		// Client secret may be empty for PKCE flows
-		if h.config.CachedClientSecretRef != "" {
+		// Client secret is stored securely and may be empty for PKCE flows
+		if h.config.CachedClientSecretRef != "" && h.secretProvider != nil {
 			cachedClientSecret, err := h.secretProvider.GetSecret(ctx, h.config.CachedClientSecretRef)
 			if err != nil {
 				logger.Warnf("Failed to retrieve cached client secret: %v", err)

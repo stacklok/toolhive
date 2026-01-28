@@ -608,21 +608,8 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 
 		// Set up client credentials persister for DCR (Dynamic Client Registration)
 		authHandler.SetClientCredentialsPersister(func(clientID, clientSecret string) error {
-			// Generate unique secret names for client credentials
-			clientIDSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
-				r.Config.Name,
-				"OAUTH_CLIENT_ID_",
-				secretManager,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to generate client ID secret name: %w", err)
-			}
-
-			// Store the client ID in the secret manager
-			if err := authsecrets.StoreSecretInManagerWithProvider(ctx, clientIDSecretName, clientID, secretManager); err != nil {
-				return fmt.Errorf("failed to store client ID: %w", err)
-			}
-			r.Config.RemoteAuthConfig.CachedClientIDRef = clientIDSecretName
+			// Store client ID directly (it's public information)
+			r.Config.RemoteAuthConfig.CachedClientID = clientID
 
 			// Only store client secret if it's non-empty (PKCE flows may not have one)
 			if clientSecret != "" {
@@ -641,12 +628,12 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 				r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
 			}
 
-			// Save the updated config to persist the references
+			// Save the updated config to persist the credentials
 			if err := r.Config.SaveState(ctx); err != nil {
-				return fmt.Errorf("failed to save config with client credential references: %w", err)
+				return fmt.Errorf("failed to save config with client credentials: %w", err)
 			}
 
-			logger.Debugf("Stored DCR client credentials in secret manager (client_id: %s)", clientIDSecretName)
+			logger.Debugf("Stored DCR client credentials (client_id: %s)", clientID)
 			return nil
 		})
 	}

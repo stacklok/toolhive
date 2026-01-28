@@ -57,8 +57,15 @@ type Config struct {
 
 	// Cached DCR client credentials for persistence across restarts.
 	// These are obtained during Dynamic Client Registration and needed to refresh tokens.
-	CachedClientIDRef     string `json:"cached_client_id_ref,omitempty" yaml:"cached_client_id_ref,omitempty"`
+	// ClientID is stored as plain text since it's public information.
+	CachedClientID        string `json:"cached_client_id,omitempty" yaml:"cached_client_id,omitempty"`
 	CachedClientSecretRef string `json:"cached_client_secret_ref,omitempty" yaml:"cached_client_secret_ref,omitempty"`
+	// ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).
+	// A zero value means the secret does not expire.
+	CachedSecretExpiry time.Time `json:"cached_secret_expiry,omitempty" yaml:"cached_secret_expiry,omitempty"`
+	// RegistrationAccessToken is used to update/delete the client registration.
+	// Stored as a secret reference since it's sensitive.
+	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -149,13 +156,15 @@ func (c *Config) ClearCachedTokens() {
 
 // HasCachedClientCredentials returns true if the config has cached DCR client credentials.
 func (c *Config) HasCachedClientCredentials() bool {
-	return c.CachedClientIDRef != ""
+	return c.CachedClientID != ""
 }
 
 // ClearCachedClientCredentials removes any cached DCR client credential references from the config.
 func (c *Config) ClearCachedClientCredentials() {
-	c.CachedClientIDRef = ""
+	c.CachedClientID = ""
 	c.CachedClientSecretRef = ""
+	c.CachedSecretExpiry = time.Time{}
+	c.CachedRegTokenRef = ""
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

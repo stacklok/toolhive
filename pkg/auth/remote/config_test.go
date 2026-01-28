@@ -175,14 +175,14 @@ func TestConfig_HasCachedClientCredentials(t *testing.T) {
 		{
 			name: "has cached client ID only",
 			config: Config{
-				CachedClientIDRef: "OAUTH_CLIENT_ID_test",
+				CachedClientID: "OAUTH_CLIENT_ID_test",
 			},
 			expected: true,
 		},
 		{
 			name: "has both cached credentials",
 			config: Config{
-				CachedClientIDRef:     "OAUTH_CLIENT_ID_test",
+				CachedClientID:        "OAUTH_CLIENT_ID_test",
 				CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
 			},
 			expected: true,
@@ -211,14 +211,14 @@ func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	t.Parallel()
 
 	config := Config{
-		CachedClientIDRef:     "OAUTH_CLIENT_ID_test",
+		CachedClientID:        "OAUTH_CLIENT_ID_test",
 		CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
 	}
 
 	config.ClearCachedClientCredentials()
 
-	if config.CachedClientIDRef != "" {
-		t.Errorf("CachedClientIDRef should be empty, got %s", config.CachedClientIDRef)
+	if config.CachedClientID != "" {
+		t.Errorf("CachedClientID should be empty, got %s", config.CachedClientID)
 	}
 	if config.CachedClientSecretRef != "" {
 		t.Errorf("CachedClientSecretRef should be empty, got %s", config.CachedClientSecretRef)

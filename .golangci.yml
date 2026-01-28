@@ -139,6 +139,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - scripts$
 formatters:
   enable:
     - gci
@@ -155,3 +156,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - scripts$

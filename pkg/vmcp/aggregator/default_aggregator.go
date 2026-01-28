@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -21,15 +25,18 @@ type defaultAggregator struct {
 	backendClient    vmcp.BackendClient
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
+	tracer           trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
 // workloadConfigs specifies per-backend tool filtering and overrides.
+// tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
 	workloadConfigs []*config.WorkloadToolConfig,
+	tracerProvider trace.TracerProvider,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
@@ -39,16 +46,38 @@ func NewDefaultAggregator(
 		}
 	}
 
+	// Create tracer from provider (use noop tracer if provider is nil)
+	var tracer trace.Tracer
+	if tracerProvider != nil {
+		tracer = tracerProvider.Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
+	} else {
+		tracer = noop.NewTracerProvider().Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
+	}
+
 	return &defaultAggregator{
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
+		tracer:           tracer,
 	}
 }
 
 // QueryCapabilities queries a single backend for its MCP capabilities.
 // Returns the raw capabilities (tools, resources, prompts) from the backend.
-func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*BackendCapabilities, error) {
+func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (_ *BackendCapabilities, retErr error) {
+	ctx, span := a.tracer.Start(ctx, "aggregator.QueryCapabilities",
+		trace.WithAttributes(
+			attribute.String("backend.id", backend.ID),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	logger.Debugf("Querying capabilities from backend %s", backend.ID)
 
 	// Create a BackendTarget from the Backend
@@ -74,6 +103,12 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		SupportsSampling: capabilities.SupportsSampling,
 	}
 
+	span.SetAttributes(
+		attribute.Int("tools.count", len(result.Tools)),
+		attribute.Int("resources.count", len(result.Resources)),
+		attribute.Int("prompts.count", len(result.Prompts)),
+	)
+
 	logger.Debugf("Backend %s: %d tools (after filtering/overrides), %d resources, %d prompts",
 		backend.ID, len(result.Tools), len(result.Resources), len(result.Prompts))
 
@@ -85,7 +120,20 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 func (a *defaultAggregator) QueryAllCapabilities(
 	ctx context.Context,
 	backends []vmcp.Backend,
-) (map[string]*BackendCapabilities, error) {
+) (_ map[string]*BackendCapabilities, retErr error) {
+	ctx, span := a.tracer.Start(ctx, "aggregator.QueryAllCapabilities",
+		trace.WithAttributes(
+			attribute.Int("backends.count", len(backends)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	logger.Infof("Querying capabilities from %d backends", len(backends))
 
 	// Use errgroup for parallel queries with context cancellation
@@ -125,6 +173,10 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		return nil, fmt.Errorf("no backends returned capabilities")
 	}
 
+	span.SetAttributes(
+		attribute.Int("successful.backends", len(capabilities)),
+	)
+
 	logger.Infof("Successfully queried %d/%d backends", len(capabilities), len(backends))
 	return capabilities, nil
 }
@@ -134,7 +186,20 @@ func (a *defaultAggregator) QueryAllCapabilities(
 func (a *defaultAggregator) ResolveConflicts(
 	ctx context.Context,
 	capabilities map[string]*BackendCapabilities,
-) (*ResolvedCapabilities, error) {
+) (_ *ResolvedCapabilities, retErr error) {
+	ctx, span := a.tracer.Start(ctx, "aggregator.ResolveConflicts",
+		trace.WithAttributes(
+			attribute.Int("backends.count", len(capabilities)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	logger.Debugf("Resolving conflicts across %d backends", len(capabilities))
 
 	// Group tools by backend for conflict resolution
@@ -191,6 +256,12 @@ func (a *defaultAggregator) ResolveConflicts(
 		resolved.SupportsSampling = resolved.SupportsSampling || caps.SupportsSampling
 	}
 
+	span.SetAttributes(
+		attribute.Int("resolved.tools", len(resolved.Tools)),
+		attribute.Int("resolved.resources", len(resolved.Resources)),
+		attribute.Int("resolved.prompts", len(resolved.Prompts)),
+	)
+
 	logger.Debugf("Resolved %d unique tools, %d resources, %d prompts",
 		len(resolved.Tools), len(resolved.Resources), len(resolved.Prompts))
 
@@ -199,11 +270,26 @@ func (a *defaultAggregator) ResolveConflicts(
 
 // MergeCapabilities creates the final unified capability view and routing table.
 // Uses the backend registry to populate full BackendTarget information for routing.
-func (*defaultAggregator) MergeCapabilities(
+func (a *defaultAggregator) MergeCapabilities(
 	ctx context.Context,
 	resolved *ResolvedCapabilities,
 	registry vmcp.BackendRegistry,
-) (*AggregatedCapabilities, error) {
+) (_ *AggregatedCapabilities, retErr error) {
+	ctx, span := a.tracer.Start(ctx, "aggregator.MergeCapabilities",
+		trace.WithAttributes(
+			attribute.Int("resolved.tools", len(resolved.Tools)),
+			attribute.Int("resolved.resources", len(resolved.Resources)),
+			attribute.Int("resolved.prompts", len(resolved.Prompts)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	logger.Debugf("Merging capabilities into final view")
 
 	// Create routing table
@@ -304,6 +390,13 @@ func (*defaultAggregator) MergeCapabilities(
 		},
 	}
 
+	span.SetAttributes(
+		attribute.Int("aggregated.tools", aggregated.Metadata.ToolCount),
+		attribute.Int("aggregated.resources", aggregated.Metadata.ResourceCount),
+		attribute.Int("aggregated.prompts", aggregated.Metadata.PromptCount),
+		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
+	)
+
 	logger.Infof("Merged capabilities: %d tools, %d resources, %d prompts",
 		aggregated.Metadata.ToolCount, aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
 
@@ -315,7 +408,23 @@ func (*defaultAggregator) MergeCapabilities(
 // 2. Query all backends
 // 3. Resolve conflicts
 // 4. Merge into final view with full backend information
-func (a *defaultAggregator) AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error) {
+func (a *defaultAggregator) AggregateCapabilities(
+	ctx context.Context,
+	backends []vmcp.Backend,
+) (_ *AggregatedCapabilities, retErr error) {
+	ctx, span := a.tracer.Start(ctx, "aggregator.AggregateCapabilities",
+		trace.WithAttributes(
+			attribute.Int("backends.count", len(backends)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	logger.Infof("Starting capability aggregation for %d backends", len(backends))
 
 	// Step 1: Create registry from discovered backends
@@ -342,6 +451,14 @@ func (a *defaultAggregator) AggregateCapabilities(ctx context.Context, backends 
 
 	// Update metadata with backend count
 	aggregated.Metadata.BackendCount = len(backends)
+
+	span.SetAttributes(
+		attribute.Int("aggregated.backends", aggregated.Metadata.BackendCount),
+		attribute.Int("aggregated.tools", aggregated.Metadata.ToolCount),
+		attribute.Int("aggregated.resources", aggregated.Metadata.ResourceCount),
+		attribute.Int("aggregated.prompts", aggregated.Metadata.PromptCount),
+		attribute.String("conflict.strategy", string(aggregated.Metadata.ConflictStrategy)),
+	)
 
 	logger.Infof("Capability aggregation complete: %d backends, %d tools, %d resources, %d prompts",
 		aggregated.Metadata.BackendCount, aggregated.Metadata.ToolCount,

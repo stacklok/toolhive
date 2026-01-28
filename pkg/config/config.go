@@ -71,8 +71,9 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 }
 
 // GetProviderType returns the secrets provider type from the environment variable or application config.
-// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
-// Returns ErrSecretsNotSetup if secrets have not been configured yet.
+// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable (allowing Kubernetes deployments
+// to override without local setup), and falls back to the config file.
+// Returns ErrSecretsNotSetup only if the environment variable is not set and secrets have not been configured.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 	return s.GetProviderTypeWithEnv(&env.OSReader{})
 }
@@ -100,7 +101,8 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 //   - If they set TOOLHIVE_SECRETS_PROVIDER=encrypted/1password without setup, it returns an error
 //   - This prevents confusing errors when providers fail to initialize later
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
-	// First check the environment variable (takes precedence)
+	// First check the environment variable (takes precedence) - this allows Kubernetes deployments
+	// to override the secrets provider without requiring local setup
 	envVar := envReader.Getenv(secrets.ProviderEnvVar)
 	if envVar != "" {
 		providerType, err := validateProviderType(envVar)

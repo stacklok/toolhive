@@ -336,6 +336,149 @@ func TestBuildResourceRequirements(t *testing.T) {
 	}
 }
 
+// TestBuildHeaderForwardSecretEnvVars tests the buildHeaderForwardSecretEnvVars function
+func TestBuildHeaderForwardSecretEnvVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		proxy    *mcpv1alpha1.MCPRemoteProxy
+		validate func(*testing.T, []corev1.EnvVar)
+	}{
+		{
+			name: "single header secret",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "my-secret",
+									Key:  "api-key",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				require.Len(t, envVars, 1)
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_TEST_PROXY", envVars[0].Name)
+				require.NotNil(t, envVars[0].ValueFrom)
+				require.NotNil(t, envVars[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, "my-secret", envVars[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, "api-key", envVars[0].ValueFrom.SecretKeyRef.Key)
+			},
+		},
+		{
+			name: "multiple header secrets",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "secret-a",
+									Key:  "key-a",
+								},
+							},
+							{
+								HeaderName: "X-Token",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "secret-b",
+									Key:  "key-b",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				require.Len(t, envVars, 2)
+				// Verify first env var
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_MULTI_PROXY", envVars[0].Name)
+				assert.Equal(t, "secret-a", envVars[0].ValueFrom.SecretKeyRef.Name)
+				// Verify second env var
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_MULTI_PROXY", envVars[1].Name)
+				assert.Equal(t, "secret-b", envVars[1].ValueFrom.SecretKeyRef.Name)
+			},
+		},
+		{
+			name: "skip entries with nil ValueSecretRef",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "skip-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName:     "X-Invalid",
+								ValueSecretRef: nil, // Should be skipped
+							},
+							{
+								HeaderName: "X-Valid",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "valid-secret",
+									Key:  "valid-key",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				require.Len(t, envVars, 1)
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_VALID_SKIP_PROXY", envVars[0].Name)
+			},
+		},
+		{
+			name: "empty AddHeadersFromSecret",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{},
+					},
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				assert.Empty(t, envVars)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			envVars := buildHeaderForwardSecretEnvVars(tt.proxy)
+
+			if tt.validate != nil {
+				tt.validate(t, envVars)
+			}
+		})
+	}
+}
+
 // TestBuildHealthProbe tests health probe building
 func TestBuildHealthProbe(t *testing.T) {
 	t.Parallel()
@@ -638,6 +781,66 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 					}
 				}
 				assert.True(t, found, "Token exchange secret should be referenced")
+			},
+		},
+		{
+			name: "with header forward secrets",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "header-forward-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "api-key-secret",
+									Key:  "api-key",
+								},
+							},
+							{
+								HeaderName: "Authorization",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "auth-secret",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				// Should have env vars for both header secrets and TOOLHIVE_SECRETS_PROVIDER
+				apiKeyFound := false
+				authFound := false
+				secretsProviderFound := false
+				for _, env := range envVars {
+					if env.Name == "TOOLHIVE_SECRETS_PROVIDER" {
+						assert.Equal(t, "environment", env.Value)
+						secretsProviderFound = true
+					}
+					if env.Name == "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_HEADER_FORWARD_PROXY" {
+						require.NotNil(t, env.ValueFrom)
+						require.NotNil(t, env.ValueFrom.SecretKeyRef)
+						assert.Equal(t, "api-key-secret", env.ValueFrom.SecretKeyRef.Name)
+						assert.Equal(t, "api-key", env.ValueFrom.SecretKeyRef.Key)
+						apiKeyFound = true
+					}
+					if env.Name == "TOOLHIVE_SECRET_HEADER_FORWARD_AUTHORIZATION_HEADER_FORWARD_PROXY" {
+						require.NotNil(t, env.ValueFrom)
+						require.NotNil(t, env.ValueFrom.SecretKeyRef)
+						assert.Equal(t, "auth-secret", env.ValueFrom.SecretKeyRef.Name)
+						assert.Equal(t, "token", env.ValueFrom.SecretKeyRef.Key)
+						authFound = true
+					}
+				}
+				assert.True(t, secretsProviderFound, "TOOLHIVE_SECRETS_PROVIDER should be set to 'environment'")
+				assert.True(t, apiKeyFound, "X-API-Key header secret should be referenced")
+				assert.True(t, authFound, "Authorization header secret should be referenced")
 			},
 		},
 		{

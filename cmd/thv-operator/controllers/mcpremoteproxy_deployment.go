@@ -182,6 +182,20 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add header forward secret environment variables
+	if proxy.Spec.HeaderForward != nil && len(proxy.Spec.HeaderForward.AddHeadersFromSecret) > 0 {
+		// Set secrets provider to environment so runner uses environment variables for secrets.
+		// This is needed because header forward secrets use the ToolHive secrets provider
+		// (unlike token exchange and OIDC secrets which read directly from os.Getenv).
+		// The EnvironmentProvider reads env vars with the TOOLHIVE_SECRET_ prefix.
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_SECRETS_PROVIDER",
+			Value: "environment",
+		})
+		headerEnvVars := buildHeaderForwardSecretEnvVars(proxy)
+		env = append(env, headerEnvVars...)
+	}
+
 	// Add user-specified environment variables
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -193,6 +207,36 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.
+// Each secret is mounted as an env var using Kubernetes SecretKeyRef, with a name following
+// the TOOLHIVE_SECRET_<identifier> pattern expected by the secrets.EnvironmentProvider.
+func buildHeaderForwardSecretEnvVars(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+
+	for _, headerSecret := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
+		if headerSecret.ValueSecretRef == nil {
+			continue
+		}
+
+		// Generate env var name following the TOOLHIVE_SECRET_ pattern
+		envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+
+		envVars = append(envVars, corev1.EnvVar{
+			Name: envVarName,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: headerSecret.ValueSecretRef.Name,
+					},
+					Key: headerSecret.ValueSecretRef.Key,
+				},
+			},
+		})
+	}
+
+	return envVars
 }
 
 // buildDeploymentMetadata builds deployment-level labels and annotations

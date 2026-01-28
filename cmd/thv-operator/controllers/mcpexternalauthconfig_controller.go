@@ -116,10 +116,14 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 			logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
 				"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
 
-			// Trigger reconciliation by updating the MCPServer
-			// This will cause the MCPServer controller to reconcile and pick up the new config
+			// Add an annotation to the MCPServer to trigger reconciliation
+			if server.Annotations == nil {
+				server.Annotations = make(map[string]string)
+			}
+			server.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
+
 			if err := r.Update(ctx, &server); err != nil {
-				logger.Error(err, "Failed to trigger MCPServer reconciliation", "mcpserver", server.Name)
+				logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
 				// Continue with other servers even if one fails
 			}
 		}
@@ -130,7 +134,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities.
 // Note: This only hashes the spec, not referenced Secret values. Secret value hashing will be added in a follow-up PR.
-func (r *MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
+func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }
 

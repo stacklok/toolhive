@@ -613,6 +613,34 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 			errorMsg:    "failed to load state",
 		},
 		{
+			name:         "remote workload with zombie supervisor (PID exists but process dead)",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// PID file exists with a valid PID, but process is dead (zombie scenario)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+				// With zombie supervisor detected, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Mock process as dead - this is the zombie scenario where PID file exists but process is gone
+			mockFindProcess: func(_ int) (bool, error) { return false, nil },
+			// Restart proceeds to load state which fails in tests
+			expectError: true,
+			errorMsg:    "failed to load state",
+		},
+		{
 			name:         "status manager error",
 			workloadName: "remote-workload",
 			runConfig: &runner.RunConfig{

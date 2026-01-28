@@ -6,6 +6,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -25,7 +26,7 @@ func KillProcess(pid int) error {
 	// First try graceful termination with SIGTERM
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		// Process might already be dead
-		if err.Error() == "os: process already finished" {
+		if errors.Is(err, os.ErrProcessDone) {
 			return nil
 		}
 		return fmt.Errorf("failed to send SIGTERM to process: %w", err)
@@ -44,7 +45,7 @@ func KillProcess(pid int) error {
 	// Process didn't respond to SIGTERM - force kill with SIGKILL
 	// This handles zombie processes that may survive laptop sleep
 	if err := proc.Signal(syscall.SIGKILL); err != nil {
-		if err.Error() == "os: process already finished" {
+		if errors.Is(err, os.ErrProcessDone) {
 			return nil
 		}
 		return fmt.Errorf("failed to send SIGKILL to process: %w", err)

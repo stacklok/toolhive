@@ -35,7 +35,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
-
 // Manager is responsible for managing the state of ToolHive-managed containers.
 // NOTE: This interface may be split up in future PRs, in particular, operations
 // which are only relevant to the CLI/API use case will be split out.
@@ -79,7 +78,6 @@ type Manager interface {
 	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
 }
 
-// DefaultManager is the default implementation of the Manager interface.
 // ProcessFinder is a function type for checking if a process exists.
 // This allows dependency injection for testing.
 type ProcessFinder func(pid int) (bool, error)

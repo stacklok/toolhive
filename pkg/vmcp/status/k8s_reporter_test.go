@@ -316,6 +316,209 @@ func TestK8sReporter_ReportStatus_ConcurrentUpdates(t *testing.T) {
 	assert.Equal(t, "backend-5", updated.Status.DiscoveredBackends[0].Name)
 }
 
+// TestK8sReporter_ReportStatus_ConditionUpdates tests that conditions are properly updated.
+// Note: LastTransitionTime preservation semantics are handled by meta.SetStatusCondition,
+// which is tested by the Kubernetes project. We verify that conditions are correctly
+// updated with the expected Status, Reason, and Message fields.
+func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
+	t.Parallel()
+
+	reporter, fakeClient := createTestReporter(t, "test-server", "default")
+	createTestVirtualMCPServer(t, fakeClient, "test-server", "default")
+	ctx := context.Background()
+
+	// First report: Ready condition with Status True
+	status1 := &vmcptypes.Status{
+		Phase:     vmcptypes.PhaseReady,
+		Message:   "All backends healthy",
+		Timestamp: time.Now(),
+		Conditions: []metav1.Condition{
+			{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "AllBackendsHealthy",
+				Message:            "All backends are healthy",
+			},
+		},
+		BackendCount: 2,
+	}
+
+	err := reporter.ReportStatus(ctx, status1)
+	require.NoError(t, err)
+
+	// Verify condition was created
+	updated := &mcpv1alpha1.VirtualMCPServer{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      "test-server",
+		Namespace: "default",
+	}, updated)
+	require.NoError(t, err)
+	require.Len(t, updated.Status.Conditions, 1)
+	assert.Equal(t, "Ready", updated.Status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
+	assert.Equal(t, "AllBackendsHealthy", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "All backends are healthy", updated.Status.Conditions[0].Message)
+
+	// Second report: update message while keeping Status True
+	status2 := &vmcptypes.Status{
+		Phase:     vmcptypes.PhaseReady,
+		Message:   "Still healthy",
+		Timestamp: time.Now(),
+		Conditions: []metav1.Condition{
+			{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "AllBackendsHealthy",
+				Message:            "All backends are still healthy",
+			},
+		},
+		BackendCount: 2,
+	}
+
+	err = reporter.ReportStatus(ctx, status2)
+	require.NoError(t, err)
+
+	// Verify message was updated
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      "test-server",
+		Namespace: "default",
+	}, updated)
+	require.NoError(t, err)
+	require.Len(t, updated.Status.Conditions, 1)
+	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
+	assert.Equal(t, "All backends are still healthy", updated.Status.Conditions[0].Message)
+
+	// Third report: change Status to False
+	status3 := &vmcptypes.Status{
+		Phase:     vmcptypes.PhaseFailed,
+		Message:   "No healthy backends",
+		Timestamp: time.Now(),
+		Conditions: []metav1.Condition{
+			{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "NoHealthyBackends",
+				Message:            "No healthy backends available",
+			},
+		},
+		BackendCount: 0,
+	}
+
+	err = reporter.ReportStatus(ctx, status3)
+	require.NoError(t, err)
+
+	// Verify Status was changed
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      "test-server",
+		Namespace: "default",
+	}, updated)
+	require.NoError(t, err)
+	require.Len(t, updated.Status.Conditions, 1)
+	assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[0].Status)
+	assert.Equal(t, "NoHealthyBackends", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "No healthy backends available", updated.Status.Conditions[0].Message)
+}
+
+// TestK8sReporter_ReportStatus_RemovesStaleConditions tests that conditions
+// no longer present in status are removed from the resource.
+func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
+	t.Parallel()
+
+	reporter, fakeClient := createTestReporter(t, "test-server", "default")
+	createTestVirtualMCPServer(t, fakeClient, "test-server", "default")
+	ctx := context.Background()
+
+	// First report: system is degraded with both Ready and Degraded conditions
+	status1 := &vmcptypes.Status{
+		Phase:     vmcptypes.PhaseDegraded,
+		Message:   "Some backends unhealthy",
+		Timestamp: time.Now(),
+		Conditions: []metav1.Condition{
+			{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "SomeBackendsUnhealthy",
+				Message:            "2/3 backends healthy",
+			},
+			{
+				Type:               "Degraded",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "BackendsDegraded",
+				Message:            "1 backend degraded",
+			},
+		},
+		BackendCount: 2,
+	}
+
+	err := reporter.ReportStatus(ctx, status1)
+	require.NoError(t, err)
+
+	// Verify both conditions exist
+	updated := &mcpv1alpha1.VirtualMCPServer{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      "test-server",
+		Namespace: "default",
+	}, updated)
+	require.NoError(t, err)
+	assert.Len(t, updated.Status.Conditions, 2, "Should have Ready and Degraded conditions")
+
+	hasDegraded := false
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == "Degraded" {
+			hasDegraded = true
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+		}
+	}
+	assert.True(t, hasDegraded, "Degraded condition should be present")
+
+	// Second report: system recovered, only Ready condition (no Degraded)
+	status2 := &vmcptypes.Status{
+		Phase:     vmcptypes.PhaseReady,
+		Message:   "All backends healthy",
+		Timestamp: time.Now(),
+		Conditions: []metav1.Condition{
+			{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "AllBackendsHealthy",
+				Message:            "All 3 backends healthy",
+			},
+		},
+		BackendCount: 3,
+	}
+
+	err = reporter.ReportStatus(ctx, status2)
+	require.NoError(t, err)
+
+	// Verify Degraded condition was removed
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      "test-server",
+		Namespace: "default",
+	}, updated)
+	require.NoError(t, err)
+	assert.Len(t, updated.Status.Conditions, 1, "Should have only Ready condition")
+
+	hasReady := false
+	hasDegraded = false
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == "Ready" {
+			hasReady = true
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+		}
+		if cond.Type == "Degraded" {
+			hasDegraded = true
+		}
+	}
+	assert.True(t, hasReady, "Ready condition should be present")
+	assert.False(t, hasDegraded, "Degraded condition should be removed after recovery")
+}
+
 // TestK8sReporter_Start tests the Start lifecycle method.
 func TestK8sReporter_Start(t *testing.T) {
 	t.Parallel()

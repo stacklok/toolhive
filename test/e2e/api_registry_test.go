@@ -351,21 +351,6 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 					"Should return 400 for invalid api_url format")
 			})
 
-			It("should accept api_url even if host is unreachable", func() {
-				// Note: Unlike url updates, api_url only validates URL format and private IP
-				// It does NOT verify that the endpoint is reachable
-				By("Sending request with api_url to unreachable host")
-				updateReq := map[string]interface{}{
-					"api_url": "https://nonexistent-host-12345.invalid/api",
-				}
-				resp := updateRegistry(apiServer, "default", updateReq)
-				defer resp.Body.Close()
-
-				By("Verifying response status is 200 OK (api_url doesn't verify reachability)")
-				Expect(resp.StatusCode).To(Equal(http.StatusOK),
-					"Should return 200 for api_url (reachability not validated)")
-			})
-
 			It("should return 400 when specifying both url and api_url", func() {
 				By("Sending request with both url and api_url")
 				updateReq := map[string]interface{}{

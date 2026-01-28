@@ -13,6 +13,8 @@ coverage:
     - "**/mocks/**/*"
     - "**/mock_*.go"
     - "**/zz_generated.deepcopy.go"
+    - "**/*_test.go"
+    - "**/*_test_coverage.go"
   status:
     project:
       default:

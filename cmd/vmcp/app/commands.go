@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -310,8 +311,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create conflict resolver: %w", err)
 	}
 
-	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
+	// If telemetry is configured, create the provider early so aggregator can use it
+	var telemetryProvider *telemetry.Provider
+	if cfg.Telemetry != nil {
+		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry provider: %w", err)
+		}
+		defer func() {
+			err := telemetryProvider.Shutdown(ctx)
+			if err != nil {
+				logger.Errorf("failed to shutdown telemetry provider: %v", err)
+			}
+		}()
+	}
+
+	// Create aggregator with tracer provider (nil if telemetry not configured)
+	var tracerProvider trace.TracerProvider
+	if telemetryProvider != nil {
+		tracerProvider = telemetryProvider.TracerProvider()
+	}
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools, tracerProvider)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
@@ -381,21 +401,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
-	// If telemetry is configured, create the provider.
-	var telemetryProvider *telemetry.Provider
-	if cfg.Telemetry != nil {
-		var err error
-		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-		defer func() {
-			err := telemetryProvider.Shutdown(ctx)
-			if err != nil {
-				logger.Errorf("failed to shutdown telemetry provider: %v", err)
-			}
-		}()
-	}
+	// Note: telemetryProvider was already created earlier (before aggregator creation)
+	// to enable tracing in the aggregator
 
 	// Configure health monitoring if enabled
 	var healthMonitorConfig *health.MonitorConfig
@@ -418,8 +425,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
-	// Create logging status reporter for CLI mode (always logs)
-	statusReporter := vmcpstatus.NewLoggingReporter()
+	// Create status reporter using factory (auto-detects K8s vs CLI mode)
+	statusReporter, err := vmcpstatus.NewReporter()
+	if err != nil {
+		return fmt.Errorf("failed to create status reporter: %w", err)
+	}
 
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,

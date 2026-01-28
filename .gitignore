@@ -43,3 +43,4 @@ cmd/thv-operator/.task/checksum/crdref-gen
 coverage*
 
 crd-helm-wrapper
+cmd/vmcp/__debug_bin*

@@ -41,7 +41,11 @@ type healthChecker struct {
 //   - degradedThreshold: Response time threshold for marking backend as degraded (0 = disabled)
 //
 // Returns a new HealthChecker implementation.
-func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration, degradedThreshold time.Duration) vmcp.HealthChecker {
+func NewHealthChecker(
+	client vmcp.BackendClient,
+	timeout time.Duration,
+	degradedThreshold time.Duration,
+) vmcp.HealthChecker {
 	return &healthChecker{
 		client:            client,
 		timeout:           timeout,
@@ -62,11 +66,15 @@ func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration, degraded
 // The error return is informational and provides context about what failed.
 // The BackendHealthStatus return indicates the categorized health state.
 func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTarget) (vmcp.BackendHealthStatus, error) {
-	// Apply timeout if configured
-	checkCtx := ctx
+	// Mark context as health check to bypass authentication logging
+	// Health checks verify backend availability and should not require user credentials
+	healthCheckCtx := WithHealthCheckMarker(ctx)
+
+	// Apply timeout if configured (after adding health check marker)
+	checkCtx := healthCheckCtx
 	var cancel context.CancelFunc
 	if h.timeout > 0 {
-		checkCtx, cancel = context.WithTimeout(ctx, h.timeout)
+		checkCtx, cancel = context.WithTimeout(healthCheckCtx, h.timeout)
 		defer cancel()
 	}
 

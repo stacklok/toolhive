@@ -336,7 +336,7 @@ func (d *DefaultManager) stopSingleWorkload(ctx context.Context, name string) er
 
 // stopRemoteWorkload stops a remote workload
 func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
-	logger.Infof("Stopping remote workload %s...", name)
+	logger.Debugf("Stopping remote workload %s...", name)
 
 	// Check if the workload is running by checking its status
 	workload, err := d.statuses.GetWorkload(ctx, name)
@@ -1424,8 +1424,6 @@ func (*DefaultManager) MoveToGroup(ctx context.Context, workloadNames []string, 
 		if err = runnerConfig.SaveState(ctx); err != nil {
 			return fmt.Errorf("failed to save updated configuration for workload %s: %w", workloadName, err)
 		}
-
-		logger.Infof("Moved workload %s to default group", workloadName)
 	}
 
 	return nil

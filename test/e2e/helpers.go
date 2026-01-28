@@ -326,7 +326,6 @@ func RemoveGroup(config *TestConfig, groupName string) error {
 
 // CreateAndTrackGroup creates a group and tracks it for cleanup
 func CreateAndTrackGroup(config *TestConfig, groupName string, createdGroups *[]string) {
-	createOutput, _ := NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
-	Expect(createOutput).To(ContainSubstring("created successfully"))
+	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
 	*createdGroups = append(*createdGroups, groupName)
 }

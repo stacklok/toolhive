@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -83,6 +84,12 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				// Verify service account
 				assert.Equal(t, proxyRunnerServiceAccountNameForRemoteProxy("basic-proxy"),
 					dep.Spec.Template.Spec.ServiceAccountName)
+
+				// Verify default resources are applied when none are specified
+				assert.Equal(t, "50m", container.Resources.Requests.Cpu().String())
+				assert.Equal(t, "64Mi", container.Resources.Requests.Memory().String())
+				assert.Equal(t, "200m", container.Resources.Limits.Cpu().String())
+				assert.Equal(t, "256Mi", container.Resources.Limits.Memory().String())
 			},
 		},
 		{
@@ -328,6 +335,182 @@ func TestBuildResourceRequirements(t *testing.T) {
 			t.Parallel()
 
 			result := ctrlutil.BuildResourceRequirements(tt.resourceSpec)
+
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestResourceRequirementsForRemoteProxy tests resource requirements for remote proxy
+func TestResourceRequirementsForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		proxy    *mcpv1alpha1.MCPRemoteProxy
+		validate func(*testing.T, corev1.ResourceRequirements)
+	}{
+		{
+			name: "no user resources - uses defaults",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					Resources: mcpv1alpha1.ResourceRequirements{},
+				},
+			},
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, "50m", res.Requests.Cpu().String())
+				assert.Equal(t, "64Mi", res.Requests.Memory().String())
+				assert.Equal(t, "200m", res.Limits.Cpu().String())
+				assert.Equal(t, "256Mi", res.Limits.Memory().String())
+			},
+		},
+		{
+			name: "user resources override defaults",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					Resources: mcpv1alpha1.ResourceRequirements{
+						Limits: mcpv1alpha1.ResourceList{
+							CPU:    "1",
+							Memory: "512Mi",
+						},
+						Requests: mcpv1alpha1.ResourceList{
+							CPU:    "100m",
+							Memory: "128Mi",
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				// User values should override defaults
+				assert.Equal(t, "100m", res.Requests.Cpu().String())
+				assert.Equal(t, "128Mi", res.Requests.Memory().String())
+				assert.Equal(t, "1", res.Limits.Cpu().String())
+				assert.Equal(t, "512Mi", res.Limits.Memory().String())
+			},
+		},
+		{
+			name: "partial user resources - only CPU specified",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					Resources: mcpv1alpha1.ResourceRequirements{
+						Limits: mcpv1alpha1.ResourceList{
+							CPU: "500m",
+						},
+						Requests: mcpv1alpha1.ResourceList{
+							CPU: "100m",
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				// CPU should be user-provided
+				assert.Equal(t, "100m", res.Requests.Cpu().String())
+				assert.Equal(t, "500m", res.Limits.Cpu().String())
+				// Memory should use defaults
+				assert.Equal(t, "64Mi", res.Requests.Memory().String())
+				assert.Equal(t, "256Mi", res.Limits.Memory().String())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := resourceRequirementsForRemoteProxy(tt.proxy)
+
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestBuildDefaultProxyRunnerResourceRequirements tests default resource requirements
+func TestBuildDefaultProxyRunnerResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	res := ctrlutil.BuildDefaultProxyRunnerResourceRequirements()
+
+	assert.Equal(t, "50m", res.Requests.Cpu().String())
+	assert.Equal(t, "64Mi", res.Requests.Memory().String())
+	assert.Equal(t, "200m", res.Limits.Cpu().String())
+	assert.Equal(t, "256Mi", res.Limits.Memory().String())
+}
+
+// TestMergeResourceRequirements tests resource requirements merging
+func TestMergeResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		defaultRes    corev1.ResourceRequirements
+		userRes       corev1.ResourceRequirements
+		validate      func(*testing.T, corev1.ResourceRequirements)
+	}{
+		{
+			name: "user values override defaults",
+			defaultRes: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("200m"),
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				},
+			},
+			userRes: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("100m"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("500m"),
+				},
+			},
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				// CPU should be user-provided
+				assert.Equal(t, "100m", res.Requests.Cpu().String())
+				assert.Equal(t, "500m", res.Limits.Cpu().String())
+				// Memory should be from defaults
+				assert.Equal(t, "64Mi", res.Requests.Memory().String())
+				assert.Equal(t, "256Mi", res.Limits.Memory().String())
+			},
+		},
+		{
+			name: "empty user resources - returns defaults",
+			defaultRes: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("200m"),
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				},
+			},
+			userRes: corev1.ResourceRequirements{},
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, "50m", res.Requests.Cpu().String())
+				assert.Equal(t, "64Mi", res.Requests.Memory().String())
+				assert.Equal(t, "200m", res.Limits.Cpu().String())
+				assert.Equal(t, "256Mi", res.Limits.Memory().String())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := ctrlutil.MergeResourceRequirements(tt.defaultRes, tt.userRes)
 
 			if tt.validate != nil {
 				tt.validate(t, result)

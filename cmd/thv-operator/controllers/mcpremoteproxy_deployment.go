@@ -31,7 +31,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
-	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	resources := resourceRequirementsForRemoteProxy(proxy)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
@@ -80,6 +80,15 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		return nil
 	}
 	return dep
+}
+
+// resourceRequirementsForRemoteProxy returns the resource requirements for the MCPRemoteProxy.
+// It merges default proxy runner resources (50m/200m CPU, 64Mi/256Mi memory) with user-provided values.
+// User-provided values take precedence over defaults.
+func resourceRequirementsForRemoteProxy(proxy *mcpv1alpha1.MCPRemoteProxy) corev1.ResourceRequirements {
+	defaultResources := ctrlutil.BuildDefaultProxyRunnerResourceRequirements()
+	userResources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	return ctrlutil.MergeResourceRequirements(defaultResources, userResources)
 }
 
 // buildContainerArgs builds the container arguments for the proxy

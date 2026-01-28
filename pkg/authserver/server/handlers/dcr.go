@@ -56,6 +56,13 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	// Validate requested scopes against server's supported scopes
+	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scope, h.config.ScopesSupported)
+	if dcrErr != nil {
+		writeDCRError(w, http.StatusBadRequest, dcrErr)
+		return
+	}
+
 	// Generate client ID
 	clientID := uuid.NewString()
 
@@ -66,6 +73,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		Public:        true,
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
+		Scopes:        scopes,
 	})
 	if err != nil {
 		logger.Errorw("failed to create client", "error", err)
@@ -100,6 +108,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
+		Scope:                   registration.FormatScopes(scopes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

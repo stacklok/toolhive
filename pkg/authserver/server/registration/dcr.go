@@ -19,6 +19,7 @@ package registration
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -64,6 +65,11 @@ type DCRRequest struct {
 	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
 	// Defaults to ["code"] if not specified.
 	ResponseTypes []string `json:"response_types,omitempty"`
+
+	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
+	// If not specified, defaults to the server's default scopes.
+	// All requested scopes must be supported by the server.
+	Scope string `json:"scope,omitempty"`
 }
 
 // DCRResponse represents a successful OAuth 2.0 Dynamic Client Registration
@@ -90,6 +96,9 @@ type DCRResponse struct {
 
 	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
 	ResponseTypes []string `json:"response_types"`
+
+	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
+	Scope string `json:"scope,omitempty"`
 }
 
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error
@@ -246,4 +255,50 @@ func ValidateRedirectURI(uri string) *DCRError {
 		}
 	}
 	return nil
+}
+
+// ValidateScopes validates that all requested scopes are in the allowed set.
+// Returns the validated scopes (or defaults if empty) and any error.
+// This enforces server-side scope restrictions per RFC 7591 Section 2.
+func ValidateScopes(requestedScope string, allowedScopes []string) ([]string, *DCRError) {
+	// Build allowed scope set for O(1) lookup
+	allowed := make(map[string]bool, len(allowedScopes))
+	for _, s := range allowedScopes {
+		allowed[s] = true
+	}
+
+	// Parse space-separated scope string per RFC 6749 Section 3.3
+	var scopes []string
+	if requestedScope != "" {
+		for _, s := range strings.Fields(requestedScope) {
+			if !allowed[s] {
+				return nil, &DCRError{
+					Error:            DCRErrorInvalidClientMetadata,
+					ErrorDescription: "unsupported scope: " + s,
+				}
+			}
+			scopes = append(scopes, s)
+		}
+	}
+
+	// If no scopes requested, use defaults (which should be within allowed)
+	if len(scopes) == 0 {
+		return DefaultScopes, nil
+	}
+
+	return scopes, nil
+}
+
+// ParseScopes parses a space-separated scope string into a slice.
+// Returns an empty slice for empty input.
+func ParseScopes(scopeString string) []string {
+	if scopeString == "" {
+		return nil
+	}
+	return strings.Fields(scopeString)
+}
+
+// FormatScopes formats a scope slice as a space-separated string.
+func FormatScopes(scopes []string) string {
+	return strings.Join(scopes, " ")
 }

@@ -20,6 +20,104 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		spec mcpv1alpha1.MCPExternalAuthConfigSpec
+	}{
+		{
+			name: "empty spec",
+			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			},
+		},
+		{
+			name: "with token exchange config",
+			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: "https://oauth.example.com/token",
+					ClientID: "test-client-id",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "test-secret",
+						Key:  "client-secret",
+					},
+					Audience: "backend-service",
+					Scopes:   []string{"read", "write"},
+				},
+			},
+		},
+		{
+			name: "with custom header",
+			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: "https://oauth.example.com/token",
+					ClientID: "test-client-id",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "test-secret",
+						Key:  "client-secret",
+					},
+					Audience:                "backend-service",
+					ExternalTokenHeaderName: "X-Upstream-Token",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &MCPExternalAuthConfigReconciler{}
+
+			hash1 := r.calculateConfigHash(tt.spec)
+			hash2 := r.calculateConfigHash(tt.spec)
+
+			// Same spec should produce same hash
+			assert.Equal(t, hash1, hash2, "Hash should be consistent for same spec")
+			assert.NotEmpty(t, hash1, "Hash should not be empty")
+		})
+	}
+
+	// Different specs should produce different hashes
+	t.Run("different specs produce different hashes", func(t *testing.T) {
+		t.Parallel()
+		r := &MCPExternalAuthConfigReconciler{}
+		spec1 := mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "client1",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "secret1",
+					Key:  "key1",
+				},
+				Audience: "audience1",
+			},
+		}
+		spec2 := mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "client2",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "secret2",
+					Key:  "key2",
+				},
+				Audience: "audience2",
+			},
+		}
+
+		hash1 := r.calculateConfigHash(spec1)
+		hash2 := r.calculateConfigHash(spec2)
+
+		assert.NotEqual(t, hash1, hash2, "Different specs should produce different hashes")
+	})
+}
+
 func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 	t.Parallel()
 
@@ -582,4 +680,15 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
 	assert.NotEqual(t, firstHash, finalConfig.Status.ConfigHash, "Hash should change when spec changes")
 	assert.Equal(t, int64(2), finalConfig.Status.ObservedGeneration, "ObservedGeneration should be updated")
+
+	// Verify MCPServer has annotation with new hash
+	var updatedServer mcpv1alpha1.MCPServer
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      mcpServer.Name,
+		Namespace: mcpServer.Namespace,
+	}, &updatedServer)
+	require.NoError(t, err)
+	assert.Equal(t, finalConfig.Status.ConfigHash,
+		updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"],
+		"MCPServer should have annotation with new config hash")
 }

@@ -78,7 +78,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
-	// Calculate the hash of the current configuration (spec only, without secret values)
+	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(externalAuthConfig.Spec)
 
 	// Check if the hash has changed
@@ -133,7 +133,6 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities.
-// Note: This only hashes the spec, not referenced Secret values. Secret value hashing will be added in a follow-up PR.
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }

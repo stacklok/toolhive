@@ -1079,8 +1079,8 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 				ProxyPort:  testPort,
 				TargetPort: testPort,
 			},
-			cliProxyPort:      9000,
-			expectedProxyPort: 9000,
+			cliProxyPort:      9999,
+			expectedProxyPort: 9999,
 		},
 		{
 			name: "random port when neither CLI nor registry specified",

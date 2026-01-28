@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -127,8 +128,6 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 
-	logger.Debugf("Applied authentication strategy %q to backend %s", a.authStrategy.Name(), a.target.WorkloadID)
-
 	return a.base.RoundTrip(reqClone)
 }
 
@@ -170,6 +169,8 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
+	logger.Debugf("Applied authentication strategy %q to backend %s", authStrategy.Name(), target.WorkloadID)
+
 	// Add authentication layer with pre-resolved strategy
 	baseTransport = &authRoundTripper{
 		base:         baseTransport,
@@ -204,8 +205,10 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	})
 
 	// Create HTTP client with configured transport chain
+	// Set timeouts to prevent long-lived connections that require continuous listening
 	httpClient := &http.Client{
 		Transport: sizeLimitedTransport,
+		Timeout:   30 * time.Second, // Prevent hanging on connections
 	}
 
 	var c *client.Client
@@ -214,8 +217,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	case "streamable-http", "streamable":
 		c, err = client.NewStreamableHttpClient(
 			target.BaseURL,
-			transport.WithHTTPTimeout(0),
-			transport.WithContinuousListening(),
+			transport.WithHTTPTimeout(30*time.Second), // Set timeout instead of 0
 			transport.WithHTTPBasicClient(httpClient),
 		)
 		if err != nil {
@@ -696,10 +698,10 @@ func (h *httpBackendClient) ReadResource(
 	}
 
 	// Extract _meta field from backend response
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	meta := conversion.FromMCPMeta(result.Meta)
 
+	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
+	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: data,
 		MimeType: mimeType,

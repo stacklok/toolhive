@@ -565,13 +565,13 @@ func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]Con
 		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
-				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
+				logger.Debugf("Client config file not found for %s, creating it...", clientStatus.ClientType)
 				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
 					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
 				}
-				logger.Infof("Successfully created client config file for %s", clientStatus.ClientType)
+				logger.Debugf("Successfully created client config file for %s", clientStatus.ClientType)
 			} else {
 				logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
 				continue
@@ -616,7 +616,7 @@ func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, 
 	}
 
 	// Create the file if it does not exist
-	logger.Infof("Creating new client config file at %s", path)
+	logger.Debugf("Creating new client config file at %s", path)
 
 	// Create parent directories if they don't exist
 	parentDir := filepath.Dir(path)

@@ -135,18 +135,6 @@ func GetClientStatus(ctx context.Context) ([]MCPClientStatus, error) {
 	return manager.GetClientStatus(ctx)
 }
 
-// GetClientStatusWithDependencies returns the status of all supported MCP clients using provided dependencies
-func GetClientStatusWithDependencies(
-	ctx context.Context,
-	configProvider config.Provider,
-	homeDir string,
-	groupManager groups.Manager,
-	clientIntegrations []mcpClientConfig,
-) ([]MCPClientStatus, error) {
-	manager := NewTestClientManager(homeDir, groupManager, clientIntegrations, configProvider)
-	return manager.GetClientStatus(ctx)
-}
-
 func buildConfigDirectoryPath(relPath []string, platformPrefix map[string][]string, path []string) string {
 	if prefix, ok := platformPrefix[runtime.GOOS]; ok {
 		path = append(path, prefix...)

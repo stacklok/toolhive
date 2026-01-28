@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# PR Gate - Sentinel workflow that ensures all quality checks pass
+#
+# This workflow acts as a single entry point for branch protection rules.
+# It waits for all triggered quality checks to complete and reports their
+# combined status. This solves the problem of conditional workflows:
+# - Some workflows only run when certain files are touched
+# - Branch protection can't require workflows that don't always run
+# - This gate checks all jobs that DID run and reports success/failure
+#
+# Configure branch protection to require only the "All Checks Pass" job.
+
+name: PR Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Detect which files changed to determine which checks to run
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      charts: ${{ steps.filter.outputs.charts }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            code:
+              - '!deploy/charts/**'
+            charts:
+              - 'deploy/charts/**'
+
+  # ============================================================================
+  # PR Checks (Go code) - from run-on-pr.yml
+  # These run when NOT touching deploy/charts/**
+  # ============================================================================
+
+  pr-spellcheck:
+    name: Spellcheck
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/spellcheck.yml
+
+  pr-license-headers:
+    name: License Headers
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/license-headers.yml
+
+  pr-linting:
+    name: Linting
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/lint.yml
+
+  pr-security-scan:
+    name: Security Scan
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/security-scan.yml
+
+  pr-tests:
+    name: Tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/test.yml
+    secrets: inherit
+
+  pr-docs:
+    name: Docs
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/verify-docgen.yml
+
+  pr-codegen:
+    name: Codegen
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/verify-gen.yml
+
+  pr-e2e-tests:
+    name: E2E Tests
+    needs: [changes, pr-linting, pr-tests, pr-docs, pr-codegen]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/e2e-tests.yml
+
+  pr-operator-ci:
+    name: Operator CI
+    needs: [changes, pr-linting, pr-tests, pr-docs, pr-codegen]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.code == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/operator-ci.yml
+
+  # ============================================================================
+  # Chart Checks - from run-on-pr-charts.yml
+  # These run when ONLY touching deploy/charts/**
+  # ============================================================================
+
+  charts-spellcheck:
+    name: Charts Spellcheck
+    needs: changes
+    if: needs.changes.outputs.charts == 'true'
+    uses: ./.github/workflows/spellcheck.yml
+
+  charts-linting:
+    name: Charts Linting
+    needs: changes
+    if: needs.changes.outputs.charts == 'true'
+    uses: ./.github/workflows/lint-helm-charts.yml
+
+  charts-tests:
+    name: Charts Tests
+    needs: changes
+    if: needs.changes.outputs.charts == 'true'
+    uses: ./.github/workflows/test-helm-charts.yml
+
+  # ============================================================================
+  # SENTINEL JOB - This is the job to require in branch protection
+  # ============================================================================
+
+  all-checks:
+    name: All Checks Pass
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      # PR checks (Go code)
+      - pr-spellcheck
+      - pr-license-headers
+      - pr-linting
+      - pr-security-scan
+      - pr-tests
+      - pr-docs
+      - pr-codegen
+      - pr-e2e-tests
+      - pr-operator-ci
+      # Chart checks
+      - charts-spellcheck
+      - charts-linting
+      - charts-tests
+
+    # CRITICAL: Always run this job, even if some dependencies were skipped
+    if: always()
+
+    steps:
+      - name: Check all job statuses
+        run: |
+          echo "Checking status of all quality gate jobs..."
+          echo ""
+
+          # Convert needs context to JSON for easier parsing
+          cat << 'EOF' | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          ${{ toJSON(needs) }}
+          EOF
+
+          echo ""
+
+          # Check if any job failed or was cancelled
+          # Jobs can be: success, failure, cancelled, skipped
+          # We want to fail if ANY job failed or was cancelled
+          # We allow skipped (means the job didn't need to run)
+
+          if echo '${{ toJSON(needs) }}' | jq -e 'to_entries[] | select(.value.result == "failure")' > /dev/null; then
+            echo "❌ One or more jobs failed"
+            exit 1
+          fi
+
+          if echo '${{ toJSON(needs) }}' | jq -e 'to_entries[] | select(.value.result == "cancelled")' > /dev/null; then
+            echo "❌ One or more jobs were cancelled"
+            exit 1
+          fi
+
+          echo "✅ All required checks passed or were skipped appropriately"

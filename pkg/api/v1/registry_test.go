@@ -107,8 +107,9 @@ func TestGetRegistryInfo(t *testing.T) {
 			configProvider, cleanup := CreateTestConfigProvider(t, tt.config)
 			defer cleanup()
 
-			registryType, source := getRegistryInfoWithProvider(configProvider)
-			assert.Equal(t, tt.expectedType, registryType, "Registry type should match expected")
+			service := config.NewRegistryConfigServiceWithProvider(configProvider)
+			registryType, source := service.GetRegistryInfo()
+			assert.Equal(t, string(tt.expectedType), registryType, "Registry type should match expected")
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")
 		})
 	}
@@ -187,8 +188,8 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				require.NoError(t, err)
 				return `{"local_path":"` + tempFile + `"}`
 			},
-			expectedCode: http.StatusBadRequest,
-			description:  "Local file with invalid registry structure should return 400",
+			expectedCode: http.StatusBadGateway,
+			description:  "Local file with invalid registry structure should return 502 (validation failure)",
 		},
 		{
 			name: "invalid URL - unreachable",
@@ -196,8 +197,8 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				t.Helper()
 				return `{"url":"https://invalid-url-that-does-not-exist-12345.example.com/test.json"}`
 			},
-			expectedCode: http.StatusBadRequest,
-			description:  "Unreachable URL should return 400",
+			expectedCode: http.StatusGatewayTimeout,
+			description:  "Unreachable URL should return 504 Gateway Timeout",
 		},
 		{
 			name: "invalid JSON",

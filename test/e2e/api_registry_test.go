@@ -186,7 +186,7 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				err := json.NewDecoder(resp.Body).Decode(&result)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Type).To(Equal("default"), "Type should be 'default'")
-				Expect(result.Message).To(ContainSubstring("reset to default"))
+				Expect(result.Message).To(ContainSubstring("Will use built-in registry"))
 			})
 		})
 
@@ -237,7 +237,7 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 					"Should return 400 for non-existent file")
 			})
 
-			It("should return 400 for invalid JSON file", func() {
+			It("should return 502 for invalid JSON file", func() {
 				By("Creating a file with invalid JSON")
 				testFile := createTestRegistryFileWithContent([]byte(`{"invalid`))
 
@@ -247,12 +247,12 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				resp := updateRegistry(apiServer, "default", updateReq)
 				defer resp.Body.Close()
 
-				By("Verifying response status is 400 Bad Request")
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
-					"Should return 400 for invalid JSON file")
+				By("Verifying response status is 502 Bad Gateway")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadGateway),
+					"Should return 502 for invalid JSON file")
 			})
 
-			It("should return 400 for file without servers", func() {
+			It("should return 502 for file without servers", func() {
 				By("Creating a file without servers")
 				testFile := createTestRegistryFileWithContent([]byte(`{"version": "1.0.0"}`))
 
@@ -262,9 +262,9 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				resp := updateRegistry(apiServer, "default", updateReq)
 				defer resp.Body.Close()
 
-				By("Verifying response status is 400 Bad Request")
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
-					"Should return 400 for file without servers")
+				By("Verifying response status is 502 Bad Gateway")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadGateway),
+					"Should return 502 for file without servers")
 			})
 		})
 
@@ -284,7 +284,7 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 		})
 
 		Context("URL-based updates", func() {
-			It("should return 400 for URL pointing to unreachable host", func() {
+			It("should return 504 for URL pointing to unreachable host", func() {
 				By("Sending request with URL to unreachable host")
 				updateReq := map[string]interface{}{
 					"url": "https://nonexistent-host-12345.invalid/registry.json",
@@ -292,9 +292,9 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				resp := updateRegistry(apiServer, "default", updateReq)
 				defer resp.Body.Close()
 
-				By("Verifying response status is 400 Bad Request")
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
-					"Should return 400 for unreachable URL")
+				By("Verifying response status is 504 Gateway Timeout")
+				Expect(resp.StatusCode).To(Equal(http.StatusGatewayTimeout),
+					"Should return 504 for unreachable URL")
 			})
 
 			It("should return 400 for HTTP URL without allow_private_ip", func() {
@@ -351,9 +351,8 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 					"Should return 400 for invalid api_url format")
 			})
 
-			It("should accept api_url even if host is unreachable", func() {
-				// Note: Unlike url updates, api_url only validates URL format and private IP
-				// It does NOT verify that the endpoint is reachable
+			It("should return 504 for api_url pointing to unreachable host", func() {
+				// Note: api_url now validates reachability when allow_private_ip is false
 				By("Sending request with api_url to unreachable host")
 				updateReq := map[string]interface{}{
 					"api_url": "https://nonexistent-host-12345.invalid/api",
@@ -361,9 +360,9 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				resp := updateRegistry(apiServer, "default", updateReq)
 				defer resp.Body.Close()
 
-				By("Verifying response status is 200 OK (api_url doesn't verify reachability)")
-				Expect(resp.StatusCode).To(Equal(http.StatusOK),
-					"Should return 200 for api_url (reachability not validated)")
+				By("Verifying response status is 504 Gateway Timeout")
+				Expect(resp.StatusCode).To(Equal(http.StatusGatewayTimeout),
+					"Should return 504 for unreachable api_url")
 			})
 
 			It("should return 400 when specifying both url and api_url", func() {

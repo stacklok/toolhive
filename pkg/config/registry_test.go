@@ -176,9 +176,9 @@ func TestIsValidRegistryJSON(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		setupServer    func() *httptest.Server
-		expectedResult bool
+		name          string
+		setupServer   func() *httptest.Server
+		expectedError bool
 	}{
 		{
 			name: "valid registry JSON with servers field",
@@ -193,7 +193,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: true,
+			expectedError: false,
 		},
 		{
 			name: "valid registry JSON with remote_servers field",
@@ -208,7 +208,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: true,
+			expectedError: false,
 		},
 		{
 			name: "valid registry JSON with both servers and remote_servers",
@@ -226,7 +226,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: true,
+			expectedError: false,
 		},
 		{
 			name: "invalid JSON - missing registry fields",
@@ -239,7 +239,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "invalid JSON - not JSON at all",
@@ -249,7 +249,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					w.Write([]byte("<html>Not JSON</html>"))
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "server error",
@@ -258,7 +258,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					w.WriteHeader(http.StatusInternalServerError)
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "invalid structure - servers as string instead of map",
@@ -272,7 +272,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "invalid structure - remote_servers as array instead of map",
@@ -286,7 +286,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "empty registry - has fields but no servers",
@@ -300,7 +300,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: false,
+			expectedError: true,
 		},
 		{
 			name: "valid registry with groups only",
@@ -321,7 +321,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					})
 				}))
 			},
-			expectedResult: true,
+			expectedError: false,
 		},
 	}
 
@@ -334,9 +334,13 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			defer server.Close()
 
 			client := &http.Client{}
-			result := isValidRegistryJSON(client, server.URL)
+			err := isValidRegistryJSON(client, server.URL)
 
-			assert.Equal(t, tt.expectedResult, result, "isValidRegistryJSON result should match expected")
+			if tt.expectedError {
+				assert.Error(t, err, "isValidRegistryJSON should return an error")
+			} else {
+				assert.NoError(t, err, "isValidRegistryJSON should not return an error")
+			}
 		})
 	}
 }

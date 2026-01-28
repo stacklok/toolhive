@@ -139,6 +139,12 @@ func (b *HttpClientBuilder) WithInsecureAllowHTTP(allow bool) *HttpClientBuilder
 	return b
 }
 
+// WithTimeout sets the HTTP client timeout
+func (b *HttpClientBuilder) WithTimeout(timeout time.Duration) *HttpClientBuilder {
+	b.clientTimeout = timeout
+	return b
+}
+
 // Build creates the configured HTTP client
 func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	transport := &http.Transport{
@@ -193,7 +199,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 
 	client := &http.Client{
 		Transport: clientTransport,
-		Timeout:   HttpTimeout,
+		Timeout:   b.clientTimeout,
 	}
 
 	return client, nil

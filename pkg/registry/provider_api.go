@@ -41,14 +41,14 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryPro
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the endpoint by actually trying to use it (not checking openapi.yaml)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Validate the endpoint by actually trying to use it with 5-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Try to list servers with a small limit to verify API functionality
 	_, err = client.ListServers(ctx, &api.ListOptions{Limit: 1})
 	if err != nil {
-		return nil, fmt.Errorf("API endpoint not functional: %w", err)
+		return nil, fmt.Errorf("registry API validation failed: %w", err)
 	}
 
 	return p, nil

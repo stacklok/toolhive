@@ -367,7 +367,7 @@ func (o *EmbeddingOptimizer) CallTool(ctx context.Context, input CallToolInput) 
 
 // Close implements Optimizer.Close by cleaning up resources.
 func (o *EmbeddingOptimizer) Close() error {
-	if o.ingestionService == nil {
+	if o == nil || o.ingestionService == nil {
 		return nil
 	}
 	return o.ingestionService.Close()
@@ -507,7 +507,7 @@ func (o *EmbeddingOptimizer) Initialize(
 
 // IngestInitialBackends ingests all discovered backends and their tools at startup.
 func (o *EmbeddingOptimizer) IngestInitialBackends(ctx context.Context, backends []vmcp.Backend) error {
-	if o.ingestionService == nil {
+	if o == nil || o.ingestionService == nil {
 		logger.Infow("Optimizer disabled, embedding time: 0ms")
 		return nil
 	}
@@ -859,6 +859,9 @@ func (o *EmbeddingOptimizer) OnRegisterSession(
 	_ *aggregator.AggregatedCapabilities, // capabilities - not used in simplified test version
 ) error {
 	// Test helper - no-op implementation
+	if o == nil {
+		return nil
+	}
 	return nil
 }
 

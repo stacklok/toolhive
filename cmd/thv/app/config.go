@@ -166,7 +166,7 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
 
-	service := config.NewRegistryConfigService()
+	service := registry.NewConfigurator()
 	registryType, message, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
 	if err != nil {
 		// Enhance error message for better user experience
@@ -194,7 +194,7 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	service := config.NewRegistryConfigService()
+	service := registry.NewConfigurator()
 	registryType, source := service.GetRegistryInfo()
 
 	switch registryType {
@@ -215,7 +215,7 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	service := config.NewRegistryConfigService()
+	service := registry.NewConfigurator()
 	message, err := service.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

@@ -108,14 +108,14 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 // RegistryRoutes defines the routes for the registry API.
 type RegistryRoutes struct {
 	configProvider config.Provider
-	configService  config.RegistryConfigService
+	configService  regpkg.Configurator
 }
 
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
 func NewRegistryRoutes() *RegistryRoutes {
 	return &RegistryRoutes{
 		configProvider: config.NewDefaultProvider(),
-		configService:  config.NewRegistryConfigService(),
+		configService:  regpkg.NewConfigurator(),
 	}
 }
 
@@ -124,7 +124,7 @@ func NewRegistryRoutes() *RegistryRoutes {
 func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 	return &RegistryRoutes{
 		configProvider: provider,
-		configService:  config.NewRegistryConfigServiceWithProvider(provider),
+		configService:  regpkg.NewConfiguratorWithProvider(provider),
 	}
 }
 

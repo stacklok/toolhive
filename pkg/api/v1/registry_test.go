@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
@@ -107,7 +108,7 @@ func TestGetRegistryInfo(t *testing.T) {
 			configProvider, cleanup := CreateTestConfigProvider(t, tt.config)
 			defer cleanup()
 
-			service := config.NewRegistryConfigServiceWithProvider(configProvider)
+			service := registry.NewConfiguratorWithProvider(configProvider)
 			registryType, source := service.GetRegistryInfo()
 			assert.Equal(t, string(tt.expectedType), registryType, "Registry type should match expected")
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")

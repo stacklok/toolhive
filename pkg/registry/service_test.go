@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package config_test
+package registry_test
 
 import (
 	"os"
@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
-func TestRegistryConfigService_SetRegistryFromInput(t *testing.T) {
+func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -79,7 +80,7 @@ func TestRegistryConfigService_SetRegistryFromInput(t *testing.T) {
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			provider := config.NewPathProvider(configPath)
-			service := config.NewRegistryConfigServiceWithProvider(provider)
+			service := registry.NewConfiguratorWithProvider(provider)
 
 			// Setup test data if needed
 			var input string
@@ -106,7 +107,7 @@ func TestRegistryConfigService_SetRegistryFromInput(t *testing.T) {
 	}
 }
 
-func TestRegistryConfigService_UnsetRegistry(t *testing.T) {
+func TestConfigurator_UnsetRegistry(t *testing.T) {
 	t.Parallel()
 
 	// Create a test config provider with a registry set
@@ -127,7 +128,7 @@ func TestRegistryConfigService_UnsetRegistry(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, content, 0600))
 
 	provider := config.NewPathProvider(configPath)
-	service := config.NewRegistryConfigServiceWithProvider(provider)
+	service := registry.NewConfiguratorWithProvider(provider)
 
 	// First, set a registry
 	_, _, err := service.SetRegistryFromInput(tmpFile, false)
@@ -150,12 +151,12 @@ func TestRegistryConfigService_UnsetRegistry(t *testing.T) {
 	assert.Empty(t, source, "Source should be empty")
 }
 
-func TestRegistryConfigService_GetRegistryInfo(t *testing.T) {
+func TestConfigurator_GetRegistryInfo(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name           string
-		setupFunc      func(t *testing.T, service config.RegistryConfigService)
+		setupFunc      func(t *testing.T, service registry.Configurator)
 		expectedType   string
 		expectedSource string // Empty means we don't check it
 	}{
@@ -167,7 +168,7 @@ func TestRegistryConfigService_GetRegistryInfo(t *testing.T) {
 		},
 		{
 			name: "local file registry",
-			setupFunc: func(t *testing.T, service config.RegistryConfigService) {
+			setupFunc: func(t *testing.T, service registry.Configurator) {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
 				content := []byte(`{
@@ -195,7 +196,7 @@ func TestRegistryConfigService_GetRegistryInfo(t *testing.T) {
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			provider := config.NewPathProvider(configPath)
-			service := config.NewRegistryConfigServiceWithProvider(provider)
+			service := registry.NewConfiguratorWithProvider(provider)
 
 			// Setup if needed
 			if tt.setupFunc != nil {

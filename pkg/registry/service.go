@@ -1,21 +1,23 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package config
+package registry
 
 import (
 	"fmt"
+
+	"github.com/stacklok/toolhive/pkg/config"
 )
 
-// RegistryConfigService provides high-level operations for registry configuration management.
+// Configurator provides high-level operations for registry configuration management.
 // It encapsulates registry type detection, validation, and persistence.
 //
 // Note: Callers are responsible for resetting the registry provider cache after configuration
 // changes by calling registry.ResetDefaultProvider(). This avoids circular dependencies between
 // the config and registry packages.
 //
-//go:generate mockgen -destination=mocks/mock_registry_service.go -package=mocks -source=registry_service.go RegistryConfigService
-type RegistryConfigService interface {
+//go:generate mockgen -destination=mocks/mock_service.go -package=mocks -source=service.go Configurator
+type Configurator interface {
 	// SetRegistryFromInput auto-detects the registry type (URL/API/File) and configures it.
 	// Returns the detected registry type, a user-friendly message, and any error.
 	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
@@ -31,50 +33,50 @@ type RegistryConfigService interface {
 	GetRegistryInfo() (registryType, source string)
 }
 
-// DefaultRegistryConfigService is the default implementation of RegistryConfigService.
-type DefaultRegistryConfigService struct {
-	provider Provider
+// DefaultConfigurator is the default implementation of Configurator.
+type DefaultConfigurator struct {
+	provider config.Provider
 }
 
-// NewRegistryConfigService creates a new registry config service with the default provider.
-func NewRegistryConfigService() RegistryConfigService {
-	return &DefaultRegistryConfigService{
-		provider: NewDefaultProvider(),
+// NewConfigurator creates a new registry configurator with the default provider.
+func NewConfigurator() Configurator {
+	return &DefaultConfigurator{
+		provider: config.NewDefaultProvider(),
 	}
 }
 
-// NewRegistryConfigServiceWithProvider creates a new registry config service with a custom provider.
+// NewConfiguratorWithProvider creates a new registry configurator with a custom provider.
 // This is useful for testing.
-func NewRegistryConfigServiceWithProvider(provider Provider) RegistryConfigService {
-	return &DefaultRegistryConfigService{
+func NewConfiguratorWithProvider(provider config.Provider) Configurator {
+	return &DefaultConfigurator{
 		provider: provider,
 	}
 }
 
 // SetRegistryFromInput auto-detects the registry type and configures it.
-func (s *DefaultRegistryConfigService) SetRegistryFromInput(input string, allowPrivateIP bool) (string, string, error) {
+func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, string, error) {
 	// Auto-detect the registry type
-	registryType, cleanPath := DetectRegistryType(input, allowPrivateIP)
+	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateIP)
 
 	var err error
 	var message string
 
 	switch registryType {
-	case RegistryTypeURL:
+	case config.RegistryTypeURL:
 		err = s.provider.SetRegistryURL(cleanPath, allowPrivateIP)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to set remote registry: %w", err)
 		}
 		message = fmt.Sprintf("Successfully set a remote registry file: %s", cleanPath)
 
-	case RegistryTypeAPI:
+	case config.RegistryTypeAPI:
 		err = s.provider.SetRegistryAPI(cleanPath, allowPrivateIP)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to set registry API: %w", err)
 		}
 		message = fmt.Sprintf("Successfully set registry API endpoint: %s", cleanPath)
 
-	case RegistryTypeFile:
+	case config.RegistryTypeFile:
 		err = s.provider.SetRegistryFile(cleanPath)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to set local registry file: %w", err)
@@ -87,17 +89,17 @@ func (s *DefaultRegistryConfigService) SetRegistryFromInput(input string, allowP
 
 	// Reset the config singleton to clear cached configuration
 	// Note: Callers are responsible for resetting the registry provider cache
-	ResetSingleton()
+	config.ResetSingleton()
 
 	return registryType, message, nil
 }
 
 // UnsetRegistry resets the registry configuration to defaults.
-func (s *DefaultRegistryConfigService) UnsetRegistry() (string, error) {
+func (s *DefaultConfigurator) UnsetRegistry() (string, error) {
 	// Get current config before unsetting (for informational message)
 	url, localPath, _, registryType := s.provider.GetRegistryConfig()
 
-	if registryType == RegistryTypeDefault {
+	if registryType == config.RegistryTypeDefault {
 		return "No custom registry is currently configured.", nil
 	}
 
@@ -108,7 +110,7 @@ func (s *DefaultRegistryConfigService) UnsetRegistry() (string, error) {
 
 	// Reset the config singleton to clear cached configuration
 	// Note: Callers are responsible for resetting the registry provider cache
-	ResetSingleton()
+	config.ResetSingleton()
 
 	// Build informational message
 	var message string
@@ -125,17 +127,17 @@ func (s *DefaultRegistryConfigService) UnsetRegistry() (string, error) {
 }
 
 // GetRegistryInfo returns information about the currently configured registry.
-func (s *DefaultRegistryConfigService) GetRegistryInfo() (string, string) {
+func (s *DefaultConfigurator) GetRegistryInfo() (string, string) {
 	url, localPath, _, registryType := s.provider.GetRegistryConfig()
 
 	switch registryType {
-	case RegistryTypeAPI:
-		return RegistryTypeAPI, url
-	case RegistryTypeURL:
-		return RegistryTypeURL, url
-	case RegistryTypeFile:
-		return RegistryTypeFile, localPath
+	case config.RegistryTypeAPI:
+		return config.RegistryTypeAPI, url
+	case config.RegistryTypeURL:
+		return config.RegistryTypeURL, url
+	case config.RegistryTypeFile:
+		return config.RegistryTypeFile, localPath
 	default:
-		return RegistryTypeDefault, ""
+		return config.RegistryTypeDefault, ""
 	}
 }

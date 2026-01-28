@@ -37,11 +37,6 @@ func TestBackendHealthStatus_ToCRDStatus(t *testing.T) {
 			expected: testStatusUnavailable,
 		},
 		{
-			name:     "unauthenticated maps to unavailable",
-			status:   BackendUnauthenticated,
-			expected: testStatusUnavailable,
-		},
-		{
 			name:     "unknown maps to unknown",
 			status:   BackendUnknown,
 			expected: "unknown",
@@ -78,7 +73,6 @@ func TestBackendHealthStatus_ToCRDStatus_AllHealthStatusesCovered(t *testing.T) 
 		BackendDegraded,
 		BackendUnhealthy,
 		BackendUnknown,
-		BackendUnauthenticated,
 	}
 
 	// Verify each status maps to a valid CRD status

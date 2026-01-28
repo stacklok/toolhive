@@ -517,21 +517,19 @@ func TestSummary_String(t *testing.T) {
 	t.Parallel()
 
 	summary := Summary{
-		Total:           10,
-		Healthy:         5,
-		Degraded:        1,
-		Unhealthy:       2,
-		Unknown:         1,
-		Unauthenticated: 1,
+		Total:     9,
+		Healthy:   5,
+		Degraded:  1,
+		Unhealthy: 2,
+		Unknown:   1,
 	}
 
 	str := summary.String()
-	assert.Contains(t, str, "total=10")
+	assert.Contains(t, str, "total=9")
 	assert.Contains(t, str, "healthy=5")
 	assert.Contains(t, str, "degraded=1")
 	assert.Contains(t, str, "unhealthy=2")
 	assert.Contains(t, str, "unknown=1")
-	assert.Contains(t, str, "unauthenticated=1")
 }
 
 // testContextKey is a custom type for context keys in tests

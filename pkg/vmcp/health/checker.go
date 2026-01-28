@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -50,18 +51,20 @@ func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration, degraded
 }
 
 // CheckHealth performs a health check on a backend by calling ListCapabilities.
-// This validates the full MCP communication stack and returns the backend's health status.
+// This validates the full MCP communication stack and returns the backend's health status and reason.
 //
 // Health determination logic:
-//   - Success with fast response: Backend is healthy (BackendHealthy)
-//   - Success with slow response (> degradedThreshold): Backend is degraded (BackendDegraded)
-//   - Authentication error: Backend is unauthenticated (BackendUnauthenticated)
-//   - Timeout or connection error: Backend is unhealthy (BackendUnhealthy)
-//   - Other errors: Backend is unhealthy (BackendUnhealthy)
+//   - Success with fast response: healthy (no reason)
+//   - Success with slow response (> degradedThreshold): degraded (slow_response)
+//   - Authentication error: unhealthy (authentication_failed)
+//   - Timeout or connection error: unhealthy (timeout/connection_refused)
+//   - Other errors: unhealthy (health_check_failed)
 //
-// The error return is informational and provides context about what failed.
-// The BackendHealthStatus return indicates the categorized health state.
-func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTarget) (vmcp.BackendHealthStatus, error) {
+// Returns:
+//   - status: The health status (healthy, degraded, unhealthy, unknown)
+//   - reason: Why the backend is in that status
+//   - error: Informational error providing context about what failed
+func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTarget) (vmcp.BackendHealthStatus, vmcp.BackendHealthReason, error) {
 	// Apply timeout if configured
 	checkCtx := ctx
 	var cancel context.CancelFunc
@@ -84,56 +87,71 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	responseDuration := time.Since(startTime)
 
 	if err != nil {
-		// Categorize the error to determine health status
-		status := categorizeError(err)
-		logger.Debugf("Health check failed for backend %s: %v (status: %s, duration: %v)",
-			target.WorkloadName, err, status, responseDuration)
-		return status, fmt.Errorf("health check failed: %w", err)
+		// Categorize the error to determine health status and reason
+		status, reason := categorizeError(err)
+		logger.Debugf("Health check failed for backend %s: %v (status: %s, reason: %s, duration: %v)",
+			target.WorkloadName, err, status, reason, responseDuration)
+		return status, reason, fmt.Errorf("health check failed: %w", err)
 	}
 
 	// Check if response time indicates degraded performance
 	if h.degradedThreshold > 0 && responseDuration > h.degradedThreshold {
 		logger.Warnf("Health check succeeded for backend %s but response was slow: %v (threshold: %v) - marking as degraded",
 			target.WorkloadName, responseDuration, h.degradedThreshold)
-		return vmcp.BackendDegraded, nil
+		return vmcp.BackendDegraded, vmcp.ReasonSlowResponse, nil
 	}
 
 	logger.Debugf("Health check succeeded for backend %s (duration: %v)", target.WorkloadName, responseDuration)
-	return vmcp.BackendHealthy, nil
+	return vmcp.BackendHealthy, vmcp.ReasonHealthy, nil
 }
 
-// categorizeError determines the appropriate health status based on the error type.
+// categorizeError determines the appropriate health status and reason based on the error type.
 // This uses sentinel error checking with errors.Is() for type-safe error categorization.
 // Falls back to string-based detection for backwards compatibility with non-wrapped errors.
-func categorizeError(err error) vmcp.BackendHealthStatus {
+//
+// Returns:
+//   - status: The health status (unhealthy for all error conditions)
+//   - reason: Why the backend is unhealthy (authentication_failed, timeout, etc.)
+func categorizeError(err error) (vmcp.BackendHealthStatus, vmcp.BackendHealthReason) {
 	if err == nil {
-		return vmcp.BackendHealthy
+		return vmcp.BackendHealthy, vmcp.ReasonHealthy
 	}
 
 	// 1. Type-safe detection: Check for sentinel errors using errors.Is()
 	// BackendClient now wraps all errors with appropriate sentinel errors
 	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
-		return vmcp.BackendUnauthenticated
+		return vmcp.BackendUnhealthy, vmcp.ReasonAuthenticationFailed
 	}
 
-	if errors.Is(err, vmcp.ErrTimeout) || errors.Is(err, vmcp.ErrCancelled) {
-		return vmcp.BackendUnhealthy
+	if errors.Is(err, vmcp.ErrTimeout) || errors.Is(err, vmcp.ErrCancelled) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return vmcp.BackendUnhealthy, vmcp.ReasonTimeout
 	}
 
 	if errors.Is(err, vmcp.ErrBackendUnavailable) {
-		return vmcp.BackendUnhealthy
+		return vmcp.BackendUnhealthy, vmcp.ReasonHealthCheckFailed
 	}
 
 	// 2. String-based detection: Fallback for backwards compatibility
 	// This handles errors from sources that don't wrap with sentinel errors
-	if vmcp.IsAuthenticationError(err) {
-		return vmcp.BackendUnauthenticated
+	// Optimization: Convert to lowercase once and reuse for all pattern checks
+	errLower := strings.ToLower(err.Error())
+
+	// Check error patterns in order of specificity
+	if containsAuthError(errLower) {
+		return vmcp.BackendUnhealthy, vmcp.ReasonAuthenticationFailed
 	}
 
-	if vmcp.IsTimeoutError(err) || vmcp.IsConnectionError(err) {
-		return vmcp.BackendUnhealthy
+	if containsTimeoutError(errLower) {
+		return vmcp.BackendUnhealthy, vmcp.ReasonTimeout
 	}
 
-	// Default to unhealthy for unknown errors
-	return vmcp.BackendUnhealthy
+	if containsConnectionError(errLower) {
+		// Determine specific connection error reason
+		reason := categorizeConnectionErrorByString(errLower)
+		return vmcp.BackendUnhealthy, reason
+	}
+
+	// Default to unhealthy with generic health check failed reason
+	return vmcp.BackendUnhealthy, vmcp.ReasonHealthCheckFailed
 }

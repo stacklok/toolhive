@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.25.5
+go 1.25.6
 
 require (
 	dario.cat/mergo v1.0.2

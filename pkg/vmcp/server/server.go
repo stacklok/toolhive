@@ -216,7 +216,7 @@ type Server struct {
 
 	// optimizerIntegration provides semantic tool discovery via optim_find_tool and optim_call_tool.
 	// Nil if optimizer is disabled.
-	optimizerIntegration OptimizerIntegration
+	optimizerIntegration optimizer.Optimizer
 
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.

@@ -70,6 +70,23 @@ type Config struct {
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
 	// Currently only a single upstream is supported.
 	Upstreams []UpstreamConfig
+
+	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+	// If nil or empty, defaults to ["openid", "offline_access"].
+	// This is advertised in /.well-known/openid-configuration and
+	// /.well-known/oauth-authorization-server discovery endpoints.
+	ScopesSupported []string
+
+	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+	// Per RFC 8707, the "resource" parameter in authorization and token requests is
+	// validated against this list. MCP clients are required to include the resource
+	// parameter, so this should be configured with the canonical URIs of all MCP servers
+	// this authorization server issues tokens for.
+	//
+	// Security: An empty list means NO audiences are permitted (secure default).
+	// When empty, any request with a "resource" parameter will be rejected with
+	// "invalid_target". Configure this for proper MCP specification compliance.
+	AllowedAudiences []string
 }
 
 // GetUpstream returns the primary upstream configuration.
@@ -101,6 +118,13 @@ func (c *Config) Validate() error {
 
 	if err := c.validateUpstreams(); err != nil {
 		return err
+	}
+
+	// AllowedAudiences is required for MCP compliance.
+	// Per MCP specification, clients MUST include the "resource" parameter (RFC 8707),
+	// which requires the server to have configured allowed audiences to validate against.
+	if len(c.AllowedAudiences) == 0 {
+		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
 	}
 
 	logger.Debugw("authserver config validation passed",
@@ -177,6 +201,12 @@ func (c *Config) applyDefaults() error {
 		c.KeyProvider = keys.NewGeneratingProvider(keys.DefaultAlgorithm)
 		logger.Warnw("no key provider configured, using ephemeral signing key",
 			"warning", "JWTs will be invalid after restart")
+	}
+	if len(c.ScopesSupported) == 0 {
+		// Default to minimal OIDC scopes per MCP specification best practices.
+		// "openid" is required for OIDC, "offline_access" enables refresh tokens.
+		c.ScopesSupported = []string{"openid", "offline_access"}
+		logger.Debugw("applied default scopes_supported", "scopes", c.ScopesSupported)
 	}
 	return nil
 }

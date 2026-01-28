@@ -134,17 +134,3 @@ func serializeServerMetadata(server *models.BackendServer) (map[string]string, e
 		"type": "backend_server",
 	}, nil
 }
-
-func deserializeServerMetadata(metadata map[string]string) (*models.BackendServer, error) {
-	data, ok := metadata["data"]
-	if !ok {
-		return nil, fmt.Errorf("missing data field in metadata")
-	}
-
-	var server models.BackendServer
-	if err := json.Unmarshal([]byte(data), &server); err != nil {
-		return nil, err
-	}
-
-	return &server, nil
-}

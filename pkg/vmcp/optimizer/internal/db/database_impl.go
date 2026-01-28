@@ -60,7 +60,11 @@ func (d *databaseImpl) DeleteToolsByServer(ctx context.Context, serverID string)
 }
 
 // SearchToolsHybrid performs hybrid search for backend tools
-func (d *databaseImpl) SearchToolsHybrid(ctx context.Context, query string, config *HybridSearchConfig) ([]*models.BackendToolWithMetadata, error) {
+func (d *databaseImpl) SearchToolsHybrid(
+	ctx context.Context,
+	query string,
+	config *HybridSearchConfig,
+) ([]*models.BackendToolWithMetadata, error) {
 	return d.backendToolOps.searchHybrid(ctx, query, config)
 }
 

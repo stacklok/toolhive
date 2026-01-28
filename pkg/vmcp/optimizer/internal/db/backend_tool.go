@@ -84,66 +84,6 @@ func (ops *backendToolOps) create(ctx context.Context, tool *models.BackendTool,
 	return nil
 }
 
-// update updates an existing backend tool in chromem-go
-// Note: This only updates chromem-go, not FTS5. Use create to update both.
-func (ops *backendToolOps) update(ctx context.Context, tool *models.BackendTool) error {
-	collection, err := ops.db.getOrCreateCollection(ctx, BackendToolCollection, ops.embeddingFunc)
-	if err != nil {
-		return fmt.Errorf("failed to get backend tool collection: %w", err)
-	}
-
-	// Prepare content for embedding
-	content := tool.ToolName
-	if tool.Description != nil && *tool.Description != "" {
-		content += ". " + *tool.Description
-	}
-
-	// Serialize metadata
-	metadata, err := serializeToolMetadata(tool)
-	if err != nil {
-		return fmt.Errorf("failed to serialize tool metadata: %w", err)
-	}
-
-	// Delete existing document
-	_ = collection.Delete(ctx, nil, nil, tool.ID) // Ignore error if doesn't exist
-
-	// Create updated document
-	doc := chromem.Document{
-		ID:       tool.ID,
-		Content:  content,
-		Metadata: metadata,
-	}
-
-	if len(tool.ToolEmbedding) > 0 {
-		doc.Embedding = tool.ToolEmbedding
-	}
-
-	err = collection.AddDocument(ctx, doc)
-	if err != nil {
-		return fmt.Errorf("failed to update tool document: %w", err)
-	}
-
-	logger.Debugf("Updated backend tool: %s", tool.ID)
-	return nil
-}
-
-// delete removes a backend tool
-func (ops *backendToolOps) delete(ctx context.Context, toolID string) error {
-	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)
-	if err != nil {
-		// Collection doesn't exist, nothing to delete
-		return nil
-	}
-
-	err = collection.Delete(ctx, nil, nil, toolID)
-	if err != nil {
-		return fmt.Errorf("failed to delete tool: %w", err)
-	}
-
-	logger.Debugf("Deleted backend tool: %s", toolID)
-	return nil
-}
-
 // deleteByServer removes all tools for a given server from both chromem-go and FTS5
 func (ops *backendToolOps) deleteByServer(ctx context.Context, serverID string) error {
 	collection, err := ops.db.getCollection(BackendToolCollection, ops.embeddingFunc)

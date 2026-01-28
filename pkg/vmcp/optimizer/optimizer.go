@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -47,8 +46,11 @@ import (
 // Deprecated: Use config.OptimizerConfig directly.
 type Config = config.OptimizerConfig
 
-// OptimizerIntegration is a type alias for EmbeddingOptimizer, provided for test compatibility.
+// Integration is a type alias for EmbeddingOptimizer, provided for test compatibility.
 // Deprecated: Use *EmbeddingOptimizer directly.
+type Integration = EmbeddingOptimizer
+
+//nolint:revive // OptimizerIntegration kept for backward compatibility in tests
 type OptimizerIntegration = EmbeddingOptimizer
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.
@@ -173,13 +175,12 @@ type Factory func(
 //   - Combines both for hybrid semantic + keyword matching
 //   - Ingests backends once at startup, not per-session
 type EmbeddingOptimizer struct {
-	config            *config.OptimizerConfig
-	ingestionService  *ingestion.Service
-	mcpServer         *server.MCPServer
-	backendClient     vmcp.BackendClient
-	sessionManager    *transportsession.Manager
-	processedSessions sync.Map
-	tracer            trace.Tracer
+	config           *config.OptimizerConfig
+	ingestionService *ingestion.Service
+	mcpServer        *server.MCPServer
+	backendClient    vmcp.BackendClient
+	sessionManager   *transportsession.Manager
+	tracer           trace.Tracer
 }
 
 // NewIntegration is an alias for NewEmbeddingOptimizer, provided for test compatibility.
@@ -205,7 +206,7 @@ func NewIntegration(
 // NewEmbeddingOptimizer is a Factory that creates an embedding-based optimizer.
 // This is the production implementation using semantic embeddings.
 func NewEmbeddingOptimizer(
-	ctx context.Context,
+	_ context.Context,
 	cfg *config.OptimizerConfig,
 	mcpServer *server.MCPServer,
 	backendClient vmcp.BackendClient,
@@ -623,7 +624,7 @@ func (o *EmbeddingOptimizer) IngestInitialBackends(ctx context.Context, backends
 // Helper methods
 
 // convertSearchResults converts database search results to ToolMatch format.
-func (o *EmbeddingOptimizer) convertSearchResults(
+func (*EmbeddingOptimizer) convertSearchResults(
 	results []*models.BackendToolWithMetadata,
 	routingTable *vmcp.RoutingTable,
 ) ([]ToolMatch, int) {
@@ -668,7 +669,7 @@ func (o *EmbeddingOptimizer) convertSearchResults(
 }
 
 // resolveToolTarget finds and validates the target backend for a tool.
-func (o *EmbeddingOptimizer) resolveToolTarget(
+func (*EmbeddingOptimizer) resolveToolTarget(
 	ctx context.Context,
 	backendID string,
 	toolName string,

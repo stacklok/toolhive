@@ -556,8 +556,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Create optimizer instance if factory is provided
-	if s.config.Optimizer == nil && s.config.OptimizerFactory != nil && s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
-		opt, err := s.config.OptimizerFactory(ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
+	if s.config.Optimizer == nil && s.config.OptimizerFactory != nil &&
+		s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
+		opt, err := s.config.OptimizerFactory(
+			ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
 		if err != nil {
 			return fmt.Errorf("failed to create optimizer: %w", err)
 		}

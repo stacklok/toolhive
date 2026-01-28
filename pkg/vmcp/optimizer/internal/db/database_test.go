@@ -21,7 +21,7 @@ func TestDatabase_ServerOperations(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, embeddingFunc := createTestDatabase(t)
+	db := createTestDatabase(t)
 	defer func() { _ = db.Close() }()
 
 	description := "A test MCP server"
@@ -50,9 +50,6 @@ func TestDatabase_ServerOperations(t *testing.T) {
 	// Delete non-existent server should not error
 	err = db.DeleteServer(ctx, "non-existent")
 	require.NoError(t, err)
-
-	// Verify embedding function was used (create a server and check it went through)
-	_ = embeddingFunc
 }
 
 // TestDatabase_ToolOperations tests the full lifecycle of tool operations through the Database interface
@@ -60,7 +57,7 @@ func TestDatabase_ToolOperations(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, _ := createTestDatabase(t)
+	db := createTestDatabase(t)
 	defer func() { _ = db.Close() }()
 
 	description := "Test tool for weather"
@@ -100,7 +97,7 @@ func TestDatabase_HybridSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, _ := createTestDatabase(t)
+	db := createTestDatabase(t)
 	defer func() { _ = db.Close() }()
 
 	// Create test tools
@@ -159,7 +156,7 @@ func TestDatabase_TokenCounting(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, _ := createTestDatabase(t)
+	db := createTestDatabase(t)
 	defer func() { _ = db.Close() }()
 
 	// Create tool with known token count
@@ -210,7 +207,7 @@ func TestDatabase_Reset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, _ := createTestDatabase(t)
+	db := createTestDatabase(t)
 	defer func() { _ = db.Close() }()
 
 	// Add some data
@@ -250,7 +247,7 @@ func TestDatabase_Reset(t *testing.T) {
 }
 
 // Helper function to create a test database
-func createTestDatabase(t *testing.T) (Database, func(context.Context, string) ([]float32, error)) {
+func createTestDatabase(t *testing.T) Database {
 	t.Helper()
 	tmpDir := t.TempDir()
 
@@ -301,5 +298,5 @@ func createTestDatabase(t *testing.T) (Database, func(context.Context, string) (
 	db, err := NewDatabase(config, embeddingFunc)
 	require.NoError(t, err)
 
-	return db, embeddingFunc
+	return db
 }

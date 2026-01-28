@@ -384,6 +384,239 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 	}
 }
 
+// TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken tests RunConfig generation with bearer token
+func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		proxy        *mcpv1alpha1.MCPRemoteProxy
+		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		bearerSecret *corev1.Secret
+		expectError  bool
+		validate     func(*testing.T, *runner.RunConfig)
+	}{
+		{
+			name: "with bearer token",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com/api",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "api-bearer-auth",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api-bearer-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "api-bearer-token",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			bearerSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api-bearer-token",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"token": []byte("my-bearer-token-123"),
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "bearer-proxy", config.Name)
+				assert.Equal(t, "https://mcp.example.com/api", config.RemoteURL)
+
+				// Verify RemoteAuthConfig has bearer token in CLI format
+				require.NotNil(t, config.RemoteAuthConfig)
+				assert.Equal(t, "api-bearer-token,target=bearer_token", config.RemoteAuthConfig.BearerToken)
+			},
+		},
+		{
+			name: "missing TokenSecretRef",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "broken-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "broken-bearer",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "broken-bearer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: nil, // Missing TokenSecretRef
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "secret not found",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-secret-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "missing-secret-bearer",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-secret-bearer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "non-existent-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "secret missing key",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-key-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "missing-key-bearer",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-key-bearer",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "incomplete-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			bearerSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "incomplete-secret",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"other-key": []byte("value"),
+					// Missing "token" key
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := []runtime.Object{tt.proxy}
+			if tt.externalAuth != nil {
+				objects = append(objects, tt.externalAuth)
+			}
+			if tt.bearerSecret != nil {
+				objects = append(objects, tt.bearerSecret)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				Build()
+
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, runConfig)
+				if tt.validate != nil {
+					tt.validate(t, runConfig)
+				}
+			}
+		})
+	}
+}
+
 // TestValidateRunConfigForRemoteProxy tests the validation logic for remote proxy RunConfigs
 func TestValidateRunConfigForRemoteProxy(t *testing.T) {
 	t.Parallel()

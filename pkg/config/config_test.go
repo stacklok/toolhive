@@ -348,7 +348,7 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 		assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
 	})
 
-	t.Run("Setup not completed returns error", func(t *testing.T) {
+	t.Run("Setup not completed returns error when env var is unset", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -359,9 +359,84 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 			SetupCompleted: false,
 		}
 
-		// No expectation needed since the function returns early when SetupCompleted is false
+		// Explicitly set expectation: env var is unset (empty string)
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
 		_, err := s.GetProviderTypeWithEnv(mockEnv)
-		assert.Error(t, err, "Should return error when setup not completed")
+		assert.Error(t, err, "Should return error when setup not completed and env var is unset")
 		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
+	})
+
+	t.Run("Environment variable bypasses SetupCompleted check", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: false, // Setup not completed
+		}
+
+		// Environment variable is set - should bypass SetupCompleted check
+		// This is the Kubernetes use case: operator sets env var, no config file needed
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EnvironmentType))
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err, "Should succeed when env var is set, even if SetupCompleted is false")
+		assert.Equal(t, secrets.EnvironmentType, got, "Should return provider from environment variable")
+	})
+
+	t.Run("Non-environment providers require SetupCompleted when set via env var", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   "",
+			SetupCompleted: false, // Setup not completed
+		}
+
+		// Encrypted provider requires setup - should return error
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EncryptedType))
+		_, err := s.GetProviderTypeWithEnv(mockEnv)
+		assert.Error(t, err, "Should return error when non-environment provider is set without setup")
+		assert.Contains(t, err.Error(), "requires setup to be completed", "Error should mention setup requirement")
+		assert.Contains(t, err.Error(), "environment", "Error should suggest using environment provider")
+	})
+
+	t.Run("Non-environment providers work when SetupCompleted is true", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   "",
+			SetupCompleted: true, // Setup completed
+		}
+
+		// Encrypted provider should work when setup is completed
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EncryptedType))
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err, "Should succeed when SetupCompleted is true")
+		assert.Equal(t, secrets.EncryptedType, got, "Should return provider from environment variable")
+	})
+
+	t.Run("1password provider requires SetupCompleted when set via env var", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   "",
+			SetupCompleted: false, // Setup not completed
+		}
+
+		// 1password provider requires setup - should return error
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.OnePasswordType))
+		_, err := s.GetProviderTypeWithEnv(mockEnv)
+		assert.Error(t, err, "Should return error when 1password provider is set without setup")
+		assert.Contains(t, err.Error(), "requires setup to be completed", "Error should mention setup requirement")
 	})
 }

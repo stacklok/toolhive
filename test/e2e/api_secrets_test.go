@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -142,6 +145,57 @@ func deleteSecret(server *e2e.Server, key string) *http.Response {
 	return resp
 }
 
+func cleanupSecretsConfig() {
+	// Reset secrets configuration by updating the config file directly
+	// This ensures subsequent tests start with a clean slate
+	configDir := os.Getenv("TOOLHIVE_E2E_SHARED_CONFIG")
+	if configDir == "" {
+		// If not using shared config, use standard config location
+		return
+	}
+
+	// Path to the config file
+	configPath := filepath.Join(configDir, ".toolhive", "config.yaml")
+
+	// Read the current config
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		// If config doesn't exist, nothing to clean up
+		if os.IsNotExist(err) {
+			return
+		}
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	// Parse and update the config
+	var configData map[string]interface{}
+	err = yaml.Unmarshal(data, &configData)
+	if err != nil {
+		// If config is malformed, just remove it
+		_ = os.Remove(configPath)
+		return
+	}
+
+	// Reset secrets configuration
+	if secrets, ok := configData["secrets"].(map[string]interface{}); ok {
+		secrets["setup_completed"] = false
+		secrets["provider_type"] = ""
+	} else {
+		// If secrets section doesn't exist, create it
+		configData["secrets"] = map[string]interface{}{
+			"setup_completed": false,
+			"provider_type":   "",
+		}
+	}
+
+	// Write the updated config back
+	updatedData, err := yaml.Marshal(configData)
+	Expect(err).ToNot(HaveOccurred())
+
+	err = os.WriteFile(configPath, updatedData, 0600)
+	Expect(err).ToNot(HaveOccurred())
+}
+
 // Test suite
 
 var _ = Describe("Secrets API", Label("api", "secrets", "e2e"), func() {
@@ -153,6 +207,15 @@ var _ = Describe("Secrets API", Label("api", "secrets", "e2e"), func() {
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
 		apiServer = e2e.StartServer(config)
+
+		// Register cleanup to run after the server stops
+		// DeferCleanup runs in reverse order, so this runs after server.Stop()
+		DeferCleanup(func() {
+			// Clean up secrets configuration to ensure test isolation
+			// This is necessary because tests share a config directory
+			By("Cleaning up secrets configuration")
+			cleanupSecretsConfig()
+		})
 	})
 
 	Describe("POST /api/v1beta/secrets - Setup secrets provider", func() {

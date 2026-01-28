@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -297,7 +299,12 @@ func (m *Monitor) IsBackendHealthy(backendID string) bool {
 // Returns counts of healthy, degraded, unhealthy, and total backends.
 func (m *Monitor) GetHealthSummary() Summary {
 	allStates := m.statusTracker.GetAllStates()
+	return computeSummary(allStates)
+}
 
+// computeSummary computes a Summary from a snapshot of backend states.
+// This is a pure function that takes a states map and returns aggregated counts.
+func computeSummary(allStates map[string]*State) Summary {
 	summary := Summary{
 		Total:           len(allStates),
 		Healthy:         0,
@@ -339,4 +346,210 @@ type Summary struct {
 func (s Summary) String() string {
 	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d unauthenticated=%d",
 		s.Total, s.Healthy, s.Degraded, s.Unhealthy, s.Unknown, s.Unauthenticated)
+}
+
+// BuildStatus builds a vmcp.Status from the current health monitor state.
+// This converts backend health information into the format needed for status reporting
+// to the Kubernetes API or CLI output.
+//
+// Phase determination:
+// - Ready: All backends healthy, or no backends configured (cold start)
+// - Pending: Backends configured but no health check data yet (waiting for first check)
+// - Degraded: Some backends healthy, some degraded/unhealthy
+// - Failed: No healthy backends (and at least one backend exists)
+//
+// Returns a Status instance with current health information and discovered backends.
+//
+// Takes a single snapshot of backend states to ensure internal consistency under
+// concurrent updates.
+func (m *Monitor) BuildStatus() *vmcp.Status {
+	// Take a single snapshot of all backend states
+	// This ensures consistency between summary counts and discovered backends
+	allStates := m.GetAllBackendStates()
+
+	// Compute summary from the snapshot (not a separate query)
+	summary := computeSummary(allStates)
+
+	// Pass configured backend count to distinguish between:
+	// - No backends configured (cold start) vs
+	// - Backends configured but no health data yet (waiting for first check)
+	configuredBackendCount := len(m.backends)
+	phase := determinePhase(summary, configuredBackendCount)
+	message := formatStatusMessage(summary, phase, configuredBackendCount)
+	discoveredBackends := m.convertToDiscoveredBackends(allStates)
+	conditions := buildConditions(summary, phase, configuredBackendCount)
+
+	return &vmcp.Status{
+		Phase:              phase,
+		Message:            message,
+		Conditions:         conditions,
+		DiscoveredBackends: discoveredBackends,
+		BackendCount:       summary.Healthy, // Only count healthy backends
+		Timestamp:          time.Now(),
+	}
+}
+
+// determinePhase determines the overall phase based on backend health.
+// Takes both the health summary and the count of configured backends to distinguish:
+// - No backends configured (configuredCount==0): Ready (cold start)
+// - Backends configured but no health data (configuredCount>0 && summary.Total==0): Pending
+// - Has health data: Ready/Degraded/Failed based on health status
+func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
+	if summary.Total == 0 {
+		// No health data yet - distinguish cold start from waiting for first check
+		if configuredBackendCount == 0 {
+			return vmcp.PhaseReady // True cold start - no backends configured
+		}
+		return vmcp.PhasePending // Backends configured but health checks not complete
+	}
+	if summary.Healthy == summary.Total {
+		return vmcp.PhaseReady
+	}
+	if summary.Healthy == 0 {
+		return vmcp.PhaseFailed
+	}
+	return vmcp.PhaseDegraded
+}
+
+// formatStatusMessage creates a human-readable message describing overall status.
+func formatStatusMessage(summary Summary, phase vmcp.Phase, configuredBackendCount int) string {
+	if summary.Total == 0 {
+		// No health data yet - distinguish cold start from waiting for checks
+		if configuredBackendCount == 0 {
+			return "Ready, no backends configured"
+		}
+		return fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)
+	}
+	if phase == vmcp.PhaseReady {
+		return fmt.Sprintf("All %d backends healthy", summary.Healthy)
+	}
+
+	// Format unhealthy backend counts (shared by Failed and Degraded)
+	unhealthyDetails := fmt.Sprintf("%d degraded, %d unhealthy, %d unknown, %d unauthenticated",
+		summary.Degraded, summary.Unhealthy, summary.Unknown, summary.Unauthenticated)
+
+	if phase == vmcp.PhaseFailed {
+		return fmt.Sprintf("No healthy backends (%s)", unhealthyDetails)
+	}
+	// Degraded
+	return fmt.Sprintf("%d/%d backends healthy (%s)", summary.Healthy, summary.Total, unhealthyDetails)
+}
+
+// convertToDiscoveredBackends converts backend health states to DiscoveredBackend format.
+func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmcp.DiscoveredBackend {
+	discoveredBackends := make([]vmcp.DiscoveredBackend, 0, len(allStates))
+
+	for _, backend := range m.backends {
+		state, exists := allStates[backend.ID]
+		if !exists {
+			continue // Skip backends not yet tracked (shouldn't happen)
+		}
+
+		authConfigRef, authType := extractAuthInfo(backend)
+
+		discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
+			Name:            backend.Name,
+			URL:             backend.BaseURL,
+			Status:          state.Status.ToCRDStatus(),
+			AuthConfigRef:   authConfigRef,
+			AuthType:        authType,
+			LastHealthCheck: metav1.NewTime(state.LastCheckTime),
+			Message:         formatBackendMessage(state),
+		})
+	}
+
+	return discoveredBackends
+}
+
+// extractAuthInfo extracts authentication information from a backend.
+// Returns the AuthConfigRef (if populated during discovery) and the auth type.
+func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
+	if backend.AuthConfig == nil {
+		return "", ""
+	}
+	// Use the actual AuthConfigRef populated during backend discovery.
+	// In K8s mode, this is the name of the MCPExternalAuthConfig resource.
+	// In CLI mode or when not discovered via K8s, this may be empty.
+	return backend.AuthConfigRef, backend.AuthConfig.Type
+}
+
+// formatBackendMessage creates a human-readable message for a backend's health state.
+func formatBackendMessage(state *State) string {
+	if state.LastError != nil {
+		return fmt.Sprintf("%s (failures: %d)", state.LastError.Error(), state.ConsecutiveFailures)
+	}
+
+	switch state.Status {
+	case vmcp.BackendHealthy:
+		return "Healthy"
+	case vmcp.BackendDegraded:
+		if state.ConsecutiveFailures > 0 {
+			return fmt.Sprintf("Recovering from %d failures", state.ConsecutiveFailures)
+		}
+		return "Degraded performance"
+	case vmcp.BackendUnhealthy:
+		return "Unhealthy"
+	case vmcp.BackendUnauthenticated:
+		return "Authentication required"
+	case vmcp.BackendUnknown:
+		return "Unknown"
+	default:
+		return string(state.Status)
+	}
+}
+
+// buildConditions creates Kubernetes-style conditions based on health summary and phase.
+// Takes configured backend count to properly distinguish cold start from pending health checks.
+func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount int) []metav1.Condition {
+	now := metav1.Now()
+	conditions := []metav1.Condition{}
+
+	// Ready condition - true if phase is Ready
+	readyCondition := metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: now,
+		Reason:             "BackendsUnhealthy",
+		Message:            "Not all backends are healthy",
+	}
+
+	switch phase {
+	case vmcp.PhaseReady:
+		readyCondition.Status = metav1.ConditionTrue
+		readyCondition.Reason = "AllBackendsHealthy"
+		// Distinguish cold start (no backends configured) from having healthy backends
+		if summary.Total == 0 && configuredBackendCount == 0 {
+			readyCondition.Message = "Ready, no backends configured"
+		} else {
+			readyCondition.Message = fmt.Sprintf("All %d backends are healthy", summary.Healthy)
+		}
+	case vmcp.PhaseDegraded:
+		readyCondition.Reason = "SomeBackendsUnhealthy"
+		readyCondition.Message = fmt.Sprintf("%d/%d backends healthy", summary.Healthy, summary.Total)
+	case vmcp.PhaseFailed:
+		readyCondition.Reason = "NoHealthyBackends"
+		readyCondition.Message = "No healthy backends available"
+	case vmcp.PhasePending:
+		readyCondition.Reason = "BackendsPending"
+		readyCondition.Message = fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)
+	default:
+		// Unknown phase - use default values set above
+		readyCondition.Reason = "BackendsUnhealthy"
+		readyCondition.Message = "Backend status unknown"
+	}
+
+	conditions = append(conditions, readyCondition)
+
+	// Degraded condition - true if any backends are degraded
+	if summary.Degraded > 0 {
+		conditions = append(conditions, metav1.Condition{
+			Type:               "Degraded",
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "BackendsDegraded",
+			Message:            fmt.Sprintf("%d backends degraded", summary.Degraded),
+		})
+	}
+
+	return conditions
 }

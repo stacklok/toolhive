@@ -418,8 +418,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
-	// Create logging status reporter for CLI mode (always logs)
-	statusReporter := vmcpstatus.NewLoggingReporter()
+	// Create status reporter using factory (auto-detects K8s vs CLI mode)
+	statusReporter, err := vmcpstatus.NewReporter()
+	if err != nil {
+		return fmt.Errorf("failed to create status reporter: %w", err)
+	}
 
 	serverCfg := &vmcpserver.Config{
 		Name:                cfg.Name,

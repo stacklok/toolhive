@@ -17,7 +17,8 @@ This creates a problem for branch protection:
 The `pr-gate.yml` workflow acts as a sentinel that:
 1. Detects which files changed using `dorny/paths-filter`
 2. Conditionally runs the appropriate quality checks
-3. Provides a single "All Checks Pass" job that reports the combined status
+3. Provides a single "All Checks Pass" job that dynamically discovers and validates all workflow runs
+4. Uses the GitHub API to query workflow statuses (no static list maintenance required)
 
 This is a well-established pattern used by many large open-source projects.
 
@@ -49,10 +50,12 @@ graph TD
 ```
 
 The `all-checks` job:
-- Runs with `if: always()` so it executes even if some jobs were skipped
-- Checks the status of all quality gate jobs
-- Succeeds if all jobs are either `success` or `skipped`
-- Fails if any job has status `failure` or `cancelled`
+- Runs with `if: always()` so it executes unconditionally
+- Uses GitHub API to dynamically discover all workflow runs for the PR
+- Polls until all workflows complete (max 60 minutes timeout)
+- Succeeds if all workflows are either `success` or `skipped`
+- Fails if any workflow has status `failure` or `cancelled`
+- **No manual maintenance** - automatically detects new/removed workflows
 
 ## Deprecating Old Workflows
 
@@ -67,21 +70,23 @@ These workflows are now replaced by `pr-gate.yml`. However, you may want to keep
 
 ## Modifying the Gate
 
-To add or remove checks from the gate:
+The gate automatically discovers all workflows that run on PRs - no manual maintenance needed!
+
+To add or remove checks:
 
 1. **Add a new check**:
-   - Add the workflow call as a new job under the appropriate section (code or charts)
-   - Add the job name to the `needs:` list in the `all-checks` job
-   - Ensure the job has proper conditionals (`if: needs.changes.outputs.code == 'true'`)
+   - Simply add the workflow with `on: pull_request` trigger
+   - The gate will automatically detect and wait for it
+   - No need to update the gate workflow itself
 
 2. **Remove a check**:
-   - Remove the job definition
-   - Remove the job name from the `needs:` list in `all-checks`
+   - Remove or disable the workflow
+   - The gate will stop waiting for it automatically
 
-3. **Modify path filters**:
-   - Edit the `filters:` section in the `changes` job
-   - The `code` filter matches everything except charts
-   - The `charts` filter matches only `deploy/charts/**`
+3. **Modify path filters** (optional, for conditional workflows):
+   - You can use the `changes` job outputs in your workflow's `if:` condition
+   - Or implement your own path filtering in the workflow
+   - The gate respects workflows that choose not to run (treats as skipped)
 
 ## Testing
 

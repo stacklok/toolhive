@@ -5,12 +5,9 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -81,12 +78,8 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
-	// Calculate the hash of the current configuration (including referenced Secret values)
-	configHash, err := r.calculateConfigHash(ctx, externalAuthConfig)
-	if err != nil {
-		logger.Error(err, "Failed to calculate config hash")
-		return ctrl.Result{}, err
-	}
+	// Calculate the hash of the current configuration (spec only, without secret values)
+	configHash := r.calculateConfigHash(externalAuthConfig.Spec)
 
 	// Check if the hash has changed
 	if externalAuthConfig.Status.ConfigHash != configHash {
@@ -123,14 +116,10 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 			logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
 				"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
 
-			// Add an annotation to the MCPServer to trigger reconciliation
-			if server.Annotations == nil {
-				server.Annotations = make(map[string]string)
-			}
-			server.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
-
+			// Trigger reconciliation by updating the MCPServer
+			// This will cause the MCPServer controller to reconcile and pick up the new config
 			if err := r.Update(ctx, &server); err != nil {
-				logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
+				logger.Error(err, "Failed to trigger MCPServer reconciliation", "mcpserver", server.Name)
 				// Continue with other servers even if one fails
 			}
 		}
@@ -139,71 +128,10 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	return ctrl.Result{}, nil
 }
 
-// calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec including referenced Secret values
-// This ensures that changes to Secret values trigger reconciliation
-func (r *MCPExternalAuthConfigReconciler) calculateConfigHash(
-	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
-) (string, error) {
-	// Start with the base spec hash
-	hashString := ctrlutil.CalculateConfigHash(externalAuthConfig.Spec)
-
-	// Include referenced Secret values in the hash for bearer token configs
-	if externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeBearerToken &&
-		externalAuthConfig.Spec.BearerToken != nil &&
-		externalAuthConfig.Spec.BearerToken.TokenSecretRef != nil {
-		var secret corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: externalAuthConfig.Namespace,
-			Name:      externalAuthConfig.Spec.BearerToken.TokenSecretRef.Name,
-		}, &secret); err != nil {
-			if errors.IsNotFound(err) {
-				// Secret doesn't exist yet, include that in hash
-				hashString += ":secret-not-found"
-			} else {
-				return "", fmt.Errorf("failed to get bearer token secret: %w", err)
-			}
-		} else {
-			// Include the secret value in the hash
-			if tokenValue, ok := secret.Data[externalAuthConfig.Spec.BearerToken.TokenSecretRef.Key]; ok {
-				hasher := sha256.New()
-				hasher.Write(tokenValue)
-				hashString += ":" + hex.EncodeToString(hasher.Sum(nil))[:16]
-			} else {
-				hashString += ":key-not-found"
-			}
-		}
-	}
-
-	// Also include token exchange client secret if present
-	if externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeTokenExchange &&
-		externalAuthConfig.Spec.TokenExchange != nil &&
-		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
-		var secret corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: externalAuthConfig.Namespace,
-			Name:      externalAuthConfig.Spec.TokenExchange.ClientSecretRef.Name,
-		}, &secret); err != nil {
-			if errors.IsNotFound(err) {
-				hashString += ":client-secret-not-found"
-			} else {
-				return "", fmt.Errorf("failed to get client secret: %w", err)
-			}
-		} else {
-			if secretValue, ok := secret.Data[externalAuthConfig.Spec.TokenExchange.ClientSecretRef.Key]; ok {
-				hasher := sha256.New()
-				hasher.Write(secretValue)
-				hashString += ":" + hex.EncodeToString(hasher.Sum(nil))[:16]
-			} else {
-				hashString += ":client-secret-key-not-found"
-			}
-		}
-	}
-
-	// Hash the final combined string
-	hasher := sha256.New()
-	hasher.Write([]byte(hashString))
-	return hex.EncodeToString(hasher.Sum(nil))[:16], nil
+// calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities.
+// Note: This only hashes the spec, not referenced Secret values. Secret value hashing will be added in a follow-up PR.
+func (r *MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
+	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPExternalAuthConfig
@@ -267,54 +195,6 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 		})
 }
 
-// findMCPExternalAuthConfigsReferencingSecret finds all MCPExternalAuthConfigs that reference the given Secret.
-// This includes configs that reference the Secret for bearer tokens or token exchange client secrets.
-func (r *MCPExternalAuthConfigReconciler) findMCPExternalAuthConfigsReferencingSecret(
-	ctx context.Context,
-	secret *corev1.Secret,
-) ([]mcpv1alpha1.MCPExternalAuthConfig, error) {
-	// List all MCPExternalAuthConfigs in the same namespace as the Secret
-	externalAuthConfigs := &mcpv1alpha1.MCPExternalAuthConfigList{}
-	if err := r.List(ctx, externalAuthConfigs, client.InNamespace(secret.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPExternalAuthConfigs: %w", err)
-	}
-
-	// Filter configs that reference this Secret
-	referencingConfigs := make([]mcpv1alpha1.MCPExternalAuthConfig, 0)
-	for _, config := range externalAuthConfigs.Items {
-		if configReferencesSecret(&config, secret.Name) {
-			referencingConfigs = append(referencingConfigs, config)
-		}
-	}
-
-	return referencingConfigs, nil
-}
-
-// configReferencesSecret checks if an MCPExternalAuthConfig references a Secret by name.
-// This checks both bearer token and token exchange configurations.
-func configReferencesSecret(
-	config *mcpv1alpha1.MCPExternalAuthConfig,
-	secretName string,
-) bool {
-	// Check bearer token config
-	if config.Spec.Type == mcpv1alpha1.ExternalAuthTypeBearerToken &&
-		config.Spec.BearerToken != nil &&
-		config.Spec.BearerToken.TokenSecretRef != nil &&
-		config.Spec.BearerToken.TokenSecretRef.Name == secretName {
-		return true
-	}
-
-	// Check token exchange config
-	if config.Spec.Type == mcpv1alpha1.ExternalAuthTypeTokenExchange &&
-		config.Spec.TokenExchange != nil &&
-		config.Spec.TokenExchange.ClientSecretRef != nil &&
-		config.Spec.TokenExchange.ClientSecretRef.Name == secretName {
-		return true
-	}
-
-	return false
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
@@ -347,41 +227,10 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 		},
 	)
 
-	// Create a handler that maps Secret changes to MCPExternalAuthConfig reconciliation requests
-	secretHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			secret, ok := obj.(*corev1.Secret)
-			if !ok {
-				return nil
-			}
-
-			// Find all MCPExternalAuthConfigs that reference this Secret
-			configs, err := r.findMCPExternalAuthConfigsReferencingSecret(ctx, secret)
-			if err != nil {
-				log.FromContext(ctx).Error(err, "Failed to find MCPExternalAuthConfigs referencing Secret")
-				return nil
-			}
-
-			requests := make([]reconcile.Request, 0, len(configs))
-			for _, config := range configs {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      config.Name,
-						Namespace: config.Namespace,
-					},
-				})
-			}
-
-			return requests
-		},
-	)
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPExternalAuthConfig{}).
 		// Watch for MCPServers and reconcile the MCPExternalAuthConfig when they change
 		Watches(&mcpv1alpha1.MCPServer{}, externalAuthConfigHandler).
-		// Watch for Secrets and reconcile MCPExternalAuthConfigs that reference them
-		Watches(&corev1.Secret{}, secretHandler).
 		Complete(r)
 }
 

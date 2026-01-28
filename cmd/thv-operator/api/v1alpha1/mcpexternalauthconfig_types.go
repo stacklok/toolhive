@@ -134,9 +134,9 @@ type BearerTokenConfig struct {
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
-	// Must be a valid HTTPS URL.
+	// Must be a valid HTTPS URL without a trailing slash (per RFC 8414).
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^https://[^\s/]+.*$`
+	// +kubebuilder:validation:Pattern=`^https://\S+[^/]$`
 	Issuer string `json:"issuer"`
 
 	// SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -161,10 +161,9 @@ type EmbeddedAuthServerConfig struct {
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
-	// Currently only a single upstream provider is supported.
+	// Currently only a single upstream provider is supported (validated at runtime).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=1
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.

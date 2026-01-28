@@ -119,8 +119,8 @@ spec:
                     description: |-
                       Issuer is the issuer identifier for this authorization server.
                       This will be included in the "iss" claim of issued tokens.
-                      Must be a valid HTTPS URL.
-                    pattern: ^https://[^\s/]+.*$
+                      Must be a valid HTTPS URL without a trailing slash (per RFC 8414).
+                    pattern: ^https://\S+[^/]$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -173,7 +173,7 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       The embedded auth server delegates authentication to these providers.
-                      Currently only a single upstream provider is supported.
+                      Currently only a single upstream provider is supported (validated at runtime).
                     items:
                       description: UpstreamProviderConfig defines configuration for
                         an upstream Identity Provider.
@@ -298,7 +298,6 @@ spec:
                       - name
                       - type
                       type: object
-                    maxItems: 1
                     minItems: 1
                     type: array
                 required:

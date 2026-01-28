@@ -91,7 +91,7 @@ func NewIncomingAuthMiddleware(
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
 func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
-		return nil, fmt.Errorf("Cedar authorization requires at least one policy")
+		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
 
 	logger.Infof("Creating Cedar authorization middleware with %d policies", len(authzCfg.Policies))

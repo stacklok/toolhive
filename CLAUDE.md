@@ -350,6 +350,96 @@ Follow conventional commit format:
 - Do not end subject line with period
 - Use body to explain what and why vs. how
 
+## Pull Request Guidelines
+
+### PR Size and Scope
+
+**CRITICAL**: Before creating a pull request, Claude MUST evaluate the size and scope of changes to ensure they are reviewable.
+
+#### Size Limits
+
+Maximum recommended changes per PR:
+- **400 lines of code changes** (excluding tests, generated code, and documentation)
+- **10 files changed** (excluding test files, generated code, and documentation)
+
+These limits ensure PRs are:
+- Reviewable in a reasonable time (under 1 hour)
+- Focused on a single logical change
+- Less likely to introduce bugs
+- Easier to revert if needed
+
+#### When Changes Exceed Limits
+
+When changes exceed these limits, Claude MUST:
+1. **Stop and inform the user** that the PR would be too large for effective review
+2. **Analyze the changes** and identify logical boundaries for splitting
+3. **Propose a split strategy** with multiple smaller PRs
+4. **Ask the user** which part they want to create first
+5. **Create a tracking issue or checklist** for the remaining work
+
+Use the `/split-pr` skill to help with this analysis.
+
+#### Check PR Size Before Creation
+
+Before creating a PR, run these commands to check size:
+
+```bash
+# Count files changed (excluding generated files and docs)
+git diff main...HEAD --name-only | grep -v 'vendor/' | grep -v '\.pb\.go$' | grep -v 'zz_generated' | grep -v '^docs/' | wc -l
+
+# Count lines changed (excluding generated files, vendor, docs)
+git diff main...HEAD --stat -- . ':(exclude)vendor/*' ':(exclude)*.pb.go' ':(exclude)zz_generated*' ':(exclude)docs/*' | tail -1
+```
+
+If the numbers exceed limits, propose splitting before creating the PR.
+
+#### Atomic PRs
+
+Each PR should represent **one logical change**:
+- ✅ One feature at a time
+- ✅ One bug fix at a time
+- ✅ One refactoring at a time
+- ✅ Tests included with their related code changes
+- ❌ Multiple unrelated changes bundled together
+- ❌ Refactoring mixed with new features
+- ❌ Bug fixes mixed with feature work
+
+#### Exception Cases
+
+Large PRs are acceptable for:
+- **Generated code updates** (proto files, CRDs, mocks) - but confirm with the user first
+- **Dependency updates** (go.mod changes, vendor updates)
+- **Large refactorings that cannot be safely split** (with explicit user approval)
+- **Documentation-only updates** (changes to `docs/` directory)
+- **Test-only changes** (adding missing test coverage)
+
+For these cases, still inform the user about the size and ask for confirmation before creating the PR.
+
+#### PR Split Strategy
+
+When splitting large changes:
+
+1. **Identify dependencies**: Which changes depend on others?
+2. **Create foundation PRs first**: Refactoring, new interfaces, shared utilities
+3. **Build features on top**: Feature PRs that use the foundation
+4. **Keep each PR independently testable**: Each PR should pass all tests
+5. **Use feature flags if needed**: For incomplete features that span multiple PRs
+
+**Example split**:
+- PR 1: Add new interface and base implementation (foundation)
+- PR 2: Migrate existing code to use new interface (refactoring)
+- PR 3: Add new feature using the interface (feature)
+
+### PR Creation Workflow
+
+When a user asks to create a PR:
+
+1. **Check size first** using the commands above
+2. **If too large**: Propose split strategy, wait for user decision
+3. **If reasonable size**: Proceed with PR creation following standard git workflow
+4. **Include context**: Ensure PR description explains what/why, links to issues
+5. **Verify tests pass**: Run relevant tests before creating PR
+
 ## Architecture Documentation
 
 ToolHive maintains comprehensive architecture documentation in `docs/arch/`. When making changes that affect architecture, you MUST update the relevant documentation to keep it in sync with the code.

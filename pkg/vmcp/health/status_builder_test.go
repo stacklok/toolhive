@@ -170,7 +170,7 @@ func TestFormatBackendMessage(t *testing.T) {
 				ConsecutiveFailures: 3,
 				LastError:           fmt.Errorf("connection refused"),
 			},
-			shouldContain: "connection refused",
+			shouldContain: "Connection failed",
 		},
 	}
 

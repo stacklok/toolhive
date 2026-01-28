@@ -335,7 +335,8 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 	// This is used for status reporting and debugging
 	backend.AuthConfigRef = authConfigRef.Name
 
-	logger.Debugf("Discovered auth config for %s %s: strategy=%s, configRef=%s", resourceKind, resourceName, strategy.Type, authConfigRef.Name)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s, configRef=%s",
+		resourceKind, resourceName, strategy.Type, authConfigRef.Name)
 	return nil
 }
 

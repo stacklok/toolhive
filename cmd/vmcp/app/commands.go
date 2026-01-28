@@ -431,19 +431,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create status reporter: %w", err)
 	}
 
+	// Extract status reporting interval from config
+	var statusReportingInterval time.Duration
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil &&
+		cfg.Operational.FailureHandling.StatusReportingInterval > 0 {
+		statusReportingInterval = time.Duration(cfg.Operational.FailureHandling.StatusReportingInterval)
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:                cfg.Name,
-		Version:             getVersion(),
-		GroupRef:            cfg.Group,
-		Host:                host,
-		Port:                port,
-		AuthMiddleware:      authMiddleware,
-		AuthInfoHandler:     authInfoHandler,
-		TelemetryProvider:   telemetryProvider,
-		AuditConfig:         cfg.Audit,
-		HealthMonitorConfig: healthMonitorConfig,
-		Watcher:             backendWatcher,
-		StatusReporter:      statusReporter,
+		Name:                    cfg.Name,
+		Version:                 getVersion(),
+		GroupRef:                cfg.Group,
+		Host:                    host,
+		Port:                    port,
+		AuthMiddleware:          authMiddleware,
+		AuthInfoHandler:         authInfoHandler,
+		TelemetryProvider:       telemetryProvider,
+		AuditConfig:             cfg.Audit,
+		HealthMonitorConfig:     healthMonitorConfig,
+		StatusReportingInterval: statusReportingInterval,
+		Watcher:                 backendWatcher,
+		StatusReporter:          statusReporter,
 	}
 
 	if cfg.Optimizer != nil {

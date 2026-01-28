@@ -223,21 +223,17 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
 func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) error {
-	cfg := s.configProvider.GetConfig()
-
-	// Check if secrets provider is setup
-	if !cfg.Secrets.SetupCompleted {
-		return secrets.ErrSecretsNotSetup
+	// Use getSecretsManager to ensure provider is properly configured and accessible
+	// This will return 404 if provider is not set up
+	provider, err := s.getSecretsManager()
+	if err != nil {
+		return err
 	}
 
+	cfg := s.configProvider.GetConfig()
 	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
 		return fmt.Errorf("failed to get provider type: %w", err)
-	}
-	// Get provider capabilities
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		return fmt.Errorf("failed to access secrets provider: %w", err)
 	}
 
 	capabilities := provider.Capabilities()

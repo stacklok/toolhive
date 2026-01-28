@@ -63,6 +63,7 @@ func TestConfigValidate(t *testing.T) {
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
+	validUpstreams := []UpstreamConfig{{Name: "default", Config: validUpstream}}
 
 	tests := []struct {
 		name    string
@@ -70,14 +71,18 @@ func TestConfigValidate(t *testing.T) {
 		wantErr bool
 		errMsg  string
 	}{
-		{name: "missing issuer", config: Config{KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstream: validUpstream}, wantErr: true, errMsg: "issuer is required"},
-		{name: "nil HMAC secrets", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, Upstream: validUpstream}, wantErr: true, errMsg: "HMAC secrets are required"},
-		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstream: validUpstream}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
-		{name: "nil upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "upstream config is required"},
+		{name: "missing issuer", config: Config{KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "issuer is required"},
+		{name: "nil HMAC secrets", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secrets are required"},
+		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
+		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
+		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test"}}}, wantErr: true, errMsg: "config is required"},
+		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Config: validUpstream}, {Name: "second", Config: validUpstream}}}, wantErr: true, errMsg: "multiple upstreams not yet supported (found 2)"},
+		{name: "duplicate upstream names", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "same", Config: validUpstream}, {Name: "same", Config: validUpstream}}}, wantErr: true, errMsg: "multiple upstreams not yet supported"},
 
 		// Valid configs
-		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstream: validUpstream}},
-		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstream: validUpstream}},
+		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams}},
+		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams}},
+		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Config: validUpstream}}}},
 	}
 
 	for _, tt := range tests {
@@ -87,6 +92,36 @@ func TestConfigValidate(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
+}
+
+func TestConfigGetUpstream(t *testing.T) {
+	t.Parallel()
+
+	validUpstream := &upstream.OAuth2Config{
+		CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+
+	t.Run("returns nil for empty upstreams", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{}
+		if got := cfg.GetUpstream(); got != nil {
+			t.Errorf("GetUpstream() = %v, want nil", got)
+		}
+	})
+
+	t.Run("returns first upstream config", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			Upstreams: []UpstreamConfig{
+				{Name: "default", Config: validUpstream},
+			},
+		}
+		if got := cfg.GetUpstream(); got != validUpstream {
+			t.Errorf("GetUpstream() = %v, want %v", got, validUpstream)
+		}
+	})
 }
 
 func TestConfigApplyDefaults(t *testing.T) {

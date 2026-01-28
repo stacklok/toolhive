@@ -18,6 +18,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+// UpstreamConfig wraps an upstream IDP configuration with identifying metadata.
+type UpstreamConfig struct {
+	// Name uniquely identifies this upstream.
+	// Used for routing decisions and session binding in multi-upstream scenarios.
+	// If empty when only one upstream is configured, defaults to "default".
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+
+	// Config contains the OAuth 2.0 provider configuration.
+	Config *upstream.OAuth2Config `json:"config" yaml:"config"`
+}
+
 // Config is the pure configuration for the OAuth authorization server.
 // All values must be fully resolved (no file paths, no env vars).
 // This is the interface that consumers should use to configure the server.
@@ -55,9 +66,20 @@ type Config struct {
 	// If zero, defaults to 10 minutes.
 	AuthCodeLifespan time.Duration
 
-	// Upstream contains configuration for connecting to an upstream IDP.
-	// This field is required - the server delegates authentication to the upstream IDP.
-	Upstream *upstream.OAuth2Config
+	// Upstreams contains configurations for connecting to upstream IDPs.
+	// At least one upstream is required - the server delegates authentication to the upstream IDP.
+	// Currently only a single upstream is supported.
+	Upstreams []UpstreamConfig
+}
+
+// GetUpstream returns the primary upstream configuration.
+// For current single-upstream deployments, this returns the only configured upstream.
+// Returns nil if no upstreams are configured (call Validate first).
+func (c *Config) GetUpstream() *upstream.OAuth2Config {
+	if len(c.Upstreams) == 0 {
+		return nil
+	}
+	return c.Upstreams[0].Config
 }
 
 // Validate checks that the Config is valid.
@@ -77,17 +99,52 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("HMAC secret must be at least %d bytes", servercrypto.MinSecretLength)
 	}
 
-	if c.Upstream == nil {
-		return fmt.Errorf("upstream config is required")
-	}
-	if err := c.Upstream.Validate(); err != nil {
-		return fmt.Errorf("upstream config: %w", err)
+	if err := c.validateUpstreams(); err != nil {
+		return err
 	}
 
 	logger.Debugw("authserver config validation passed",
 		"issuer", c.Issuer,
-		"hasUpstream", c.Upstream != nil,
+		"upstreamCount", len(c.Upstreams),
 	)
+	return nil
+}
+
+// validateUpstreams validates the upstream configurations.
+func (c *Config) validateUpstreams() error {
+	if len(c.Upstreams) == 0 {
+		return fmt.Errorf("at least one upstream is required")
+	}
+	if len(c.Upstreams) > 1 {
+		return fmt.Errorf("multiple upstreams not yet supported (found %d)", len(c.Upstreams))
+	}
+
+	// Track names for uniqueness checking
+	seenNames := make(map[string]bool)
+
+	for i := range c.Upstreams {
+		up := &c.Upstreams[i]
+
+		// Default empty name to "default"
+		if up.Name == "" {
+			up.Name = "default"
+		}
+
+		// Check for duplicate names
+		if seenNames[up.Name] {
+			return fmt.Errorf("duplicate upstream name: %q", up.Name)
+		}
+		seenNames[up.Name] = true
+
+		// Validate the upstream config
+		if up.Config == nil {
+			return fmt.Errorf("upstream %q: config is required", up.Name)
+		}
+		if err := up.Config.Validate(); err != nil {
+			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	}
+
 	return nil
 }
 

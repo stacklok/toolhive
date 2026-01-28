@@ -14,39 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
-func TestClientConfigValidate(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		client  ClientConfig
-		wantErr bool
-		errMsg  string
-	}{
-		// Config-level validation
-		{name: "missing client ID", client: ClientConfig{RedirectURIs: []string{"http://localhost/cb"}}, wantErr: true, errMsg: "client id is required"},
-		{name: "missing redirect URIs", client: ClientConfig{ID: "c"}, wantErr: true, errMsg: "at least one redirect_uri is required"},
-		{name: "empty redirect URIs", client: ClientConfig{ID: "c", RedirectURIs: []string{}}, wantErr: true, errMsg: "at least one redirect_uri is required"},
-		{name: "confidential without secret", client: ClientConfig{ID: "c", RedirectURIs: []string{"http://localhost/cb"}, Public: false}, wantErr: true, errMsg: "secret is required"},
-
-		// Valid clients
-		{name: "valid confidential", client: ClientConfig{ID: "c", Secret: "s", RedirectURIs: []string{"http://localhost/cb"}}},
-		{name: "valid public", client: ClientConfig{ID: "c", RedirectURIs: []string{"http://localhost/cb"}, Public: true}},
-		{name: "valid custom scheme", client: ClientConfig{ID: "c", RedirectURIs: []string{"cursor://cb"}, Public: true}},
-
-		// Redirect URI validation (one case to verify delegation to oauth package)
-		{name: "invalid redirect URI", client: ClientConfig{ID: "c", RedirectURIs: []string{"http://evil.com/cb"}, Public: true}, wantErr: true, errMsg: "redirect_uri[0]:"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := tt.client.Validate()
-			assertError(t, err, tt.wantErr, tt.errMsg)
-		})
-	}
-}
-
 func TestValidateIssuerURL(t *testing.T) {
 	t.Parallel()
 
@@ -107,11 +74,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil HMAC secrets", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, Upstream: validUpstream}, wantErr: true, errMsg: "HMAC secrets are required"},
 		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstream: validUpstream}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
 		{name: "nil upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "upstream config is required"},
-		{name: "invalid client", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstream: validUpstream, Clients: []ClientConfig{{}}}, wantErr: true, errMsg: "client 0:"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstream: validUpstream}},
-		{name: "valid with client", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstream: validUpstream, Clients: []ClientConfig{{ID: "c", Secret: "s", RedirectURIs: []string{"http://localhost/cb"}}}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstream: validUpstream}},
 	}
 

@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 )
 
 // Config is the pure configuration for the OAuth authorization server.
@@ -56,29 +55,9 @@ type Config struct {
 	// If zero, defaults to 10 minutes.
 	AuthCodeLifespan time.Duration
 
-	// Clients is the list of pre-registered OAuth clients.
-	Clients []ClientConfig
-
 	// Upstream contains configuration for connecting to an upstream IDP.
 	// This field is required - the server delegates authentication to the upstream IDP.
 	Upstream *upstream.OAuth2Config
-}
-
-// ClientConfig defines a pre-registered OAuth client.
-type ClientConfig struct {
-	// ID is the unique identifier for this client.
-	ID string `json:"id" yaml:"id"`
-
-	// Secret is the client secret. Required for confidential clients.
-	// For public clients, this should be empty.
-	Secret string `json:"secret,omitempty" yaml:"secret,omitempty"`
-
-	// RedirectURIs is the list of allowed redirect URIs for this client.
-	RedirectURIs []string `json:"redirect_uris" yaml:"redirect_uris"`
-
-	// Public indicates whether this is a public client (e.g., native app, SPA).
-	// Public clients do not have a secret.
-	Public bool `json:"public,omitempty" yaml:"public,omitempty"`
 }
 
 // Validate checks that the Config is valid.
@@ -98,12 +77,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("HMAC secret must be at least %d bytes", servercrypto.MinSecretLength)
 	}
 
-	for i, client := range c.Clients {
-		if err := client.Validate(); err != nil {
-			return fmt.Errorf("client %d: %w", i, err)
-		}
-	}
-
 	if c.Upstream == nil {
 		return fmt.Errorf("upstream config is required")
 	}
@@ -113,38 +86,8 @@ func (c *Config) Validate() error {
 
 	logger.Debugw("authserver config validation passed",
 		"issuer", c.Issuer,
-		"clientCount", len(c.Clients),
 		"hasUpstream", c.Upstream != nil,
 	)
-	return nil
-}
-
-// Validate checks that the ClientConfig is valid.
-func (c *ClientConfig) Validate() error {
-	logger.Debugw("validating client config", "clientID", c.ID, "public", c.Public)
-
-	if c.ID == "" {
-		return fmt.Errorf("client id is required")
-	}
-
-	if len(c.RedirectURIs) == 0 {
-		return fmt.Errorf("at least one redirect_uri is required")
-	}
-
-	// Validate each redirect URI per RFC 6749/8252.
-	// Static clients allow private-use schemes (e.g., cursor://, vscode://)
-	// for native app support per RFC 8252 Section 7.1.
-	for i, uri := range c.RedirectURIs {
-		if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyAllowPrivateSchemes); err != nil {
-			return fmt.Errorf("redirect_uri[%d]: %w", i, err)
-		}
-	}
-
-	if !c.Public && c.Secret == "" {
-		return fmt.Errorf("secret is required for confidential clients")
-	}
-
-	logger.Debugw("client config validated", "clientID", c.ID, "redirectURICount", len(c.RedirectURIs))
 	return nil
 }
 

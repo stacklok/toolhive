@@ -139,3 +139,200 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			"response should be 403 Forbidden for non-admin user")
 	})
 }
+
+// TestNewIncomingAuthMiddleware_AuthzApproveAndBlock tests that Cedar authorization
+// correctly approves permitted requests and blocks denied requests in the same policy.
+func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
+	t.Parallel()
+
+	// Policy that permits list_tools but denies call_tool
+	cfg := &config.IncomingAuthConfig{
+		Type: "anonymous",
+		Authz: &config.AuthzConfig{
+			Type: "cedar",
+			Policies: []string{
+				`permit(principal, action == Action::"list_tools", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource);`,
+			},
+		},
+	}
+
+	middleware, _, err := NewIncomingAuthMiddleware(t.Context(), cfg)
+	require.NoError(t, err, "middleware creation should succeed")
+	require.NotNil(t, middleware, "middleware should not be nil")
+
+	t.Run("list_tools_is_permitted", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := middleware(testHandler)
+
+		// Request to list tools - should be ALLOWED
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "tools/list",
+			"id":      1,
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.True(t, handlerCalled,
+			"handler SHOULD be called - Cedar policy permits tools/list requests")
+		assert.Equal(t, http.StatusOK, recorder.Code,
+			"response should be 200 OK when Cedar policy permits the request")
+	})
+
+	t.Run("call_tool_is_blocked", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := middleware(testHandler)
+
+		// Request to call a tool - should be DENIED
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "tools/call",
+			"id":      1,
+			"params": map[string]any{
+				"name":      "some_tool",
+				"arguments": map[string]any{},
+			},
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.False(t, handlerCalled,
+			"handler should NOT be called - Cedar policy forbids tools/call requests")
+		assert.Equal(t, http.StatusForbidden, recorder.Code,
+			"response should be 403 Forbidden when Cedar policy denies the request")
+	})
+
+	t.Run("read_resource_is_blocked_by_default_deny", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := middleware(testHandler)
+
+		// Request to read a resource - not explicitly permitted, so should be DENIED (default deny)
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "resources/read",
+			"id":      1,
+			"params": map[string]any{
+				"uri": "file:///etc/passwd",
+			},
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.False(t, handlerCalled,
+			"handler should NOT be called - no permit policy for resources/read (default deny)")
+		assert.Equal(t, http.StatusForbidden, recorder.Code,
+			"response should be 403 Forbidden when no policy permits the request")
+	})
+
+	t.Run("list_operations_pass_through_for_filtering", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			// Return a valid JSON-RPC response that the filter can process
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"prompts":[]}}`))
+		})
+
+		wrapped := middleware(testHandler)
+
+		// List operations are not blocked - they pass through and get filtered
+		// This is the expected behavior for prompts/list, resources/list, etc.
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "prompts/list",
+			"id":      1,
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		// List operations pass through - filtering happens on the response
+		assert.True(t, handlerCalled,
+			"handler SHOULD be called - list operations pass through for response filtering")
+		assert.Equal(t, http.StatusOK, recorder.Code,
+			"response should be 200 OK - list operations are allowed (filtering happens on response)")
+	})
+
+	t.Run("get_prompt_is_blocked_by_default_deny", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := middleware(testHandler)
+
+		// Request to get a specific prompt - not explicitly permitted, should be DENIED
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "prompts/get",
+			"id":      1,
+			"params": map[string]any{
+				"name": "secret_prompt",
+			},
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.False(t, handlerCalled,
+			"handler should NOT be called - no permit policy for prompts/get (default deny)")
+		assert.Equal(t, http.StatusForbidden, recorder.Code,
+			"response should be 403 Forbidden when no policy permits the request")
+	})
+}

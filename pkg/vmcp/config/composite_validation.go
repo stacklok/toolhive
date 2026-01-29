@@ -571,9 +571,11 @@ func uniqueStepFieldRefs(refs []stepFieldRef) []stepFieldRef {
 	return result
 }
 
-// ValidateTemplate validates Go template syntax.
+// ValidateTemplate validates Go template syntax including custom functions.
+// It uses the same FuncMap as the runtime template expander to ensure
+// templates using json, quote, or fromJson are validated correctly.
 func ValidateTemplate(tmpl string) error {
-	_, err := template.New("validation").Parse(tmpl)
+	_, err := template.New("validation").Funcs(templates.FuncMap()).Parse(tmpl)
 	if err != nil {
 		return fmt.Errorf("invalid template syntax: %w", err)
 	}

@@ -23,6 +23,7 @@ import (
 	fositehandler "github.com/ory/fosite/handler/oauth2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	authserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -1169,4 +1170,186 @@ func TestIntegration_UpstreamTokensStored(t *testing.T) {
 
 	finalStats := ts.Storage.Stats()
 	assert.Greater(t, finalStats.UpstreamTokens, initialStats.UpstreamTokens, "upstream tokens should be stored after successful auth")
+}
+
+// ============================================================================
+// Security Integration Tests using x/oauth2 for realistic client behavior
+// ============================================================================
+
+// newOAuth2Config creates an oauth2.Config for testing against the given server.
+// This provides a realistic OAuth2 client that can be used to validate server behavior.
+func newOAuth2Config(serverURL, clientID, redirectURI string, scopes []string) *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:    clientID,
+		RedirectURL: redirectURI,
+		Scopes:      scopes,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  serverURL + "/oauth/authorize",
+			TokenURL: serverURL + "/oauth/token",
+		},
+	}
+}
+
+// oauth2Exchange exchanges an authorization code for tokens using x/oauth2.
+// This validates that our server works with standard OAuth2 clients.
+func oauth2Exchange(
+	t *testing.T,
+	cfg *oauth2.Config,
+	code string,
+	verifier string,
+) (*oauth2.Token, error) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier))
+}
+
+// oauth2RefreshToken uses a refresh token to get new tokens using x/oauth2.
+func oauth2RefreshToken(
+	t *testing.T,
+	cfg *oauth2.Config,
+	refreshToken string,
+) (*oauth2.Token, error) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create a token source from the refresh token
+	token := &oauth2.Token{RefreshToken: refreshToken}
+	tokenSource := cfg.TokenSource(ctx, token)
+
+	return tokenSource.Token()
+}
+
+// TestIntegration_ClientBinding_CodeTheftPrevention verifies that an authorization code
+// cannot be exchanged by a different client than the one that initiated the flow.
+// This prevents authorization code theft attacks per RFC 6749 Section 4.1.3.
+func TestIntegration_ClientBinding_CodeTheftPrevention(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	// Register a second client (attacker's client)
+	attackerClientID := "attacker-client"
+	attackerRedirectURI := "http://localhost:9090/attacker-callback"
+	err := ts.Storage.RegisterClient(context.Background(), &fosite.DefaultClient{
+		ID:            attackerClientID,
+		Secret:        nil,
+		RedirectURIs:  []string{attackerRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        []string{"openid", "profile", "email"},
+		Public:        true,
+	})
+	require.NoError(t, err)
+
+	// Legitimate client initiates authorization flow
+	verifier, challenge := generatePKCE(t)
+	authCode := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "legitimate-state",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	// Attacker uses x/oauth2 client to try exchanging the stolen code
+	attackerConfig := newOAuth2Config(ts.Server.URL, attackerClientID, attackerRedirectURI, []string{"openid", "profile"})
+
+	// Attacker tries to exchange the code with their client configuration
+	_, err = oauth2Exchange(t, attackerConfig, authCode, verifier)
+
+	// Must reject: client binding violation (code was issued to testClientID, not attackerClientID)
+	require.Error(t, err, "should reject code theft attempt")
+	assert.Contains(t, err.Error(), "oauth2", "error should be from oauth2 exchange")
+}
+
+// TestIntegration_RedirectURIMismatch verifies that the redirect_uri at the token endpoint
+// must exactly match the redirect_uri from the authorization request.
+// RFC 6749 Section 4.1.3: redirect_uri parameter value is identical to the value
+// included in the initial authorization request.
+func TestIntegration_RedirectURIMismatch(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	verifier, challenge := generatePKCE(t)
+
+	// Complete authorization with correct redirect URI
+	authCode := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "state-redirect-test",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	// Try to exchange with different redirect URI
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {"http://localhost:8080/different-callback"}, // Different!
+		"code_verifier": {verifier},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+
+	require.GreaterOrEqual(t, resp.StatusCode, 400, "should reject redirect URI mismatch")
+
+	errResp := parseTokenResponse(t, resp)
+	errorField, ok := errResp["error"].(string)
+	require.True(t, ok, "error should be present")
+	assert.NotEmpty(t, errorField)
+}
+
+// TestIntegration_RefreshToken_ClientBinding verifies that a refresh token
+// cannot be used by a different client than the one it was issued to.
+// RFC 6749 Section 10.4: Authorization server MUST verify binding between
+// refresh token and client identity.
+func TestIntegration_RefreshToken_ClientBinding(t *testing.T) {
+	t.Parallel()
+
+	ts := integrationTestSetup(t)
+
+	// Register a second client (the attacker)
+	attackerClientID := "attacker-refresh-client"
+	attackerRedirectURI := "http://localhost:9999/callback"
+	err := ts.Storage.RegisterClient(context.Background(), &fosite.DefaultClient{
+		ID:            attackerClientID,
+		Secret:        nil,
+		RedirectURIs:  []string{attackerRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        []string{"openid", "profile", "offline_access"},
+		Public:        true,
+	})
+	require.NoError(t, err)
+
+	// Generate PKCE verifier and challenge
+	verifier, challenge := generatePKCE(t)
+
+	// Create auth code session for legitimate client requesting offline_access for refresh token
+	authCode := createAuthCodeSession(t, ts, challenge, []string{"openid", "profile", "offline_access"})
+
+	// Legitimate client uses x/oauth2 to exchange code for tokens
+	legitimateConfig := newOAuth2Config(ts.Server.URL, testClientID, testRedirectURI, []string{"openid", "profile", "offline_access"})
+	token, err := oauth2Exchange(t, legitimateConfig, authCode, verifier)
+	require.NoError(t, err, "legitimate client exchange should succeed")
+	require.NotEmpty(t, token.RefreshToken, "should have refresh token")
+
+	// Attacker uses x/oauth2 client to try using the stolen refresh token
+	attackerConfig := newOAuth2Config(ts.Server.URL, attackerClientID, attackerRedirectURI, []string{"openid", "profile", "offline_access"})
+	_, err = oauth2RefreshToken(t, attackerConfig, token.RefreshToken)
+
+	// Must reject: refresh token client binding violation (RFC 6749 Section 10.4)
+	require.Error(t, err, "should reject refresh token theft")
+	assert.Contains(t, err.Error(), "oauth2", "error should be from oauth2 refresh")
 }

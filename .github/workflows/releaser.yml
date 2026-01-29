@@ -187,9 +187,9 @@ jobs:
       id-token: write
     uses: ./.github/workflows/helm-publish.yml
 
-  update-docs-website-binaries:
-    name: Trigger Docs Update for Binaries
-    needs: [ release-binaries ]
+  update-docs-website:
+    name: Trigger Docs Update
+    needs: [ publish-helm ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     with:
@@ -257,7 +257,7 @@ jobs:
       - compute-build-flags
       - release-binaries
       - image-build-and-push
-      - update-docs-website-binaries
+      - update-docs-website
       - publish-helm
     if: ${{ failure() }}
     runs-on: ubuntu-slim

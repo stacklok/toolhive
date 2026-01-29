@@ -53,7 +53,6 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) error {
 	// Validate input
 	if provider == "" {
-		fmt.Println("validation error: provider cannot be empty")
 		return fmt.Errorf("validation error: provider cannot be empty")
 	}
 
@@ -87,7 +86,6 @@ func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) erro
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	fmt.Printf("Secrets provider type updated to: %s\n", provider)
 	return nil
 }
 

@@ -146,7 +146,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if req.Password != "" {
 			// Use provided password
 			passwordToUse = req.Password
-			logger.Infof("Using provided password for encrypted provider setup")
+			logger.Debugf("Using provided password for encrypted provider setup")
 		} else {
 			// Generate a secure random password
 			generatedPassword, err := secrets.GenerateSecurePassword()
@@ -154,7 +154,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 				return fmt.Errorf("failed to generate secure password: %w", err)
 			}
 			passwordToUse = generatedPassword
-			logger.Infof("Generated secure random password for encrypted provider setup")
+			logger.Debugf("Generated secure random password for encrypted provider setup")
 		}
 	}
 
@@ -177,7 +177,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return fmt.Errorf("failed to initialize encrypted provider: %w", err)
 		}
-		logger.Info("Encrypted provider initialized and password saved to keyring")
+		logger.Debugf("Encrypted provider initialized and password saved to keyring")
 	}
 
 	// Update the secrets provider type and mark setup as completed

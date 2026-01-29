@@ -1870,3 +1870,147 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, existingPID, statusFile2.ProcessID, "PID should remain unchanged for second workload")
 }
+
+func TestFileStatusManager_IsRemoteWorkload_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configJSON  string
+		expected    bool
+		setupMock   func(*stateMocks.MockStore)
+		expectErr   bool
+		expectedErr error
+	}{
+		{
+			name:       "remote workload with URL",
+			configJSON: `{"remote_url": "https://example.com"}`,
+			expected:   true,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"remote_url": "https://example.com"}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: false,
+		},
+		{
+			name:       "local workload without remote_url field",
+			configJSON: `{"name": "test-workload"}`,
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload"}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: false,
+		},
+		{
+			name:       "edge case - remote_url in string value (false positive with old implementation)",
+			configJSON: `{"description": "Set \"remote_url\" in config to enable remote mode"}`,
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"description": "Set \"remote_url\" in config to enable remote mode"}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: false,
+		},
+		{
+			name:       "remote_url field is empty string",
+			configJSON: `{"remote_url": ""}`,
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"remote_url": ""}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: false,
+		},
+		{
+			name:       "remote_url field with whitespace only",
+			configJSON: `{"remote_url": "   "}`,
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"remote_url": "   "}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: false,
+		},
+		{
+			name:       "workload does not exist",
+			configJSON: "",
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(false, nil)
+			},
+			expectErr:   true,
+			expectedErr: rt.ErrWorkloadNotFound,
+		},
+		{
+			name:       "error from Exists call",
+			configJSON: "",
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(false, errors.New("store error"))
+			},
+			expectErr:   true,
+			expectedErr: errors.New("store error"),
+		},
+		{
+			name:       "error from GetReader call",
+			configJSON: "",
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(nil, errors.New("reader error"))
+			},
+			expectErr:   true,
+			expectedErr: errors.New("reader error"),
+		},
+		{
+			name:       "invalid JSON causes decode error",
+			configJSON: `{"invalid": json}`,
+			expected:   false,
+			setupMock: func(mockStore *stateMocks.MockStore) {
+				mockStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil)
+				mockReader := io.NopCloser(strings.NewReader(`{"invalid": json}`))
+				mockStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil)
+			},
+			expectErr: true,
+			// JSON decode errors don't have a specific error type, just check that it's an error
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, _, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := context.Background()
+
+			tt.setupMock(mockRunConfigStore)
+
+			result, err := manager.isRemoteWorkload(ctx, "test-workload")
+
+			if tt.expectErr {
+				assert.Error(t, err)
+				if tt.expectedErr != nil {
+					if tt.expectedErr == rt.ErrWorkloadNotFound {
+						assert.Equal(t, rt.ErrWorkloadNotFound, err)
+					} else {
+						assert.Equal(t, tt.expectedErr.Error(), err.Error())
+					}
+				}
+				assert.False(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result, "expected %v, got %v for JSON: %s", tt.expected, result, tt.configJSON)
+			}
+		})
+	}
+}

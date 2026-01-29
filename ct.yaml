@@ -1,5 +1,16 @@
-chart-dirs:
-  - deploy/charts
+# Configuration for chart-testing (ct) install command
+# See: https://github.com/helm/chart-testing
+
+charts:
+  - deploy/charts/operator-crds
+  - deploy/charts/operator
+
+# Do not require version bump on every PR - we handle releases separately
+check-version-increment: false
+
 validate-maintainers: false
 remote: origin
 target-branch: main
+
+# Helm install options
+helm-extra-args: --timeout 120s

@@ -120,6 +120,11 @@ type Config struct {
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
 
+	// StatusReportingInterval is the interval for reporting status updates.
+	// If zero, defaults to 30 seconds.
+	// Lower values provide faster status updates but increase API server load.
+	StatusReportingInterval time.Duration
+
 	// Watcher is the optional Kubernetes backend watcher for dynamic mode.
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
@@ -206,11 +211,6 @@ type Server struct {
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
-
-	// statusReportingCtx controls the lifecycle of the periodic status reporting goroutine.
-	// Created in Start(), cancelled in Stop() or on Start() error paths.
-	statusReportingCtx    context.Context
-	statusReportingCancel context.CancelFunc
 
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
@@ -548,12 +548,24 @@ func (s *Server) Start(ctx context.Context) error {
 
 		// Create internal context for status reporting goroutine lifecycle
 		// This ensures the goroutine is cleaned up on all exit paths
-		s.statusReportingCtx, s.statusReportingCancel = context.WithCancel(ctx)
+		statusReportingCtx, statusReportingCancel := context.WithCancel(ctx)
 
-		// Start periodic status reporting in background with internal context
+		// Prepare status reporting config
 		statusConfig := DefaultStatusReportingConfig()
 		statusConfig.Reporter = s.statusReporter
-		go s.periodicStatusReporting(s.statusReportingCtx, statusConfig)
+		if s.config.StatusReportingInterval > 0 {
+			statusConfig.Interval = s.config.StatusReportingInterval
+		}
+
+		// Start periodic status reporting in background
+		go s.periodicStatusReporting(statusReportingCtx, statusConfig)
+
+		// Append cancel function to shutdownFuncs for cleanup
+		// Done after starting goroutine to avoid race if Stop() is called immediately
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			statusReportingCancel()
+			return nil
+		})
 	}
 
 	// Wait for either context cancellation or server error
@@ -612,12 +624,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Cancel status reporting goroutine if running
-	if s.statusReportingCancel != nil {
-		s.statusReportingCancel()
-	}
-
-	// Run shutdown functions (e.g., status reporter, future components)
+	// Run shutdown functions (e.g., status reporter cleanup, future components)
 	for _, shutdown := range s.shutdownFuncs {
 		if err := shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("failed to execute shutdown function: %w", err))

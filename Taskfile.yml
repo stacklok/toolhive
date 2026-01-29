@@ -8,22 +8,23 @@ includes:
 tasks:
   docs:
     desc: Regenerate the docs
-    deps: [swagger-install, helm-docs-install]
+    deps: [swagger-install, helm-docs]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
       - swag init -g pkg/api/server.go --v3.1 -o docs/server
-      - helm-docs --chart-search-root=deploy/charts --template-files=./_templates.gotmpl --template-files=README.md.gotmpl
+      - task: helm-docs
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
       - go install github.com/swaggo/swag/v2/cmd/swag@latest
 
-  helm-docs-install:
-    desc: Install the helm-docs tool to regenerate Helm chart documentation
+  helm-docs:
+    desc: Generate Helm chart documentation
     cmds:
-      - go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+      - command -v helm-docs >/dev/null 2>&1 || go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+      - helm-docs --chart-search-root=deploy/charts
 
   mock-install:
     desc: Install the mockgen tool for mock generation

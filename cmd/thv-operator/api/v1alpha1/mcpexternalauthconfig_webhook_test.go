@@ -351,6 +351,503 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 			expectError: true,
 			errorMsg:    "headerInjection must not be set when type is 'bearerToken'",
 		},
+		// embeddedAuthServer test cases
+		{
+			name: "valid embeddedAuthServer with OIDC upstream",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-oidc",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid embeddedAuthServer with OAuth2 upstream",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-oauth2",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "github",
+								Type: UpstreamProviderTypeOAuth2,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+									TokenEndpoint:         "https://github.com/login/oauth/access_token",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://api.github.com/user"},
+									ClientID:              "github-client-id",
+									RedirectURI:           "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "embeddedAuthServer without config should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+				},
+			},
+			expectError: true,
+			errorMsg:    "embeddedAuthServer configuration is required when type is 'embeddedAuthServer'",
+		},
+		{
+			name: "embeddedAuthServer with tokenExchange should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						Audience: "backend-service",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "tokenExchange must not be set when type is 'embeddedAuthServer'",
+		},
+		{
+			name: "embeddedAuthServer with headerInjection should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+					HeaderInjection: &HeaderInjectionConfig{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "headerInjection must not be set when type is 'embeddedAuthServer'",
+		},
+		{
+			name: "embeddedAuthServer with bearerToken should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "bearerToken must not be set when type is 'embeddedAuthServer'",
+		},
+		{
+			name: "OIDC upstream with oauth2Config set should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "mixed",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://example.com/auth",
+									TokenEndpoint:         "https://example.com/token",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://example.com/userinfo"},
+									ClientID:              "client-id",
+									RedirectURI:           "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "oauth2Config must not be set when type is 'oidc'",
+		},
+		{
+			name: "OAuth2 upstream with oidcConfig set should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "mixed",
+								Type: UpstreamProviderTypeOAuth2,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://example.com/auth",
+									TokenEndpoint:         "https://example.com/token",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://example.com/userinfo"},
+									ClientID:              "client-id",
+									RedirectURI:           "https://auth.example.com/callback",
+								},
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "oidcConfig must not be set when type is 'oauth2'",
+		},
+		{
+			name: "OIDC upstream missing oidcConfig should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "missing-config",
+								Type: UpstreamProviderTypeOIDC,
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "oidcConfig is required when type is 'oidc'",
+		},
+		{
+			name: "OAuth2 upstream missing oauth2Config should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "missing-config",
+								Type: UpstreamProviderTypeOAuth2,
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "oauth2Config is required when type is 'oauth2'",
+		},
+		{
+			name: "tokenExchange with embeddedAuthServer should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						Audience: "backend-service",
+					},
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "embeddedAuthServer must not be set when type is 'tokenExchange'",
+		},
+		{
+			name: "headerInjection with embeddedAuthServer should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &HeaderInjectionConfig{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+					},
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "embeddedAuthServer must not be set when type is 'headerInjection'",
+		},
+		{
+			name: "bearerToken with embeddedAuthServer should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeBearerToken,
+					BearerToken: &BearerTokenConfig{
+						TokenSecretRef: &SecretKeyRef{
+							Name: "bearer-token-secret",
+							Key:  "token",
+						},
+					},
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "embeddedAuthServer must not be set when type is 'bearerToken'",
+		},
+		{
+			name: "unauthenticated with embeddedAuthServer should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []SecretKeyRef{
+							{Name: "signing-key-secret", Key: "private-key"},
+						},
+						HMACSecretRefs: []SecretKeyRef{
+							{Name: "hmac-secret", Key: "secret"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			errorMsg:      "embeddedAuthServer must not be set when type is 'unauthenticated'",
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
+		},
 	}
 
 	for _, tt := range tests {

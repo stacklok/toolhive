@@ -793,8 +793,23 @@
                     "bearer_token_file": {
                         "type": "string"
                     },
+                    "cached_client_id": {
+                        "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
+                        "type": "string"
+                    },
+                    "cached_client_secret_ref": {
+                        "type": "string"
+                    },
                     "cached_refresh_token_ref": {
                         "description": "Cached OAuth token reference for persistence across restarts.\nThe refresh token is stored securely in the secret manager, and this field\ncontains the reference to retrieve it (e.g., \"OAUTH_REFRESH_TOKEN_workload\").\nThis enables session restoration without requiring a new browser-based login.",
+                        "type": "string"
+                    },
+                    "cached_reg_token_ref": {
+                        "description": "RegistrationAccessToken is used to update/delete the client registration.\nStored as a secret reference since it's sensitive.",
+                        "type": "string"
+                    },
+                    "cached_secret_expiry": {
+                        "description": "ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).\nA zero value means the secret does not expire.",
                         "type": "string"
                     },
                     "cached_token_expiry": {

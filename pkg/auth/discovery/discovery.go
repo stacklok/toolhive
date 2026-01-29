@@ -510,6 +510,10 @@ type OAuthFlowResult struct {
 	AccessToken  string
 	RefreshToken string
 	Expiry       time.Time
+
+	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
+	ClientID     string
+	ClientSecret string
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -691,6 +695,8 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		AccessToken:  tokenResult.AccessToken,
 		RefreshToken: tokenResult.RefreshToken,
 		Expiry:       tokenResult.Expiry,
+		ClientID:     oauthConfig.ClientID,
+		ClientSecret: oauthConfig.ClientSecret,
 	}, nil
 }
 

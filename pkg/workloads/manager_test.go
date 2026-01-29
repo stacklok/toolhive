@@ -638,13 +638,14 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		workloadName string
-		runConfig    *runner.RunConfig
-		foreground   bool
-		setupMocks   func(*statusMocks.MockStatusManager)
-		expectError  bool
-		errorMsg     string
+		name            string
+		workloadName    string
+		runConfig       *runner.RunConfig
+		foreground      bool
+		setupMocks      func(*statusMocks.MockStatusManager)
+		mockFindProcess func(int) (bool, error) // optional: mock for findProcessFunc
+		expectError     bool
+		errorMsg        string
 	}{
 		{
 			name:         "remote workload already running with healthy supervisor",
@@ -662,6 +663,8 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 				// Check if supervisor is alive - return valid PID (supervisor is healthy)
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
 			},
+			// Mock process as alive for healthy supervisor test
+			mockFindProcess: func(_ int) (bool, error) { return true, nil },
 			// With healthy supervisor, restart should return early (no-op)
 			expectError: false,
 		},
@@ -692,6 +695,34 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 			errorMsg:    "failed to load state",
 		},
 		{
+			name:         "remote workload with zombie supervisor (PID exists but process dead)",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// PID file exists with a valid PID, but process is dead (zombie scenario)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+				// With zombie supervisor detected, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Mock process as dead - this is the zombie scenario where PID file exists but process is gone
+			mockFindProcess: func(_ int) (bool, error) { return false, nil },
+			// Restart proceeds to load state which fails in tests
+			expectError: true,
+			errorMsg:    "failed to load state",
+		},
+		{
 			name:         "status manager error",
 			workloadName: "remote-workload",
 			runConfig: &runner.RunConfig{
@@ -718,7 +749,8 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 			tt.setupMocks(statusMgr)
 
 			manager := &DefaultManager{
-				statuses: statusMgr,
+				statuses:    statusMgr,
+				findProcess: tt.mockFindProcess, // inject mock (nil uses default)
 			}
 
 			err := manager.restartRemoteWorkload(context.Background(), tt.workloadName, tt.runConfig, tt.foreground)
@@ -739,12 +771,13 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		workloadName string
-		foreground   bool
-		setupMocks   func(*statusMocks.MockStatusManager, *runtimeMocks.MockRuntime)
-		expectError  bool
-		errorMsg     string
+		name            string
+		workloadName    string
+		foreground      bool
+		setupMocks      func(*statusMocks.MockStatusManager, *runtimeMocks.MockRuntime)
+		mockFindProcess func(int) (bool, error) // optional: mock for findProcessFunc
+		expectError     bool
+		errorMsg        string
 	}{
 		{
 			name:         "container workload already running with healthy supervisor",
@@ -766,6 +799,8 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 				// Check if supervisor is alive - return valid PID (supervisor is healthy)
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(12345, nil)
 			},
+			// Mock process as alive for healthy supervisor test
+			mockFindProcess: func(_ int) (bool, error) { return true, nil },
 			// With healthy supervisor, restart should return early (no-op)
 			expectError: false,
 		},
@@ -833,8 +868,9 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 			tt.setupMocks(statusMgr, runtimeMgr)
 
 			manager := &DefaultManager{
-				statuses: statusMgr,
-				runtime:  runtimeMgr,
+				statuses:    statusMgr,
+				runtime:     runtimeMgr,
+				findProcess: tt.mockFindProcess, // inject mock (nil uses default)
 			}
 
 			err := manager.restartContainerWorkload(context.Background(), tt.workloadName, tt.foreground)
@@ -871,7 +907,8 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(12345, nil)
 
 		manager := &DefaultManager{
-			statuses: statusMgr,
+			statuses:    statusMgr,
+			findProcess: func(_ int) (bool, error) { return true, nil }, // mock: process alive
 		}
 
 		runConfig := &runner.RunConfig{
@@ -949,8 +986,9 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(12345, nil)
 
 		manager := &DefaultManager{
-			statuses: statusMgr,
-			runtime:  runtimeMgr,
+			statuses:    statusMgr,
+			runtime:     runtimeMgr,
+			findProcess: func(_ int) (bool, error) { return true, nil }, // mock: process alive
 		}
 
 		err := manager.restartContainerWorkload(context.Background(), "test-workload", false)

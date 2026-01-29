@@ -32,9 +32,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
-	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -141,29 +139,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Discover backends from the MCPGroup
-	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to discover backends")
-		// Don't fail reconciliation if backend discovery fails, but log the error
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
-			fmt.Sprintf("Failed to discover backends: %v", err),
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-	} else {
-		statusManager.SetDiscoveredBackends(discoveredBackends)
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
-			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
-			metav1.ConditionTrue,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
-	}
+	// Backend discovery and health reporting is now delegated to the vMCP runtime (StatusReporter).
+	// The runtime reports status.discoveredBackends, status.backendCount, backend health, and
+	// BackendsDiscovered condition based on actual MCP connectivity and health checks.
+	//
+	// Controller responsibilities (infrastructure-only):
+	// - RBAC (ServiceAccount, Role, RoleBinding)
+	// - Deployment, Service, ConfigMap
+	// - GroupRef validation
+	// - Infrastructure conditions (DeploymentReady, ServiceReady)
+	// - status.URL
+	//
+	// Runtime responsibilities (via StatusReporter with VMCP_NAME/VMCP_NAMESPACE env vars):
+	// - Backend discovery from MCPGroup
+	// - Backend health monitoring (ready/degraded/unavailable)
+	// - status.Phase (Ready/Degraded/Failed)
+	// - status.discoveredBackends with health status
+	// - status.backendCount
+	// - BackendsDiscovered condition
 
 	// Fetch the latest version before updating status to ensure we use the current Generation
 	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
@@ -499,10 +492,12 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures RBAC resources for VirtualMCPServer in dynamic mode.
-// In static mode, RBAC creation is skipped. When switching dynamic→static, existing RBAC
-// resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
-// This follows standard Kubernetes garbage collection patterns.
+// ensureRBACResources ensures RBAC resources for VirtualMCPServer.
+// RBAC resources are created in all modes (discovered and inline) to support:
+// - Backend discovery (discovered mode only)
+// - Status reporting via K8sReporter (all modes)
+//
+// When a custom ServiceAccount is provided, RBAC creation is skipped.
 //
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
@@ -510,21 +505,15 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
-	// Determine the outgoing auth source mode
-	source := outgoingAuthSource(vmcp)
-
-	// Static mode (inline): Skip RBAC creation/deletion
-	// Existing resources from dynamic mode persist until VirtualMCPServer deletion
-	if source == OutgoingAuthSourceInline {
-		return nil
-	}
-
 	// If a service account is specified, we don't need to create one
 	if vmcp.Spec.ServiceAccount != nil {
 		return nil
 	}
 
-	// Dynamic mode (discovered): Ensure RBAC resources exist
+	// Always ensure RBAC resources exist for status reporting
+	// Status reporting (via K8sReporter) runs in ALL modes (discovered and inline),
+	// so the vMCP runtime needs permissions to update VirtualMCPServer status
+	// regardless of the outgoing auth source mode.
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
@@ -1241,25 +1230,17 @@ func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 	return OutgoingAuthSourceDiscovered
 }
 
-// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer
-// based on its outgoing auth source mode.
+// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer.
 // - User-provided service account: Returns the user-specified service account name
-// - Dynamic mode (discovered): Returns the dedicated service account name
-// - Static mode (inline): Returns empty string (uses default service account)
+// - All other modes: Returns the dedicated service account name (for status reporting)
 func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 	// If a service account is specified, use it
 	if vmcp.Spec.ServiceAccount != nil {
 		return *vmcp.Spec.ServiceAccount
 	}
 
-	source := outgoingAuthSource(vmcp)
-
-	// Static mode: Use default service account (no RBAC resources)
-	if source == OutgoingAuthSourceInline {
-		return ""
-	}
-
-	// Dynamic mode: Use dedicated service account with K8s API permissions
+	// Use dedicated service account with K8s API permissions for status reporting
+	// (required in all modes - discovered and inline)
 	return vmcpServiceAccountName(vmcp.Name)
 }
 
@@ -1560,138 +1541,6 @@ func convertBackendsToStaticBackends(
 // a list of DiscoveredBackend objects with their current status.
 //
 //nolint:gocyclo
-func (r *VirtualMCPServerReconciler) discoverBackends(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]mcpv1alpha1.DiscoveredBackend, error) {
-	ctxLogger := log.FromContext(ctx)
-
-	groupsManager := groups.NewCRDManager(r.Client, vmcp.Namespace)
-	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
-
-	typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
-	}
-
-	// Build outgoing auth config only if OutgoingAuth is explicitly configured
-	// This allows the aggregator to apply auth config to backends based on source mode
-	var authConfig *vmcpconfig.OutgoingAuthConfig
-	if vmcp.Spec.OutgoingAuth != nil {
-		var err error
-		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
-				"error", err)
-			// Continue without auth config rather than failing
-			authConfig = nil
-		}
-	}
-
-	// Use the aggregator's unified backend discoverer to reuse discovery logic
-	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
-
-	// Discover backends using the aggregator
-	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.Config.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover backends: %w", err)
-	}
-
-	// Create a map of discovered backend names for quick lookup
-	discoveredBackendMap := make(map[string]*vmcptypes.Backend, len(backends))
-	for i := range backends {
-		discoveredBackendMap[backends[i].Name] = &backends[i]
-	}
-
-	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
-	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
-	}
-
-	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(typedWorkloads))
-	now := metav1.Now()
-
-	// Convert vmcp.Backend to DiscoveredBackend for all workloads in the group
-	for _, workloadInfo := range typedWorkloads {
-		backend, found := discoveredBackendMap[workloadInfo.Name]
-		if !found {
-			// Workload exists but is not accessible (no URL or error)
-			discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
-				Name:            workloadInfo.Name,
-				Status:          mcpv1alpha1.BackendStatusUnavailable,
-				LastHealthCheck: now,
-			})
-			continue
-		}
-
-		// Convert vmcp.Backend to DiscoveredBackend
-		// Use ToCRDStatus() to map internal health status to CRD status string
-		backendStatus := backend.HealthStatus.ToCRDStatus()
-
-		// Extract auth config reference and check workload phase based on workload type
-		// Using pre-fetched maps instead of individual Get calls
-		authConfigRef := ""
-		authType := ""
-		switch workloadInfo.Type {
-		case workloads.WorkloadTypeMCPServer:
-			if mcpServer, found := mcpServerMap[workloadInfo.Name]; found {
-				if mcpServer.Spec.ExternalAuthConfigRef != nil {
-					authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
-					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
-				}
-				// Override backend status based on MCPServer phase for non-ready states
-				if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhasePending ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
-					backendStatus = mcpv1alpha1.BackendStatusUnavailable
-					ctxLogger.V(1).Info("Backend MCPServer not ready, marking as unavailable",
-						"name", workloadInfo.Name,
-						"phase", mcpServer.Status.Phase)
-				}
-			}
-		case workloads.WorkloadTypeMCPRemoteProxy:
-			if mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]; found {
-				if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil {
-					authConfigRef = mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
-					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
-				}
-				// Override backend status based on MCPRemoteProxy phase for non-ready states
-				if mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhasePending ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseFailed ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseTerminating {
-					backendStatus = mcpv1alpha1.BackendStatusUnavailable
-					ctxLogger.V(1).Info("Backend MCPRemoteProxy not ready, marking as unavailable",
-						"name", workloadInfo.Name,
-						"phase", mcpRemoteProxy.Status.Phase)
-				}
-			}
-		}
-
-		discoveredBackend := mcpv1alpha1.DiscoveredBackend{
-			Name:            backend.Name,
-			AuthConfigRef:   authConfigRef,
-			AuthType:        authType,
-			Status:          backendStatus,
-			LastHealthCheck: now,
-			URL:             backend.BaseURL,
-		}
-
-		discoveredBackends = append(discoveredBackends, discoveredBackend)
-		ctxLogger.V(1).Info("Discovered backend",
-			"name", backend.Name,
-			"status", backendStatus,
-			"url", backend.BaseURL,
-			"authConfigRef", authConfigRef)
-	}
-
-	return discoveredBackends, nil
-}
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {

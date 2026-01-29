@@ -436,10 +436,12 @@ func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
 	t.Parallel()
 
 	// Static mode: OutgoingAuth.Source set to "inline"
+	// RBAC resources should still be created for status reporting
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "static-vmcp",
 			Namespace: "default",
+			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			Config: vmcpconfig.Config{
@@ -466,33 +468,34 @@ func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	// Call ensureRBACResources in static mode - should return nil without creating resources
+	// Call ensureRBACResources in static mode - should create RBAC for status reporting
 	err := r.ensureRBACResources(context.Background(), vmcp)
 	require.NoError(t, err)
 
 	saName := vmcpServiceAccountName(vmcp.Name)
 
-	// Verify NO RBAC resources were created in static mode
+	// Verify RBAC resources were created even in static mode (for status reporting)
 	sa := &corev1.ServiceAccount{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, sa)
-	assert.Error(t, err, "ServiceAccount should not be created in static mode")
+	assert.NoError(t, err, "ServiceAccount should be created in static mode for status reporting")
 
 	role := &rbacv1.Role{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, role)
-	assert.Error(t, err, "Role should not be created in static mode")
+	assert.NoError(t, err, "Role should be created in static mode for status reporting")
+	assert.Equal(t, vmcpRBACRules, role.Rules)
 
 	rb := &rbacv1.RoleBinding{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, rb)
-	assert.Error(t, err, "RoleBinding should not be created in static mode")
+	assert.NoError(t, err, "RoleBinding should be created in static mode for status reporting")
 }
 
 // TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources

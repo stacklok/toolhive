@@ -444,9 +444,12 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		logger.Debugf("Mounted prefix handler at %s", prefix)
 	}
 
-	// 2. Mount health check endpoint if enabled (no middlewares)
+	// 2. Mount health check endpoint if enabled, otherwise return 404
+	// (prevents /health from being proxied to the backend)
 	if p.healthChecker != nil {
 		mux.Handle("/health", p.healthChecker)
+	} else {
+		mux.HandleFunc("/health", http.NotFound)
 	}
 
 	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares)

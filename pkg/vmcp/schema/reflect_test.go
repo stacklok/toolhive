@@ -8,119 +8,22 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
-func TestGenerateSchema_FindToolInput(t *testing.T) {
-	t.Parallel()
-
-	expected := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"tool_description": map[string]any{
-				"type":        "string",
-				"description": "Natural language description of the tool to find",
-			},
-			"tool_keywords": map[string]any{
-				"type":        "array",
-				"items":       map[string]any{"type": "string"},
-				"description": "Optional keywords to narrow search",
-			},
-		},
-		"required": []string{"tool_description"},
-	}
-
-	actual, err := GenerateSchema[optimizer.FindToolInput]()
-	require.NoError(t, err)
-
-	require.Equal(t, expected, actual)
+// FindToolInput represents the input schema for optim_find_tool
+// This matches the schema defined in pkg/vmcp/optimizer/optimizer.go
+type FindToolInput struct {
+	ToolDescription string `json:"tool_description" description:"Natural language description of the tool you're looking for"`
+	ToolKeywords    string `json:"tool_keywords,omitempty" description:"Optional space-separated keywords for keyword-based search"`
+	Limit           int    `json:"limit,omitempty" description:"Maximum number of tools to return (default: 10)"`
 }
 
-func TestGenerateSchema_CallToolInput(t *testing.T) {
-	t.Parallel()
-
-	expected := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"tool_name": map[string]any{
-				"type":        "string",
-				"description": "Name of the tool to call",
-			},
-			"parameters": map[string]any{
-				"type":        "object",
-				"description": "Parameters to pass to the tool",
-			},
-		},
-		"required": []string{"tool_name", "parameters"},
-	}
-
-	actual, err := GenerateSchema[optimizer.CallToolInput]()
-	require.NoError(t, err)
-
-	require.Equal(t, expected, actual)
-}
-
-func TestTranslate_FindToolInput(t *testing.T) {
-	t.Parallel()
-
-	input := map[string]any{
-		"tool_description": "find a tool to read files",
-		"tool_keywords":    []any{"file", "read"},
-	}
-
-	result, err := Translate[optimizer.FindToolInput](input)
-	require.NoError(t, err)
-
-	require.Equal(t, optimizer.FindToolInput{
-		ToolDescription: "find a tool to read files",
-		ToolKeywords:    []string{"file", "read"},
-	}, result)
-}
-
-func TestTranslate_CallToolInput(t *testing.T) {
-	t.Parallel()
-
-	input := map[string]any{
-		"tool_name": "read_file",
-		"parameters": map[string]any{
-			"path": "/etc/hosts",
-		},
-	}
-
-	result, err := Translate[optimizer.CallToolInput](input)
-	require.NoError(t, err)
-
-	require.Equal(t, optimizer.CallToolInput{
-		ToolName:   "read_file",
-		Parameters: map[string]any{"path": "/etc/hosts"},
-	}, result)
-}
-
-func TestTranslate_PartialInput(t *testing.T) {
-	t.Parallel()
-
-	input := map[string]any{
-		"tool_description": "find a file reader",
-	}
-
-	result, err := Translate[optimizer.FindToolInput](input)
-	require.NoError(t, err)
-
-	require.Equal(t, optimizer.FindToolInput{
-		ToolDescription: "find a file reader",
-		ToolKeywords:    nil,
-	}, result)
-}
-
-func TestTranslate_InvalidInput(t *testing.T) {
-	t.Parallel()
-
-	input := make(chan int)
-
-	_, err := Translate[optimizer.FindToolInput](input)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to marshal input")
+// CallToolInput represents the input schema for optim_call_tool
+// This matches the schema defined in pkg/vmcp/optimizer/optimizer.go
+type CallToolInput struct {
+	BackendID  string         `json:"backend_id" description:"Backend ID from find_tool results"`
+	ToolName   string         `json:"tool_name" description:"Tool name to invoke"`
+	Parameters map[string]any `json:"parameters" description:"Parameters to pass to the tool"`
 }
 
 func TestGenerateSchema_AllTypes(t *testing.T) {
@@ -182,4 +85,127 @@ func TestGenerateSchema_AllTypes(t *testing.T) {
 	require.Equal(t, expected["type"], actual["type"])
 	require.Equal(t, expected["properties"], actual["properties"])
 	require.ElementsMatch(t, expected["required"], actual["required"])
+}
+
+func TestGenerateSchema_FindToolInput(t *testing.T) {
+	t.Parallel()
+
+	expected := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tool_description": map[string]any{
+				"type":        "string",
+				"description": "Natural language description of the tool you're looking for",
+			},
+			"tool_keywords": map[string]any{
+				"type":        "string",
+				"description": "Optional space-separated keywords for keyword-based search",
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"description": "Maximum number of tools to return (default: 10)",
+			},
+		},
+		"required": []string{"tool_description"},
+	}
+
+	actual, err := GenerateSchema[FindToolInput]()
+	require.NoError(t, err)
+
+	require.Equal(t, expected, actual)
+}
+
+func TestGenerateSchema_CallToolInput(t *testing.T) {
+	t.Parallel()
+
+	expected := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"backend_id": map[string]any{
+				"type":        "string",
+				"description": "Backend ID from find_tool results",
+			},
+			"tool_name": map[string]any{
+				"type":        "string",
+				"description": "Tool name to invoke",
+			},
+			"parameters": map[string]any{
+				"type":        "object",
+				"description": "Parameters to pass to the tool",
+			},
+		},
+		"required": []string{"backend_id", "tool_name", "parameters"},
+	}
+
+	actual, err := GenerateSchema[CallToolInput]()
+	require.NoError(t, err)
+
+	require.Equal(t, expected, actual)
+}
+
+func TestTranslate_FindToolInput(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"tool_description": "find a tool to read files",
+		"tool_keywords":    "file read",
+		"limit":            5,
+	}
+
+	result, err := Translate[FindToolInput](input)
+	require.NoError(t, err)
+
+	require.Equal(t, FindToolInput{
+		ToolDescription: "find a tool to read files",
+		ToolKeywords:    "file read",
+		Limit:           5,
+	}, result)
+}
+
+func TestTranslate_CallToolInput(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"backend_id": "backend-123",
+		"tool_name":  "read_file",
+		"parameters": map[string]any{
+			"path": "/etc/hosts",
+		},
+	}
+
+	result, err := Translate[CallToolInput](input)
+	require.NoError(t, err)
+
+	require.Equal(t, CallToolInput{
+		BackendID:  "backend-123",
+		ToolName:   "read_file",
+		Parameters: map[string]any{"path": "/etc/hosts"},
+	}, result)
+}
+
+func TestTranslate_PartialInput(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"tool_description": "find a file reader",
+	}
+
+	result, err := Translate[FindToolInput](input)
+	require.NoError(t, err)
+
+	require.Equal(t, FindToolInput{
+		ToolDescription: "find a file reader",
+		ToolKeywords:    "",
+		Limit:           0,
+	}, result)
+}
+
+func TestTranslate_InvalidInput(t *testing.T) {
+	t.Parallel()
+
+	input := make(chan int)
+
+	_, err := Translate[FindToolInput](input)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to marshal input")
 }

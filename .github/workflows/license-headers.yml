@@ -4,15 +4,36 @@
 name: License Headers
 
 on:
-  workflow_call:
+  workflow_call:  # Keep for run-on-main.yml
+  workflow_dispatch:  # Manual trigger
+  pull_request:  # Run independently on PRs
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            code:
+              - '!deploy/charts/**'
+
   check-license-headers:
     name: Check License Headers
     runs-on: ubuntu-latest
+    needs: changes
+    if: |
+      always() &&
+      (needs.changes.result == 'skipped' || needs.changes.outputs.code == 'true')
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 

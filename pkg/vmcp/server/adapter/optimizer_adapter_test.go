@@ -9,65 +9,76 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
-// mockOptimizer implements optimizer.Optimizer for testing.
-type mockOptimizer struct {
-	findToolFunc func(ctx context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error)
-	callToolFunc func(ctx context.Context, input optimizer.CallToolInput) (*mcp.CallToolResult, error)
+// mockOptimizerHandlerProvider implements OptimizerHandlerProvider for testing.
+type mockOptimizerHandlerProvider struct {
+	findToolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+	callToolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 }
 
-func (m *mockOptimizer) FindTool(ctx context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
-	if m.findToolFunc != nil {
-		return m.findToolFunc(ctx, input)
+func (m *mockOptimizerHandlerProvider) CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if m.findToolHandler != nil {
+		return m.findToolHandler
 	}
-	return &optimizer.FindToolOutput{}, nil
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("ok"), nil
+	}
 }
 
-func (m *mockOptimizer) CallTool(ctx context.Context, input optimizer.CallToolInput) (*mcp.CallToolResult, error) {
-	if m.callToolFunc != nil {
-		return m.callToolFunc(ctx, input)
+func (m *mockOptimizerHandlerProvider) CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if m.callToolHandler != nil {
+		return m.callToolHandler
 	}
-	return mcp.NewToolResultText("ok"), nil
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("ok"), nil
+	}
 }
 
 func TestCreateOptimizerTools(t *testing.T) {
 	t.Parallel()
 
-	opt := &mockOptimizer{}
-	tools := CreateOptimizerTools(opt)
+	provider := &mockOptimizerHandlerProvider{}
+	tools, err := CreateOptimizerTools(provider)
 
+	require.NoError(t, err)
 	require.Len(t, tools, 2)
 	require.Equal(t, FindToolName, tools[0].Tool.Name)
 	require.Equal(t, CallToolName, tools[1].Tool.Name)
 }
 
+func TestCreateOptimizerTools_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	tools, err := CreateOptimizerTools(nil)
+
+	require.Error(t, err)
+	require.Nil(t, tools)
+	require.Contains(t, err.Error(), "cannot be nil")
+}
+
 func TestFindToolHandler(t *testing.T) {
 	t.Parallel()
 
-	opt := &mockOptimizer{
-		findToolFunc: func(_ context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
-			require.Equal(t, "read files", input.ToolDescription)
-			return &optimizer.FindToolOutput{
-				Tools: []optimizer.ToolMatch{
-					{
-						Name:        "read_file",
-						Description: "Read a file",
-						Score:       1.0,
-					},
-				},
-			}, nil
+	provider := &mockOptimizerHandlerProvider{
+		findToolHandler: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			args, ok := req.Params.Arguments.(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "read files", args["tool_description"])
+			return mcp.NewToolResultText("found tools"), nil
 		},
 	}
 
-	tools := CreateOptimizerTools(opt)
+	tools, err := CreateOptimizerTools(provider)
+	require.NoError(t, err)
 	handler := tools[0].Handler
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{
-		"tool_description": "read files",
+	request := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"tool_description": "read files",
+			},
+		},
 	}
 
 	result, err := handler(context.Background(), request)
@@ -80,22 +91,29 @@ func TestFindToolHandler(t *testing.T) {
 func TestCallToolHandler(t *testing.T) {
 	t.Parallel()
 
-	opt := &mockOptimizer{
-		callToolFunc: func(_ context.Context, input optimizer.CallToolInput) (*mcp.CallToolResult, error) {
-			require.Equal(t, "read_file", input.ToolName)
-			require.Equal(t, "/etc/hosts", input.Parameters["path"])
+	provider := &mockOptimizerHandlerProvider{
+		callToolHandler: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			args, ok := req.Params.Arguments.(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "read_file", args["tool_name"])
+			params := args["parameters"].(map[string]any)
+			require.Equal(t, "/etc/hosts", params["path"])
 			return mcp.NewToolResultText("file contents here"), nil
 		},
 	}
 
-	tools := CreateOptimizerTools(opt)
+	tools, err := CreateOptimizerTools(provider)
+	require.NoError(t, err)
 	handler := tools[1].Handler
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{
-		"tool_name": "read_file",
-		"parameters": map[string]any{
-			"path": "/etc/hosts",
+	request := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"tool_name": "read_file",
+				"parameters": map[string]any{
+					"path": "/etc/hosts",
+				},
+			},
 		},
 	}
 

@@ -135,6 +135,17 @@ func (c *Converter) Convert(
 	// are handled by kubebuilder annotations in pkg/telemetry/config.go and applied by the API server.
 	config.Telemetry = spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 
+	// Convert audit config
+	c.convertAuditConfig(config, vmcp)
+
+	// Apply operational defaults (fills missing values)
+	config.EnsureOperationalDefaults()
+
+	return config, nil
+}
+
+// convertAuditConfig converts audit configuration from CRD to vmcp config.
+func (*Converter) convertAuditConfig(config *vmcpconfig.Config, vmcp *mcpv1alpha1.VirtualMCPServer) {
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
 	}
@@ -142,11 +153,6 @@ func (c *Converter) Convert(
 	if config.Audit != nil && config.Audit.Component == "" {
 		config.Audit.Component = vmcp.Name
 	}
-
-	// Apply operational defaults (fills missing values)
-	config.EnsureOperationalDefaults()
-
-	return config, nil
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.

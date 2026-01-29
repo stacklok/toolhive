@@ -52,10 +52,22 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 
 	logger.Infof("Starting periodic status reporting (interval: %v)", interval)
 
+	// Wait for initial health checks to complete before first status report
+	// This ensures that the first status report has accurate health information
+	// rather than reporting with backendCount=0 before checks complete
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+	if healthMon != nil {
+		logger.Debug("Waiting for initial health checks to complete before first status report")
+		healthMon.WaitForInitialHealthChecks()
+		logger.Debug("Initial health checks complete, proceeding with status reporting")
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Report status immediately on startup
+	// Report status immediately after initial health checks complete
 	s.reportStatus(ctx, config.Reporter)
 
 	for {
@@ -72,6 +84,18 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 
 // reportStatus collects current runtime status and sends it to the reporter.
 func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter) {
+	// Update health monitor with current backends from registry (for dynamic discovery)
+	if dynamicReg, ok := s.backendRegistry.(vmcp.DynamicRegistry); ok {
+		currentBackends := dynamicReg.List(ctx)
+		logger.Debugf("Refreshing backends from registry: %d backends found", len(currentBackends))
+		s.healthMonitorMu.RLock()
+		healthMon := s.healthMonitor
+		s.healthMonitorMu.RUnlock()
+		if healthMon != nil {
+			healthMon.UpdateBackends(currentBackends)
+		}
+	}
+
 	// Build status from health monitor if available
 	var status *vmcp.Status
 
@@ -87,6 +111,10 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 		}
 	}
 	s.healthMonitorMu.RUnlock()
+
+	// Log status at debug level
+	logger.Debugf("Reporting status: phase=%s, backendCount=%d, discoveredBackends=%d",
+		status.Phase, status.BackendCount, len(status.DiscoveredBackends))
 
 	// Report status
 	if err := reporter.ReportStatus(ctx, status); err != nil {

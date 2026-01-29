@@ -135,14 +135,44 @@ func IsTimeoutError(err error) bool {
 
 // IsConnectionError checks if an error message indicates a connection failure.
 // Detects network-level errors like connection refused, reset, unreachable, etc.
+// Also detects broken pipes, EOF errors, and HTTP 5xx server errors that indicate
+// backend unavailability.
 func IsConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	errLower := strings.ToLower(err.Error())
-	return strings.Contains(errLower, "connection refused") ||
-		strings.Contains(errLower, "connection reset") ||
-		strings.Contains(errLower, "no route to host") ||
-		strings.Contains(errLower, "network is unreachable")
+	errStr := err.Error()
+	errLower := strings.ToLower(errStr)
+
+	// Check against list of known connection error patterns
+	networkPatterns := []string{
+		"connection refused", "connection reset", "no route to host",
+		"network is unreachable", "broken pipe", "connection closed",
+	}
+	for _, pattern := range networkPatterns {
+		if strings.Contains(errLower, pattern) {
+			return true
+		}
+	}
+
+	// EOF errors (be specific - check exact case to avoid false positives)
+	if strings.Contains(errStr, "EOF") {
+		return true
+	}
+
+	// HTTP 5xx server errors
+	httpErrorPatterns := []string{
+		"500 internal server error", "502 bad gateway",
+		"503 service unavailable", "504 gateway timeout",
+		"status code 500", "status code 502",
+		"status code 503", "status code 504",
+	}
+	for _, pattern := range httpErrorPatterns {
+		if strings.Contains(errLower, pattern) {
+			return true
+		}
+	}
+
+	return false
 }

@@ -206,7 +206,7 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:v0.4.8"
+  image: "ghcr.io/stacklok/thv-registry-api:v0.5.0"
   # -- Service account configuration for the registry API
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials

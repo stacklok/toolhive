@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -125,9 +126,19 @@ type Config struct {
 	// Used for /readyz endpoint to gate readiness on cache sync.
 	Watcher Watcher
 
-	// OptimizerFactory builds an optimizer from a list of tools.
-	// If not set, the optimizer is disabled.
-	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
+	// Optimizer is the optional optimizer for semantic tool discovery.
+	// If nil, optimizer is disabled and backend tools are exposed directly.
+	// If set, this takes precedence over OptimizerFactory.
+	Optimizer optimizer.Optimizer
+
+	// OptimizerFactory creates an optimizer instance at startup.
+	// If Optimizer is already set, this is ignored.
+	// If both are nil, optimizer is disabled.
+	OptimizerFactory optimizer.Factory
+
+	// OptimizerConfig is the optimizer configuration used by OptimizerFactory.
+	// Only used if OptimizerFactory is set and Optimizer is nil.
+	OptimizerConfig *config.OptimizerConfig
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -202,6 +213,10 @@ type Server struct {
 	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
+
+	// optimizerIntegration provides semantic tool discovery via optim_find_tool and optim_call_tool.
+	// Nil if optimizer is disabled.
+	optimizerIntegration optimizer.Optimizer
 
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
@@ -345,7 +360,9 @@ func New(
 	if cfg.HealthMonitorConfig != nil {
 		// Get initial backends list from registry for health monitoring setup
 		initialBackends := backendRegistry.List(ctx)
-		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
+		// Construct selfURL to prevent health checker from checking itself
+		selfURL := fmt.Sprintf("http://%s:%d%s", cfg.Host, cfg.Port, cfg.EndpointPath)
+		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig, selfURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health monitor: %w", err)
 		}
@@ -538,6 +555,29 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Create optimizer instance if factory is provided
+	if s.config.Optimizer == nil && s.config.OptimizerFactory != nil &&
+		s.config.OptimizerConfig != nil && s.config.OptimizerConfig.Enabled {
+		opt, err := s.config.OptimizerFactory(
+			ctx, s.config.OptimizerConfig, s.mcpServer, s.backendClient, s.sessionManager)
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer: %w", err)
+		}
+		s.config.Optimizer = opt
+	}
+
+	// Initialize optimizer if configured (registers tools and ingests backends)
+	if s.config.Optimizer != nil {
+		// Type assert to get Initialize method (part of EmbeddingOptimizer but not base interface)
+		if initializer, ok := s.config.Optimizer.(interface {
+			Initialize(context.Context, *server.MCPServer, vmcp.BackendRegistry) error
+		}); ok {
+			if err := initializer.Initialize(ctx, s.mcpServer, s.backendRegistry); err != nil {
+				return fmt.Errorf("failed to initialize optimizer: %w", err)
+			}
+		}
+	}
+
 	// Start status reporter if configured
 	if s.statusReporter != nil {
 		shutdown, err := s.statusReporter.Start(ctx)
@@ -609,6 +649,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	if healthMon != nil {
 		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
+		}
+	}
+
+	// Stop optimizer integration if configured
+	if s.optimizerIntegration != nil {
+		if err := s.optimizerIntegration.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close optimizer integration: %w", err))
 		}
 	}
 
@@ -771,7 +818,6 @@ func (s *Server) Ready() <-chan struct{} {
 //   - No previous capabilities exist, so no deletion needed
 //   - Capabilities are IMMUTABLE for the session lifetime (see limitation below)
 //   - Discovery middleware does not re-run for subsequent requests
-//   - If injectOptimizerCapabilities is called, this should not be called again.
 //
 // LIMITATION: Session capabilities are fixed at creation time.
 // If backends change (new tools added, resources removed), existing sessions won't see updates.
@@ -845,54 +891,6 @@ func (s *Server) injectCapabilities(
 	return nil
 }
 
-// injectOptimizerCapabilities injects all capabilities into the session, including optimizer tools.
-// It should not be called if not in optimizer mode and replaces injectCapabilities.
-//
-// When optimizer mode is enabled, instead of exposing all backend tools directly,
-// vMCP exposes only two meta-tools:
-//   - find_tool: Search for tools by description
-//   - call_tool: Invoke a tool by name with parameters
-//
-// This method:
-// 1. Converts all tools (backend + composite) to SDK format with handlers
-// 2. Injects the optimizer capabilities into the session
-func (s *Server) injectOptimizerCapabilities(
-	sessionID string,
-	caps *aggregator.AggregatedCapabilities,
-) error {
-
-	tools := append([]vmcp.Tool{}, caps.Tools...)
-	tools = append(tools, caps.CompositeTools...)
-
-	sdkTools, err := s.capabilityAdapter.ToSDKTools(tools)
-	if err != nil {
-		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
-	}
-
-	// Create optimizer tools (find_tool, call_tool)
-	optimizerTools := adapter.CreateOptimizerTools(s.config.OptimizerFactory(sdkTools))
-
-	logger.Debugw("created optimizer tools for session",
-		"session_id", sessionID,
-		"backend_tool_count", len(caps.Tools),
-		"composite_tool_count", len(caps.CompositeTools),
-		"total_tools_indexed", len(sdkTools))
-
-	// Clear tools from caps - they're now wrapped by optimizer
-	// Resources and prompts are preserved and handled normally
-	capsCopy := *caps
-	capsCopy.Tools = nil
-	capsCopy.CompositeTools = nil
-
-	// Manually add the optimizer tools, since we don't want to bother converting
-	// optimizer tools into `vmcp.Tool`s as well.
-	if err := s.mcpServer.AddSessionTools(sessionID, optimizerTools...); err != nil {
-		return fmt.Errorf("failed to add session tools: %w", err)
-	}
-
-	return s.injectCapabilities(sessionID, &capsCopy)
-}
-
 // handleSessionRegistration processes a new MCP session registration.
 //
 // This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
@@ -905,7 +903,7 @@ func (s *Server) injectOptimizerCapabilities(
 //  1. Retrieves discovered capabilities from context
 //  2. Adds composite tools from configuration
 //  3. Stores routing table in VMCPSession for request routing
-//  4. Injects capabilities into the SDK session
+//  4. Injects capabilities into the SDK session (or delegates to optimizer if enabled)
 //
 // IMPORTANT: Session capabilities are immutable after injection.
 //   - Capabilities discovered during initialize are fixed for the session lifetime
@@ -980,16 +978,26 @@ func (s *Server) handleSessionRegistration(
 		"resource_count", len(caps.RoutingTable.Resources),
 		"prompt_count", len(caps.RoutingTable.Prompts))
 
-	if s.config.OptimizerFactory != nil {
-		err = s.injectOptimizerCapabilities(sessionID, caps)
+	// Delegate to optimizer if enabled
+	if s.config.Optimizer != nil {
+		handled, err := s.config.Optimizer.HandleSessionRegistration(
+			ctx,
+			sessionID,
+			caps,
+			s.mcpServer,
+			s.capabilityAdapter.ToSDKResources,
+		)
 		if err != nil {
-			logger.Errorw("failed to create optimizer tools",
+			logger.Errorw("failed to handle session registration with optimizer",
 				"error", err,
 				"session_id", sessionID)
-		} else {
-			logger.Infow("optimizer capabilities injected")
+			return
 		}
-		return
+		if handled {
+			// Optimizer handled the registration, we're done
+			return
+		}
+		// If optimizer didn't handle it, fall through to normal registration
 	}
 
 	// Inject capabilities into SDK session

@@ -58,6 +58,17 @@ type WorkflowResult struct {
 	Error error
 }
 
+// OptimizerHandlerProvider provides handlers for optimizer tools.
+// This interface allows the adapter to create optimizer tools without
+// depending on the optimizer package implementation.
+type OptimizerHandlerProvider interface {
+	// CreateFindToolHandler returns the handler for find_tool
+	CreateFindToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+
+	// CreateCallToolHandler returns the handler for call_tool
+	CreateCallToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+}
+
 // DefaultHandlerFactory creates MCP request handlers that route to backend workloads.
 type DefaultHandlerFactory struct {
 	router        router.Router

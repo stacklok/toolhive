@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
@@ -504,6 +505,156 @@ func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
 	tokenType, ok := refreshTokenResp["token_type"].(string)
 	require.True(t, ok, "token_type should be a string")
 	assert.Equal(t, "bearer", strings.ToLower(tokenType))
+}
+
+// TestIntegration_JWKS_ValidatesJWT tests that JWTs from the token endpoint can be validated using JWKS.
+func TestIntegration_JWKS_ValidatesJWT(t *testing.T) {
+	t.Parallel()
+
+	ts := integrationTestSetup(t)
+
+	// Generate PKCE verifier and challenge
+	verifier, challenge := generatePKCE(t)
+
+	// Pre-populate storage with auth code
+	authCode := createAuthCodeSession(t, ts, challenge, []string{"openid", "profile"})
+
+	// Get JWT from token endpoint
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	tokenResp := parseTokenResponse(t, resp)
+	resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "token request should succeed, got error: %v", tokenResp)
+
+	accessToken, ok := tokenResp["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken, "access_token should not be empty")
+
+	// Fetch JWKS from endpoint
+	jwksResp, err := http.Get(ts.Server.URL + "/.well-known/jwks.json")
+	require.NoError(t, err)
+	defer jwksResp.Body.Close()
+
+	require.Equal(t, http.StatusOK, jwksResp.StatusCode, "JWKS request should succeed")
+
+	var jwks jose.JSONWebKeySet
+	err = json.NewDecoder(jwksResp.Body).Decode(&jwks)
+	require.NoError(t, err)
+	require.NotEmpty(t, jwks.Keys, "JWKS should have at least one key")
+
+	// Parse the JWT
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+
+	// Get the key ID from the token header (may be empty if not set)
+	require.NotEmpty(t, parsedToken.Headers, "JWT should have headers")
+	keyID := parsedToken.Headers[0].KeyID
+
+	// Find the matching key in JWKS
+	// If keyID is empty, use the first key in JWKS (common for single-key setups)
+	var key jose.JSONWebKey
+	if keyID != "" {
+		keys := jwks.Key(keyID)
+		require.NotEmpty(t, keys, "JWKS should contain key with ID %s", keyID)
+		key = keys[0]
+	} else {
+		// No kid in token, use first JWKS key
+		require.NotEmpty(t, jwks.Keys, "JWKS should have at least one key")
+		key = jwks.Keys[0]
+	}
+
+	// Validate the JWT signature using the public key from JWKS
+	var claims map[string]interface{}
+	err = parsedToken.Claims(key.Key, &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	// Verify the issuer claim matches
+	iss, ok := claims["iss"].(string)
+	assert.True(t, ok, "iss claim should be a string")
+	assert.Equal(t, ts.ServerConfig.AccessTokenIssuer, iss, "issuer should match config")
+}
+
+// TestIntegration_Discovery_ValidDocument tests that the discovery document contains all required fields.
+func TestIntegration_Discovery_ValidDocument(t *testing.T) {
+	t.Parallel()
+
+	ts := integrationTestSetup(t)
+
+	// Fetch discovery document
+	resp, err := http.Get(ts.Server.URL + "/.well-known/openid-configuration")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "discovery request should succeed")
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	// Parse discovery document
+	var discovery sharedobauth.OIDCDiscoveryDocument
+	err = json.NewDecoder(resp.Body).Decode(&discovery)
+	require.NoError(t, err)
+
+	// Verify required fields are present and correct
+	assert.Equal(t, ts.ServerConfig.AccessTokenIssuer, discovery.Issuer, "issuer should match config")
+	assert.NotEmpty(t, discovery.AuthorizationEndpoint, "authorization_endpoint should be present")
+	assert.NotEmpty(t, discovery.TokenEndpoint, "token_endpoint should be present")
+	assert.NotEmpty(t, discovery.JWKSURI, "jwks_uri should be present")
+
+	// Verify endpoints are valid URLs with correct issuer prefix
+	assert.True(t, strings.HasPrefix(discovery.AuthorizationEndpoint, ts.ServerConfig.AccessTokenIssuer),
+		"authorization_endpoint should use issuer as base URL")
+	assert.True(t, strings.HasPrefix(discovery.TokenEndpoint, ts.ServerConfig.AccessTokenIssuer),
+		"token_endpoint should use issuer as base URL")
+	assert.True(t, strings.HasPrefix(discovery.JWKSURI, ts.ServerConfig.AccessTokenIssuer),
+		"jwks_uri should use issuer as base URL")
+
+	// Verify supported values
+	assert.Contains(t, discovery.ResponseTypesSupported, "code", "should support code response type")
+	assert.Contains(t, discovery.GrantTypesSupported, "authorization_code", "should support authorization_code grant")
+	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token", "should support refresh_token grant")
+	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256", "should support S256 PKCE")
+	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none", "should support public clients")
+}
+
+// TestIntegration_JWKS_KeyProperties tests that JWKS keys have all required properties.
+func TestIntegration_JWKS_KeyProperties(t *testing.T) {
+	t.Parallel()
+
+	ts := integrationTestSetup(t)
+
+	// Fetch JWKS
+	resp, err := http.Get(ts.Server.URL + "/.well-known/jwks.json")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	// Parse JWKS
+	var jwks jose.JSONWebKeySet
+	err = json.NewDecoder(resp.Body).Decode(&jwks)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, jwks.Keys, "JWKS should have at least one key")
+
+	// Verify each key has required properties
+	for i, key := range jwks.Keys {
+		key := key // capture range variable
+		t.Run("key_"+string(rune(i)), func(t *testing.T) {
+			t.Parallel()
+			assert.NotEmpty(t, key.KeyID, "key should have kid")
+			assert.NotEmpty(t, key.Algorithm, "key should have alg")
+			assert.Equal(t, "sig", key.Use, "key use should be 'sig'")
+			assert.True(t, key.IsPublic(), "JWKS should only contain public keys")
+		})
+	}
 }
 
 // ============================================================================

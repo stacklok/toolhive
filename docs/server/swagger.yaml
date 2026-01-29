@@ -1293,6 +1293,8 @@ components:
         group:
           description: Group name this workload belongs to
           type: string
+        header_forward:
+          $ref: '#/components/schemas/v1.headerForwardConfig'
         headers:
           items:
             $ref: '#/components/schemas/registry.Header'
@@ -1444,6 +1446,27 @@ components:
             $ref: '#/components/schemas/groups.Group'
           type: array
           uniqueItems: false
+      type: object
+    v1.headerForwardConfig:
+      description: |-
+        HeaderForward configures headers to inject into requests to remote MCP servers.
+        Use this to add custom headers like X-Tenant-ID or correlation IDs.
+      properties:
+        add_headers_from_secret:
+          additionalProperties:
+            type: string
+          description: |-
+            AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.
+            Key: HTTP header name, Value: secret name in the secrets manager
+          type: object
+        add_plaintext_headers:
+          additionalProperties:
+            type: string
+          description: |-
+            AddPlaintextHeaders contains literal header values to inject.
+            WARNING: These values are stored and transmitted in plaintext.
+            Use AddHeadersFromSecret for sensitive data like API keys.
+          type: object
       type: object
     v1.listSecretsResponse:
       description: Response containing a list of secret keys
@@ -1658,6 +1681,8 @@ components:
         group:
           description: Group name this workload belongs to
           type: string
+        header_forward:
+          $ref: '#/components/schemas/v1.headerForwardConfig'
         headers:
           items:
             $ref: '#/components/schemas/registry.Header'

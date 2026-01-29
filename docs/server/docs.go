@@ -2826,6 +2826,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "Not Found"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway - Registry validation failed"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout - Registry unreachable"
                     }
                 },
                 "summary": "Update registry configuration",

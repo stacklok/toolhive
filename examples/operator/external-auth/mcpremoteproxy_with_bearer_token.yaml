@@ -1,0 +1,60 @@
+# Example: MCPRemoteProxy with Bearer Token Authentication
+# This example demonstrates how to configure bearer token authentication
+# for a remote MCP server
+
+---
+# Secret containing the bearer token for authenticating with the remote
+# MCP server
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-bearer-token
+  namespace: default
+type: Opaque
+stringData:
+  token: your-bearer-token-here
+
+---
+# External authentication configuration that references the bearer token secret
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: api-bearer-auth
+  namespace: default
+spec:
+  type: bearerToken
+  bearerToken:
+    tokenSecretRef:
+      name: api-bearer-token
+      key: token
+
+---
+# MCPRemoteProxy that uses bearer token authentication for outgoing requests
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: api-proxy
+  namespace: default
+spec:
+  remoteURL: "https://mcp.example.com/api"
+  port: 8080
+  transport: streamable-http
+
+  # OIDC configuration for incoming authentication (validates tokens from clients)
+  oidcConfig:
+    type: inline
+    inline:
+      issuer: "https://auth.example.com"
+      audience: "mcp-api"
+
+  # Reference to external auth configuration (bearer token)
+  externalAuthConfigRef:
+    name: api-bearer-auth
+
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"

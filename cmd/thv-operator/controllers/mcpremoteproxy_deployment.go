@@ -152,6 +152,21 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		} else {
 			env = append(env, tokenExchangeEnvVars...)
 		}
+
+		// Add bearer token environment variables
+		bearerTokenEnvVars, err := ctrlutil.GenerateBearerTokenEnvVar(
+			ctx,
+			r.Client,
+			proxy.Namespace,
+			proxy.Spec.ExternalAuthConfigRef,
+			ctrlutil.GetExternalAuthConfigByName,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate bearer token environment variables")
+		} else {
+			env = append(env, bearerTokenEnvVars...)
+		}
 	}
 
 	// Add OIDC client secret environment variable if using inline config with secretRef

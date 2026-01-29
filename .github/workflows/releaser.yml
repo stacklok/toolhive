@@ -258,6 +258,7 @@ jobs:
       - release-binaries
       - image-build-and-push
       - update-docs-website-binaries
+      - publish-helm
     if: ${{ failure() }}
     runs-on: ubuntu-slim
     permissions: {}

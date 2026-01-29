@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -29,6 +31,10 @@ type healthChecker struct {
 	// If a health check succeeds but takes longer than this duration, the backend is marked degraded.
 	// Zero means disabled (backends will never be marked degraded based on response time alone).
 	degradedThreshold time.Duration
+
+	// selfURL is the server's own URL. If a health check targets this URL, it's short-circuited.
+	// This prevents the server from trying to health check itself.
+	selfURL string
 }
 
 // NewHealthChecker creates a new health checker that uses BackendClient.ListCapabilities
@@ -39,17 +45,20 @@ type healthChecker struct {
 //   - client: BackendClient for communicating with backend MCP servers
 //   - timeout: Maximum duration for health check operations (0 = no timeout)
 //   - degradedThreshold: Response time threshold for marking backend as degraded (0 = disabled)
+//   - selfURL: Optional server's own URL. If provided, health checks targeting this URL are short-circuited.
 //
 // Returns a new HealthChecker implementation.
 func NewHealthChecker(
 	client vmcp.BackendClient,
 	timeout time.Duration,
 	degradedThreshold time.Duration,
+	selfURL string,
 ) vmcp.HealthChecker {
 	return &healthChecker{
 		client:            client,
 		timeout:           timeout,
 		degradedThreshold: degradedThreshold,
+		selfURL:           selfURL,
 	}
 }
 
@@ -79,6 +88,14 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	}
 
 	logger.Debugf("Performing health check for backend %s (%s)", target.WorkloadName, target.BaseURL)
+
+	// Short-circuit health check if targeting ourselves
+	// This prevents the server from trying to health check itself, which would work
+	// but is wasteful and can cause connection issues during startup
+	if h.selfURL != "" && h.isSelfCheck(target.BaseURL) {
+		logger.Debugf("Skipping health check for backend %s - this is the server itself", target.WorkloadName)
+		return vmcp.BackendHealthy, nil
+	}
 
 	// Track response time for degraded detection
 	startTime := time.Now()
@@ -144,4 +161,63 @@ func categorizeError(err error) vmcp.BackendHealthStatus {
 
 	// Default to unhealthy for unknown errors
 	return vmcp.BackendUnhealthy
+}
+
+// isSelfCheck checks if a backend URL matches the server's own URL.
+// URLs are normalized before comparison to handle variations like:
+// - http://127.0.0.1:PORT vs http://localhost:PORT
+// - http://HOST:PORT vs http://HOST:PORT/
+func (h *healthChecker) isSelfCheck(backendURL string) bool {
+	if h.selfURL == "" || backendURL == "" {
+		return false
+	}
+
+	// Normalize both URLs for comparison
+	backendNormalized, err := NormalizeURLForComparison(backendURL)
+	if err != nil {
+		return false
+	}
+
+	selfNormalized, err := NormalizeURLForComparison(h.selfURL)
+	if err != nil {
+		return false
+	}
+
+	return backendNormalized == selfNormalized
+}
+
+// NormalizeURLForComparison normalizes a URL for comparison by:
+// - Parsing and reconstructing the URL
+// - Converting localhost/127.0.0.1 to a canonical form
+// - Comparing only scheme://host:port (ignoring path, query, fragment)
+// - Lowercasing scheme and host
+// Exported for testing purposes
+func NormalizeURLForComparison(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	// Validate that we have a scheme and host (basic URL validation)
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid URL: missing scheme or host")
+	}
+
+	// Normalize host: convert localhost to 127.0.0.1 for consistency
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+
+	// Reconstruct URL with normalized components (scheme://host:port only)
+	// We ignore path, query, and fragment for comparison
+	normalized := &url.URL{
+		Scheme: strings.ToLower(u.Scheme),
+	}
+	if u.Port() != "" {
+		normalized.Host = host + ":" + u.Port()
+	} else {
+		normalized.Host = host
+	}
+
+	return normalized.String(), nil
 }

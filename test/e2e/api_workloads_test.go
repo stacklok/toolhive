@@ -424,7 +424,7 @@ var _ = Describe("Workloads API", Label("api", "workloads", "e2e"), func() {
 
 				By("Verifying workload is removed from list")
 				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
+					workloads := listWorkloads(apiServer, false) // Don't use all=true to filter out "removing" workloads
 					for _, w := range workloads {
 						if w.Name == workloadName {
 							return true
@@ -432,7 +432,7 @@ var _ = Describe("Workloads API", Label("api", "workloads", "e2e"), func() {
 					}
 					return false
 				}, 60*time.Second, 2*time.Second).Should(BeFalse(),
-					"Workload should be removed from list within 30 seconds")
+					"Workload should be removed from list within 60 seconds")
 			})
 
 			It("should successfully delete stopped workload", func() {

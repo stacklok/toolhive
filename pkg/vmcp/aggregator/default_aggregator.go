@@ -87,6 +87,8 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	// Query capabilities using the backend client
 	capabilities, err := a.backendClient.ListCapabilities(ctx, target)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("%w: %s: %w", ErrBackendQueryFailed, backend.ID, err)
 	}
 
@@ -166,11 +168,16 @@ func (a *defaultAggregator) QueryAllCapabilities(
 
 	// Wait for all queries to complete
 	if err := g.Wait(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("capability queries failed: %w", err)
 	}
 
 	if len(capabilities) == 0 {
-		return nil, fmt.Errorf("no backends returned capabilities")
+		err := fmt.Errorf("no backends returned capabilities")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	span.SetAttributes(
@@ -215,6 +222,8 @@ func (a *defaultAggregator) ResolveConflicts(
 	if a.conflictResolver != nil {
 		resolvedTools, err = a.conflictResolver.ResolveToolConflicts(ctx, toolsByBackend)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("conflict resolution failed: %w", err)
 		}
 	} else {
@@ -434,18 +443,24 @@ func (a *defaultAggregator) AggregateCapabilities(
 	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to query backends: %w", err)
 	}
 
 	// Step 3: Resolve conflicts
 	resolved, err := a.ResolveConflicts(ctx, capabilities)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to resolve conflicts: %w", err)
 	}
 
 	// Step 4: Merge into final view with full backend information
 	aggregated, err := a.MergeCapabilities(ctx, resolved, registry)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 

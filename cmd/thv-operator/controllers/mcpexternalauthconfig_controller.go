@@ -40,7 +40,6 @@ type MCPExternalAuthConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -132,7 +131,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	return ctrl.Result{}, nil
 }
 
-// calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities.
+// calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }

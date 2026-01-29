@@ -31,6 +31,21 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
+
+	// Add embedded auth server volumes and env vars if configured (single call for efficiency)
+	if proxy.Spec.ExternalAuthConfigRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+		} else {
+			volumes = append(volumes, authServerVolumes...)
+			volumeMounts = append(volumeMounts, authServerMounts...)
+			env = append(env, authServerEnvVars...)
+		}
+	}
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
@@ -89,7 +104,9 @@ func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
 	return []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
 }
 
-// buildVolumesForProxy builds volumes and volume mounts for the proxy
+// buildVolumesForProxy builds volumes and volume mounts for the proxy.
+// Note: Embedded auth server volumes are added separately in deploymentForMCPRemoteProxy
+// to avoid duplicate API calls.
 func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 ) ([]corev1.VolumeMount, []corev1.Volume) {
@@ -138,6 +155,8 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	// Add token exchange environment variables
+	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
+	// to avoid duplicate API calls.
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
 			ctx,

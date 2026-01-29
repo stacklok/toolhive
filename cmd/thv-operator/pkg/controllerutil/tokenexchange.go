@@ -125,9 +125,7 @@ func AddExternalAuthConfigOptions(
 		// No config to add for unauthenticated
 		return nil
 	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
-		// Embedded auth server config is handled separately (via volume mounts)
-		// Controller integration will be in a future task
-		return nil
+		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, externalAuthConfigRef, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

@@ -205,6 +205,82 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 			errContains: "unsupported external auth type",
 		},
 		{
+			name: "valid embedded auth server configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "embedded-auth-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+								OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validateConfig: func(t *testing.T, opts []runner.RunConfigBuilderOption) {
+				t.Helper()
+				assert.Len(t, opts, 1, "Should have one embedded auth server config option")
+			},
+		},
+		{
+			name: "embedded auth server with nil embedded config",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "bad-embedded-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bad-embedded-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type:               mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: nil, // Missing embedded config
+				},
+			},
+			expectError: true,
+			errContains: "embedded auth server configuration is nil",
+		},
+		{
 			name: "token exchange spec is nil",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -576,6 +652,80 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				},
 			},
 			expectError: true,
+		},
+		{
+			name: "with external auth embedded auth server",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					Port:      8080,
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "embedded-auth-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+						TokenLifespans: &mcpv1alpha1.TokenLifespanConfig{
+							AccessTokenLifespan:  "30m",
+							RefreshTokenLifespan: "168h",
+							AuthCodeLifespan:     "5m",
+						},
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+								OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "my-client-id",
+									RedirectURI: "https://auth.example.com/callback",
+									Scopes:      []string{"openid", "profile", "email"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "embedded-auth-server", config.Name)
+				assert.Equal(t, "test:v1", config.Image)
+
+				// Verify embedded auth server config is present
+				require.NotNil(t, config.EmbeddedAuthServerConfig, "embedded auth server config should be present")
+				assert.Equal(t, "https://auth.example.com", config.EmbeddedAuthServerConfig.Issuer)
+
+				// Verify signing key config
+				require.NotNil(t, config.EmbeddedAuthServerConfig.SigningKeyConfig)
+				assert.Equal(t, "/etc/toolhive/authserver/keys", config.EmbeddedAuthServerConfig.SigningKeyConfig.KeyDir)
+
+				// Verify token lifespans
+				require.NotNil(t, config.EmbeddedAuthServerConfig.TokenLifespans)
+				assert.Equal(t, "30m", config.EmbeddedAuthServerConfig.TokenLifespans.AccessTokenLifespan)
+
+				// Verify upstream provider
+				require.Len(t, config.EmbeddedAuthServerConfig.Upstreams, 1)
+				assert.Equal(t, "okta", config.EmbeddedAuthServerConfig.Upstreams[0].Name)
+			},
 		},
 	}
 

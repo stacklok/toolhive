@@ -1046,6 +1046,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumeMounts = append(volumeMounts, caMounts...)
 	}
 
+	// Add embedded auth server volumes and env vars if configured
+	if m.Spec.ExternalAuthConfigRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+		} else {
+			volumes = append(volumes, authServerVolumes...)
+			volumeMounts = append(volumeMounts, authServerMounts...)
+			env = append(env, authServerEnvVars...)
+		}
+	}
+
 	// Prepare container resources
 	resources := corev1.ResourceRequirements{}
 	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {

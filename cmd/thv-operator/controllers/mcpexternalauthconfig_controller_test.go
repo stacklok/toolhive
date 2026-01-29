@@ -23,45 +23,84 @@ import (
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+
 	tests := []struct {
-		name string
-		spec mcpv1alpha1.MCPExternalAuthConfigSpec
+		name               string
+		externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig
+		secrets            []*corev1.Secret
 	}{
 		{
 			name: "empty spec",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			},
-		},
-		{
-			name: "with token exchange config",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-					TokenURL: "https://oauth.example.com/token",
-					ClientID: "test-client-id",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-						Name: "test-secret",
-						Key:  "client-secret",
-					},
-					Audience: "backend-service",
-					Scopes:   []string{"read", "write"},
+			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
 				},
 			},
 		},
 		{
-			name: "with custom header",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-					TokenURL: "https://oauth.example.com/token",
-					ClientID: "test-client-id",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-						Name: "test-secret",
-						Key:  "client-secret",
+			name: "with token exchange config",
+			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						ClientID: "test-client-id",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "test-secret",
+							Key:  "client-secret",
+						},
+						Audience: "backend-service",
+						Scopes:   []string{"read", "write"},
 					},
-					Audience:                "backend-service",
-					ExternalTokenHeaderName: "X-Upstream-Token",
+				},
+			},
+			secrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"client-secret": []byte("secret-value"),
+					},
+				},
+			},
+		},
+		{
+			name: "with bearer token config",
+			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "bearer-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			secrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "bearer-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"token": []byte("bearer-token-value"),
+					},
 				},
 			},
 		},
@@ -71,10 +110,30 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := &MCPExternalAuthConfigReconciler{}
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
 
-			hash1 := r.calculateConfigHash(tt.spec)
-			hash2 := r.calculateConfigHash(tt.spec)
+			objs := []client.Object{tt.externalAuthConfig}
+			for _, secret := range tt.secrets {
+				objs = append(objs, secret)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &MCPExternalAuthConfigReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			hash1, err1 := r.calculateConfigHash(ctx, tt.externalAuthConfig)
+			require.NoError(t, err1)
+
+			hash2, err2 := r.calculateConfigHash(ctx, tt.externalAuthConfig)
+			require.NoError(t, err2)
 
 			// Same spec should produce same hash
 			assert.Equal(t, hash1, hash2, "Hash should be consistent for same spec")
@@ -85,36 +144,161 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 	// Different specs should produce different hashes
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
-		r := &MCPExternalAuthConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL: "https://oauth.example.com/token",
-				ClientID: "client1",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-					Name: "secret1",
-					Key:  "key1",
+
+		scheme := runtime.NewScheme()
+		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, corev1.AddToScheme(scheme))
+
+		config1 := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "config1",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: "https://oauth.example.com/token",
+					ClientID: "client1",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "secret1",
+						Key:  "key1",
+					},
+					Audience: "audience1",
 				},
-				Audience: "audience1",
 			},
 		}
-		spec2 := mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL: "https://oauth.example.com/token",
-				ClientID: "client2",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-					Name: "secret2",
-					Key:  "key2",
+		config2 := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "config2",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: "https://oauth.example.com/token",
+					ClientID: "client2",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "secret2",
+						Key:  "key2",
+					},
+					Audience: "audience2",
 				},
-				Audience: "audience2",
 			},
 		}
 
-		hash1 := r.calculateConfigHash(spec1)
-		hash2 := r.calculateConfigHash(spec2)
+		secret1 := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret1",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key1": []byte("value1"),
+			},
+		}
+		secret2 := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret2",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key2": []byte("value2"),
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(config1, config2, secret1, secret2).
+			Build()
+
+		r := &MCPExternalAuthConfigReconciler{
+			Client: fakeClient,
+			Scheme: scheme,
+		}
+
+		hash1, err1 := r.calculateConfigHash(ctx, config1)
+		require.NoError(t, err1)
+
+		hash2, err2 := r.calculateConfigHash(ctx, config2)
+		require.NoError(t, err2)
 
 		assert.NotEqual(t, hash1, hash2, "Different specs should produce different hashes")
+	})
+
+	// Test that secret value changes affect the hash
+	t.Run("secret value changes affect hash", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		scheme := runtime.NewScheme()
+		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, corev1.AddToScheme(scheme))
+
+		config := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+				BearerToken: &mcpv1alpha1.BearerTokenConfig{
+					TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: "bearer-secret",
+						Key:  "token",
+					},
+				},
+			},
+		}
+
+		secret1 := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bearer-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"token": []byte("token-value-1"),
+			},
+		}
+
+		fakeClient1 := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(config, secret1).
+			Build()
+
+		r1 := &MCPExternalAuthConfigReconciler{
+			Client: fakeClient1,
+			Scheme: scheme,
+		}
+
+		hash1, err1 := r1.calculateConfigHash(ctx, config)
+		require.NoError(t, err1)
+
+		// Update secret value
+		secret2 := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bearer-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"token": []byte("token-value-2"),
+			},
+		}
+
+		fakeClient2 := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(config, secret2).
+			Build()
+
+		r2 := &MCPExternalAuthConfigReconciler{
+			Client: fakeClient2,
+			Scheme: scheme,
+		}
+
+		hash2, err2 := r2.calculateConfigHash(ctx, config)
+		require.NoError(t, err2)
+
+		// Hash should be different when secret value changes
+		assert.NotEqual(t, hash1, hash2, "Hash should change when secret value changes")
 	})
 }
 
@@ -691,4 +875,228 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.Equal(t, finalConfig.Status.ConfigHash,
 		updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"],
 		"MCPServer should have annotation with new config hash")
+}
+
+func TestMCPExternalAuthConfigReconciler_findMCPExternalAuthConfigsReferencingSecret(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create secrets
+	bearerSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bearer-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"token": []byte("bearer-token"),
+		},
+	}
+
+	clientSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "client-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"secret": []byte("client-secret-value"),
+		},
+	}
+
+	unrelatedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unrelated-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"data": []byte("unrelated"),
+		},
+	}
+
+	// Create configs that reference secrets
+	bearerConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bearer-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+			BearerToken: &mcpv1alpha1.BearerTokenConfig{
+				TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "bearer-secret",
+					Key:  "token",
+				},
+			},
+		},
+	}
+
+	tokenExchangeConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "token-exchange-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "client-secret",
+					Key:  "secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+	}
+
+	// Config that doesn't reference any secret
+	noSecretConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-secret-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(bearerConfig, tokenExchangeConfig, noSecretConfig).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Test finding configs that reference bearer-secret
+	configs, err := r.findMCPExternalAuthConfigsReferencingSecret(ctx, bearerSecret)
+	require.NoError(t, err)
+	assert.Len(t, configs, 1, "Should find one config referencing bearer-secret")
+	assert.Equal(t, "bearer-config", configs[0].Name)
+
+	// Test finding configs that reference client-secret
+	configs, err = r.findMCPExternalAuthConfigsReferencingSecret(ctx, clientSecret)
+	require.NoError(t, err)
+	assert.Len(t, configs, 1, "Should find one config referencing client-secret")
+	assert.Equal(t, "token-exchange-config", configs[0].Name)
+
+	// Test finding configs that reference unrelated-secret
+	configs, err = r.findMCPExternalAuthConfigsReferencingSecret(ctx, unrelatedSecret)
+	require.NoError(t, err)
+	assert.Len(t, configs, 0, "Should find no configs referencing unrelated-secret")
+}
+
+func Test_configReferencesSecret(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     *mcpv1alpha1.MCPExternalAuthConfig
+		secretName string
+		expected   bool
+	}{
+		{
+			name: "bearer token config references secret",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "bearer-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			secretName: "bearer-secret",
+			expected:   true,
+		},
+		{
+			name: "bearer token config does not reference secret",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "bearer-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			secretName: "other-secret",
+			expected:   false,
+		},
+		{
+			name: "token exchange config references secret",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						ClientID: "test-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "client-secret",
+							Key:  "secret",
+						},
+					},
+				},
+			},
+			secretName: "client-secret",
+			expected:   true,
+		},
+		{
+			name: "token exchange config does not reference secret",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						ClientID: "test-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "client-secret",
+							Key:  "secret",
+						},
+					},
+				},
+			},
+			secretName: "other-secret",
+			expected:   false,
+		},
+		{
+			name: "unauthenticated config does not reference secret",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+				},
+			},
+			secretName: "any-secret",
+			expected:   false,
+		},
+		{
+			name: "bearer token config without secret ref",
+			config: &mcpv1alpha1.MCPExternalAuthConfig{
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type:        mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{},
+				},
+			},
+			secretName: "any-secret",
+			expected:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := configReferencesSecret(tt.config, tt.secretName)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

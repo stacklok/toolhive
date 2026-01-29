@@ -53,6 +53,10 @@ type AuthorizationServerMetadata struct {
 
 	// TokenEndpointAuthMethodsSupported lists the authentication methods supported at the token endpoint (OPTIONAL).
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+
+	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED per RFC 8414).
+	// For MCP authorization servers, this typically includes "openid" and "offline_access".
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
 }
 
 // OIDCDiscoveryDocument represents the OpenID Connect Discovery 1.0 document.
@@ -67,9 +71,6 @@ type OIDCDiscoveryDocument struct {
 
 	// IDTokenSigningAlgValuesSupported lists the JWS algorithms supported for ID tokens (REQUIRED for OIDC).
 	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported,omitempty"`
-
-	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED for OIDC).
-	ScopesSupported []string `json:"scopes_supported,omitempty"`
 
 	// ClaimsSupported lists the claims that can be returned (RECOMMENDED for OIDC).
 	ClaimsSupported []string `json:"claims_supported,omitempty"`

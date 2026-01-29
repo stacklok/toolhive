@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -332,8 +335,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			It("should stop the Streamable HTTP server successfully [Serial]", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() string {
@@ -348,8 +350,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			It("should restart the Streamable HTTP server successfully [Serial]", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package secrets
 
 import (
@@ -53,9 +56,6 @@ const (
 	// OnePasswordType represents the 1Password secret provider.
 	OnePasswordType ProviderType = "1password"
 
-	// NoneType represents the none secret provider.
-	NoneType ProviderType = "none"
-
 	// EnvironmentType represents the environment variable secret provider
 	EnvironmentType ProviderType = "environment"
 )
@@ -108,8 +108,6 @@ func ValidateProviderWithPassword(ctx context.Context, providerType ProviderType
 		return validateEncryptedProvider(ctx, provider, result)
 	case OnePasswordType:
 		return validateOnePasswordProvider(ctx, provider, result)
-	case NoneType:
-		return validateNoneProvider(result)
 	case EnvironmentType:
 		return ValidateEnvironmentProvider(ctx, provider, result)
 	default:
@@ -193,14 +191,6 @@ func validateOnePasswordProvider(ctx context.Context, provider Provider, result 
 	return result
 }
 
-// validateNoneProvider validates the none provider (always succeeds)
-func validateNoneProvider(result *SetupResult) *SetupResult {
-	// None provider doesn't need validation, it always works
-	result.Success = true
-	result.Message = "None provider validation successful"
-	return result
-}
-
 // ErrKeyringNotAvailable is returned when the OS keyring is not available for the encrypted provider.
 var ErrKeyringNotAvailable = thverrors.WithCode(
 	errors.New("OS keyring is not available. "+
@@ -237,7 +227,7 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 			return nil, ErrKeyringNotAvailable
 		}
 
-		secretsPassword, err := GetSecretsPassword(password)
+		secretsPassword, isNew, err := GetSecretsPassword(password)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get secrets password: %w", err)
 		}
@@ -249,12 +239,19 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		}
 		primary, err = NewEncryptedManager(secretsPath, key[:])
 		if err != nil {
+			// Decryption failed - don't store the password in keyring
+			// This allows the user to retry with the correct password
 			return nil, err
+		}
+
+		// Only store password in keyring after successful validation (decryption)
+		if isNew {
+			if storeErr := StoreSecretsPassword(secretsPassword); storeErr != nil {
+				return nil, fmt.Errorf("failed to store password in keyring: %w", storeErr)
+			}
 		}
 	case OnePasswordType:
 		primary, err = NewOnePasswordManager()
-	case NoneType:
-		primary, err = NewNoneManager()
 	case EnvironmentType:
 		// Direct environment provider - no fallback needed
 		return NewEnvironmentProvider(), nil
@@ -286,15 +283,19 @@ func shouldEnableFallback() bool {
 }
 
 // GetSecretsPassword returns the password to use for encrypting and decrypting secrets.
-// If optionalPassword is provided and keyring is not yet setup, it uses that password and stores it.
-// Otherwise, it uses the current functionality (read from keyring or stdin).
-func GetSecretsPassword(optionalPassword string) ([]byte, error) {
+// It returns (password, isNew, error) where isNew indicates if the password was not found
+// in the keyring and needs to be stored after successful validation.
+// If optionalPassword is provided and keyring is not yet setup, it uses that password.
+// Otherwise, it reads from keyring or prompts via stdin.
+// IMPORTANT: When isNew is true, the caller MUST call StoreSecretsPassword after successfully
+// validating the password (e.g., after successful decryption) to persist it in the keyring.
+func GetSecretsPassword(optionalPassword string) ([]byte, bool, error) {
 	provider := getKeyringProvider()
 
 	// Attempt to load the password from the keyring
 	keyringSecret, err := provider.Get(keyringService, keyringService)
 	if err == nil {
-		return []byte(keyringSecret), nil
+		return []byte(keyringSecret), false, nil
 	}
 
 	// Handle key not found
@@ -303,36 +304,40 @@ func GetSecretsPassword(optionalPassword string) ([]byte, error) {
 
 		// If optional password is provided, use it
 		if optionalPassword != "" {
-			if len(optionalPassword) == 0 {
-				return nil, errors.New("password cannot be empty")
-			}
 			password = []byte(optionalPassword)
 		} else {
 			// Keyring is available but no password stored - this should only happen during setup
 			if process.IsDetached() {
-				return nil, fmt.Errorf("detached process detected, cannot ask for password")
+				return nil, false, fmt.Errorf("detached process detected, cannot ask for password")
 			}
 
 			// Prompt for password during setup
 			var err error
 			password, err = readPasswordStdin()
 			if err != nil {
-				return nil, fmt.Errorf("failed to read password: %w", err)
+				return nil, false, fmt.Errorf("failed to read password: %w", err)
 			}
 		}
 
-		// Store the password in the keyring for future use
-		logger.Info(fmt.Sprintf("writing password to %s", provider.Name()))
-		err = provider.Set(keyringService, keyringService, string(password))
-		if err != nil {
-			return nil, fmt.Errorf("failed to store password in keyring: %w", err)
-		}
-
-		return password, nil
+		// Return the password with isNew=true, caller must store after validation
+		return password, true, nil
 	}
 
 	// Assume any other keyring error means keyring is not available
-	return nil, fmt.Errorf("keyring is not available: %w", err)
+	return nil, false, fmt.Errorf("keyring is not available: %w", err)
+}
+
+// StoreSecretsPassword stores the password in the keyring.
+// This should only be called after the password has been successfully validated
+// (e.g., after successful decryption of the secrets file).
+func StoreSecretsPassword(password []byte) error {
+	provider := getKeyringProvider()
+	logger.Info(fmt.Sprintf("writing password to %s", provider.Name()))
+	err := provider.Set(keyringService, keyringService, string(password))
+	if err != nil {
+		return fmt.Errorf("failed to store password in keyring: %w", err)
+	}
+	return nil
 }
 
 func readPasswordStdin() ([]byte, error) {

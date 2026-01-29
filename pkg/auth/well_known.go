@@ -1,20 +1,15 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package auth provides authentication and authorization utilities.
 package auth
 
 import (
 	"net/http"
 	"strings"
-)
 
-// WellKnownOAuthResourcePath is the RFC 9728 standard path for OAuth Protected Resource metadata.
-// Per RFC 9728 Section 3, this endpoint and any subpaths under it should be accessible
-// without authentication to enable OIDC/OAuth discovery.
-//
-// Example valid paths:
-//   - /.well-known/oauth-protected-resource
-//   - /.well-known/oauth-protected-resource/mcp
-//   - /.well-known/oauth-protected-resource/v1/metadata
-const WellKnownOAuthResourcePath = "/.well-known/oauth-protected-resource"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+)
 
 // NewWellKnownHandler creates an HTTP handler that routes requests under the
 // /.well-known/ path space to the appropriate handler.
@@ -49,7 +44,7 @@ func NewWellKnownHandler(authInfoHandler http.Handler) http.Handler {
 		//   ✓ /.well-known/oauth-protected-resource
 		//   ✓ /.well-known/oauth-protected-resource/mcp
 		//   ✗ /.well-known/other-endpoint
-		if strings.HasPrefix(r.URL.Path, WellKnownOAuthResourcePath) {
+		if strings.HasPrefix(r.URL.Path, oauthproto.WellKnownOAuthResourcePath) {
 			authInfoHandler.ServeHTTP(w, r)
 			return
 		}

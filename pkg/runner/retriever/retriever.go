@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package retriever contains logic for fetching or building MCP servers.
 package retriever
 
@@ -251,7 +254,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 
 	if isLatestTag {
 		// For "latest" tag, try to pull first
-		logger.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
+		logger.Debugf("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
 		err := imageManager.PullImage(ctx, image)
 		if err != nil {
 			// Check if the error is due to context cancellation/timeout
@@ -263,7 +266,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			}
 
 			// Pull failed, check if it exists locally
-			logger.Infof("Pull failed, checking if image exists locally: %s", image)
+			logger.Debugf("Pull failed, checking if image exists locally: %s", image)
 			imageExists, checkErr := imageManager.ImageExists(ctx, image)
 			if checkErr != nil {
 				return fmt.Errorf("failed to check if image exists: %w", checkErr)
@@ -275,7 +278,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 				return fmt.Errorf("%w: %s", ErrImageNotFound, image)
 			}
 		} else {
-			logger.Infof("Successfully pulled image: %s", image)
+			logger.Debugf("Successfully pulled image: %s", image)
 		}
 	} else {
 		// For non-latest tags, check locally first
@@ -302,7 +305,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 				// TODO: need more fine grained error handling here.
 				return fmt.Errorf("%w: %s", ErrImageNotFound, image)
 			}
-			logger.Infof("Successfully pulled image: %s", image)
+			logger.Debugf("Successfully pulled image: %s", image)
 		}
 	}
 
@@ -358,7 +361,7 @@ func verifyImage(image string, server *types.ImageMetadata, verifySetting string
 				return fmt.Errorf("MCP server %s failed image verification", image)
 			}
 		} else {
-			logger.Infof("MCP server %s is verified successfully", image)
+			logger.Debugf("MCP server %s is verified successfully", image)
 		}
 	default:
 		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)

@@ -1,10 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -110,12 +112,6 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := complete(); err != nil {
 		return fmt.Errorf("failed to stop workloads %v: %w", workloadNames, err)
 	}
-	if len(workloadNames) == 1 {
-		fmt.Printf("Workload %s stopped successfully\n", workloadNames[0])
-	} else {
-		formattedNames := strings.Join(workloadNames, ", ")
-		fmt.Printf("Workloads %s stopped successfully\n", formattedNames)
-	}
 
 	return nil
 }
@@ -148,7 +144,6 @@ func stopAllWorkloads(ctx context.Context, workloadManager workloads.Manager) er
 	if err := complete(); err != nil {
 		return fmt.Errorf("failed to stop all workloads: %w", err)
 	}
-	fmt.Println("All workloads stopped successfully")
 	return nil
 }
 
@@ -202,6 +197,5 @@ func stopWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager
 		return fmt.Errorf("failed to stop workloads in group '%s': %w", groupName, err)
 	}
 
-	fmt.Printf("Successfully stopped %d workload(s) in group '%s'\n", len(workloadNames), groupName)
 	return nil
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package k8s provides common Kubernetes client utilities for ToolHive.
 //
 // This package centralizes Kubernetes client creation, configuration loading,

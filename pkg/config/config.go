@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package config contains the definition of the application config structure
 // and logic required to load and update it.
 package config
@@ -24,21 +27,22 @@ const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
-	Secrets                  Secrets             `yaml:"secrets"`
-	Clients                  Clients             `yaml:"clients"`
-	RegistryUrl              string              `yaml:"registry_url"`
-	RegistryApiUrl           string              `yaml:"registry_api_url"`
-	LocalRegistryPath        string              `yaml:"local_registry_path"`
-	AllowPrivateRegistryIp   bool                `yaml:"allow_private_registry_ip"`
-	CACertificatePath        string              `yaml:"ca_certificate_path,omitempty"`
-	OTEL                     OpenTelemetryConfig `yaml:"otel,omitempty"`
-	DefaultGroupMigration    bool                `yaml:"default_group_migration,omitempty"`
-	TelemetryConfigMigration bool                `yaml:"telemetry_config_migration,omitempty"`
-	DisableUsageMetrics      bool                `yaml:"disable_usage_metrics,omitempty"`
-	BuildEnv                 map[string]string   `yaml:"build_env,omitempty"`
-	BuildEnvFromSecrets      map[string]string   `yaml:"build_env_from_secrets,omitempty"`
-	BuildEnvFromShell        []string            `yaml:"build_env_from_shell,omitempty"`
-	BuildAuthFiles           map[string]string   `yaml:"build_auth_files,omitempty"`
+	Secrets                      Secrets             `yaml:"secrets"`
+	Clients                      Clients             `yaml:"clients"`
+	RegistryUrl                  string              `yaml:"registry_url"`
+	RegistryApiUrl               string              `yaml:"registry_api_url"`
+	LocalRegistryPath            string              `yaml:"local_registry_path"`
+	AllowPrivateRegistryIp       bool                `yaml:"allow_private_registry_ip"`
+	CACertificatePath            string              `yaml:"ca_certificate_path,omitempty"`
+	OTEL                         OpenTelemetryConfig `yaml:"otel,omitempty"`
+	DefaultGroupMigration        bool                `yaml:"default_group_migration,omitempty"`
+	TelemetryConfigMigration     bool                `yaml:"telemetry_config_migration,omitempty"`
+	MiddlewareTelemetryMigration bool                `yaml:"middleware_telemetry_migration,omitempty"`
+	DisableUsageMetrics          bool                `yaml:"disable_usage_metrics,omitempty"`
+	BuildEnv                     map[string]string   `yaml:"build_env,omitempty"`
+	BuildEnvFromSecrets          map[string]string   `yaml:"build_env_from_secrets,omitempty"`
+	BuildEnvFromShell            []string            `yaml:"build_env_from_shell,omitempty"`
+	BuildAuthFiles               map[string]string   `yaml:"build_auth_files,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.
@@ -54,17 +58,22 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 		return secrets.EncryptedType, nil
 	case string(secrets.OnePasswordType):
 		return secrets.OnePasswordType, nil
-	case string(secrets.NoneType):
-		return secrets.NoneType, nil
+	case string(secrets.EnvironmentType):
+		return secrets.EnvironmentType, nil
 	default:
 		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
-			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+			provider,
+			string(secrets.EncryptedType),
+			string(secrets.OnePasswordType),
+			string(secrets.EnvironmentType),
+		)
 	}
 }
 
 // GetProviderType returns the secrets provider type from the environment variable or application config.
-// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
-// Returns ErrSecretsNotSetup if secrets have not been configured yet.
+// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable (allowing Kubernetes deployments
+// to override without local setup), and falls back to the config file.
+// Returns ErrSecretsNotSetup only if the environment variable is not set and secrets have not been configured.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 	return s.GetProviderTypeWithEnv(&env.OSReader{})
 }
@@ -72,14 +81,15 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 // GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
 // This method allows for dependency injection of environment variable access for testing.
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
-	// Check if secrets setup has been completed
-	if !s.SetupCompleted {
-		return "", secrets.ErrSecretsNotSetup
-	}
-
-	// First check the environment variable
+	// First check the environment variable - this allows Kubernetes deployments
+	// to override the secrets provider without requiring local setup
 	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
 		return validateProviderType(envVar)
+	}
+
+	// Check if secrets setup has been completed (only for config file fallback)
+	if !s.SetupCompleted {
+		return "", secrets.ErrSecretsNotSetup
 	}
 
 	// Fall back to config file
@@ -107,11 +117,12 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
-		RegistryUrl:              "",
-		RegistryApiUrl:           "",
-		AllowPrivateRegistryIp:   false,
-		DefaultGroupMigration:    false,
-		TelemetryConfigMigration: false,
+		RegistryUrl:                  "",
+		RegistryApiUrl:               "",
+		AllowPrivateRegistryIp:       false,
+		DefaultGroupMigration:        false,
+		TelemetryConfigMigration:     false,
+		MiddlewareTelemetryMigration: false,
 	}
 }
 

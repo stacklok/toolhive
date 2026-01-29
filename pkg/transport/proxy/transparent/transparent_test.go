@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transparent
 
 import (
@@ -651,6 +654,23 @@ func TestRewriteEndpointURL(t *testing.T) {
 				host:   "public.example.com",
 			},
 			expected: "https://public.example.com/sse?sessionId=abc123",
+		},
+		{
+			name:        "scheme and host only - path-only URL remains relative",
+			originalURL: "/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				scheme: "http",
+			},
+			expected: "/sse?sessionId=abc123",
+		},
+		{
+			name:        "scheme and host only - path and prefix URL remains relative",
+			originalURL: "/sse?sessionId=abc123",
+			config: sseRewriteConfig{
+				prefix: "/playwright",
+				scheme: "http",
+			},
+			expected: "/playwright/sse?sessionId=abc123",
 		},
 		{
 			name:        "preserves complex query string",

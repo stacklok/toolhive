@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package workloads
 
 import (
@@ -199,6 +202,9 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	// Generate URL from status or reconstruct from spec
 	url := mcpServer.Status.URL
 	if url == "" {
+		// Use ProxyPort (not McpPort) because it's the externally accessible port
+		// that the egress proxy listens on. This is what vMCP connects to.
+		// The McpPort is only for internal container-to-container communication.
 		port := int(mcpServer.Spec.ProxyPort)
 		if port == 0 {
 			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
@@ -325,8 +331,12 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 
 	// Populate backend auth fields with typed strategy
 	backend.AuthConfig = strategy
+	// Also store the reference to the MCPExternalAuthConfig resource name
+	// This is used for status reporting and debugging
+	backend.AuthConfigRef = authConfigRef.Name
 
-	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s, configRef=%s",
+		resourceKind, resourceName, strategy.Type, authConfigRef.Name)
 	return nil
 }
 

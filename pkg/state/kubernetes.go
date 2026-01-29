@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package state
 
 import (
@@ -32,6 +35,12 @@ func (*KubernetesStore) GetReader(_ context.Context, _ string) (io.ReadCloser, e
 
 // GetWriter returns a no-op writer for Kubernetes stores.
 func (*KubernetesStore) GetWriter(_ context.Context, _ string) (io.WriteCloser, error) {
+	return &noopWriteCloser{}, nil
+}
+
+// CreateExclusive returns a no-op writer for Kubernetes stores.
+// In Kubernetes, state management is handled by the cluster, not local files.
+func (*KubernetesStore) CreateExclusive(_ context.Context, _ string) (io.WriteCloser, error) {
 	return &noopWriteCloser{}, nil
 }
 

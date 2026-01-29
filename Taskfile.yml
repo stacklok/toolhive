@@ -8,22 +8,23 @@ includes:
 tasks:
   docs:
     desc: Regenerate the docs
-    deps: [swagger-install, helm-docs-install]
+    deps: [swagger-install, helm-docs]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
       - swag init -g pkg/api/server.go --v3.1 -o docs/server
-      - helm-docs --chart-search-root=deploy/charts --template-files=./_templates.gotmpl --template-files=README.md.gotmpl
+      - task: helm-docs
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
       - go install github.com/swaggo/swag/v2/cmd/swag@latest
 
-  helm-docs-install:
-    desc: Install the helm-docs tool to regenerate Helm chart documentation
+  helm-docs:
+    desc: Generate Helm chart documentation
     cmds:
-      - go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+      - command -v helm-docs >/dev/null 2>&1 || go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+      - helm-docs --chart-search-root=deploy/charts
 
   mock-install:
     desc: Install the mockgen tool for mock generation
@@ -37,6 +38,25 @@ tasks:
     deps: [mock-install]
     cmds:
       - go generate ./...
+
+  addlicense-install:
+    desc: Install the addlicense tool for license header management
+    status:
+      - which addlicense
+    cmds:
+      - go install github.com/google/addlicense@latest
+
+  license-check:
+    desc: Check that all Go files have proper SPDX license headers
+    deps: [addlicense-install]
+    cmds:
+      - addlicense -check -f .github/license-header.txt -ignore '**/mocks/**' -ignore '**/testdata/**' -ignore 'vendor/**' -ignore '**/*.pb.go' -ignore '**/zz_generated*.go' $(find . -name '*.go' -type f)
+
+  license-fix:
+    desc: Add SPDX license headers to Go files that are missing them
+    deps: [addlicense-install]
+    cmds:
+      - addlicense -f .github/license-header.txt -ignore '**/mocks/**' -ignore '**/testdata/**' -ignore 'vendor/**' -ignore '**/*.pb.go' -ignore '**/zz_generated*.go' $(find . -name '*.go' -type f)
 
   lint:
     desc: Run linting tools
@@ -162,7 +182,7 @@ tasks:
     deps: [gen]
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -181,7 +201,7 @@ tasks:
     desc: Install the thv binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -193,7 +213,7 @@ tasks:
     deps: [gen]
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
@@ -212,7 +232,7 @@ tasks:
     desc: Install the vmcp binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+        sh: git describe --tags --dirty --match "v*" 2>/dev/null || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'

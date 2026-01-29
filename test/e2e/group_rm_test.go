@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -93,9 +96,8 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 			// Delete the group (provide confirmation)
 			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("y\n")
-			output, err := cmd.CombinedOutput()
+			_, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(output)).To(ContainSubstring(fmt.Sprintf("Group '%s' deleted successfully", groupName)))
 
 			// Verify group is deleted
 			stdout, _ = e2e.NewTHVCommand(config, "group", "list").ExpectSuccess()
@@ -128,7 +130,6 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("WARNING:"))
-			Expect(string(output)).To(ContainSubstring(fmt.Sprintf("Group '%s' deleted successfully", groupName)))
 
 			// Verify group workloads still exist (not deleted by default)
 			stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
@@ -164,7 +165,6 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("WARNING:"))
-			Expect(string(output)).To(ContainSubstring(fmt.Sprintf("Group '%s' deleted successfully", groupName)))
 
 			// Verify workloads are deleted
 			stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()

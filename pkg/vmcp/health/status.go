@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package health
 
 import (
@@ -35,6 +38,10 @@ type statusTracker struct {
 	// states maps backend ID to its health state.
 	states map[string]*backendHealthState
 
+	// removedBackends tracks backends that were explicitly removed to prevent
+	// race conditions where in-flight health checks re-create removed backends.
+	removedBackends map[string]bool
+
 	// unhealthyThreshold is the number of consecutive failures before marking unhealthy.
 	unhealthyThreshold int
 }
@@ -54,7 +61,26 @@ func newStatusTracker(unhealthyThreshold int) *statusTracker {
 
 	return &statusTracker{
 		states:             make(map[string]*backendHealthState),
+		removedBackends:    make(map[string]bool),
 		unhealthyThreshold: unhealthyThreshold,
+	}
+}
+
+// isRemoved checks if a backend has been explicitly removed.
+// Must be called with lock held.
+func (t *statusTracker) isRemoved(backendID string) bool {
+	return t.removedBackends[backendID]
+}
+
+// copyState creates an immutable copy of a backend health state.
+// Must be called with lock held.
+func (*statusTracker) copyState(state *backendHealthState) *State {
+	return &State{
+		Status:              state.status,
+		ConsecutiveFailures: state.consecutiveFailures,
+		LastCheckTime:       state.lastCheckTime,
+		LastError:           state.lastError,
+		LastTransitionTime:  state.lastTransitionTime,
 	}
 }
 
@@ -70,6 +96,12 @@ func newStatusTracker(unhealthyThreshold int) *statusTracker {
 func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Ignore removed backends to prevent race conditions with in-flight health checks
+	if t.isRemoved(backendID) {
+		logger.Debugf("Ignoring health check result for removed backend %s", backendName)
+		return
+	}
 
 	state, exists := t.states[backendID]
 	if !exists {
@@ -127,6 +159,12 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Ignore removed backends to prevent race conditions with in-flight health checks
+	if t.isRemoved(backendID) {
+		logger.Debugf("Ignoring health check result for removed backend %s", backendName)
+		return
+	}
+
 	state, exists := t.states[backendID]
 	if !exists {
 		// Initialize new state
@@ -169,7 +207,7 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 			backendName, previousStatus, status, state.consecutiveFailures, t.unhealthyThreshold, err)
 	} else if thresholdReached {
 		// Already at threshold with same status - no transition needed
-		logger.Debugf("Backend %s remains %s (%d consecutive failures, incoming: %s): %v",
+		logger.Warnf("Backend %s remains %s (%d consecutive failures, incoming: %s): %v",
 			backendName, state.status, state.consecutiveFailures, status, err)
 	} else {
 		// Below threshold - accumulating failures but not yet unhealthy
@@ -204,14 +242,7 @@ func (t *statusTracker) GetState(backendID string) (*State, bool) {
 		return nil, false
 	}
 
-	// Return a copy to avoid race conditions
-	return &State{
-		Status:              state.status,
-		ConsecutiveFailures: state.consecutiveFailures,
-		LastCheckTime:       state.lastCheckTime,
-		LastError:           state.lastError,
-		LastTransitionTime:  state.lastTransitionTime,
-	}, true
+	return t.copyState(state), true
 }
 
 // GetAllStates returns a copy of all backend health states.
@@ -222,13 +253,7 @@ func (t *statusTracker) GetAllStates() map[string]*State {
 
 	result := make(map[string]*State, len(t.states))
 	for backendID, state := range t.states {
-		result[backendID] = &State{
-			Status:              state.status,
-			ConsecutiveFailures: state.consecutiveFailures,
-			LastCheckTime:       state.lastCheckTime,
-			LastError:           state.lastError,
-			LastTransitionTime:  state.lastTransitionTime,
-		}
+		result[backendID] = t.copyState(state)
 	}
 
 	return result
@@ -239,6 +264,27 @@ func (t *statusTracker) GetAllStates() map[string]*State {
 func (t *statusTracker) IsHealthy(backendID string) bool {
 	status, exists := t.GetStatus(backendID)
 	return exists && status == vmcp.BackendHealthy
+}
+
+// RemoveBackend removes a backend from the status tracker.
+// The backend is marked as removed to prevent race conditions where in-flight
+// health checks might try to re-create the backend state.
+func (t *statusTracker) RemoveBackend(backendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	delete(t.states, backendID)
+	t.removedBackends[backendID] = true
+}
+
+// ClearRemovedFlag clears the "removed" flag for a backend.
+// This should be called when starting to monitor a backend that was previously removed,
+// allowing health check results to be recorded again.
+func (t *statusTracker) ClearRemovedFlag(backendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	delete(t.removedBackends, backendID)
 }
 
 // State is an immutable snapshot of a backend's health state.

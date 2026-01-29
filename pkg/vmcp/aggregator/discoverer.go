@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aggregator provides platform-specific backend discovery implementations.
 //
 // This file contains:
@@ -11,6 +14,7 @@ package aggregator
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -27,6 +31,8 @@ type backendDiscoverer struct {
 	workloadsManager workloads.Discoverer
 	groupsManager    groups.Manager
 	authConfig       *config.OutgoingAuthConfig
+	staticBackends   []config.StaticBackendConfig // Pre-configured backends for static mode
+	groupRef         string                       // Group reference for static mode metadata
 }
 
 // NewUnifiedBackendDiscoverer creates a unified backend discoverer that works with both
@@ -43,6 +49,23 @@ func NewUnifiedBackendDiscoverer(
 		workloadsManager: workloadsManager,
 		groupsManager:    groupsManager,
 		authConfig:       authConfig,
+		staticBackends:   nil, // Dynamic mode - discover backends at runtime
+	}
+}
+
+// NewUnifiedBackendDiscovererWithStaticBackends creates a backend discoverer for static mode
+// with pre-configured backends, eliminating the need for K8s API access.
+func NewUnifiedBackendDiscovererWithStaticBackends(
+	staticBackends []config.StaticBackendConfig,
+	authConfig *config.OutgoingAuthConfig,
+	groupRef string,
+) BackendDiscoverer {
+	return &backendDiscoverer{
+		workloadsManager: nil, // Not needed in static mode
+		groupsManager:    nil, // Not needed in static mode
+		authConfig:       authConfig,
+		staticBackends:   staticBackends,
+		groupRef:         groupRef,
 	}
 }
 
@@ -95,8 +118,41 @@ func NewBackendDiscovererWithManager(
 // Discover finds all backend workloads in the specified group.
 // Returns all accessible backends with their health status marked based on workload status.
 // The groupRef is the group name (e.g., "engineering-team").
-func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vmcp.Backend, error) {
+//
+// In static mode (when staticBackends are configured), this returns pre-configured backends
+// without any K8s API access. In dynamic mode, it discovers backends at runtime.
+//
+// Results are always sorted alphabetically by backend name to ensure deterministic ordering.
+// This prevents non-deterministic ConfigMap content that would cause unnecessary
+// deployment rollouts (pod cycling). See: https://github.com/stacklok/toolhive/issues/3448
+func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (backends []vmcp.Backend, err error) {
+	// Sort backends by name before returning to ensure deterministic ordering
+	defer func() {
+		if len(backends) > 1 {
+			sort.Slice(backends, func(i, j int) bool {
+				return backends[i].Name < backends[j].Name
+			})
+		}
+	}()
+
 	logger.Infof("Discovering backends in group %s", groupRef)
+
+	// Static mode: Use pre-configured backends if available
+	if len(d.staticBackends) > 0 {
+		logger.Infof("Using %d pre-configured static backends (no K8s API access)", len(d.staticBackends))
+		return d.discoverFromStaticConfig(), nil
+	}
+
+	// If staticBackends was explicitly set (even if empty), but groupsManager is nil,
+	// this discoverer was created for static mode with an empty backend list.
+	// Return empty list instead of falling through to dynamic mode which would panic.
+	if d.staticBackends != nil && d.groupsManager == nil {
+		logger.Infof("Static mode with empty backend list, returning no backends")
+		return []vmcp.Backend{}, nil
+	}
+
+	// Dynamic mode: Discover backends from K8s API at runtime
+	logger.Infof("Dynamic mode: discovering backends from K8s API")
 
 	// Verify that the group exists
 	exists, err := d.groupsManager.Exists(ctx, groupRef)
@@ -121,7 +177,6 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 	logger.Debugf("Found %d workloads in group %s, discovering backends", len(typedWorkloads), groupRef)
 
 	// Query each workload and convert to backend
-	var backends []vmcp.Backend
 	for _, workload := range typedWorkloads {
 		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {
@@ -201,4 +256,41 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 			logger.Debugf("Backend %s configured with auth strategy from config: %s", backendName, authConfig.Type)
 		}
 	}
+}
+
+// discoverFromStaticConfig converts pre-configured static backends into vmcp.Backend objects
+// for use in static mode where no K8s API access is available.
+func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
+	backends := make([]vmcp.Backend, 0, len(d.staticBackends))
+
+	for _, staticBackend := range d.staticBackends {
+		backend := vmcp.Backend{
+			ID:            staticBackend.Name,
+			Name:          staticBackend.Name,
+			BaseURL:       staticBackend.URL,
+			TransportType: staticBackend.Transport,
+			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
+			Metadata:      staticBackend.Metadata,
+		}
+
+		// Apply auth configuration from OutgoingAuthConfig
+		d.applyAuthConfigToBackend(&backend, staticBackend.Name)
+
+		// Set group metadata (reserved key, always overridden)
+		if backend.Metadata == nil {
+			backend.Metadata = make(map[string]string)
+		}
+		// Warn if user provided a conflicting group value
+		if existingGroup, exists := backend.Metadata["group"]; exists && existingGroup != d.groupRef {
+			logger.Warnf("Backend %s has user-provided group metadata '%s' which will be overridden with '%s'",
+				staticBackend.Name, existingGroup, d.groupRef)
+		}
+		backend.Metadata["group"] = d.groupRef
+
+		backends = append(backends, backend)
+		logger.Infof("Loaded static backend: %s (url=%s, transport=%s)",
+			staticBackend.Name, staticBackend.URL, staticBackend.Transport)
+	}
+
+	return backends
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package state
 
 import (
@@ -81,6 +84,26 @@ func (s *LocalStore) GetWriter(_ context.Context, name string) (io.WriteCloser, 
 	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
+		return nil, fmt.Errorf("failed to create file: %w", err)
+	}
+
+	return file, nil
+}
+
+// CreateExclusive creates a new state entry exclusively, failing if it already exists.
+// This provides atomic check-and-create semantics using O_EXCL to prevent race conditions.
+func (s *LocalStore) CreateExclusive(_ context.Context, name string) (io.WriteCloser, error) {
+	filePath := s.getFilePath(name)
+	// O_EXCL with O_CREATE provides atomic check-and-create behavior
+	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, errors.WithCode(
+				fmt.Errorf("state '%s' already exists", name),
+				http.StatusConflict,
+			)
+		}
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 

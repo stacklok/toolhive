@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the VirtualMCPServer custom resource.
 // It handles the creation, update, and deletion of Virtual MCP Servers in Kubernetes.
 package controllers
@@ -13,7 +16,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,11 +29,10 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
-	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -54,7 +55,7 @@ const (
 //   - Deployment (owned)
 //   - Service (owned)
 //   - ConfigMap for vmcp config (owned)
-//   - ServiceAccount, Role, RoleBinding via ctrlutil.EnsureRBACResource (owned)
+//   - ServiceAccount, Role, RoleBinding via rbac.Client (owned)
 //
 // This differs from MCPServer which uses finalizers to explicitly delete resources that
 // may not have owner references (StatefulSet, headless Service, RunConfig ConfigMap).
@@ -138,29 +139,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Discover backends from the MCPGroup
-	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to discover backends")
-		// Don't fail reconciliation if backend discovery fails, but log the error
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
-			fmt.Sprintf("Failed to discover backends: %v", err),
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-	} else {
-		statusManager.SetDiscoveredBackends(discoveredBackends)
-		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
-			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
-			metav1.ConditionTrue,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
-	}
+	// Backend discovery and health reporting is now delegated to the vMCP runtime (StatusReporter).
+	// The runtime reports status.discoveredBackends, status.backendCount, backend health, and
+	// BackendsDiscovered condition based on actual MCP connectivity and health checks.
+	//
+	// Controller responsibilities (infrastructure-only):
+	// - RBAC (ServiceAccount, Role, RoleBinding)
+	// - Deployment, Service, ConfigMap
+	// - GroupRef validation
+	// - Infrastructure conditions (DeploymentReady, ServiceReady)
+	// - status.URL
+	//
+	// Runtime responsibilities (via StatusReporter with VMCP_NAME/VMCP_NAMESPACE env vars):
+	// - Backend discovery from MCPGroup
+	// - Backend health monitoring (ready/degraded/unavailable)
+	// - status.Phase (Ready/Degraded/Failed)
+	// - status.discoveredBackends with health status
+	// - status.backendCount
+	// - BackendsDiscovered condition
 
 	// Fetch the latest version before updating status to ensure we use the current Generation
 	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
@@ -496,59 +492,39 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return nil
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer
+// ensureRBACResources ensures RBAC resources for VirtualMCPServer.
+// RBAC resources are created in all modes (discovered and inline) to support:
+// - Backend discovery (discovered mode only)
+// - Status reporting via K8sReporter (all modes)
+//
+// When a custom ServiceAccount is provided, RBAC creation is skipped.
+//
+// Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
+// automatically during operator upgrades.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
+	// If a service account is specified, we don't need to create one
+	if vmcp.Spec.ServiceAccount != nil {
+		return nil
+	}
+
+	// Always ensure RBAC resources exist for status reporting
+	// Status reporting (via K8sReporter) runs in ALL modes (discovered and inline),
+	// so the vMCP runtime needs permissions to update VirtualMCPServer status
+	// regardless of the outgoing auth source mode.
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
-	// Ensure Role with minimal permissions
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-			Rules: vmcpRBACRules,
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     serviceAccountName,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: vmcp.Namespace,
-				},
-			},
-		}
+	// Ensure Role with permissions to discover backends and update status
+	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      serviceAccountName,
+		Namespace: vmcp.Namespace,
+		Rules:     vmcpRBACRules,
+		Owner:     vmcp,
 	})
+	return err
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
@@ -848,13 +824,9 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if service account has changed
-	expectedServiceAccountName := vmcpServiceAccountName(vmcp.Name)
+	expectedServiceAccountName := r.serviceAccountNameForVmcp(vmcp)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
-	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
-		return true
-	}
-
-	return false
+	return currentServiceAccountName != expectedServiceAccountName
 }
 
 // deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed
@@ -1249,6 +1221,29 @@ func vmcpServiceAccountName(vmcpName string) string {
 	return fmt.Sprintf("%s-vmcp", vmcpName)
 }
 
+// outgoingAuthSource returns the outgoing auth source mode with default fallback.
+// Returns OutgoingAuthSourceDiscovered if not specified.
+func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		return vmcp.Spec.OutgoingAuth.Source
+	}
+	return OutgoingAuthSourceDiscovered
+}
+
+// serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer.
+// - User-provided service account: Returns the user-specified service account name
+// - All other modes: Returns the dedicated service account name (for status reporting)
+func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+	// If a service account is specified, use it
+	if vmcp.Spec.ServiceAccount != nil {
+		return *vmcp.Spec.ServiceAccount
+	}
+
+	// Use dedicated service account with K8s API permissions for status reporting
+	// (required in all modes - discovered and inline)
+	return vmcpServiceAccountName(vmcp.Name)
+}
+
 // vmcpServiceName generates the service name for a VirtualMCPServer
 // Uses "vmcp-" prefix to distinguish from MCPServer's "mcp-{name}-proxy" pattern.
 // This allows VirtualMCPServer and MCPServer to coexist with the same base name.
@@ -1472,10 +1467,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	typedWorkloads []workloads.TypedWorkload,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	// Determine source - default to "discovered" if not specified
-	source := OutgoingAuthSourceDiscovered
-	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
-		source = vmcp.Spec.OutgoingAuth.Source
-	}
+	source := outgoingAuthSource(vmcp)
 
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   source,
@@ -1491,10 +1483,11 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 		outgoing.Default = defaultStrategy
 	}
 
-	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
-	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
-	}
+	// Discover ExternalAuthConfig from MCPServers to populate backend auth configs.
+	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
+	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
+	// this function is not called, keeping the ConfigMap minimal.
+	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -1510,159 +1503,44 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	return outgoing, nil
 }
 
-// discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
-// a list of DiscoveredBackend objects with their current status.
-// This reuses the existing workload discovery code from pkg/vmcp/workloads.
-//
-//nolint:gocyclo
-func (r *VirtualMCPServerReconciler) discoverBackends(
+// convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
+// Preserves metadata and uses transport types from workload Specs.
+// Logs warnings when backends are skipped due to missing URL or transport information.
+func convertBackendsToStaticBackends(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]mcpv1alpha1.DiscoveredBackend, error) {
-	ctxLogger := log.FromContext(ctx)
-
-	// Create groups manager using the controller's client and VirtualMCPServer's namespace
-	groupsManager := groups.NewCRDManager(r.Client, vmcp.Namespace)
-
-	// Create K8S workload discoverer for the VirtualMCPServer's namespace
-	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
-
-	// Get all workloads in the group
-	typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
-	}
-
-	// Build outgoing auth config only if OutgoingAuth is explicitly configured
-	// This allows the aggregator to apply auth config to backends based on source mode
-	var authConfig *vmcpconfig.OutgoingAuthConfig
-	if vmcp.Spec.OutgoingAuth != nil {
-		var err error
-		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
-				"error", err)
-			// Continue without auth config rather than failing
-			authConfig = nil
-		}
-	}
-
-	// Use the aggregator's unified backend discoverer to reuse discovery logic
-	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
-
-	// Discover backends using the aggregator
-	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.Config.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover backends: %w", err)
-	}
-
-	// Create a map of discovered backend names for quick lookup
-	discoveredBackendMap := make(map[string]*vmcptypes.Backend, len(backends))
-	for i := range backends {
-		discoveredBackendMap[backends[i].Name] = &backends[i]
-	}
-
-	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
-	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
-	}
-
-	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(typedWorkloads))
-	now := metav1.Now()
-
-	// Convert vmcp.Backend to DiscoveredBackend for all workloads in the group
-	for _, workloadInfo := range typedWorkloads {
-		backend, found := discoveredBackendMap[workloadInfo.Name]
-		if !found {
-			// Workload exists but is not accessible (no URL or error)
-			discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
-				Name:            workloadInfo.Name,
-				Status:          mcpv1alpha1.BackendStatusUnavailable,
-				LastHealthCheck: now,
-			})
+	backends []vmcptypes.Backend,
+	transportMap map[string]string,
+) []vmcpconfig.StaticBackendConfig {
+	logger := log.FromContext(ctx)
+	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
+	for _, backend := range backends {
+		if backend.BaseURL == "" {
+			logger.V(1).Info("Skipping backend without URL in static mode",
+				"backend", backend.Name)
 			continue
 		}
 
-		// Convert vmcp.Backend to DiscoveredBackend
-		// Map health status from BackendHealthStatus to string
-		var backendStatus string
-		switch backend.HealthStatus {
-		case vmcptypes.BackendHealthy:
-			backendStatus = mcpv1alpha1.BackendStatusReady
-		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
-			backendStatus = mcpv1alpha1.BackendStatusUnavailable
-		case vmcptypes.BackendDegraded:
-			backendStatus = mcpv1alpha1.BackendStatusDegraded
-		case vmcptypes.BackendUnknown:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
-		default:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
+		transport := transportMap[backend.Name]
+		if transport == "" {
+			logger.V(1).Info("Skipping backend without transport information in static mode",
+				"backend", backend.Name)
+			continue
 		}
 
-		// Extract auth config reference and check workload phase based on workload type
-		// Using pre-fetched maps instead of individual Get calls
-		authConfigRef := ""
-		authType := ""
-		switch workloadInfo.Type {
-		case workloads.WorkloadTypeMCPServer:
-			if mcpServer, found := mcpServerMap[workloadInfo.Name]; found {
-				if mcpServer.Spec.ExternalAuthConfigRef != nil {
-					authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
-					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
-				}
-				// Override backend status based on MCPServer phase for non-ready states
-				if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhasePending ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
-					backendStatus = mcpv1alpha1.BackendStatusUnavailable
-					ctxLogger.V(1).Info("Backend MCPServer not ready, marking as unavailable",
-						"name", workloadInfo.Name,
-						"phase", mcpServer.Status.Phase)
-				}
-			}
-		case workloads.WorkloadTypeMCPRemoteProxy:
-			if mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]; found {
-				if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil {
-					authConfigRef = mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
-					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
-				}
-				// Override backend status based on MCPRemoteProxy phase for non-ready states
-				if mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhasePending ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseFailed ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseTerminating {
-					backendStatus = mcpv1alpha1.BackendStatusUnavailable
-					ctxLogger.V(1).Info("Backend MCPRemoteProxy not ready, marking as unavailable",
-						"name", workloadInfo.Name,
-						"phase", mcpRemoteProxy.Status.Phase)
-				}
-			}
-		}
-
-		discoveredBackend := mcpv1alpha1.DiscoveredBackend{
-			Name:            backend.Name,
-			AuthConfigRef:   authConfigRef,
-			AuthType:        authType,
-			Status:          backendStatus,
-			LastHealthCheck: now,
-			URL:             backend.BaseURL,
-		}
-
-		discoveredBackends = append(discoveredBackends, discoveredBackend)
-		ctxLogger.V(1).Info("Discovered backend",
-			"name", backend.Name,
-			"status", backendStatus,
-			"url", backend.BaseURL,
-			"authConfigRef", authConfigRef)
+		static = append(static, vmcpconfig.StaticBackendConfig{
+			Name:      backend.Name,
+			URL:       backend.BaseURL,
+			Transport: transport,
+			Metadata:  backend.Metadata,
+		})
 	}
-
-	return discoveredBackends, nil
+	return static
 }
+
+// discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
+// a list of DiscoveredBackend objects with their current status.
+//
+//nolint:gocyclo
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {

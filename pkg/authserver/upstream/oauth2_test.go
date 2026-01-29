@@ -17,6 +17,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -987,99 +988,29 @@ func Test_validateRedirectURI(t *testing.T) {
 		wantErr     bool
 		errContains string
 	}{
-		// Valid URIs
-		{
-			name:    "valid HTTPS URI with path",
-			uri:     "https://auth.example.com/oauth/callback",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTPS URI with port",
-			uri:     "https://auth.example.com:8443/oauth/callback",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTP URI with loopback IPv4",
-			uri:     "http://127.0.0.1:8080/oauth/callback",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTP URI with loopback IPv6",
-			uri:     "http://[::1]:8080/oauth/callback",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTP URI with localhost",
-			uri:     "http://localhost:8080/oauth/callback",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTPS URI without path",
-			uri:     "https://example.com",
-			wantErr: false,
-		},
+		// Valid HTTPS URIs
+		{"HTTPS with path", "https://auth.example.com/oauth/callback", false, ""},
+		{"HTTPS with port", "https://auth.example.com:8443/oauth/callback", false, ""},
+		{"HTTPS without path", "https://example.com", false, ""},
 
-		// Invalid URIs
-		{
-			name:        "HTTP to non-loopback address",
-			uri:         "http://example.com/callback",
-			wantErr:     true,
-			errContains: "redirect_uri with http scheme requires loopback address (127.0.0.1, ::1, or localhost)",
-		},
-		{
-			name:        "URI contains fragment",
-			uri:         "https://example.com/callback#section",
-			wantErr:     true,
-			errContains: "redirect_uri must not contain a fragment (#)",
-		},
-		{
-			name:        "URI contains userinfo",
-			uri:         "https://user:pass@example.com/callback",
-			wantErr:     true,
-			errContains: "redirect_uri must not contain user credentials",
-		},
-		{
-			name:        "invalid scheme (ftp)",
-			uri:         "ftp://example.com/callback",
-			wantErr:     true,
-			errContains: "redirect_uri must use http or https scheme",
-		},
-		{
-			name:        "relative URI",
-			uri:         "/oauth/callback",
-			wantErr:     true,
-			errContains: "redirect_uri must be an absolute URL with scheme and host",
-		},
-		{
-			name:        "wildcard hostname",
-			uri:         "https://*/callback",
-			wantErr:     true,
-			errContains: "redirect_uri must not contain wildcard hostname",
-		},
-		{
-			name:        "empty URI",
-			uri:         "",
-			wantErr:     true,
-			errContains: "redirect_uri must be an absolute URL with scheme and host",
-		},
-		{
-			name:        "scheme only",
-			uri:         "https://",
-			wantErr:     true,
-			errContains: "redirect_uri must be an absolute URL with scheme and host",
-		},
-		{
-			name:        "wildcard subdomain",
-			uri:         "https://*.example.com/callback",
-			wantErr:     true,
-			errContains: "redirect_uri must not contain wildcard hostname",
-		},
-		{
-			name:        "malformed URL with invalid percent encoding",
-			uri:         "https://example.com/path%ZZ",
-			wantErr:     true,
-			errContains: "redirect_uri must be an absolute URL with scheme and host",
-		},
+		// Valid HTTP loopback URIs
+		{"HTTP localhost", "http://localhost/callback", false, ""},
+		{"HTTP localhost with port", "http://localhost:8080/callback", false, ""},
+		{"HTTP 127.0.0.1", "http://127.0.0.1/callback", false, ""},
+		{"HTTP 127.0.0.1 with port", "http://127.0.0.1:8080/callback", false, ""},
+		{"HTTP IPv6 ::1", "http://[::1]/callback", false, ""},
+		{"HTTP IPv6 ::1 with port", "http://[::1]:8080/callback", false, ""},
+
+		// Invalid: HTTP to non-loopback
+		{"HTTP non-loopback hostname", "http://example.com/callback", true, "redirect_uri must use http (for loopback) or https scheme"},
+		{"HTTP non-loopback hostname with port", "http://example.com:8080/callback", true, "redirect_uri must use http (for loopback) or https scheme"},
+		{"HTTP non-loopback IP", "http://192.168.1.1/callback", true, "redirect_uri must use http (for loopback) or https scheme"},
+
+		// Invalid: fragment, scheme, relative, empty
+		{"URI with fragment", "https://example.com/callback#section", true, "redirect_uri must be an absolute URI without a fragment"},
+		{"FTP scheme", "ftp://example.com/callback", true, "redirect_uri must use http (for loopback) or https scheme"},
+		{"relative URI", "/oauth/callback", true, "redirect_uri must be an absolute URI without a fragment"},
+		{"empty URI", "", true, "redirect_uri must be an absolute URI without a fragment"},
 	}
 
 	for _, tt := range tests {
@@ -1097,79 +1028,699 @@ func Test_validateRedirectURI(t *testing.T) {
 	}
 }
 
-func Test_validateRedirectURI_LoopbackAddresses(t *testing.T) {
+func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		uri     string
-		wantErr bool
-	}{
-		// Loopback addresses with HTTP should be allowed
-		{
-			name:    "HTTP with localhost",
-			uri:     "http://localhost/callback",
-			wantErr: false,
-		},
-		{
-			name:    "HTTP with localhost and port",
-			uri:     "http://localhost:8080/callback",
-			wantErr: false,
-		},
-		{
-			name:    "HTTP with 127.0.0.1",
-			uri:     "http://127.0.0.1/callback",
-			wantErr: false,
-		},
-		{
-			name:    "HTTP with 127.0.0.1 and port",
-			uri:     "http://127.0.0.1:8080/callback",
-			wantErr: false,
-		},
-		{
-			name:    "HTTP with IPv6 ::1",
-			uri:     "http://[::1]/callback",
-			wantErr: false,
-		},
-		{
-			name:    "HTTP with IPv6 ::1 and port",
-			uri:     "http://[::1]:8080/callback",
-			wantErr: false,
-		},
-		// Non-loopback addresses with HTTP should be rejected
-		{
-			name:    "HTTP with non-loopback hostname",
-			uri:     "http://example.com/callback",
-			wantErr: true,
-		},
-		{
-			name:    "HTTP with non-loopback hostname and port",
-			uri:     "http://example.com:8080/callback",
-			wantErr: true,
-		},
-		{
-			name:    "HTTP with non-loopback IP",
-			uri:     "http://192.168.1.1/callback",
-			wantErr: true,
-		},
-		{
-			name:    "HTTP with non-loopback IP and port",
-			uri:     "http://192.168.1.1:8080/callback",
-			wantErr: true,
-		},
+	ctx := context.Background()
+
+	// Helper to create a minimal token server (OAuth endpoints not used for userinfo tests)
+	newTokenServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	t.Run("nil tokens returns ErrIdentityResolutionFailed", func(t *testing.T) {
+		t.Parallel()
 
-			err := validateRedirectURI(tt.uri)
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "redirect_uri with http scheme requires loopback address")
-			} else {
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "user-123"})
+		}))
+		defer userInfoServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		subject, err := provider.ResolveIdentity(ctx, nil, "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Empty(t, subject)
+	})
+
+	t.Run("successful resolution", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "user-123"})
+		}))
+		defer userInfoServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens := &Tokens{
+			AccessToken: "valid-access-token",
+		}
+		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		require.NoError(t, err)
+		assert.Equal(t, "user-123", subject)
+	})
+
+	t.Run("server returns 401", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer userInfoServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens := &Tokens{
+			AccessToken: "invalid-access-token",
+		}
+		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Contains(t, err.Error(), "401")
+		assert.Empty(t, subject)
+	})
+
+	t.Run("missing subject in response", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "Test"})
+		}))
+		defer userInfoServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens := &Tokens{
+			AccessToken: "valid-access-token",
+		}
+		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Empty(t, subject)
+	})
+
+	t.Run("empty subject in response", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": ""})
+		}))
+		defer userInfoServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens := &Tokens{
+			AccessToken: "valid-access-token",
+		}
+		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Empty(t, subject)
+	})
+}
+
+func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
+	t.Parallel()
+
+	// Helper to create a minimal token server (OAuth endpoints not used for userinfo tests)
+	newTokenServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+
+	t.Run("error cases without server", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		tests := []struct {
+			name        string
+			userInfo    *UserInfoConfig
+			accessToken string
+			wantErr     string
+		}{
+			{
+				name:        "not configured",
+				userInfo:    nil,
+				accessToken: "test-token",
+				wantErr:     "userinfo endpoint not configured",
+			},
+			{
+				name:        "empty access token",
+				userInfo:    &UserInfoConfig{EndpointURL: "http://localhost/userinfo"},
+				accessToken: "",
+				wantErr:     "access token is required",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				config := &OAuth2Config{
+					CommonOAuthConfig: CommonOAuthConfig{
+						ClientID:     "test-client",
+						ClientSecret: "test-secret",
+						RedirectURI:  "http://localhost:8080/callback",
+					},
+					AuthorizationEndpoint: tokenServer.URL + "/authorize",
+					TokenEndpoint:         tokenServer.URL + "/token",
+					UserInfo:              tt.userInfo,
+				}
+
+				provider, err := NewOAuth2Provider(config)
 				require.NoError(t, err)
+
+				_, err = provider.FetchUserInfo(context.Background(), tt.accessToken)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			})
+		}
+	})
+
+	t.Run("server response cases", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name         string
+			serverResp   map[string]any
+			serverStatus int
+			fieldMapping *UserInfoFieldMapping
+			wantSubject  string
+			wantErr      string
+		}{
+			{
+				name:         "successful with default sub field",
+				serverResp:   map[string]any{"sub": "user-123", "name": "Test User", "email": "test@example.com"},
+				serverStatus: http.StatusOK,
+				wantSubject:  "user-123",
+			},
+			{
+				name:         "custom subject field (numeric ID)",
+				serverResp:   map[string]any{"id": float64(12345), "login": "octocat"},
+				serverStatus: http.StatusOK,
+				fieldMapping: &UserInfoFieldMapping{SubjectFields: []string{"id"}},
+				wantSubject:  "12345",
+			},
+			{
+				name:         "server returns 401",
+				serverStatus: http.StatusUnauthorized,
+				wantErr:      "status 401",
+			},
+			{
+				name:         "missing subject claim",
+				serverResp:   map[string]any{"name": "No Subject", "email": "nosub@example.com"},
+				serverStatus: http.StatusOK,
+				wantErr:      "missing required subject claim",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tt.serverStatus)
+					if tt.serverResp != nil {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(tt.serverResp)
+					}
+				}))
+				defer userInfoServer.Close()
+
+				tokenServer := newTokenServer()
+				defer tokenServer.Close()
+
+				config := &OAuth2Config{
+					CommonOAuthConfig: CommonOAuthConfig{
+						ClientID:     "test-client",
+						ClientSecret: "test-secret",
+						RedirectURI:  "http://localhost:8080/callback",
+					},
+					AuthorizationEndpoint: tokenServer.URL + "/authorize",
+					TokenEndpoint:         tokenServer.URL + "/token",
+					UserInfo: &UserInfoConfig{
+						EndpointURL:  userInfoServer.URL,
+						FieldMapping: tt.fieldMapping,
+					},
+				}
+
+				provider, err := NewOAuth2Provider(config)
+				require.NoError(t, err)
+
+				userInfo, err := provider.FetchUserInfo(context.Background(), "test-access-token")
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), tt.wantErr)
+					return
+				}
+
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantSubject, userInfo.Subject)
+			})
+		}
+	})
+
+	t.Run("additional headers are sent", func(t *testing.T) {
+		t.Parallel()
+
+		var receivedHeaders http.Header
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedHeaders = r.Header.Clone()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "user-123"})
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := newTokenServer()
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+				AdditionalHeaders: map[string]string{
+					"X-GitHub-Api-Version": "2022-11-28",
+					"Accept":               "application/vnd.github+json",
+				},
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(context.Background(), "test-access-token")
+		require.NoError(t, err)
+
+		assert.Equal(t, "2022-11-28", receivedHeaders.Get("X-GitHub-Api-Version"))
+		assert.Equal(t, "application/vnd.github+json", receivedHeaders.Get("Accept"))
+	})
+}
+
+func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("successful userinfo request with default fields", func(t *testing.T) {
+		t.Parallel()
+
+		var receivedAuth string
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{
+				"sub":   "user-123",
+				"name":  "Test User",
+				"email": "test@example.com",
 			}
-		})
-	}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer userInfoServer.Close()
+
+		// Create a simple mock for token endpoint (not used in this test)
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		require.NoError(t, err)
+
+		assert.Equal(t, "Bearer test-access-token", receivedAuth)
+		assert.Equal(t, "user-123", userInfo.Subject)
+		assert.Equal(t, "Test User", userInfo.Name)
+		assert.Equal(t, "test@example.com", userInfo.Email)
+	})
+
+	t.Run("userinfo with custom field mapping", func(t *testing.T) {
+		t.Parallel()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Simulate GitHub-like response
+			resp := map[string]any{
+				"id":    float64(12345),
+				"login": "octocat",
+				"name":  "The Octocat",
+				"email": "octocat@github.com",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+				FieldMapping: &UserInfoFieldMapping{
+					SubjectFields: []string{"id", "login"},
+					NameFields:    []string{"name", "login"},
+					EmailFields:   []string{"email"},
+				},
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		require.NoError(t, err)
+
+		assert.Equal(t, "12345", userInfo.Subject) // Numeric ID converted to string
+		assert.Equal(t, "The Octocat", userInfo.Name)
+		assert.Equal(t, "octocat@github.com", userInfo.Email)
+	})
+
+	t.Run("userinfo with additional headers", func(t *testing.T) {
+		t.Parallel()
+
+		var receivedHeaders http.Header
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedHeaders = r.Header.Clone()
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{"sub": "user-123"}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+				AdditionalHeaders: map[string]string{
+					"X-GitHub-Api-Version": "2022-11-28",
+					"Accept":               "application/vnd.github+json",
+				},
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		require.NoError(t, err)
+
+		assert.Equal(t, "2022-11-28", receivedHeaders.Get("X-GitHub-Api-Version"))
+		assert.Equal(t, "application/vnd.github+json", receivedHeaders.Get("Accept"))
+	})
+
+	t.Run("userinfo with POST method", func(t *testing.T) {
+		t.Parallel()
+
+		var receivedMethod string
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedMethod = r.Method
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{"sub": "user-123"}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+				HTTPMethod:  http.MethodPost,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		require.NoError(t, err)
+
+		assert.Equal(t, http.MethodPost, receivedMethod)
+		assert.Equal(t, "user-123", userInfo.Subject)
+	})
+
+	t.Run("userinfo not configured returns error", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			// No UserInfo configured
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "userinfo endpoint not configured")
+	})
+
+	t.Run("userinfo without access token fails", func(t *testing.T) {
+		t.Parallel()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: "http://localhost/userinfo",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(ctx, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "access token is required")
+	})
+
+	t.Run("userinfo server error returns error", func(t *testing.T) {
+		t.Parallel()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "status 401")
+	})
+
+	t.Run("userinfo missing subject returns error", func(t *testing.T) {
+		t.Parallel()
+
+		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{
+				"name":  "No Subject User",
+				"email": "nosub@example.com",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer userInfoServer.Close()
+
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer tokenServer.Close()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenServer.URL + "/authorize",
+			TokenEndpoint:         tokenServer.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoServer.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing required subject claim")
+	})
 }

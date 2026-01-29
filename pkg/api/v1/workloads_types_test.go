@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -122,6 +125,77 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "sse", result.ProxyMode)
 		assert.True(t, result.NetworkIsolation)
 		assert.Equal(t, []string{"tool1", "tool2"}, result.ToolsFilter)
+	})
+
+	t.Run("with plaintext header forward", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			HeaderForward: &runner.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Custom-Header": "custom-value",
+					"X-Tenant-ID":     "tenant-123",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.HeaderForward)
+		assert.Equal(t, map[string]string{
+			"X-Custom-Header": "custom-value",
+			"X-Tenant-ID":     "tenant-123",
+		}, result.HeaderForward.AddPlaintextHeaders)
+		assert.Nil(t, result.HeaderForward.AddHeadersFromSecret)
+	})
+
+	t.Run("with secret-backed header forward", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			HeaderForward: &runner.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"Authorization": "api-key-secret",
+					"X-API-Key":     "another-secret",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.HeaderForward)
+		assert.Nil(t, result.HeaderForward.AddPlaintextHeaders)
+		assert.Equal(t, map[string]string{
+			"Authorization": "api-key-secret",
+			"X-API-Key":     "another-secret",
+		}, result.HeaderForward.AddHeadersFromSecret)
+	})
+
+	t.Run("with both plaintext and secret header forward", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			HeaderForward: &runner.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Tenant-ID": "tenant-123",
+				},
+				AddHeadersFromSecret: map[string]string{
+					"Authorization": "api-key-secret",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.HeaderForward)
+		assert.Equal(t, "tenant-123", result.HeaderForward.AddPlaintextHeaders["X-Tenant-ID"])
+		assert.Equal(t, "api-key-secret", result.HeaderForward.AddHeadersFromSecret["Authorization"])
 	})
 
 	t.Run("with OIDC config", func(t *testing.T) {
@@ -337,85 +411,193 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 func TestCreateRequestToRemoteAuthConfig(t *testing.T) {
 	t.Parallel()
 
-	t.Run("with bearer token", func(t *testing.T) {
-		t.Parallel()
+	tests := []struct {
+		name                 string
+		clientSecret         *secrets.SecretParameter
+		bearerToken          *secrets.SecretParameter
+		expectedClientSecret string
+		expectedBearerToken  string
+	}{
+		{
+			name: "with bearer token only",
+			bearerToken: &secrets.SecretParameter{
+				Name:   "bearer-token-secret",
+				Target: "bearer_token",
+			},
+			expectedClientSecret: "",
+			expectedBearerToken:  "bearer-token-secret,target=bearer_token",
+		},
+		{
+			name: "with bearer token and client secret",
+			clientSecret: &secrets.SecretParameter{
+				Name:   "oauth-client-secret",
+				Target: "oauth_secret",
+			},
+			bearerToken: &secrets.SecretParameter{
+				Name:   "bearer-token-secret",
+				Target: "bearer_token",
+			},
+			expectedClientSecret: "oauth-client-secret,target=oauth_secret",
+			expectedBearerToken:  "bearer-token-secret,target=bearer_token",
+		},
+		{
+			name:                 "without bearer token or client secret",
+			clientSecret:         nil,
+			bearerToken:          nil,
+			expectedClientSecret: "",
+			expectedBearerToken:  "",
+		},
+	}
 
-		bearerTokenParam := &secrets.SecretParameter{
-			Name:   "bearer-token-secret",
-			Target: "bearer_token",
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		req := &createRequest{
-			updateRequest: updateRequest{
-				URL: "https://example.com/mcp",
-				OAuthConfig: remoteOAuthConfig{
-					ClientID:    "test-client",
-					BearerToken: bearerTokenParam,
-					Scopes:      []string{"read", "write"},
+			req := &createRequest{
+				updateRequest: updateRequest{
+					URL: "https://example.com/mcp",
+					OAuthConfig: remoteOAuthConfig{
+						ClientID:     "test-client",
+						ClientSecret: tt.clientSecret,
+						BearerToken:  tt.bearerToken,
+						Scopes:       []string{"read", "write"},
+					},
+				},
+			}
+
+			result := createRequestToRemoteAuthConfig(context.Background(), req)
+
+			require.NotNil(t, result)
+			assert.Equal(t, "test-client", result.ClientID)
+			assert.Equal(t, []string{"read", "write"}, result.Scopes)
+			assert.Equal(t, tt.expectedClientSecret, result.ClientSecret)
+			assert.Equal(t, tt.expectedBearerToken, result.BearerToken)
+		})
+	}
+}
+
+func TestValidateHeaderForwardConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		config    *headerForwardConfig
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "valid config with plaintext headers",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Custom-Header": "value",
+					"X-Tenant-ID":     "tenant-123",
 				},
 			},
-		}
-
-		result := createRequestToRemoteAuthConfig(context.Background(), req)
-
-		require.NotNil(t, result)
-		assert.Equal(t, "test-client", result.ClientID)
-		assert.Equal(t, []string{"read", "write"}, result.Scopes)
-		// Verify bearer token is converted to CLI format
-		assert.Equal(t, "bearer-token-secret,target=bearer_token", result.BearerToken)
-	})
-
-	t.Run("with bearer token and client secret", func(t *testing.T) {
-		t.Parallel()
-
-		clientSecretParam := &secrets.SecretParameter{
-			Name:   "oauth-client-secret",
-			Target: "oauth_secret",
-		}
-		bearerTokenParam := &secrets.SecretParameter{
-			Name:   "bearer-token-secret",
-			Target: "bearer_token",
-		}
-
-		req := &createRequest{
-			updateRequest: updateRequest{
-				URL: "https://example.com/mcp",
-				OAuthConfig: remoteOAuthConfig{
-					ClientID:     "test-client",
-					ClientSecret: clientSecretParam,
-					BearerToken:  bearerTokenParam,
-					Scopes:       []string{"read", "write"},
+			wantErr: false,
+		},
+		{
+			name: "valid config with secret headers",
+			config: &headerForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-API-Key":     "api-key-secret",
+					"Authorization": "auth-secret",
 				},
 			},
-		}
-
-		result := createRequestToRemoteAuthConfig(context.Background(), req)
-
-		require.NotNil(t, result)
-		assert.Equal(t, "test-client", result.ClientID)
-		// Verify both secrets are converted to CLI format
-		assert.Equal(t, "oauth-client-secret,target=oauth_secret", result.ClientSecret)
-		assert.Equal(t, "bearer-token-secret,target=bearer_token", result.BearerToken)
-	})
-
-	t.Run("without bearer token", func(t *testing.T) {
-		t.Parallel()
-
-		req := &createRequest{
-			updateRequest: updateRequest{
-				URL: "https://example.com/mcp",
-				OAuthConfig: remoteOAuthConfig{
-					ClientID: "test-client",
-					Scopes:   []string{"read", "write"},
+			wantErr: false,
+		},
+		{
+			name:    "nil config is valid",
+			config:  nil,
+			wantErr: false,
+		},
+		{
+			name:    "empty config is valid",
+			config:  &headerForwardConfig{},
+			wantErr: false,
+		},
+		{
+			name: "restricted header Host rejected in plaintext",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"Host": "evil.com",
 				},
 			},
-		}
+			wantErr:   true,
+			errSubstr: "restricted",
+		},
+		{
+			name: "restricted header Host rejected in secrets",
+			config: &headerForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"Host": "host-secret",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "restricted",
+		},
+		{
+			name: "restricted header Content-Length rejected",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"Content-Length": "100",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "restricted",
+		},
+		{
+			name: "empty header name rejected in plaintext",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"": "value",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "empty",
+		},
+		{
+			name: "empty header name rejected in secrets",
+			config: &headerForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"": "secret-name",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "empty",
+		},
+		{
+			name: "CRLF injection in header value rejected",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Custom": "value\r\nX-Injected: malicious",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "invalid header value",
+		},
+		{
+			name: "control character in header value rejected",
+			config: &headerForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Custom": "value\x00with-null",
+				},
+			},
+			wantErr:   true,
+			errSubstr: "invalid header value",
+		},
+	}
 
-		result := createRequestToRemoteAuthConfig(context.Background(), req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		require.NotNil(t, result)
-		assert.Equal(t, "test-client", result.ClientID)
-		// Bearer token should be empty when not provided
-		assert.Empty(t, result.BearerToken)
-	})
+			err := validateHeaderForwardConfig(tt.config)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

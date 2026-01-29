@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package client provides utilities for managing client configurations
 // and interacting with MCP servers.
 package client
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -688,6 +692,29 @@ func TestCreateClientConfig(t *testing.T) {
 		assert.Error(t, err, "Should return error for unsupported client type")
 		assert.Nil(t, cf, "Should not return a config file on error")
 		assert.Contains(t, err.Error(), "unsupported client type", "Error should mention unsupported client type")
+	})
+
+	t.Run("CreateClientConfigUnsupportedClientTypeIsSentinelError", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create empty mock client configs (no supported clients)
+		mockClientConfigs := []mcpClientConfig{}
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig with unsupported client type
+		_, err := manager.CreateClientConfig(VSCode)
+		require.Error(t, err)
+
+		// Verify the error can be matched using errors.Is with the sentinel error
+		// This is important for API handlers to return appropriate HTTP status codes
+		assert.True(t, errors.Is(err, ErrUnsupportedClientType),
+			"Error should be matchable with ErrUnsupportedClientType sentinel error")
 	})
 
 	t.Run("CreateClientConfigWriteError", func(t *testing.T) {

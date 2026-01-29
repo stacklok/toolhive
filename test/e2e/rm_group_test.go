@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -85,12 +88,10 @@ var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func(
 			}
 
 			// Remove all workloads in the group
-			stdout, stderr := e2e.NewTHVCommand(config, "rm", "--group", testGroupName).ExpectSuccess()
-			output := stdout + stderr
-			Expect(output).To(ContainSubstring("Successfully removed 2 workload(s) from group"))
+			e2e.NewTHVCommand(config, "rm", "--group", testGroupName).ExpectSuccess()
 
 			// Verify only group workloads are deleted
-			stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+			stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 			Expect(stdout).NotTo(ContainSubstring(groupWorkload1))
 			Expect(stdout).NotTo(ContainSubstring(groupWorkload2))
 			Expect(stdout).To(ContainSubstring(nonGroupWorkload1))

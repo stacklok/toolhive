@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package aggregator
 
 import (
@@ -549,15 +552,15 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, backends, 2)
 
-		// Verify MCPServer backend
-		assert.Equal(t, "server1", backends[0].ID)
-		assert.Equal(t, "streamable-http", backends[0].TransportType)
-		assert.Equal(t, "github", backends[0].Metadata["tool_type"])
+		// Backends are sorted alphabetically by name
+		// proxy1 comes before server1 alphabetically
+		assert.Equal(t, "proxy1", backends[0].ID)
+		assert.Equal(t, "sse", backends[0].TransportType)
+		assert.Equal(t, "mcp", backends[0].Metadata["tool_type"])
 
-		// Verify MCPRemoteProxy backend
-		assert.Equal(t, "proxy1", backends[1].ID)
-		assert.Equal(t, "sse", backends[1].TransportType)
-		assert.Equal(t, "mcp", backends[1].Metadata["tool_type"])
+		assert.Equal(t, "server1", backends[1].ID)
+		assert.Equal(t, "streamable-http", backends[1].TransportType)
+		assert.Equal(t, "github", backends[1].Metadata["tool_type"])
 	})
 
 	t.Run("applies authentication to MCPRemoteProxy backends", func(t *testing.T) {
@@ -1167,4 +1170,275 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
 		assert.Equal(t, "default-fallback-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
+}
+
+// TestStaticBackendDiscoverer_EmptyBackendList verifies that when a static discoverer
+// is created with an empty backend list, it gracefully returns an empty list instead of
+// panicking due to nil groupsManager (regression test for nil pointer dereference).
+func TestStaticBackendDiscoverer_EmptyBackendList(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// Create a static discoverer with empty backend list (not nil, but zero length)
+	// This simulates the edge case where staticBackends was set but is empty
+	discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+		[]config.StaticBackendConfig{}, // Empty slice, not nil
+		nil,                            // No auth config
+		"test-group",
+	)
+
+	// This should return empty list without panicking
+	// Previously would panic when falling through to dynamic mode with nil groupsManager
+	backends, err := discoverer.Discover(ctx, "test-group")
+
+	require.NoError(t, err)
+	assert.Empty(t, backends)
+}
+
+// TestStaticBackendDiscoverer_MetadataGroupOverride verifies that the "group" metadata key
+// is always overridden with the groupRef value, even if user provides a different value.
+func TestStaticBackendDiscoverer_MetadataGroupOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		staticBackends    []config.StaticBackendConfig
+		groupRef          string
+		expectedGroupVals []string
+	}{
+		{
+			name: "user-provided group metadata is overridden",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend1",
+					URL:       "http://backend1:8080",
+					Transport: "sse",
+					Metadata: map[string]string{
+						"group": "wrong-group", // User provided conflicting value
+						"env":   "prod",
+					},
+				},
+			},
+			groupRef:          "correct-group",
+			expectedGroupVals: []string{"correct-group"},
+		},
+		{
+			name: "group metadata added when not present",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend2",
+					URL:       "http://backend2:8080",
+					Transport: "streamable-http",
+					Metadata: map[string]string{
+						"env": "dev",
+					},
+				},
+			},
+			groupRef:          "test-group",
+			expectedGroupVals: []string{"test-group"},
+		},
+		{
+			name: "group metadata added when metadata is nil",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend3",
+					URL:       "http://backend3:8080",
+					Transport: "sse",
+					Metadata:  nil, // No metadata at all
+				},
+			},
+			groupRef:          "my-group",
+			expectedGroupVals: []string{"my-group"},
+		},
+		{
+			name: "multiple backends all get correct group",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "backend1",
+					URL:       "http://backend1:8080",
+					Transport: "sse",
+					Metadata:  map[string]string{"group": "wrong1"},
+				},
+				{
+					Name:      "backend2",
+					URL:       "http://backend2:8080",
+					Transport: "streamable-http",
+					Metadata:  map[string]string{"env": "prod"},
+				},
+			},
+			groupRef:          "shared-group",
+			expectedGroupVals: []string{"shared-group", "shared-group"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+				tt.staticBackends,
+				nil, // No auth config needed for this test
+				tt.groupRef,
+			)
+
+			backends, err := discoverer.Discover(ctx, tt.groupRef)
+			require.NoError(t, err)
+
+			// Verify we got the expected number of backends
+			assert.Len(t, backends, len(tt.expectedGroupVals))
+
+			// Verify each backend has the correct group metadata
+			for i, backend := range backends {
+				assert.NotNil(t, backend.Metadata, "Backend %d should have metadata", i)
+				assert.Equal(t, tt.expectedGroupVals[i], backend.Metadata["group"],
+					"Backend %d should have correct group metadata", i)
+
+				// Verify other metadata is preserved
+				if tt.staticBackends[i].Metadata != nil {
+					for k, v := range tt.staticBackends[i].Metadata {
+						if k != "group" {
+							assert.Equal(t, v, backend.Metadata[k],
+								"Backend %d should preserve non-group metadata key %s", i, k)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestBackendDiscoverer_Discover_DeterministicOrdering tests that Discover returns backends
+// in a deterministic order (sorted alphabetically by name) regardless of input order.
+// This prevents non-deterministic ConfigMap content that would cause unnecessary
+// deployment rollouts (pod cycling). See: https://github.com/stacklok/toolhive/issues/3448
+func TestBackendDiscoverer_Discover_DeterministicOrdering(t *testing.T) {
+	t.Parallel()
+
+	// Test with multiple different input orders to ensure output is always sorted
+	testCases := []struct {
+		name           string
+		staticBackends []config.StaticBackendConfig
+	}{
+		{
+			name: "reverse alphabetical order (zebra, middle, alpha)",
+			staticBackends: []config.StaticBackendConfig{
+				{Name: "zebra-backend", URL: "http://zebra:8080", Transport: "sse"},
+				{Name: "middle-backend", URL: "http://middle:8080", Transport: "streamable-http"},
+				{Name: "alpha-backend", URL: "http://alpha:8080", Transport: "sse"},
+			},
+		},
+		{
+			name: "alphabetical order (alpha, middle, zebra)",
+			staticBackends: []config.StaticBackendConfig{
+				{Name: "alpha-backend", URL: "http://alpha:8080", Transport: "sse"},
+				{Name: "middle-backend", URL: "http://middle:8080", Transport: "streamable-http"},
+				{Name: "zebra-backend", URL: "http://zebra:8080", Transport: "sse"},
+			},
+		},
+		{
+			name: "random order (middle, zebra, alpha)",
+			staticBackends: []config.StaticBackendConfig{
+				{Name: "middle-backend", URL: "http://middle:8080", Transport: "streamable-http"},
+				{Name: "zebra-backend", URL: "http://zebra:8080", Transport: "sse"},
+				{Name: "alpha-backend", URL: "http://alpha:8080", Transport: "sse"},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+				tc.staticBackends,
+				nil, // No auth config needed for this test
+				"test-group",
+			)
+
+			backends, err := discoverer.Discover(ctx, "test-group")
+			require.NoError(t, err)
+
+			// Output should ALWAYS be alphabetically sorted regardless of input order
+			require.Len(t, backends, 3, "should include all valid backends")
+			assert.Equal(t, "alpha-backend", backends[0].Name,
+				"first backend should be alpha-backend (alphabetically first)")
+			assert.Equal(t, "middle-backend", backends[1].Name,
+				"second backend should be middle-backend (alphabetically second)")
+			assert.Equal(t, "zebra-backend", backends[2].Name,
+				"third backend should be zebra-backend (alphabetically third)")
+		})
+	}
+}
+
+// TestBackendDiscoverer_Discover_DeterministicOrdering_DynamicMode tests that Discover
+// returns backends in deterministic order when using dynamic mode (K8s API discovery).
+func TestBackendDiscoverer_Discover_DeterministicOrdering_DynamicMode(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+	mockGroups := mocks.NewMockManager(ctrl)
+
+	// Create backends in non-alphabetical order to test sorting
+	backend1 := &vmcp.Backend{
+		ID:            "zebra-backend",
+		Name:          "zebra-backend",
+		BaseURL:       "http://zebra:8080/mcp",
+		TransportType: "sse",
+		HealthStatus:  vmcp.BackendHealthy,
+	}
+	backend2 := &vmcp.Backend{
+		ID:            "alpha-backend",
+		Name:          "alpha-backend",
+		BaseURL:       "http://alpha:8080/mcp",
+		TransportType: "streamable-http",
+		HealthStatus:  vmcp.BackendHealthy,
+	}
+	backend3 := &vmcp.Backend{
+		ID:            "middle-backend",
+		Name:          "middle-backend",
+		BaseURL:       "http://middle:8080/mcp",
+		TransportType: "sse",
+		HealthStatus:  vmcp.BackendHealthy,
+	}
+
+	mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+	// Return workloads in non-alphabetical order (zebra, alpha, middle)
+	mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+		Return([]workloads.TypedWorkload{
+			{Name: "zebra-backend", Type: workloads.WorkloadTypeMCPServer},
+			{Name: "alpha-backend", Type: workloads.WorkloadTypeMCPServer},
+			{Name: "middle-backend", Type: workloads.WorkloadTypeMCPServer},
+		}, nil)
+	mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+		gomock.Any(),
+		workloads.TypedWorkload{Name: "zebra-backend", Type: workloads.WorkloadTypeMCPServer},
+	).Return(backend1, nil)
+	mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+		gomock.Any(),
+		workloads.TypedWorkload{Name: "alpha-backend", Type: workloads.WorkloadTypeMCPServer},
+	).Return(backend2, nil)
+	mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+		gomock.Any(),
+		workloads.TypedWorkload{Name: "middle-backend", Type: workloads.WorkloadTypeMCPServer},
+	).Return(backend3, nil)
+
+	discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
+	backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+	require.NoError(t, err)
+	require.Len(t, backends, 3)
+
+	// Backends should be sorted alphabetically by name
+	assert.Equal(t, "alpha-backend", backends[0].Name,
+		"first backend should be alpha-backend (alphabetically first)")
+	assert.Equal(t, "middle-backend", backends[1].Name,
+		"second backend should be middle-backend (alphabetically second)")
+	assert.Equal(t, "zebra-backend", backends[2].Name,
+		"third backend should be zebra-backend (alphabetically third)")
 }

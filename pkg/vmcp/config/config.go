@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package config provides the configuration model for Virtual MCP Server.
 //
 // This package defines a platform-agnostic configuration model that works
@@ -16,6 +19,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
+
+// Transport type constants for static backend configuration.
+// These define the allowed network transport protocols for vMCP backends in static mode.
+const (
+	// TransportSSE is the Server-Sent Events transport protocol.
+	TransportSSE = "sse"
+	// TransportStreamableHTTP is the streamable HTTP transport protocol.
+	TransportStreamableHTTP = "streamable-http"
+)
+
+// StaticModeAllowedTransports lists all transport types allowed for static backend configuration.
+// This must be kept in sync with the CRD enum validation in StaticBackendConfig.Transport.
+var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP}
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
@@ -80,6 +96,14 @@ type Config struct {
 	// +kubebuilder:validation:Required
 	Group string `json:"groupRef" yaml:"groupRef"`
 
+	// Backends defines pre-configured backend servers for static mode.
+	// When OutgoingAuth.Source is "inline", this field contains the full list of backend
+	// servers with their URLs and transport types, eliminating the need for K8s API access.
+	// When OutgoingAuth.Source is "discovered", this field is empty and backends are
+	// discovered at runtime via Kubernetes API.
+	// +optional
+	Backends []StaticBackendConfig `json:"backends,omitempty" yaml:"backends,omitempty"`
+
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
 	// When using the Kubernetes operator, this is populated by the converter from
 	// VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded.
@@ -125,6 +149,13 @@ type Config struct {
 	// See audit.Config for available configuration options.
 	// +optional
 	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
+
+	// Optimizer configures the MCP optimizer for context optimization on large toolsets.
+	// When enabled, vMCP exposes only find_tool and call_tool operations to clients
+	// instead of all backend tools directly. This reduces token usage by allowing
+	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// +optional
+	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -154,6 +185,7 @@ type IncomingAuthConfig struct {
 // +gendoc
 type OIDCConfig struct {
 	// Issuer is the OIDC issuer URL.
+	// +kubebuilder:validation:Pattern=`^https?://`
 	Issuer string `json:"issuer" yaml:"issuer"`
 
 	// ClientID is the OAuth client ID.
@@ -194,6 +226,36 @@ type AuthzConfig struct {
 
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
+}
+
+// StaticBackendConfig defines a pre-configured backend server for static mode.
+// This allows vMCP to operate without Kubernetes API access by embedding all backend
+// information directly in the configuration.
+// +gendoc
+// +kubebuilder:object:generate=true
+type StaticBackendConfig struct {
+	// Name is the backend identifier.
+	// Must match the backend name from the MCPGroup for auth config resolution.
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+
+	// URL is the backend's MCP server base URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url" yaml:"url"`
+
+	// Transport is the MCP transport protocol: "sse" or "streamable-http"
+	// Only network transports supported by vMCP client are allowed.
+	// +kubebuilder:validation:Enum=sse;streamable-http
+	// +kubebuilder:validation:Required
+	Transport string `json:"transport" yaml:"transport"`
+
+	// Metadata is a custom key-value map for storing additional backend information
+	// such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
+	// This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
+	// Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
+	// +optional
+	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // OutgoingAuthConfig configures backend authentication.
@@ -384,6 +446,13 @@ type FailureHandlingConfig struct {
 	// +kubebuilder:default=3
 	// +optional
 	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty" yaml:"unhealthyThreshold,omitempty"`
+
+	// StatusReportingInterval is the interval for reporting status updates to Kubernetes.
+	// This controls how often the vMCP runtime reports backend health and phase changes.
+	// Lower values provide faster status updates but increase API server load.
+	// +kubebuilder:default="30s"
+	// +optional
+	StatusReportingInterval Duration `json:"statusReportingInterval,omitempty" yaml:"statusReportingInterval,omitempty"`
 
 	// PartialFailureMode defines behavior when some backends are unavailable.
 	// - fail: Fail entire request if any backend is unavailable
@@ -632,6 +701,18 @@ type OutputProperty struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	Default thvjson.Any `json:"default,omitempty" yaml:"default,omitempty"`
+}
+
+// OptimizerConfig configures the MCP optimizer.
+// When enabled, vMCP exposes only find_tool and call_tool operations to clients
+// instead of all backend tools directly.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OptimizerConfig struct {
+	// EmbeddingService is the name of a Kubernetes Service that provides the embedding service
+	// for semantic tool discovery. The service must implement the optimizer embedding API.
+	// +kubebuilder:validation:Required
+	EmbeddingService string `json:"embeddingService" yaml:"embeddingService"`
 }
 
 // Validator validates configuration.

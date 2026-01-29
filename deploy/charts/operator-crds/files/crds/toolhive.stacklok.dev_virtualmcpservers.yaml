@@ -215,6 +215,51 @@ spec:
                           data included in audit logs (in bytes).
                         type: integer
                     type: object
+                  backends:
+                    description: |-
+                      Backends defines pre-configured backend servers for static mode.
+                      When OutgoingAuth.Source is "inline", this field contains the full list of backend
+                      servers with their URLs and transport types, eliminating the need for K8s API access.
+                      When OutgoingAuth.Source is "discovered", this field is empty and backends are
+                      discovered at runtime via Kubernetes API.
+                    items:
+                      description: |-
+                        StaticBackendConfig defines a pre-configured backend server for static mode.
+                        This allows vMCP to operate without Kubernetes API access by embedding all backend
+                        information directly in the configuration.
+                      properties:
+                        metadata:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Metadata is a custom key-value map for storing additional backend information
+                            such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
+                            This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.
+                            Reserved keys: "group" is automatically set by vMCP and any user-provided value will be overridden.
+                          type: object
+                        name:
+                          description: |-
+                            Name is the backend identifier.
+                            Must match the backend name from the MCPGroup for auth config resolution.
+                          type: string
+                        transport:
+                          description: |-
+                            Transport is the MCP transport protocol: "sse" or "streamable-http"
+                            Only network transports supported by vMCP client are allowed.
+                          enum:
+                          - sse
+                          - streamable-http
+                          type: string
+                        url:
+                          description: URL is the backend's MCP server base URL.
+                          pattern: ^https?://
+                          type: string
+                      required:
+                      - name
+                      - transport
+                      - url
+                      type: object
+                    type: array
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -517,6 +562,7 @@ spec:
                             type: boolean
                           issuer:
                             description: Issuer is the OIDC issuer URL.
+                            pattern: ^https?://
                             type: string
                           protectedResourceAllowPrivateIp:
                             description: |-
@@ -596,6 +642,14 @@ spec:
                             - fail
                             - best_effort
                             type: string
+                          statusReportingInterval:
+                            default: 30s
+                            description: |-
+                              StatusReportingInterval is the interval for reporting status updates to Kubernetes.
+                              This controls how often the vMCP runtime reports backend health and phase changes.
+                              Lower values provide faster status updates but increase API server load.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           unhealthyThreshold:
                             default: 3
                             description: UnhealthyThreshold is the number of consecutive
@@ -627,6 +681,21 @@ spec:
                               overrides.
                             type: object
                         type: object
+                    type: object
+                  optimizer:
+                    description: |-
+                      Optimizer configures the MCP optimizer for context optimization on large toolsets.
+                      When enabled, vMCP exposes only find_tool and call_tool operations to clients
+                      instead of all backend tools directly. This reduces token usage by allowing
+                      LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+                    properties:
+                      embeddingService:
+                        description: |-
+                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
+                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                        type: string
+                    required:
+                    - embeddingService
                     type: object
                   outgoingAuth:
                     description: |-
@@ -943,6 +1012,38 @@ spec:
                           ConfigMap references a ConfigMap containing OIDC configuration
                           Only used when Type is "configmap"
                         properties:
+                          caBundleRef:
+                            description: |-
+                              CABundleRef references a ConfigMap containing the CA certificate bundle.
+                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+                              If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence.
+                            properties:
+                              configMapRef:
+                                description: |-
+                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                  If Key is not specified, it defaults to "ca.crt".
+                                properties:
+                                  key:
+                                    description: The key to select.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            type: object
                           key:
                             default: oidc.json
                             description: Key is the key in the ConfigMap that contains
@@ -963,6 +1064,38 @@ spec:
                             description: Audience is the expected audience for the
                               token
                             type: string
+                          caBundleRef:
+                            description: |-
+                              CABundleRef references a ConfigMap containing the CA certificate bundle.
+                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
+                              If ThvCABundlePath is explicitly set, it takes precedence over CABundleRef.
+                            properties:
+                              configMapRef:
+                                description: |-
+                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
+                                  If Key is not specified, it defaults to "ca.crt".
+                                properties:
+                                  key:
+                                    description: The key to select.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the ConfigMap or
+                                      its key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            type: object
                           clientId:
                             description: ClientID is the OIDC client ID
                             type: string
@@ -1029,8 +1162,13 @@ spec:
                             type: array
                           thvCABundlePath:
                             description: |-
-                              ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
-                              The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+                              ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests.
+
+                              Deprecated: Use CABundleRef instead. ThvCABundlePath requires the CA bundle to
+                              already exist in the proxy runner container (e.g., Kubernetes service account CA at
+                              /var/run/secrets/kubernetes.io/serviceaccount/ca.crt). For custom CA certificates,
+                              use CABundleRef which automatically mounts the ConfigMap and computes the path.
+                              This field will be removed when the API graduates to v1beta1.
                             type: string
                         required:
                         - issuer
@@ -1186,6 +1324,11 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.
+                  If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server.
+                type: string
               serviceType:
                 default: ClusterIP
                 description: ServiceType specifies the Kubernetes service type for
@@ -1202,7 +1345,9 @@ spec:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
               backendCount:
-                description: BackendCount is the number of discovered backends
+                description: |-
+                  BackendCount is the number of healthy/ready backends
+                  (excludes unavailable, degraded, and unknown backends)
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations
@@ -1266,8 +1411,9 @@ spec:
                 description: DiscoveredBackends lists discovered backend configurations
                   from the MCPGroup
                 items:
-                  description: DiscoveredBackend represents a discovered backend MCPServer
-                    in the MCPGroup
+                  description: |-
+                    DiscoveredBackend represents a backend server discovered by vMCP runtime.
+                    This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
                   properties:
                     authConfigRef:
                       description: AuthConfigRef is the name of the discovered MCPExternalAuthConfig
@@ -1281,12 +1427,17 @@ spec:
                         check
                       format: date-time
                       type: string
+                    message:
+                      description: Message provides additional information about the
+                        backend status
+                      type: string
                     name:
                       description: Name is the name of the backend MCPServer
                       type: string
                     status:
-                      description: Status is the current status of the backend (ready,
-                        degraded, unavailable)
+                      description: |-
+                        Status is the current status of the backend (ready, degraded, unavailable, unknown).
+                        Use BackendHealthStatus.ToCRDStatus() to populate this field.
                       type: string
                     url:
                       description: URL is the URL of the backend MCPServer

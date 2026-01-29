@@ -1,12 +1,17 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -204,4 +209,114 @@ func TestHTTPTransport_UnauthorizedResponseCallback(t *testing.T) {
 		transport.SetOnUnauthorizedResponse(nil)
 		assert.Nil(t, transport.onUnauthorizedResponse)
 	})
+}
+
+func TestHasTokenExchangeMiddleware(t *testing.T) {
+	t.Parallel()
+
+	dummyMiddleware := func(next http.Handler) http.Handler { return next }
+
+	tests := []struct {
+		name        string
+		middlewares []types.NamedMiddleware
+		want        bool
+	}{
+		{
+			name:        "empty",
+			middlewares: nil,
+			want:        false,
+		},
+		{
+			name: "not found",
+			middlewares: []types.NamedMiddleware{
+				{Name: "auth", Function: dummyMiddleware},
+			},
+			want: false,
+		},
+		{
+			name: "found",
+			middlewares: []types.NamedMiddleware{
+				{Name: "auth", Function: dummyMiddleware},
+				{Name: tokenexchange.MiddlewareType, Function: dummyMiddleware},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, hasTokenExchangeMiddleware(tt.middlewares))
+		})
+	}
+}
+
+func TestShouldEnableHealthCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		isRemote bool
+		envValue string
+		want     bool
+	}{
+		{
+			name:     "local workload - always enabled",
+			isRemote: false,
+			envValue: "",
+			want:     true,
+		},
+		{
+			name:     "local workload - enabled even if env var is set to false",
+			isRemote: false,
+			envValue: "false",
+			want:     true,
+		},
+		{
+			name:     "remote workload - disabled by default",
+			isRemote: true,
+			envValue: "",
+			want:     false,
+		},
+		{
+			name:     "remote workload - enabled with env var set to 'true'",
+			isRemote: true,
+			envValue: "true",
+			want:     true,
+		},
+		{
+			name:     "remote workload - enabled with env var set to '1'",
+			isRemote: true,
+			envValue: "1",
+			want:     true,
+		},
+		{
+			name:     "remote workload - disabled with env var set to 'false'",
+			isRemote: true,
+			envValue: "false",
+			want:     false,
+		},
+		{
+			name:     "remote workload - disabled with env var set to '0'",
+			isRemote: true,
+			envValue: "0",
+			want:     false,
+		},
+		{
+			name:     "remote workload - disabled with invalid env var",
+			isRemote: true,
+			envValue: "yes",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set the environment variable
+			if tt.envValue != "" {
+				t.Setenv("TOOLHIVE_REMOTE_HEALTHCHECKS", tt.envValue)
+			}
+
+			result := shouldEnableHealthCheck(tt.isRemote)
+			assert.Equal(t, tt.want, result)
+		})
+	}
 }

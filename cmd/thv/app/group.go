@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -97,12 +100,7 @@ func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
-	if err := manager.Create(ctx, groupName); err != nil {
-		return err
-	}
-
-	fmt.Printf("Group '%s' created successfully.\n", groupName)
-	return nil
+	return manager.Create(ctx, groupName)
 }
 
 func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -202,7 +200,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	// Handle workloads if any exist
 	if len(groupWorkloads) > 0 {
 		if withWorkloadsFlag {
-			err = deleteWorkloadsInGroup(ctx, workloadsManager, groupWorkloads, groupName)
+			err = deleteWorkloadsInGroup(ctx, workloadsManager, groupWorkloads)
 		} else {
 			err = moveWorkloadsToGroup(ctx, workloadsManager, groupWorkloads, groupName, groups.DefaultGroup)
 		}
@@ -215,7 +213,6 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
 
-	fmt.Printf("Group '%s' deleted successfully\n", groupName)
 	return nil
 }
 
@@ -267,7 +264,6 @@ func deleteWorkloadsInGroup(
 	ctx context.Context,
 	workloadManager workloads.Manager,
 	groupWorkloads []core.Workload,
-	groupName string,
 ) error {
 	// Extract workload names for deletion
 	var workloadNames []string
@@ -286,7 +282,6 @@ func deleteWorkloadsInGroup(
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
-	fmt.Printf("Deleted %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }
 
@@ -316,7 +311,6 @@ func moveWorkloadsToGroup(
 		return fmt.Errorf("failed to update client configurations with new group: %w", err)
 	}
 
-	fmt.Printf("Moved %d workload(s) from group '%s' to group '%s'\n", len(groupWorkloads), groupFrom, groupTo)
 	return nil
 }
 
@@ -365,10 +359,6 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("group '%s' not found in registry", groupName)
 	}
 
-	totalServers := len(registryGroup.Servers) + len(registryGroup.RemoteServers)
-	fmt.Printf("Found registry group '%s' with %d servers (%d container, %d remote)\n",
-		registryGroup.Name, totalServers, len(registryGroup.Servers), len(registryGroup.RemoteServers))
-
 	// Validate all preconditions before making any changes
 	if err := validateGroupRunPreconditions(ctx, groupName, registryGroup, groupSecrets, groupEnvVars); err != nil {
 		return err
@@ -384,10 +374,8 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := groupManager.Create(ctx, groupName); err != nil {
 		return fmt.Errorf("failed to create group '%s': %w", groupName, err)
 	}
-	fmt.Printf("Created runtime group '%s'\n", groupName)
 
 	// Deploy servers - continue on failure but warn user
-	var successfulServers []string
 	var failedServers []string
 
 	// Deploy container servers
@@ -399,9 +387,6 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 			failedServers = append(failedServers, serverName)
 			continue
 		}
-
-		successfulServers = append(successfulServers, serverName)
-		fmt.Printf("Started server '%s'\n", serverName)
 	}
 
 	// Deploy remote servers
@@ -413,15 +398,9 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 			failedServers = append(failedServers, serverName)
 			continue
 		}
-
-		successfulServers = append(successfulServers, serverName)
-		fmt.Printf("Started remote server '%s'\n", serverName)
 	}
 
-	// Report deployment results
-	if len(successfulServers) > 0 {
-		fmt.Printf("Successfully deployed %d servers in group '%s': %v\n", len(successfulServers), groupName, successfulServers)
-	}
+	// Report deployment failures
 	if len(failedServers) > 0 {
 		fmt.Printf("Warning: %d servers failed to deploy: %v\n", len(failedServers), failedServers)
 	}

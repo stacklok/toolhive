@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package groups
 
 import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
@@ -38,10 +43,7 @@ func TestManager_Create(t *testing.T) {
 			groupName: testGroupName,
 			setupMock: func(mock *mocks.MockStore) {
 				mock.EXPECT().
-					Exists(gomock.Any(), testGroupName).
-					Return(false, nil)
-				mock.EXPECT().
-					GetWriter(gomock.Any(), testGroupName).
+					CreateExclusive(gomock.Any(), testGroupName).
 					Return(&mockWriteCloser{}, nil)
 			},
 			expectError: false,
@@ -51,36 +53,33 @@ func TestManager_Create(t *testing.T) {
 			groupName: "existinggroup",
 			setupMock: func(mock *mocks.MockStore) {
 				mock.EXPECT().
-					Exists(gomock.Any(), "existinggroup").
-					Return(true, nil)
+					CreateExclusive(gomock.Any(), "existinggroup").
+					Return(nil, thverrors.WithCode(errors.New("state 'existinggroup' already exists"), http.StatusConflict))
 			},
 			expectError: true,
 			errorMsg:    "already exists",
 		},
 		{
-			name:      "exists check fails",
+			name:      "create exclusive fails with other error",
 			groupName: testGroupName,
 			setupMock: func(mock *mocks.MockStore) {
 				mock.EXPECT().
-					Exists(gomock.Any(), testGroupName).
-					Return(false, errors.New("exists check failed"))
+					CreateExclusive(gomock.Any(), testGroupName).
+					Return(nil, errors.New("disk full"))
 			},
 			expectError: true,
-			errorMsg:    "failed to check if group exists",
+			errorMsg:    "failed to create group",
 		},
 		{
-			name:      "get writer fails",
+			name:      "writer encoding fails",
 			groupName: testGroupName,
 			setupMock: func(mock *mocks.MockStore) {
 				mock.EXPECT().
-					Exists(gomock.Any(), testGroupName).
-					Return(false, nil)
-				mock.EXPECT().
-					GetWriter(gomock.Any(), testGroupName).
-					Return(nil, errors.New("writer failed"))
+					CreateExclusive(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{writeError: errors.New("write failed")}, nil)
 			},
 			expectError: true,
-			errorMsg:    "failed to get writer for group",
+			errorMsg:    "failed to write group",
 		},
 		{
 			name:        "invalid name - uppercase",
@@ -638,14 +637,23 @@ func TestManager_UnregisterClients(t *testing.T) {
 
 // mockWriteCloser implements io.WriteCloser for testing
 type mockWriteCloser struct {
-	data []byte
+	data       []byte
+	writeError error
+	closeError error
 }
 
 func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
+	if m.writeError != nil {
+		return 0, m.writeError
+	}
 	m.data = append(m.data, p...)
 	return len(p), nil
 }
 
-func (*mockWriteCloser) Close() error {
+func (m *mockWriteCloser) Close() error {
+	return m.closeError
+}
+
+func (*mockWriteCloser) Sync() error {
 	return nil
 }

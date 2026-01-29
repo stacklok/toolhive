@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 //go:generate mockgen -destination=mocks/mock_outgoing_registry.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth OutgoingAuthRegistry
@@ -156,7 +159,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{})
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)

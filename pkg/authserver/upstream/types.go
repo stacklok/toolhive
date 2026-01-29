@@ -15,8 +15,7 @@
 package upstream
 
 import (
-	"context"
-	"fmt"
+	"errors"
 )
 
 // ProviderType identifies the type of upstream Identity Provider.
@@ -58,37 +57,5 @@ type OIDCEndpoints struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// IDTokenNonceValidator is implemented by providers that support OIDC nonce validation.
-// This is used to validate the nonce claim in ID tokens to prevent replay attacks.
-type IDTokenNonceValidator interface {
-	// ValidateIDTokenWithNonce validates an ID token with nonce verification.
-	// Returns the parsed claims if validation succeeds, or an error if validation fails.
-	ValidateIDTokenWithNonce(idToken, expectedNonce string) (*IDTokenClaims, error)
-}
-
-// UserInfoSubjectValidator is implemented by providers that support UserInfo subject validation
-// per OIDC Core Section 5.3.4. This validation ensures the UserInfo response's subject matches
-// the ID Token's subject to prevent user impersonation attacks.
-type UserInfoSubjectValidator interface {
-	// UserInfoWithSubjectValidation fetches user info and validates the subject matches expected.
-	// Returns ErrUserInfoSubjectMismatch if the subjects do not match.
-	UserInfoWithSubjectValidation(ctx context.Context, accessToken, expectedSubject string) (*UserInfo, error)
-}
-
-// ErrUserInfoSubjectMismatch is returned when the UserInfo endpoint returns a subject
-// that does not match the expected subject from the ID Token.
-// This validation is required per OIDC Core Section 5.3.4 to prevent user impersonation.
-var ErrUserInfoSubjectMismatch = fmt.Errorf("userinfo subject does not match expected subject")
-
-// UserInfoFetcher is implemented by providers that support fetching user information.
-// This interface enables extensible UserInfo retrieval from various endpoint types,
-// including standard OIDC UserInfo endpoints and custom provider-specific APIs.
-//
-// Implementations may use different authentication methods, field mappings, and
-// response formats as configured via UserInfoConfig.
-type UserInfoFetcher interface {
-	// FetchUserInfo retrieves user information using the provided access token.
-	// Returns the parsed UserInfo on success, or an error if the request fails
-	// or the response cannot be parsed.
-	FetchUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
-}
+// ErrIdentityResolutionFailed indicates identity could not be determined.
+var ErrIdentityResolutionFailed = errors.New("failed to resolve user identity")

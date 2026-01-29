@@ -99,12 +99,14 @@ task build-all-images
 
 ### Running Tests
 
-- Unit tests: `task test`
-- E2E tests: `task test-e2e` (requires build first)
+- Unit tests: `task test` (primarily for `pkg/` business logic)
+- E2E tests: `task test-e2e` (requires build first, primary testing for CLI)
 - All tests: `task test-all`
 - With coverage: `task test-coverage`
 
 The test framework uses Ginkgo and Gomega for BDD-style testing.
+
+**When adding CLI features**: Always run E2E tests (`task test-e2e`) to verify the full user experience. Unit tests should primarily cover business logic in `pkg/` packages.
 
 ## Architecture Overview
 
@@ -177,9 +179,30 @@ ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol
 ### Test Organization
 
 - **Unit tests**: Located alongside source files (`*_test.go`)
+  - **`pkg/` packages**: Thorough unit test coverage (this is where business logic lives)
+  - **`cmd/thv/app/`**: Minimal unit tests (only for output formatting, flag validation helpers)
 - **Integration tests**: In individual package test files
 - **End-to-end tests**: Located in `test/e2e/`
+  - **Primary testing strategy for CLI commands**
+  - Tests the compiled binary with real user workflows
+  - Covers flag parsing, business logic execution, and output formatting in one test
 - **Operator tests**: Chainsaw tests in `test/e2e/chainsaw/operator/`
+
+### CLI Testing Philosophy
+
+**CLI commands should be tested primarily with E2E tests, not unit tests.**
+
+- Business logic in `pkg/` packages → Unit tests with mocks
+- CLI commands in `cmd/thv/app/` → E2E tests with compiled binary
+- Only write CLI unit tests for output formatting or validation helper functions
+
+Why?
+- CLI is a thin layer (just glue code calling `pkg/`)
+- E2E tests verify real user experience
+- Better coverage with less maintenance burden
+- Catches integration issues that unit tests miss
+
+See `docs/cli-best-practices.md` for detailed testing guidance.
 
 ### Mock Generation
 
@@ -202,6 +225,16 @@ ToolHive automatically detects available container runtimes in the following ord
 
 **Colima Support**: Colima is fully supported as a Docker-compatible runtime. ToolHive will automatically detect Colima installations on macOS and Linux systems.
 
+### Remote Workload Health Checks
+
+ToolHive performs health checks on workloads to verify they are running and responding correctly. The behavior differs based on workload type:
+
+- **Local workloads**: Health checks are always enabled
+- **Remote workloads**: Health checks are disabled by default (to avoid unnecessary network traffic), but can be enabled with:
+  - `TOOLHIVE_REMOTE_HEALTHCHECKS`: Set to `true` or `1` to enable health checks for remote MCP server proxies
+
+Health check implementation: `pkg/transport/http.go:shouldEnableHealthCheck`
+
 ## Development Guidelines
 
 ### Code Organization
@@ -212,6 +245,31 @@ ToolHive automatically detects available container runtimes in the following ord
 - Keep packages focused on single responsibilities
 - In Go codefiles, keep public methods to the top half of the file, and private
   methods to the bottom half of the file.
+
+### CLI Architecture Principle
+
+**CRITICAL**: CLI commands in `cmd/thv/app/` must be thin wrappers that delegate to business logic in `pkg/`.
+
+The CLI layer is responsible ONLY for:
+- Parsing flags and arguments (using Cobra)
+- Calling business logic functions from `pkg/` packages
+- Formatting output (text tables or JSON)
+- Displaying errors to users
+
+Business logic MUST live in `pkg/` packages:
+- `pkg/workloads/`: Workload lifecycle management
+- `pkg/registry/`: Registry operations
+- `pkg/groups/`: Group management
+- `pkg/runner/`: Server execution logic
+- etc.
+
+**Why this matters**:
+- Business logic in `pkg/` is thoroughly unit tested
+- CLI layer is tested with E2E tests (testing real user workflows)
+- Separation makes code reusable (API can use same `pkg/` logic)
+- Easier to maintain and refactor
+
+**Example**: See `cmd/thv/app/list.go` which delegates to `pkg/workloads.Manager.ListWorkloads()`
 
 ### Operator Development
 
@@ -234,9 +292,39 @@ When working on the Kubernetes operator:
 
 ### Adding New Commands
 
-1. Create command file in `cmd/thv/app/`
-2. Add command to `NewRootCmd()` in `commands.go`
-3. Update CLI documentation with `task docs`
+When adding new CLI commands, follow the comprehensive guide in `docs/cli-best-practices.md` which covers:
+- Command structure and design patterns
+- Flag naming conventions and common patterns
+- Output formatting (JSON/text)
+- Error messages with actionable hints
+- Shell completion
+- Testing requirements
+
+Quick steps:
+1. **Put business logic in `pkg/` first** - Create or use existing packages for the actual work
+2. Create command file in `cmd/thv/app/` as a thin wrapper
+3. Follow patterns from existing commands (e.g., `list.go`, `run.go`, `status.go`)
+4. Add command to `NewRootCmd()` in `commands.go`
+5. Add flags using helper functions (`AddFormatFlag`, `AddGroupFlag`, etc.)
+6. Implement validation in `PreRunE`
+7. CLI should only: parse flags, call `pkg/` functions, format output
+8. Support both text and JSON output formats
+9. **Write E2E tests** (primary testing strategy)
+10. Write minimal unit tests only for output formatting or validation helpers
+11. Update CLI documentation with `task docs`
+
+**CRITICAL PRINCIPLES**:
+- **Business logic MUST be in `pkg/` packages, NOT in CLI code**
+- CLI commands are thin wrappers (flag parsing → call pkg/ → format output)
+- Test business logic with unit tests in `pkg/`
+- Test CLI with E2E tests using the compiled binary
+- Minimal unit tests for CLI layer (only output formatting/validation)
+
+**Usability requirements** (see `docs/cli-best-practices.md`):
+- Silent success (no output unless there's an error or `--debug` is used)
+- Actionable error messages with hints pointing to relevant commands
+- Consistent flag names across commands
+- Support for `--format json` and `--format text`
 
 ### Adding New Transport
 
@@ -262,6 +350,96 @@ Follow conventional commit format:
 - Do not end subject line with period
 - Use body to explain what and why vs. how
 
+## Pull Request Guidelines
+
+### PR Size and Scope
+
+**CRITICAL**: Before creating a pull request, Claude MUST evaluate the size and scope of changes to ensure they are reviewable.
+
+#### Size Limits
+
+Maximum recommended changes per PR:
+- **400 lines of code changes** (excluding tests, generated code, and documentation)
+- **10 files changed** (excluding test files, generated code, and documentation)
+
+These limits ensure PRs are:
+- Reviewable in a reasonable time (under 1 hour)
+- Focused on a single logical change
+- Less likely to introduce bugs
+- Easier to revert if needed
+
+#### When Changes Exceed Limits
+
+When changes exceed these limits, Claude MUST:
+1. **Stop and inform the user** that the PR would be too large for effective review
+2. **Analyze the changes** and identify logical boundaries for splitting
+3. **Propose a split strategy** with multiple smaller PRs
+4. **Ask the user** which part they want to create first
+5. **Create a tracking issue or checklist** for the remaining work
+
+Use the `/split-pr` skill to help with this analysis.
+
+#### Check PR Size Before Creation
+
+Before creating a PR, run these commands to check size:
+
+```bash
+# Count files changed (excluding generated files and docs)
+git diff main...HEAD --name-only | grep -v 'vendor/' | grep -v '\.pb\.go$' | grep -v 'zz_generated' | grep -v '^docs/' | wc -l
+
+# Count lines changed (excluding generated files, vendor, docs)
+git diff main...HEAD --stat -- . ':(exclude)vendor/*' ':(exclude)*.pb.go' ':(exclude)zz_generated*' ':(exclude)docs/*' | tail -1
+```
+
+If the numbers exceed limits, propose splitting before creating the PR.
+
+#### Atomic PRs
+
+Each PR should represent **one logical change**:
+- ✅ One feature at a time
+- ✅ One bug fix at a time
+- ✅ One refactoring at a time
+- ✅ Tests included with their related code changes
+- ❌ Multiple unrelated changes bundled together
+- ❌ Refactoring mixed with new features
+- ❌ Bug fixes mixed with feature work
+
+#### Exception Cases
+
+Large PRs are acceptable for:
+- **Generated code updates** (proto files, CRDs, mocks) - but confirm with the user first
+- **Dependency updates** (go.mod changes, vendor updates)
+- **Large refactorings that cannot be safely split** (with explicit user approval)
+- **Documentation-only updates** (changes to `docs/` directory)
+- **Test-only changes** (adding missing test coverage)
+
+For these cases, still inform the user about the size and ask for confirmation before creating the PR.
+
+#### PR Split Strategy
+
+When splitting large changes:
+
+1. **Identify dependencies**: Which changes depend on others?
+2. **Create foundation PRs first**: Refactoring, new interfaces, shared utilities
+3. **Build features on top**: Feature PRs that use the foundation
+4. **Keep each PR independently testable**: Each PR should pass all tests
+5. **Use feature flags if needed**: For incomplete features that span multiple PRs
+
+**Example split**:
+- PR 1: Add new interface and base implementation (foundation)
+- PR 2: Migrate existing code to use new interface (refactoring)
+- PR 3: Add new feature using the interface (feature)
+
+### PR Creation Workflow
+
+When a user asks to create a PR:
+
+1. **Check size first** using the commands above
+2. **If too large**: Propose split strategy, wait for user decision
+3. **If reasonable size**: Proceed with PR creation following standard git workflow
+4. **Include context**: Ensure PR description explains what/why, links to issues
+5. **Verify tests pass**: Run relevant tests before creating PR
+
 ## Architecture Documentation
 
 ToolHive maintains comprehensive architecture documentation in `docs/arch/`. When making changes that affect architecture, you MUST update the relevant documentation to keep it in sync with the code.
@@ -279,6 +457,7 @@ Update architecture docs when you:
 
 | Code Changes | Documentation Files |
 |--------------|---------------------|
+| CLI commands (`cmd/thv/app/`) | Follow `docs/cli-best-practices.md`; update generated docs with `task docs` |
 | Core packages (`pkg/workloads/`, `pkg/transport/`, `pkg/permissions/`, `pkg/registry/`, `pkg/groups/`) | `docs/arch/02-core-concepts.md` + topic-specific doc (e.g., `08-workloads-lifecycle.md`, `06-registry-system.md`) |
 | RunConfig schema (`pkg/runner/config.go`) | `docs/arch/05-runconfig-and-permissions.md` |
 | Middleware (`pkg/*/middleware.go`) | `docs/middleware.md` and `docs/arch/02-core-concepts.md` |
@@ -297,13 +476,66 @@ For the complete documentation structure and navigation, see `docs/arch/README.m
 
 ## Development Best Practices
 
+- **CLI Commands**:
+  - **MUST** follow the guidelines in `docs/cli-best-practices.md` for all CLI command development
+  - Ensure silent success (no output on successful operations unless `--debug` is used)
+  - Provide actionable error messages with hints
+  - Support both `--format json` and `--format text` output
+  - Use helper functions for common flags (`AddFormatFlag`, `AddGroupFlag`, `AddAllFlag`)
+  - Include shell completion with `ValidArgsFunction`
 - **Linting**:
   - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.
+- **SPDX License Headers**:
+  - All Go files require SPDX headers at the top:
+    ```go
+    // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+    // SPDX-License-Identifier: Apache-2.0
+    ```
+  - Use `task license-check` to verify headers, `task license-fix` to add them automatically.
+  - CI enforces this on all PRs (ignores generated files: mocks, testdata, vendor, *.pb.go, zz_generated*.go).
 - **Commit messages and PR titles**:
   - Refer to the `CONTRIBUTING.md` file for guidelines on commit message format
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
+- Use very large numbers for unit tests which need port numbers.
+  - Using common port ranges leads to a likelihood that you will clash with a
+    port which is already in use. Pick math.MaxInt16 as a sample port to reduce
+    the changes of hitting this problem.
+
+### Go Coding Style
+
+- **Prefer immutable variable assignment with anonymous functions**:
+  When you need to assign a variable based on complex conditional logic, prefer using an immediately-invoked anonymous function instead of mutating the variable across multiple branches:
+
+  ```go
+  // ✅ Good: Immutable assignment with anonymous function
+  phase := func() PhaseType {
+      if someCondition {
+          return PhaseA
+      }
+      if anotherCondition {
+          return PhaseB
+      }
+      return PhaseDefault
+  }()
+
+  // ❌ Avoid: Mutable variable across branches
+  var phase PhaseType
+  if someCondition {
+      phase = PhaseA
+  } else if anotherCondition {
+      phase = PhaseB
+  } else {
+      phase = PhaseDefault
+  }
+  ```
+
+  **Benefits**:
+  - The variable is immutable after assignment, reducing bugs from accidental modification
+  - All decision logic is in one place with explicit returns
+  - Clearer logic flow and easier to understand
+  - Reduces cognitive load from tracking which branch sets which value
 
 ## Error Handling Guidelines
 
@@ -315,3 +547,13 @@ See `docs/error-handling.md` for comprehensive documentation.
 - **Use `errors.Is()` or `errors.As()`** - For all error inspection (they properly unwrap errors)
 - **Use `fmt.Errorf` with `%w`** - To preserve error chains; don't wrap excessively
 - **Use `recover()` sparingly** - Only at top-level API/CLI boundaries
+
+## Logging Guidelines
+
+See `docs/logging.md` for comprehensive documentation.
+
+- **Silent success** - Do not log at INFO or above for successful operations; users should only see output when something requires attention or when using `--debug`
+- **DEBUG for diagnostics** - Use for detailed troubleshooting info (runtime detection, state transitions, config values)
+- **INFO sparingly** - Only for long-running operations like image pulls that benefit from progress indication
+- **WARN for non-fatal issues** - Deprecations, fallback behavior, cleanup failures
+- **No sensitive data** - Never log credentials, tokens, API keys, or passwords

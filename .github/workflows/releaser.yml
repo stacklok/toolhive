@@ -22,14 +22,48 @@
 
 name: Release
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
+
+  verify-release:
+    name: Verify Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Verify tag matches VERSION file
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+
+          echo "Release tag: $TAG"
+          echo "VERSION file: $VERSION"
+
+          # Tag should be "v" + VERSION (e.g., v1.0.0)
+          EXPECTED_TAG="v${VERSION}"
+
+          if [[ "$TAG" != "$EXPECTED_TAG" ]]; then
+            echo ""
+            echo "❌ VERSION MISMATCH!"
+            echo "  Tag:      $TAG"
+            echo "  Expected: $EXPECTED_TAG (from VERSION file)"
+            echo ""
+            echo "The release tag does not match the VERSION file."
+            echo "This could indicate:"
+            echo "  - VERSION file was not updated correctly"
+            echo "  - Tag was created manually with wrong version"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Tag matches VERSION file: $TAG"
+
   compute-build-flags:
     name: Compute Build Flags
     runs-on: ubuntu-slim
@@ -72,7 +106,7 @@ jobs:
           cache: true
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@0b82b0b1a22399a1c542d4d656f70cd903571b5c # v0.21.1
+        uses: anchore/sbom-action/download-syft@deef08a0db64bfad603422135db61477b16cef56 # v0.22.1
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0

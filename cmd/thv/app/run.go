@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -220,7 +223,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 
 	if runFlags.Name == "" {
 		runFlags.Name = getworkloadDefaultName(ctx, serverOrImage)
-		logger.Infof("No workload name specified, using generated name: %s", runFlags.Name)
+		logger.Debugf("No workload name specified, using generated name: %s", runFlags.Name)
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
 	if err != nil {
@@ -337,7 +340,7 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
 	err := <-errCh
 	if !process.IsDetached() {
-		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		logger.Errorf("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
 		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
 	return err

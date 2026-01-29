@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -353,6 +357,8 @@ func WithOIDCConfig(
 				IntrospectionURL:  oidcIntrospectionURL,
 				ClientID:          oidcClientID,
 				ClientSecret:      oidcClientSecret,
+				CACertPath:        thvCABundle,
+				AuthTokenFile:     jwksAuthTokenFile,
 				AllowPrivateIP:    jwksAllowPrivateIP,
 				InsecureAllowHTTP: insecureAllowHTTP,
 				Scopes:            scopes,
@@ -476,6 +482,10 @@ func WithMiddlewareFromFlags(
 
 		// Add core middlewares (always present)
 		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
+
+		// NOTE: Header forward middleware is NOT added here because secret-backed
+		// headers are not yet resolved at builder time. It is added in Runner.Run()
+		// after WithSecrets() resolves all secret references.
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -1069,4 +1079,46 @@ func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
 		b.config.EnvFileDir = dirPath
 		return nil
 	}
+}
+
+// WithHeaderForward adds plaintext header forward entries for remote MCP servers.
+// The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForward(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddPlaintextHeaders == nil {
+			hf.AddPlaintextHeaders = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddPlaintextHeaders, headers)
+		return nil
+	}
+}
+
+// WithHeaderForwardSecrets adds secret-backed header forward entries for remote MCP servers.
+// The headers parameter maps header names to secret names in the secrets manager.
+// Secret values are resolved at runtime via WithSecrets() and never persisted to disk.
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForwardSecrets(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddHeadersFromSecret == nil {
+			hf.AddHeadersFromSecret = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddHeadersFromSecret, headers)
+		return nil
+	}
+}
+
+func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
+	if b.config.HeaderForward == nil {
+		b.config.HeaderForward = &HeaderForwardConfig{}
+	}
+	return b.config.HeaderForward
 }

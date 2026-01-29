@@ -26,6 +26,16 @@ For information on the ToolHive Operator, see the
 [ToolHive Operator README](../cmd/thv-operator/README.md) and
 [DESIGN doc](../cmd/thv-operator/DESIGN.md).
 
+### Development Guidelines
+
+- **[CLI Best Practices](cli-best-practices.md)** - Guidelines for adding and maintaining CLI commands with focus on usability and consistency
+- **[Logging Practices](logging.md)** - Logging levels, when to use them, and how to structure log messages
+- **[Error Handling](error-handling.md)** - Error construction, wrapping, and handling patterns for CLI and API
+- **[Observability](observability.md)** - OpenTelemetry instrumentation and monitoring patterns
+- **[Authorization](authz.md)** - Cedar policy-based authorization system
+- **[Middleware](middleware.md)** - HTTP middleware patterns for auth, authz, and telemetry
+- **[Runtime Implementation Guide](runtime-implementation-guide.md)** - Guide for implementing new container runtime support
+
 ## Getting started
 
 ToolHive is developed in Go. To get started with development, you need to

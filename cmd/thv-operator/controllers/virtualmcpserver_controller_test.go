@@ -288,6 +288,278 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), rb.Subjects[0].Name)
 }
 
+func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	saName := vmcpServiceAccountName(vmcp.Name)
+
+	// Pre-create RBAC resources with outdated rules
+	existingSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+	}
+	existingRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			},
+		},
+	}
+	existingRB := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: vmcp.Namespace,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, existingSA, existingRole, existingRB).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should update the Role with correct rules
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify Role was updated with correct rules
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcpRBACRules, role.Rules, "Role should be updated with correct rules")
+}
+
+func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idempotent-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources multiple times
+	for i := 0; i < 3; i++ {
+		err := r.ensureRBACResources(context.Background(), vmcp)
+		require.NoError(t, err, "iteration %d should succeed", i)
+	}
+
+	saName := vmcpServiceAccountName(vmcp.Name)
+
+	// Verify resources still exist with correct configuration
+	sa := &corev1.ServiceAccount{}
+	err := fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.NoError(t, err)
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcpRBACRules, role.Rules)
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.NoError(t, err)
+}
+
+func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
+	t.Parallel()
+
+	// Static mode: OutgoingAuth.Source set to "inline"
+	// RBAC resources should still be created for status reporting
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "static-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{
+				Group: "test-group",
+			},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "inline",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources in static mode - should create RBAC for status reporting
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	saName := vmcpServiceAccountName(vmcp.Name)
+
+	// Verify RBAC resources were created even in static mode (for status reporting)
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.NoError(t, err, "ServiceAccount should be created in static mode for status reporting")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err, "Role should be created in static mode for status reporting")
+	assert.Equal(t, vmcpRBACRules, role.Rules)
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.NoError(t, err, "RoleBinding should be created in static mode for status reporting")
+}
+
+// TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources
+// are NOT created when a custom ServiceAccount is provided
+func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	customSA := "custom-vmcp-sa"
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-sa-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:         vmcpconfig.Config{Group: "test-group"},
+			ServiceAccount: &customSA,
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should return nil without creating resources
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := vmcpServiceAccountName(vmcp.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when custom ServiceAccount is provided")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.Error(t, err, "Role should not be created when custom ServiceAccount is provided")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
+}
+
 // TestVirtualMCPServerEnsureDeployment tests Deployment creation
 func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	t.Parallel()

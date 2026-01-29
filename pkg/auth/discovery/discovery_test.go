@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package discovery
 
 import (
@@ -14,9 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const wellKnownOAuthPath = "/.well-known/oauth-protected-resource"
@@ -1298,13 +1301,15 @@ func TestRegisterDynamicClient_MissingRegistrationEndpoint(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a discovery document without registration_endpoint
-	discoveredDoc := &oauth.OIDCDiscoveryDocument{
-		Issuer:                "https://auth.example.com",
-		AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
-		TokenEndpoint:         "https://auth.example.com/oauth/token",
-		JWKSURI:               "https://auth.example.com/oauth/jwks",
-		// Note: RegistrationEndpoint is intentionally omitted (empty string)
-		RegistrationEndpoint: "",
+	discoveredDoc := &oauthproto.OIDCDiscoveryDocument{
+		AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+			Issuer:                "https://auth.example.com",
+			AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
+			TokenEndpoint:         "https://auth.example.com/oauth/token",
+			JWKSURI:               "https://auth.example.com/oauth/jwks",
+			// Note: RegistrationEndpoint is intentionally omitted (empty string)
+			RegistrationEndpoint: "",
+		},
 	}
 
 	config := &OAuthFlowConfig{

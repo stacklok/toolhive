@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -77,7 +81,7 @@ func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) error
 //	@Produce		json
 //	@Param			client	body	createClientRequest	true	"Client to register"
 //	@Success		200	{object}	createClientResponse
-//	@Failure		400	{string}	string	"Invalid request"
+//	@Failure		400	{string}	string	"Invalid request or unsupported client type"
 //	@Router			/api/v1beta/clients [post]
 func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) error {
 	var newClient createClientRequest
@@ -100,6 +104,12 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) er
 	}
 
 	if err := c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups); err != nil {
+		if errors.Is(err, client.ErrUnsupportedClientType) {
+			return thverrors.WithCode(
+				fmt.Errorf("failed to register client: %w", err),
+				http.StatusBadRequest,
+			)
+		}
 		return fmt.Errorf("failed to register client: %w", err)
 	}
 
@@ -118,7 +128,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) er
 //	@Tags			clients
 //	@Param			name	path	string	true	"Client name to unregister"
 //	@Success		204
-//	@Failure		400	{string}	string	"Invalid request"
+//	@Failure		400	{string}	string	"Invalid request or unsupported client type"
 //	@Router			/api/v1beta/clients/{name} [delete]
 func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) error {
 	clientName := chi.URLParam(r, "name")
@@ -130,6 +140,12 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil); err != nil {
+		if errors.Is(err, client.ErrUnsupportedClientType) {
+			return thverrors.WithCode(
+				fmt.Errorf("failed to unregister client: %w", err),
+				http.StatusBadRequest,
+			)
+		}
 		return fmt.Errorf("failed to unregister client: %w", err)
 	}
 
@@ -145,7 +161,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 //	@Param			name	path	string	true	"Client name to unregister"
 //	@Param			group	path	string	true	"Group name to remove client from"
 //	@Success		204
-//	@Failure		400	{string}	string	"Invalid request"
+//	@Failure		400	{string}	string	"Invalid request or unsupported client type"
 //	@Failure		404	{string}	string	"Client or group not found"
 //	@Router			/api/v1beta/clients/{name}/groups/{group} [delete]
 func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.Request) error {
@@ -167,6 +183,12 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 
 	// Remove client from the specific group
 	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName}); err != nil {
+		if errors.Is(err, client.ErrUnsupportedClientType) {
+			return thverrors.WithCode(
+				fmt.Errorf("failed to unregister client from group: %w", err),
+				http.StatusBadRequest,
+			)
+		}
 		return fmt.Errorf("failed to unregister client from group: %w", err)
 	}
 
@@ -183,7 +205,7 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 //	@Produce		json
 //	@Param			clients	body	bulkClientRequest	true	"Clients to register"
 //	@Success		200	{array}	createClientResponse
-//	@Failure		400	{string}	string	"Invalid request"
+//	@Failure		400	{string}	string	"Invalid request or unsupported client type"
 //	@Router			/api/v1beta/clients/register [post]
 func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
@@ -207,6 +229,12 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := c.performClientRegistration(r.Context(), clients, req.Groups); err != nil {
+		if errors.Is(err, client.ErrUnsupportedClientType) {
+			return thverrors.WithCode(
+				fmt.Errorf("failed to register clients: %w", err),
+				http.StatusBadRequest,
+			)
+		}
 		return fmt.Errorf("failed to register clients: %w", err)
 	}
 
@@ -230,7 +258,7 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 //	@Accept			json
 //	@Param			clients	body	bulkClientRequest	true	"Clients to unregister"
 //	@Success		204
-//	@Failure		400	{string}	string	"Invalid request"
+//	@Failure		400	{string}	string	"Invalid request or unsupported client type"
 //	@Router			/api/v1beta/clients/unregister [post]
 func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
@@ -255,6 +283,12 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := c.removeClient(r.Context(), clients, req.Groups); err != nil {
+		if errors.Is(err, client.ErrUnsupportedClientType) {
+			return thverrors.WithCode(
+				fmt.Errorf("failed to unregister clients: %w", err),
+				http.StatusBadRequest,
+			)
+		}
 		return fmt.Errorf("failed to unregister clients: %w", err)
 	}
 

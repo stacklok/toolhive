@@ -1,13 +1,20 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package config
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -21,6 +28,8 @@ const (
 	RegistryTypeURL = "url"
 	// RegistryTypeAPI represents an MCP Registry API endpoint
 	RegistryTypeAPI = "api"
+	// RegistryTypeDefault represents a built-in registry
+	RegistryTypeDefault = "default"
 )
 
 // DetectRegistryType determines if input is a URL or file path and returns cleaned path
@@ -48,10 +57,13 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
 // by checking if the MCP Registry API endpoint (/v0.1/servers) exists and returns valid API responses.
+// Uses a 5-second timeout for connectivity check.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
-	// Create HTTP client for probing with user's private IP preference
+	// Create HTTP client for probing with user's private IP preference and 5-second timeout
 	// If private IPs are allowed, also allow HTTP (for localhost testing)
-	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs)
+	builder := networking.NewHttpClientBuilder().
+		WithPrivateIPs(allowPrivateIPs).
+		WithTimeout(5 * time.Second)
 	if allowPrivateIPs {
 		builder = builder.WithInsecureAllowHTTP(true)
 	}
@@ -93,7 +105,7 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 	}
 
 	// If no API endpoint found, check if it's valid registry JSON
-	if isValidRegistryJSON(client, url) {
+	if err := isValidRegistryJSON(client, url); err == nil {
 		return RegistryTypeURL
 	}
 
@@ -140,10 +152,10 @@ func isValidAPIResponse(resp *http.Response) bool {
 
 // isValidRegistryJSON checks if a URL returns valid ToolHive registry JSON
 // by attempting to parse it into the actual Registry type
-func isValidRegistryJSON(client *http.Client, url string) bool {
+func isValidRegistryJSON(client *http.Client, url string) error {
 	resp, err := client.Get(url)
 	if err != nil {
-		return false
+		return classifyNetworkError(err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -154,14 +166,55 @@ func isValidRegistryJSON(client *http.Client, url string) bool {
 	// Parse into the actual Registry type for strong validation
 	registry := &registrytypes.Registry{}
 	if err := json.NewDecoder(resp.Body).Decode(registry); err != nil {
-		return false
+		return fmt.Errorf("%w: invalid JSON format: %v", ErrRegistryValidationFailed, err)
 	}
 
 	// Verify registry contains at least one server (in top-level or groups)
-	return registryHasServers(registry)
+	if !registryHasServers(registry) {
+		return fmt.Errorf("%w: registry contains no servers", ErrRegistryValidationFailed)
+	}
+
+	return nil
+}
+
+// classifyNetworkError wraps network errors with appropriate custom error types
+func classifyNetworkError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for timeout errors
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("%w: %v", ErrRegistryTimeout, err)
+	}
+
+	// Check for context deadline exceeded (another form of timeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrRegistryTimeout, err)
+	}
+
+	// Check for connection errors
+	errStr := err.Error()
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no route to host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, networking.ErrPrivateIpAddress) {
+		return fmt.Errorf("%w: %v", ErrRegistryUnreachable, err)
+	}
+
+	// Check for DNS errors (name resolution failures)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Errorf("%w: %v", ErrRegistryUnreachable, err)
+	}
+
+	// Default: return original error
+	return err
 }
 
 // setRegistryURL validates and sets a registry URL using the provided provider
+// Validates connectivity with a 5-second timeout.
 func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryIp bool) error {
 	// Validate URL scheme
 	_, err := validateURLScheme(registryURL, allowPrivateRegistryIp)
@@ -169,8 +222,10 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}
 
-	// Build HTTP client with appropriate security settings
-	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateRegistryIp)
+	// Build HTTP client with appropriate security settings and 5-second timeout
+	builder := networking.NewHttpClientBuilder().
+		WithPrivateIPs(allowPrivateRegistryIp).
+		WithTimeout(5 * time.Second)
 	if allowPrivateRegistryIp {
 		builder = builder.WithInsecureAllowHTTP(true)
 	}
@@ -183,14 +238,21 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 	if !allowPrivateRegistryIp {
 		_, err = registryClient.Get(registryURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
-			return err
+			return &RegistryError{
+				Type: RegistryTypeURL,
+				URL:  registryURL,
+				Err:  classifyNetworkError(err),
+			}
 		}
 	}
 
 	// Validate that the URL returns valid ToolHive registry JSON
-	if !isValidRegistryJSON(registryClient, registryURL) {
-		return fmt.Errorf("registry URL does not contain valid ToolHive registry format " +
-			"(expected 'servers' or 'remote_servers' fields)")
+	if err := isValidRegistryJSON(registryClient, registryURL); err != nil {
+		return &RegistryError{
+			Type: RegistryTypeURL,
+			URL:  registryURL,
+			Err:  err,
+		}
 	}
 
 	// Update the configuration
@@ -217,12 +279,20 @@ func setRegistryFile(provider Provider, registryPath string) error {
 
 	// Validate JSON file
 	if err := validateJSONFile(cleanPath); err != nil {
-		return fmt.Errorf("registry file: %w", err)
+		return &RegistryError{
+			Type: RegistryTypeFile,
+			URL:  registryPath,
+			Err:  fmt.Errorf("%w: %v", ErrRegistryValidationFailed, err),
+		}
 	}
 
 	// Validate registry structure
 	if err := validateRegistryFileStructure(cleanPath); err != nil {
-		return fmt.Errorf("registry file: %w", err)
+		return &RegistryError{
+			Type: RegistryTypeFile,
+			URL:  registryPath,
+			Err:  fmt.Errorf("%w: %v", ErrRegistryValidationFailed, err),
+		}
 	}
 
 	// Make the path absolute
@@ -287,6 +357,7 @@ func validateRegistryFileStructure(path string) error {
 }
 
 // setRegistryAPI validates and sets an MCP Registry API URL using the provided provider
+// Validates connectivity with a 5-second timeout.
 func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp bool) error {
 	parsedURL, err := neturl.Parse(apiURL)
 	if err != nil {
@@ -305,16 +376,22 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 		}
 	}
 
-	// Validate that the URL is accessible if not allowing private IPs
+	// Validate that the URL is accessible with 5-second timeout
 	if !allowPrivateRegistryIp {
-		registryClient, err := networking.NewHttpClientBuilder().Build()
+		registryClient, err := networking.NewHttpClientBuilder().
+			WithTimeout(5 * time.Second).
+			Build()
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
 		// Just check the base URL is accessible (don't require specific endpoints)
 		_, err = registryClient.Head(apiURL)
-		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
-			return err
+		if err != nil {
+			return &RegistryError{
+				Type: RegistryTypeAPI,
+				URL:  apiURL,
+				Err:  classifyNetworkError(err),
+			}
 		}
 	}
 

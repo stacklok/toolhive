@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
@@ -6,10 +9,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -173,6 +179,32 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
 }
 
+// hasTokenExchangeMiddleware checks if any middleware in the slice is a token exchange middleware.
+// When token exchange is configured, it handles its own Authorization header injection,
+// so the oauth-token-injection middleware should be skipped to avoid overwriting the exchanged token.
+func hasTokenExchangeMiddleware(middlewares []types.NamedMiddleware) bool {
+	for _, mw := range middlewares {
+		if mw.Name == tokenexchange.MiddlewareType {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldEnableHealthCheck determines whether health checks should be enabled based on workload type.
+// For local workloads, health checks are always enabled.
+// For remote workloads, health checks are only enabled if explicitly opted in via the
+// TOOLHIVE_REMOTE_HEALTHCHECKS environment variable (set to "true" or "1").
+func shouldEnableHealthCheck(isRemote bool) bool {
+	if !isRemote {
+		// Always enable health checks for local workloads
+		return true
+	}
+	// For remote workloads, only enable if explicitly opted in via environment variable
+	envVal := os.Getenv("TOOLHIVE_REMOTE_HEALTHCHECKS")
+	return strings.ToLower(envVal) == "true" || envVal == "1"
+}
+
 // Mode returns the transport mode.
 func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
@@ -246,14 +278,18 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 	isRemote := t.remoteURL != ""
 
-	// Add OAuth token injection middleware for remote authentication if we have a token source
-	if isRemote && t.tokenSource != nil {
+	// Add OAuth token injection middleware for remote authentication if we have a token source.
+	// Skip if token exchange is configured (it handles its own Authorization header injection).
+	if isRemote && t.tokenSource != nil && !hasTokenExchangeMiddleware(t.middlewares) {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",
 			Function: tokenMiddleware,
 		})
 	}
+
+	// Determine whether to enable health checks based on workload type
+	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
@@ -262,7 +298,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		!isRemote, // TODO: reinstate this universally once we figure out how to make the checks less brittle.
+		enableHealthCheck,
 		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,

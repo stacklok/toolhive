@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package secrets provides generic secret management utilities for authentication.
 // This package contains functions that can be used by any authentication method
 // (OAuth, bearer tokens, etc.) to process secrets and store them in a secrets manager.
@@ -22,6 +25,9 @@ const (
 	TokenTypeOAuthClientSecret TokenType = "oauth_client_secret"
 	// TokenTypeBearerToken represents a bearer token
 	TokenTypeBearerToken TokenType = "bearer_token"
+	// TokenTypeOAuthRefreshToken represents a cached OAuth refresh token
+	// #nosec G101 - this is a type identifier, not a credential
+	TokenTypeOAuthRefreshToken TokenType = "oauth_refresh_token"
 )
 
 // tokenTypeConfig holds configuration for each token type
@@ -41,6 +47,11 @@ var tokenTypeConfigs = map[TokenType]tokenTypeConfig{
 		prefix:       "BEARER_TOKEN_",
 		target:       "bearer_token",
 		errorContext: "bearer token",
+	},
+	TokenTypeOAuthRefreshToken: {
+		prefix:       "OAUTH_REFRESH_TOKEN_",
+		target:       "oauth_refresh",
+		errorContext: "OAuth refresh token",
 	},
 }
 

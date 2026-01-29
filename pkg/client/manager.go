@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -124,7 +127,8 @@ func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, e
 	}
 
 	// Convert to slice for return
-	var registeredClients []RegisteredClient
+	// Initialize as empty slice to ensure JSON encodes as [] instead of null when empty
+	registeredClients := make([]RegisteredClient, 0)
 	for clientName := range allRegisteredClients {
 		registered := RegisteredClient{
 			Name:   MCPClient(clientName),
@@ -167,7 +171,7 @@ func (m *defaultManager) AddServerToClients(
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		logger.Infof("No target clients found for server %s", serverName)
+		logger.Debugf("No target clients found for server %s", serverName)
 		return nil
 	}
 
@@ -187,7 +191,7 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		logger.Infof("No target clients found for server %s", serverName)
+		logger.Debugf("No target clients found for server %s", serverName)
 		return nil
 	}
 
@@ -218,7 +222,7 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 			return fmt.Errorf("failed to add workload %s to client %s: %w", workload.Name, clientType, err)
 		}
 
-		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
+		logger.Debugf("Added MCP server %s to client %s\n", workload.Name, clientType)
 	}
 
 	return nil
@@ -254,7 +258,7 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 		return fmt.Errorf("failed to remove MCP server configuration from %s: %w", clientConfig.Path, err)
 	}
 
-	logger.Infof("Removed MCP server %s from client %s", serverName, clientName)
+	logger.Debugf("Removed MCP server %s from client %s", serverName, clientName)
 	return nil
 }
 
@@ -273,13 +277,13 @@ func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL,
 		}
 	}
 
-	logger.Infof("Updating client configuration: %s", clientConfig.Path)
+	logger.Debugf("Updating client configuration: %s", clientConfig.Path)
 
 	if err := Upsert(*clientConfig, serverName, serverURL, transportType); err != nil {
 		return fmt.Errorf("failed to update MCP server configuration in %s: %w", clientConfig.Path, err)
 	}
 
-	logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
+	logger.Debugf("Successfully updated client configuration: %s", clientConfig.Path)
 	return nil
 }
 
@@ -296,7 +300,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 			return nil
 		}
 
-		logger.Infof(
+		logger.Debugf(
 			"Server %s belongs to group %s, updating %d registered client(s)",
 			serverName, group.Name, len(group.RegisteredClients),
 		)
@@ -306,7 +310,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	// Server has no group - use backward compatible behavior (update all registered clients)
 	appConfig := m.configProvider.GetConfig()
 	targetClients := appConfig.Clients.RegisteredClients
-	logger.Infof(
+	logger.Debugf(
 		"Server %s has no group, updating %d globally registered client(s) for backward compatibility",
 		serverName, len(targetClients),
 	)

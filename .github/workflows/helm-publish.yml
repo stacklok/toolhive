@@ -10,6 +10,8 @@ jobs:
   verify-tag:
     name: Verify Tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6

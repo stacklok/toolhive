@@ -4,7 +4,9 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +24,56 @@ const (
 	defaultRegistryName = "default"
 )
 
+// connectivityError represents a registry connectivity/timeout error
+type connectivityError struct {
+	URL string
+	Err error
+}
+
+func (e *connectivityError) Error() string {
+	return fmt.Sprintf("registry at %s is unreachable: %v", e.URL, e.Err)
+}
+
+func (e *connectivityError) Unwrap() error {
+	return e.Err
+}
+
+// isConnectivityError checks if an error is related to connectivity/timeout
+func isConnectivityError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if this is a RegistryError with timeout or unreachable errors
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		return errors.Is(regErr.Err, config.ErrRegistryTimeout) ||
+			errors.Is(regErr.Err, config.ErrRegistryUnreachable)
+	}
+
+	// Check for context deadline exceeded (timeout) - direct check for legacy support
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	return false
+}
+
+// isValidationError checks if an error is related to validation failure
+func isValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if this is a RegistryError with validation failure
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		return errors.Is(regErr.Err, config.ErrRegistryValidationFailed)
+	}
+
+	return false
+}
+
 // RegistryType represents the type of registry
 type RegistryType string
 
@@ -38,28 +90,8 @@ const (
 
 // getRegistryInfo returns the registry type and the source
 func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
-	return getRegistryInfoWithProvider(rr.configProvider)
-}
-
-// getRegistryInfoWithProvider returns the registry type and the source using the provided config provider
-func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, string) {
-	cfg := configProvider.GetConfig()
-
-	// Check API URL first (highest priority for live data)
-	if cfg.RegistryApiUrl != "" {
-		return RegistryTypeAPI, cfg.RegistryApiUrl
-	}
-
-	if cfg.RegistryUrl != "" {
-		return RegistryTypeURL, cfg.RegistryUrl
-	}
-
-	if cfg.LocalRegistryPath != "" {
-		return RegistryTypeFile, cfg.LocalRegistryPath
-	}
-
-	// Default built-in registry
-	return RegistryTypeDefault, ""
+	registryType, source := rr.configService.GetRegistryInfo()
+	return RegistryType(registryType), source
 }
 
 // getCurrentProvider returns the current registry provider using the injected config
@@ -76,12 +108,14 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 // RegistryRoutes defines the routes for the registry API.
 type RegistryRoutes struct {
 	configProvider config.Provider
+	configService  regpkg.Configurator
 }
 
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
 func NewRegistryRoutes() *RegistryRoutes {
 	return &RegistryRoutes{
 		configProvider: config.NewDefaultProvider(),
+		configService:  regpkg.NewConfigurator(),
 	}
 }
 
@@ -90,6 +124,7 @@ func NewRegistryRoutes() *RegistryRoutes {
 func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 	return &RegistryRoutes{
 		configProvider: provider,
+		configService:  regpkg.NewConfiguratorWithProvider(provider),
 	}
 }
 
@@ -255,14 +290,25 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Process the registry update
 	responseType, message, err := rr.processRegistryUpdate(&req)
 	if err != nil {
+		// Check if it's a connectivity error - return 504 Gateway Timeout
+		var connErr *connectivityError
+		if errors.As(err, &connErr) {
+			http.Error(w, connErr.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		// Check if it's a validation error - return 502 Bad Gateway
+		if isValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		// Other errors - return 400 Bad Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Reset the default provider to pick up configuration changes
+	// Reset the registry provider cache to pick up configuration changes
+	// Note: The config singleton is already reset by the service
 	regpkg.ResetDefaultProvider()
-	// Reset the config singleton to clear cached configuration
-	config.ResetSingleton()
 
 	response := UpdateRegistryResponse{
 		Message: message,
@@ -289,65 +335,48 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 
 // processRegistryUpdate processes the registry update based on request type
 func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (string, string, error) {
+	// Handle registry reset (unset)
 	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
-		return rr.handleRegistryReset()
+		message, err := rr.configService.UnsetRegistry()
+		if err != nil {
+			logger.Errorf("Failed to unset registry: %v", err)
+			return "", "", fmt.Errorf("failed to reset registry configuration")
+		}
+		return "default", message, nil
 	}
+
+	// Determine which registry type to set
+	var input string
+	var allowPrivateIP bool
+
 	if req.URL != nil {
-		return rr.handleRegistryURL(*req.URL, req.AllowPrivateIP)
-	}
-	if req.APIURL != nil {
-		return rr.handleRegistryAPIURL(*req.APIURL, req.AllowPrivateIP)
-	}
-	if req.LocalPath != nil {
-		return rr.handleRegistryLocalPath(*req.LocalPath)
-	}
-	return "", "", fmt.Errorf("no valid registry configuration provided")
-}
-
-// handleRegistryReset resets the registry to default
-func (rr *RegistryRoutes) handleRegistryReset() (string, string, error) {
-	if err := rr.configProvider.UnsetRegistry(); err != nil {
-		logger.Errorf("Failed to unset registry: %v", err)
-		return "", "", fmt.Errorf("failed to reset registry configuration")
-	}
-	return "default", "Registry configuration reset to default", nil
-}
-
-// handleRegistryURL updates the registry URL
-func (rr *RegistryRoutes) handleRegistryURL(registryURL string, allowPrivateIP *bool) (string, string, error) {
-	allow := false
-	if allowPrivateIP != nil {
-		allow = *allowPrivateIP
+		input = *req.URL
+		allowPrivateIP = req.AllowPrivateIP != nil && *req.AllowPrivateIP
+	} else if req.APIURL != nil {
+		input = *req.APIURL
+		allowPrivateIP = req.AllowPrivateIP != nil && *req.AllowPrivateIP
+	} else if req.LocalPath != nil {
+		input = *req.LocalPath
+		allowPrivateIP = false // Not applicable for local files
+	} else {
+		return "", "", fmt.Errorf("no valid registry configuration provided")
 	}
 
-	if err := rr.configProvider.SetRegistryURL(registryURL, allow); err != nil {
-		logger.Errorf("Failed to set registry URL: %v", err)
-		return "", "", fmt.Errorf("failed to set registry URL: %w", err)
+	// Use the service to set the registry
+	registryType, message, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
+	if err != nil {
+		logger.Errorf("Failed to set registry: %v", err)
+		// Check if error is connectivity/timeout related
+		if isConnectivityError(err) {
+			return "", "", &connectivityError{
+				URL: input,
+				Err: err,
+			}
+		}
+		return "", "", err
 	}
-	return "url", fmt.Sprintf("Successfully set registry URL: %s", registryURL), nil
-}
 
-// handleRegistryAPIURL updates the registry API URL
-func (rr *RegistryRoutes) handleRegistryAPIURL(apiURL string, allowPrivateIP *bool) (string, string, error) {
-	allow := false
-	if allowPrivateIP != nil {
-		allow = *allowPrivateIP
-	}
-
-	if err := rr.configProvider.SetRegistryAPI(apiURL, allow); err != nil {
-		logger.Errorf("Failed to set registry API URL: %v", err)
-		return "", "", fmt.Errorf("failed to set registry API URL: %w", err)
-	}
-	return "api", fmt.Sprintf("Successfully set registry API URL: %s", apiURL), nil
-}
-
-// handleRegistryLocalPath updates the registry local path
-func (rr *RegistryRoutes) handleRegistryLocalPath(localPath string) (string, string, error) {
-	if err := rr.configProvider.SetRegistryFile(localPath); err != nil {
-		logger.Errorf("Failed to set registry file: %v", err)
-		return "", "", fmt.Errorf("failed to set registry file: %w", err)
-	}
-	return "file", fmt.Sprintf("Successfully set local registry file: %s", localPath), nil
+	return registryType, message, nil
 }
 
 //	 removeRegistry

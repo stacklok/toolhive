@@ -178,6 +178,15 @@ jobs:
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
 
+  publish-helm:
+    name: Publish Helm Chart
+    needs: [image-build-and-push]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/helm-publish.yml
+
   update-docs-website-binaries:
     name: Trigger Docs Update for Binaries
     needs: [ release-binaries ]
@@ -249,6 +258,7 @@ jobs:
       - release-binaries
       - image-build-and-push
       - update-docs-website-binaries
+      - publish-helm
     if: ${{ failure() }}
     runs-on: ubuntu-slim
     permissions: {}

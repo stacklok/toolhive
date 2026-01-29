@@ -265,6 +265,8 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200		{object}	UpdateRegistryResponse
 //		@Failure		400		{string}	string	"Bad Request"
 //		@Failure		404		{string}	string	"Not Found"
+//		@Failure		502		{string}	string	"Bad Gateway - Registry validation failed"
+//		@Failure		504		{string}	string	"Gateway Timeout - Registry unreachable"
 //		@Router			/api/v1beta/registry/{name} [put]
 func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")

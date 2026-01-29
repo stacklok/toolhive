@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -343,5 +344,92 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		assert.Equal(t, 2, result.Metadata.BackendCount)
 		assert.Equal(t, 2, result.Metadata.ToolCount)
 		assert.Equal(t, 1, result.Metadata.ResourceCount)
+	})
+}
+
+func TestDefaultAggregator_ExcludeAllTools(t *testing.T) {
+	t.Parallel()
+
+	t.Run("global excludeAllTools returns empty tools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		// Backend returns tools, but they should be excluded
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")),
+			withResources(newTestResource("test://resource", "backend1")),
+			withPrompts(newTestPrompt("test_prompt", "backend1")),
+			withLogging(true))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with ExcludeAllTools: true
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: true,
+		}
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		assert.Equal(t, "backend1", result.BackendID)
+		// Tools should be empty due to ExcludeAllTools
+		assert.Len(t, result.Tools, 0)
+		// Resources and prompts should be preserved
+		assert.Len(t, result.Resources, 1)
+		assert.Len(t, result.Prompts, 1)
+		assert.True(t, result.SupportsLogging)
+	})
+
+	t.Run("global excludeAllTools false allows tools through", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with ExcludeAllTools: false (default)
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: false,
+		}
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		// Tools should come through
+		assert.Len(t, result.Tools, 1)
+		assert.Equal(t, "test_tool", result.Tools[0].Name)
+	})
+
+	t.Run("nil aggregationConfig allows tools through", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with nil aggregationConfig (default behavior)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		// Tools should come through
+		assert.Len(t, result.Tools, 1)
+		assert.Equal(t, "test_tool", result.Tools[0].Name)
 	})
 }

@@ -25,24 +25,30 @@ type defaultAggregator struct {
 	backendClient    vmcp.BackendClient
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
+	excludeAllTools  bool                                  // Global flag to exclude all tools
 	tracer           trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
-// workloadConfigs specifies per-backend tool filtering and overrides.
+// aggregationConfig specifies aggregation settings including tool filtering/overrides and excludeAllTools.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
-	workloadConfigs []*config.WorkloadToolConfig,
+	aggregationConfig *config.AggregationConfig,
 	tracerProvider trace.TracerProvider,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
-	for _, wlConfig := range workloadConfigs {
-		if wlConfig != nil {
-			toolConfigMap[wlConfig.Workload] = wlConfig
+	var excludeAllTools bool
+
+	if aggregationConfig != nil {
+		excludeAllTools = aggregationConfig.ExcludeAllTools
+		for _, wlConfig := range aggregationConfig.Tools {
+			if wlConfig != nil {
+				toolConfigMap[wlConfig.Workload] = wlConfig
+			}
 		}
 	}
 
@@ -58,6 +64,7 @@ func NewDefaultAggregator(
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
+		excludeAllTools:  excludeAllTools,
 		tracer:           tracer,
 	}
 }
@@ -91,7 +98,13 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	}
 
 	// Apply per-backend tool filtering and overrides (before conflict resolution)
-	processedTools := processBackendTools(ctx, backend.ID, capabilities.Tools, a.toolConfigMap[backend.ID])
+	var processedTools []vmcp.Tool
+	if a.excludeAllTools {
+		logger.Debugf("ExcludeAllTools is true globally, returning empty tools for backend %s", backend.ID)
+		processedTools = []vmcp.Tool{}
+	} else {
+		processedTools = processBackendTools(ctx, backend.ID, capabilities.Tools, a.toolConfigMap[backend.ID])
+	}
 
 	// Convert to BackendCapabilities
 	result := &BackendCapabilities{

@@ -5,7 +5,6 @@ package virtualmcp
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -19,22 +18,22 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
+var _ = Describe("VirtualMCPServer Global ExcludeAllTools", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		mcpGroupName    = "test-filtering-group"
-		vmcpServerName  = "test-vmcp-filtering"
-		backend1Name    = "yardstick-filter-a"
-		backend2Name    = "yardstick-filter-b"
+		mcpGroupName    = "test-excludeall-global-group"
+		vmcpServerName  = "test-vmcp-excludeall-global"
+		backend1Name    = "yardstick-excludeall-a"
+		backend2Name    = "yardstick-excludeall-b"
 		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
 	BeforeAll(func() {
-		By("Creating MCPGroup for filtering test")
+		By("Creating MCPGroup for global excludeAllTools test")
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
-			"Test MCP Group for tool filtering E2E tests", timeout, pollingInterval)
+			"Test MCP Group for global excludeAllTools E2E tests", timeout, pollingInterval)
 
 		By("Creating yardstick backend MCPServers in parallel")
 		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
@@ -42,7 +41,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
 		}, timeout, pollingInterval)
 
-		By("Creating VirtualMCPServer with tool filtering - only expose tools from backend1")
+		By("Creating VirtualMCPServer with global excludeAllTools: true")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -53,17 +52,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
 						ConflictResolution: "prefix",
-						// Tool filtering: only allow echo from backend1, nothing from backend2
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backend1Name,
-								Filter:   []string{"echo"}, // Only expose echo tool
-							},
-							{
-								Workload:   backend2Name,
-								ExcludeAll: true, // Exclude all tools from backend2
-							},
-						},
+						// Global flag to exclude all tools from all backends
+						ExcludeAllTools: true,
 					},
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
@@ -114,10 +104,10 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		_ = k8sClient.Delete(ctx, mcpGroup)
 	})
 
-	Context("when tool filtering is configured", func() {
-		It("should only expose filtered tools from backend1", func() {
+	Context("when global excludeAllTools is enabled", func() {
+		It("should return empty tools list from all backends", func() {
 			By("Creating and initializing MCP client for VirtualMCPServer")
-			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-filtering-test", 30*time.Second)
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-excludeall-test", 30*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -126,44 +116,31 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 
-			By(fmt.Sprintf("VirtualMCPServer exposes %d tools after filtering", len(tools.Tools)))
-			for _, tool := range tools.Tools {
-				GinkgoWriter.Printf("  Exposed tool: %s - %s\n", tool.Name, tool.Description)
-			}
+			By(fmt.Sprintf("VirtualMCPServer returns %d tools with excludeAllTools: true", len(tools.Tools)))
 
-			// Verify filtering: should only have echo tool from backend1
-			toolNames := make([]string, len(tools.Tools))
-			for i, tool := range tools.Tools {
-				toolNames[i] = tool.Name
-			}
-
-			// Should have tool from backend1
-			hasBackend1Tool := false
-			for _, name := range toolNames {
-				if strings.Contains(name, backend1Name) && strings.Contains(name, "echo") {
-					hasBackend1Tool = true
-				}
-			}
-			Expect(hasBackend1Tool).To(BeTrue(), "Should have echo tool from backend1")
-
-			// Should NOT have any tool from backend2 (excluded with ExcludeAll: true)
-			hasBackend2Tool := false
-			for _, name := range toolNames {
-				if strings.Contains(name, backend2Name) {
-					hasBackend2Tool = true
-				}
-			}
-			Expect(hasBackend2Tool).To(BeFalse(), "Should NOT have any tool from backend2 (excluded via ExcludeAll: true)")
+			// Verify tools list is empty due to global excludeAllTools
+			Expect(tools.Tools).To(BeEmpty(), "Should have no tools when excludeAllTools is true globally")
 		})
 
-		It("should still allow calling filtered tools", func() {
-			// Use shared helper to test tool listing and calling
-			TestToolListingAndCall(vmcpNodePort, "toolhive-filtering-test", "echo", "filtered123")
+		It("should still respond to MCP protocol requests", func() {
+			By("Creating and initializing MCP client")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-excludeall-protocol-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Verifying server responds to tools/list even when empty")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred(), "Server should respond to tools/list request")
+			Expect(tools).ToNot(BeNil(), "Response should not be nil")
+
+			// The response should be valid but with empty tools
+			Expect(tools.Tools).To(BeEmpty())
 		})
 	})
 
-	Context("when verifying filtering configuration", func() {
-		It("should have correct aggregation configuration with tool filters", func() {
+	Context("when verifying excludeAllTools configuration", func() {
+		It("should have correct aggregation configuration with excludeAllTools", func() {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
@@ -172,25 +149,31 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
+			Expect(vmcpServer.Spec.Config.Aggregation.ExcludeAllTools).To(BeTrue(),
+				"Global excludeAllTools should be true")
+		})
 
-			// Verify backend1 filter allows echo
-			var backend1Config *vmcpconfig.WorkloadToolConfig
-			var backend2Config *vmcpconfig.WorkloadToolConfig
-			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
-				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
-					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
-				}
-				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend2Name {
-					backend2Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
-				}
+		It("should have backends discovered but tools excluded", func() {
+			// Verify backends are in the group
+			backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(backends).To(HaveLen(2), "Should have 2 backends in the group")
+
+			// Verify each backend is running
+			for _, backend := range backends {
+				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+					fmt.Sprintf("Backend %s should be running", backend.Name))
 			}
 
-			Expect(backend1Config).ToNot(BeNil())
-			Expect(backend1Config.Filter).To(ContainElement("echo"))
+			// Even though backends are running, tools should be excluded
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-backend-verify-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
 
-			Expect(backend2Config).ToNot(BeNil())
-			Expect(backend2Config.ExcludeAll).To(BeTrue(), "Backend2 should have ExcludeAll: true")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).To(BeEmpty(), "Tools should be excluded despite backends being available")
 		})
 	})
 })

@@ -29,6 +29,12 @@ func processBackendTools(
 		return tools // No configuration for this backend
 	}
 
+	// Check ExcludeAll first - takes precedence over Filter/Overrides
+	if workloadConfig.ExcludeAll {
+		logger.Debugf("ExcludeAll is true for backend %s, returning empty tools list", backendID)
+		return []vmcp.Tool{}
+	}
+
 	// If no filter or overrides configured, return tools as-is
 	if len(workloadConfig.Filter) == 0 && len(workloadConfig.Overrides) == 0 {
 		return tools

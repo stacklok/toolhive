@@ -118,6 +118,50 @@ func TestProcessBackendTools(t *testing.T) {
 			wantCount: 1,
 			wantNames: []string{"renamed_tool1"},
 		},
+		{
+			name:      "excludeAll excludes all tools from workload",
+			backendID: "github",
+			tools: []vmcp.Tool{
+				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
+				{Name: "merge_pr", Description: "Merge PR", BackendID: "github"},
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload:   "github",
+				ExcludeAll: true,
+			},
+			wantCount: 0,
+			wantNames: []string{},
+		},
+		{
+			name:      "excludeAll takes precedence over filter",
+			backendID: "github",
+			tools: []vmcp.Tool{
+				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload:   "github",
+				ExcludeAll: true,
+				Filter:     []string{"create_pr"},
+			},
+			wantCount: 0,
+			wantNames: []string{},
+		},
+		{
+			name:      "excludeAll takes precedence over overrides",
+			backendID: "github",
+			tools: []vmcp.Tool{
+				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
+			},
+			workloadConfig: &config.WorkloadToolConfig{
+				Workload:   "github",
+				ExcludeAll: true,
+				Overrides: map[string]*config.ToolOverride{
+					"create_pr": {Name: "gh_create_pr"},
+				},
+			},
+			wantCount: 0,
+			wantNames: []string{},
+		},
 	}
 
 	for _, tt := range tests {

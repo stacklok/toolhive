@@ -1,0 +1,223 @@
+name: Publish Helm Charts
+
+on:
+  workflow_call:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  verify-tag:
+    name: Verify Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Verify tag matches VERSION file
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+
+          echo "Release tag: $TAG"
+          echo "VERSION file: $VERSION"
+
+          # Tag should be "v" + VERSION (e.g., v1.0.0)
+          EXPECTED_TAG="v${VERSION}"
+
+          if [[ "$TAG" != "$EXPECTED_TAG" ]]; then
+            echo ""
+            echo "❌ VERSION MISMATCH!"
+            echo "  Tag:      $TAG"
+            echo "  Expected: $EXPECTED_TAG (from VERSION file)"
+            echo ""
+            echo "The release tag does not match the VERSION file."
+            echo "This could indicate:"
+            echo "  - VERSION file was not updated correctly"
+            echo "  - Tag was created manually with wrong version"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Tag matches VERSION file: $TAG"
+
+  publish-helm:
+    name: Publish ${{ matrix.chart.name }}
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # Required for Cosign signing
+    strategy:
+      fail-fast: false
+      matrix:
+        chart:
+          - name: toolhive-operator
+            path: deploy/charts/operator
+          - name: toolhive-operator-crds
+            path: deploy/charts/operator-crds
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"  # Remove 'v' prefix: v1.0.0 -> 1.0.0
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION from tag: $TAG"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Login to GHCR (Helm)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Login to GHCR (Cosign)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package Helm chart
+        run: |
+          helm package ${{ matrix.chart.path }} \
+            --version ${{ steps.version.outputs.version }} \
+            --app-version ${{ steps.version.outputs.version }}
+          echo "Packaged chart: ${{ matrix.chart.name }}-${{ steps.version.outputs.version }}.tgz"
+
+      - name: Push to GHCR
+        id: push
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          OUTPUT=$(helm push ${{ matrix.chart.name }}-${{ steps.version.outputs.version }}.tgz \
+            oci://${{ env.REGISTRY }}/${OWNER} 2>&1)
+          echo "$OUTPUT"
+
+          # Extract digest from helm push output (e.g., "Digest: sha256:abc123...")
+          DIGEST=$(echo "$OUTPUT" | grep 'Digest:' | awk '{print $2}' || echo "")
+          if [ -n "$DIGEST" ]; then
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+            echo "Captured digest: $DIGEST"
+          fi
+
+          echo "Pushed chart to: oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }}"
+
+      - name: Sign Helm chart with Cosign
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          CHART_REF="${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}"
+          DIGEST="${{ steps.push.outputs.digest }}"
+
+          if [ -n "$DIGEST" ]; then
+            echo "Signing Helm chart by digest: ${CHART_REF}@${DIGEST}"
+            cosign sign -y "${CHART_REF}@${DIGEST}"
+          else
+            echo "Signing Helm chart by tag: ${CHART_REF}:${{ steps.version.outputs.version }}"
+            cosign sign -y "${CHART_REF}:${{ steps.version.outputs.version }}"
+          fi
+          echo "Helm chart signed successfully"
+
+      - name: Verify published chart
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm show chart oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }} \
+            --version ${{ steps.version.outputs.version }}
+
+      - name: Summary
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "## Helm Chart Published: ${{ matrix.chart.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Chart | \`${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Signed | ✅ Yes (Cosign keyless) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "helm install my-release oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }} --version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verify Signature" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "cosign verify ${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }} \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --certificate-identity-regexp https://github.com/${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Logout from GHCR
+        if: always()
+        run: helm registry logout ${{ env.REGISTRY }}
+
+  notify-helm-publish-failure:
+    name: Notify Helm Publish Failure
+    needs:
+      - verify-tag
+      - publish-helm
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Send Slack Notification
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚨 ToolHive Helm Chart Publish Failed",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n${{ github.ref_name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered by:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Workflow Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Failed Run>"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "Repository: ${{ github.repository }} | Commit: ${{ github.sha }}"
+                    }
+                  ]
+                }
+              ]
+            }

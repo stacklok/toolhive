@@ -1315,10 +1315,6 @@ const docTemplate = `{
             "v1.UpdateRegistryResponse": {
                 "description": "Response containing update result",
                 "properties": {
-                    "message": {
-                        "description": "Status message",
-                        "type": "string"
-                    },
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"

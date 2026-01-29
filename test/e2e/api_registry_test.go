@@ -153,7 +153,6 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				err := json.NewDecoder(resp.Body).Decode(&result)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Type).To(Equal("file"), "Type should be 'file'")
-				Expect(result.Message).To(ContainSubstring("Successfully set local registry file"))
 			})
 
 			It("should reset to default with empty request", func() {
@@ -186,7 +185,6 @@ var _ = Describe("Registry API", Label("api", "registry", "e2e"), func() {
 				err := json.NewDecoder(resp.Body).Decode(&result)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Type).To(Equal("default"), "Type should be 'default'")
-				Expect(result.Message).To(ContainSubstring("Will use built-in registry"))
 			})
 		})
 
@@ -799,8 +797,7 @@ type getServerResponse struct {
 }
 
 type updateRegistryResponse struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
+	Type string `json:"type"`
 }
 
 // Helper functions for registry operations

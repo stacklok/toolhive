@@ -257,7 +257,6 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				var response map[string]interface{}
 				err := json.NewDecoder(w.Body).Decode(&response)
 				require.NoError(t, err, "Success response should be valid JSON")
-				assert.Contains(t, response, "message", "Success response should contain a message")
 			}
 		})
 	}

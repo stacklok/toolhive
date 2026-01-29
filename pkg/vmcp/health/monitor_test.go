@@ -751,3 +751,92 @@ func TestHealthCheckMarker_Integration(t *testing.T) {
 		assert.False(t, IsHealthCheck(baseCtx), "base context should not be health check")
 	})
 }
+
+func TestMonitor_UpdateBackends(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+
+	// Start with one initial backend
+	initialBackends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+	}
+
+	config := MonitorConfig{
+		CheckInterval:      50 * time.Millisecond,
+		UnhealthyThreshold: 1,
+		Timeout:            10 * time.Millisecond,
+	}
+
+	// Mock health checks for all backends
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).
+		AnyTimes()
+
+	monitor, err := NewMonitor(mockClient, initialBackends, config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = monitor.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		_ = monitor.Stop()
+	}()
+
+	// Wait for initial backend to be healthy
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-1")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should become healthy")
+
+	// Wait for initial health checks to complete
+	// This should not block since initial backend already checked
+	monitor.WaitForInitialHealthChecks()
+
+	// Now add a new backend dynamically
+	// This tests the fix for the WaitGroup bug where dynamic backends
+	// would call initialCheckWg.Done() without a corresponding Add()
+	updatedBackends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+	}
+
+	monitor.UpdateBackends(updatedBackends)
+
+	// Wait for new backend to be monitored and become healthy
+	// This should not panic (which would happen with the WaitGroup bug)
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-2")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend-2 should become healthy")
+
+	// Verify both backends are now in the summary
+	summary := monitor.GetHealthSummary()
+	assert.Equal(t, 2, summary.Total, "should have 2 backends")
+	assert.Equal(t, 2, summary.Healthy, "both backends should be healthy")
+
+	// Test removing a backend
+	reducedBackends := []vmcp.Backend{
+		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+	}
+
+	monitor.UpdateBackends(reducedBackends)
+
+	// Give monitor time to stop monitoring backend-1
+	time.Sleep(100 * time.Millisecond)
+
+	// Backend-2 should still be healthy
+	assert.True(t, monitor.IsBackendHealthy("backend-2"))
+
+	// Backend-1's state should be removed (cleaned up when removed from monitoring)
+	removedState, removedErr := monitor.GetBackendState("backend-1")
+	assert.Error(t, removedErr, "backend-1 state should be removed")
+	assert.Nil(t, removedState)
+
+	// Verify summary only shows backend-2
+	summary = monitor.GetHealthSummary()
+	assert.Equal(t, 1, summary.Total, "should have 1 backend after removal")
+	assert.Equal(t, 1, summary.Healthy, "backend-2 should be healthy")
+}

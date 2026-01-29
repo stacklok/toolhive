@@ -152,16 +152,31 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, statu
 	// when the condition Status hasn't changed. This is important for Kubernetes-style
 	// condition semantics - LastTransitionTime should only update on Status transitions.
 	//
+	// Note: Kubernetes conditions are additive - once set, they persist until explicitly removed.
+	// The status building code (monitor.BuildStatus) is responsible for providing the complete
+	// set of conditions that should be present. We trust that if a condition is missing from
+	// the new status, it should be removed from the resource.
+
 	// First, identify which condition types are present in the new status
 	newConditionTypes := make(map[string]bool)
 	for _, cond := range status.Conditions {
 		newConditionTypes[cond.Type] = true
 	}
 
-	// Remove known condition types that are no longer present (e.g., Degraded after recovery)
-	knownConditionTypes := []string{"Ready", "Degraded"}
+	// Remove transient condition types that are no longer present.
+	// Transient conditions like "Degraded" only appear when that state is active,
+	// and must be explicitly removed when the system recovers.
+	//
+	// Core conditions (Ready, BackendsDiscovered) should always be present in the new status.
+	// If they're missing, that indicates a bug in the status building code, not normal operation.
+	// We still remove them to stay in sync with the status building code's intent.
+	knownConditionTypes := []string{"Ready", "Degraded", "BackendsDiscovered"}
 	for _, condType := range knownConditionTypes {
 		if !newConditionTypes[condType] {
+			// Log warning for core conditions that should always be present
+			if condType == "Ready" || condType == "BackendsDiscovered" {
+				logger.Warnf("Core condition %s missing from new status - this may indicate a bug in status building", condType)
+			}
 			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
 		}
 	}

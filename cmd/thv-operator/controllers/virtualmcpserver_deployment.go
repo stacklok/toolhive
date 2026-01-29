@@ -52,8 +52,10 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account in dynamic mode
-// These rules allow vMCP to discover backends and configurations at runtime
+// RBAC rules for VirtualMCPServer service account
+// These rules allow vMCP to:
+// - Discover backends and configurations at runtime (in discovered mode)
+// - Update VirtualMCPServer status (in all modes via K8sReporter)
 var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
@@ -64,6 +66,11 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 		APIGroups: []string{"toolhive.stacklok.dev"},
 		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},

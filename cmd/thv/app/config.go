@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -123,7 +122,6 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully set CA certificate path: %s\n", filepath.Clean(certPath))
 	return nil
 }
 
@@ -147,7 +145,7 @@ func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
 
 func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	provider := config.NewDefaultProvider()
-	certPath, exists, _ := provider.GetCACert()
+	_, exists, _ := provider.GetCACert()
 
 	if !exists {
 		fmt.Println("No CA certificate is currently configured.")
@@ -159,7 +157,6 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully removed CA certificate configuration: %s\n", certPath)
 	return nil
 }
 
@@ -167,27 +164,19 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
 
 	service := registry.NewConfigurator()
-	registryType, message, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
+	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
 	if err != nil {
 		// Enhance error message for better user experience
-		return enhanceRegistryError(err, input, string(registryType))
+		return enhanceRegistryError(err, input, registryType)
 	}
 
 	// Reset the registry provider cache to pick up the new configuration
 	registry.ResetDefaultProvider()
 
-	// Print success message
-	fmt.Println(message)
-
 	// Add additional security warnings for private IP usage
 	if allowPrivateRegistryIp {
-		fmt.Print("Successfully enabled use of private IP addresses for the registry\n")
 		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
 			"Make sure you trust any registries you configure with ToolHive.\n")
-	} else if registryType != config.RegistryTypeFile {
-		// Only show this message for URL/API types
-		fmt.Print("Use of private IP addresses for the registry has been disabled" +
-			" as it's not needed for the provided registry.\n")
 	}
 
 	return nil
@@ -216,7 +205,7 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	service := registry.NewConfigurator()
-	message, err := service.UnsetRegistry()
+	err := service.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -224,7 +213,6 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	// Reset the registry provider cache to pick up the default configuration
 	registry.ResetDefaultProvider()
 
-	fmt.Println(message)
 	return nil
 }
 
@@ -299,10 +287,5 @@ func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	if disable {
-		fmt.Println("Usage metrics disabled.")
-	} else {
-		fmt.Println("Usage metrics enabled.")
-	}
 	return nil
 }

@@ -131,7 +131,7 @@ func applyBackwardCompatibility(config *Config) error {
 	// Hack - if the secrets provider type is set to the old `basic` type,
 	// just change it to `encrypted`.
 	if config.Secrets.ProviderType == "basic" {
-		fmt.Println("cleaning up basic secrets provider")
+		logger.Debugf("cleaning up basic secrets provider, migrating to encrypted type")
 		// Attempt to cleanup path, treat errors as non fatal.
 		oldPath, err := xdg.DataFile("toolhive/secrets")
 		if err == nil {

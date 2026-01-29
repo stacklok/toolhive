@@ -19,14 +19,14 @@ import (
 //go:generate mockgen -destination=mocks/mock_service.go -package=mocks -source=service.go Configurator
 type Configurator interface {
 	// SetRegistryFromInput auto-detects the registry type (URL/API/File) and configures it.
-	// Returns the detected registry type, a user-friendly message, and any error.
+	// Returns the detected registry type and any error.
 	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
-	SetRegistryFromInput(input string, allowPrivateIP bool) (registryType, message string, err error)
+	SetRegistryFromInput(input string, allowPrivateIP bool) (registryType string, err error)
 
 	// UnsetRegistry resets the registry configuration to defaults (built-in registry).
-	// Returns a user-friendly message and any error.
+	// Returns any error that occurred during the operation.
 	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
-	UnsetRegistry() (message string, err error)
+	UnsetRegistry() error
 
 	// GetRegistryInfo returns information about the currently configured registry.
 	// Returns the registry type (api/url/file/default) and the source (URL or path).
@@ -54,76 +54,62 @@ func NewConfiguratorWithProvider(provider config.Provider) Configurator {
 }
 
 // SetRegistryFromInput auto-detects the registry type and configures it.
-func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, string, error) {
+func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, error) {
 	// Auto-detect the registry type
 	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateIP)
 
 	var err error
-	var message string
 
 	switch registryType {
 	case config.RegistryTypeURL:
 		err = s.provider.SetRegistryURL(cleanPath, allowPrivateIP)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to set remote registry: %w", err)
+			return "", fmt.Errorf("failed to set remote registry: %w", err)
 		}
-		message = fmt.Sprintf("Successfully set a remote registry file: %s", cleanPath)
 
 	case config.RegistryTypeAPI:
 		err = s.provider.SetRegistryAPI(cleanPath, allowPrivateIP)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to set registry API: %w", err)
+			return "", fmt.Errorf("failed to set registry API: %w", err)
 		}
-		message = fmt.Sprintf("Successfully set registry API endpoint: %s", cleanPath)
 
 	case config.RegistryTypeFile:
 		err = s.provider.SetRegistryFile(cleanPath)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to set local registry file: %w", err)
+			return "", fmt.Errorf("failed to set local registry file: %w", err)
 		}
-		message = fmt.Sprintf("Successfully set local registry file: %s", cleanPath)
 
 	default:
-		return "", "", fmt.Errorf("unsupported registry type: %s", registryType)
+		return "", fmt.Errorf("unsupported registry type: %s", registryType)
 	}
 
 	// Reset the config singleton to clear cached configuration
 	// Note: Callers are responsible for resetting the registry provider cache
 	config.ResetSingleton()
 
-	return registryType, message, nil
+	return registryType, nil
 }
 
 // UnsetRegistry resets the registry configuration to defaults.
-func (s *DefaultConfigurator) UnsetRegistry() (string, error) {
-	// Get current config before unsetting (for informational message)
-	url, localPath, _, registryType := s.provider.GetRegistryConfig()
+func (s *DefaultConfigurator) UnsetRegistry() error {
+	// Get current config before unsetting
+	_, _, _, registryType := s.provider.GetRegistryConfig()
 
 	if registryType == config.RegistryTypeDefault {
-		return "No custom registry is currently configured.", nil
+		// Already using default registry, nothing to do
+		return nil
 	}
 
 	err := s.provider.UnsetRegistry()
 	if err != nil {
-		return "", fmt.Errorf("failed to reset registry configuration: %w", err)
+		return fmt.Errorf("failed to reset registry configuration: %w", err)
 	}
 
 	// Reset the config singleton to clear cached configuration
 	// Note: Callers are responsible for resetting the registry provider cache
 	config.ResetSingleton()
 
-	// Build informational message
-	var message string
-	if url != "" {
-		message = fmt.Sprintf("Successfully removed registry URL: %s\n", url)
-	} else if localPath != "" {
-		message = fmt.Sprintf("Successfully removed local registry file: %s\n", localPath)
-	} else {
-		message = "Successfully removed registry configuration\n"
-	}
-	message += "Will use built-in registry."
-
-	return message, nil
+	return nil
 }
 
 // GetRegistryInfo returns information about the currently configured registry.

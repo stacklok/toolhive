@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use minimal base image to package the binary
-FROM registry.access.redhat.com/ubi10/ubi-minimal:10.1-1766033715
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.1-1769677092
 
 COPY --from=builder /workspace/main /
 COPY LICENSE /licenses/LICENSE

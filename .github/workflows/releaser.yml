@@ -189,7 +189,7 @@ jobs:
 
   update-docs-website-binaries:
     name: Trigger Docs Update for Binaries
-    needs: [ release-binaries ]
+    needs: [ publish-helm ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     with:

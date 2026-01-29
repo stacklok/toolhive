@@ -338,7 +338,7 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (string, error) {
 	// Handle registry reset (unset)
 	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
-		_, err := rr.configService.UnsetRegistry()
+		err := rr.configService.UnsetRegistry()
 		if err != nil {
 			logger.Errorf("Failed to unset registry: %v", err)
 			return "", fmt.Errorf("failed to reset registry configuration")
@@ -364,7 +364,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	}
 
 	// Use the service to set the registry
-	registryType, _, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
+	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
 	if err != nil {
 		logger.Errorf("Failed to set registry: %v", err)
 		// Check if error is connectivity/timeout related

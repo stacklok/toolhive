@@ -177,7 +177,6 @@ Note that some providers (like 1Password) are read-only and do not support setti
 			if err != nil {
 				return fmt.Errorf("failed to set secret %s: %w", name, err)
 			}
-			fmt.Printf("Secret %s set successfully\n", name)
 
 			// Warn if any workloads use this secret
 			warnWorkloadsUsingSecret(ctx, name)
@@ -265,7 +264,6 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			if err != nil {
 				return fmt.Errorf("failed to delete secret %s: %w", name, err)
 			}
-			fmt.Printf("Secret %s deleted successfully\n", name)
 
 			return nil
 		},
@@ -345,7 +343,6 @@ This command only works with the 'encrypted' secrets provider.`,
 			if err := secrets.ResetKeyringSecret(); err != nil {
 				return fmt.Errorf("failed to reset keyring secret: %w", err)
 			}
-			fmt.Println("Successfully reset keyring secret")
 
 			return nil
 		},

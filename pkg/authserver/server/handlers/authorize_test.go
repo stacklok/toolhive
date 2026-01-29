@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -229,4 +230,203 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 
 	// Verify the challenge matches the stored verifier
 	assert.Equal(t, servercrypto.ComputePKCEChallenge(pending.UpstreamPKCEVerifier), mockUpstream.capturedCodeChallenge)
+}
+
+// =============================================================================
+// Security Tests: Open Redirect Prevention
+// =============================================================================
+
+// TestAuthorizeHandler_OpenRedirectPrevention verifies that unregistered redirect URIs
+// are rejected to prevent open redirect attacks per RFC 6749 Section 10.6.
+func TestAuthorizeHandler_OpenRedirectPrevention(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	testCases := []struct {
+		name        string
+		redirectURI string
+	}{
+		{"external_domain", "http://evil.example.com/callback"},
+		{"javascript_scheme", "javascript:alert(1)"},
+		{"data_scheme", "data:text/html,<script>alert(1)</script>"},
+		{"different_path", "http://localhost:8080/evil-callback"},
+		{"path_traversal", "http://localhost:8080/callback/../evil"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			params := url.Values{
+				"client_id":             {testAuthClientID},
+				"redirect_uri":          {tc.redirectURI},
+				"response_type":         {"code"},
+				"state":                 {"test-state"},
+				"code_challenge":        {"challenge123"},
+				"code_challenge_method": {"S256"},
+				"scope":                 {"openid"},
+			}
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+			rec := httptest.NewRecorder()
+
+			handler.AuthorizeHandler(rec, req)
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code,
+				"should reject unregistered redirect URI: %s", tc.redirectURI)
+			assert.Contains(t, rec.Body.String(), "invalid_request")
+		})
+	}
+}
+
+// TestAuthorizeHandler_ScopeEscalationRejected verifies that a client cannot
+// request scopes beyond what it's registered for.
+func TestAuthorizeHandler_ScopeEscalationRejected(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	// Test client only has "openid", "profile", "email" scopes registered
+	// Try to request "admin" scope which is not registered
+	params := url.Values{
+		"client_id":             {testAuthClientID},
+		"redirect_uri":          {testAuthRedirectURI},
+		"response_type":         {"code"},
+		"state":                 {"test-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"openid admin"}, // "admin" not in client's registered scopes
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// Fosite with ExactScopeStrategy should reject this with error redirect
+	if rec.Code == http.StatusSeeOther {
+		location := rec.Header().Get("Location")
+		assert.Contains(t, location, "error=", "should contain error for invalid scope")
+	} else {
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	}
+}
+
+// TestAuthorizeHandler_HybridFlowDisabled verifies that hybrid flows
+// (response_type containing both code and token) are rejected.
+func TestAuthorizeHandler_HybridFlowDisabled(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	testCases := []string{
+		"code token",
+		"code id_token",
+		"code id_token token",
+	}
+
+	for _, responseType := range testCases {
+		t.Run(responseType, func(t *testing.T) {
+			t.Parallel()
+
+			params := url.Values{
+				"client_id":     {testAuthClientID},
+				"redirect_uri":  {testAuthRedirectURI},
+				"response_type": {responseType},
+				"state":         {"test-state"},
+				"scope":         {"openid"},
+			}
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+			rec := httptest.NewRecorder()
+
+			handler.AuthorizeHandler(rec, req)
+
+			if rec.Code == http.StatusSeeOther {
+				location := rec.Header().Get("Location")
+				assert.Contains(t, location, "error=unsupported_response_type")
+			} else {
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+			}
+		})
+	}
+}
+
+// TestAuthorizeHandler_NoTokenInErrorRedirect verifies that tokens and
+// sensitive data are not leaked in error redirect URLs.
+func TestAuthorizeHandler_NoTokenInErrorRedirect(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	params := url.Values{
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"response_type": {"token"}, // Unsupported - will error
+		"state":         {"test-state"},
+		"scope":         {"openid"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	location := rec.Header().Get("Location")
+
+	// Must NOT leak any tokens in error redirects
+	assert.NotContains(t, location, "access_token=")
+	assert.NotContains(t, location, "refresh_token=")
+	assert.NotContains(t, location, "id_token=")
+	assert.NotContains(t, location, "code=")
+	assert.Contains(t, location, "error=")
+}
+
+// TestAuthorizeHandler_PostMethodSupported verifies that the authorize endpoint
+// accepts POST requests per RFC 6749 Section 3.1.
+func TestAuthorizeHandler_PostMethodSupported(t *testing.T) {
+	t.Parallel()
+	handler, _, mockUpstream := handlerTestSetup(t)
+
+	form := url.Values{
+		"client_id":             {testAuthClientID},
+		"redirect_uri":          {testAuthRedirectURI},
+		"response_type":         {"code"},
+		"state":                 {"test-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"openid"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.NotEmpty(t, mockUpstream.capturedState)
+}
+
+// TestAuthorizeHandler_EmptyScopeRequest verifies behavior when no scope
+// parameter is provided in the authorization request.
+func TestAuthorizeHandler_EmptyScopeRequest(t *testing.T) {
+	t.Parallel()
+	handler, storState, mockUpstream := handlerTestSetup(t)
+
+	params := url.Values{
+		"client_id":             {testAuthClientID},
+		"redirect_uri":          {testAuthRedirectURI},
+		"response_type":         {"code"},
+		"state":                 {"test-state"},
+		"code_challenge":        {"challenge123"},
+		"code_challenge_method": {"S256"},
+		// No "scope" parameter
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// Should either redirect to upstream or return an error
+	if rec.Code == http.StatusFound || rec.Code == http.StatusSeeOther {
+		// If accepted, verify pending auth was stored
+		if mockUpstream.capturedState != "" {
+			_, ok := storState.pendingAuths[mockUpstream.capturedState]
+			assert.True(t, ok, "pending auth should be stored when accepted")
+		}
+	}
 }

@@ -332,7 +332,7 @@ func GetSecretsPassword(optionalPassword string) ([]byte, bool, error) {
 // (e.g., after successful decryption of the secrets file).
 func StoreSecretsPassword(password []byte) error {
 	provider := getKeyringProvider()
-	logger.Info(fmt.Sprintf("writing password to %s", provider.Name()))
+	logger.Debugf("writing password to %s", provider.Name())
 	err := provider.Set(keyringService, keyringService, string(password))
 	if err != nil {
 		return fmt.Errorf("failed to store password in keyring: %w", err)

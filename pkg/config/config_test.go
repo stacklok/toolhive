@@ -348,7 +348,7 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 		assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
 	})
 
-	t.Run("Setup not completed returns error", func(t *testing.T) {
+	t.Run("Setup not completed returns error when env var not set", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -359,9 +359,28 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 			SetupCompleted: false,
 		}
 
-		// No expectation needed since the function returns early when SetupCompleted is false
+		// Env var check happens first, so mock it returning empty
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
 		_, err := s.GetProviderTypeWithEnv(mockEnv)
-		assert.Error(t, err, "Should return error when setup not completed")
-		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
+		assert.Error(t, err, "Should return error when setup not completed and env var not set")
+		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed and env var not set")
+	})
+
+	t.Run("Environment variable bypasses SetupCompleted check", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: false, // Not setup, but env var should bypass this
+		}
+
+		// Env var is set, so it should return successfully without checking SetupCompleted
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EnvironmentType))
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err, "Should not return error when env var is set, even if setup not completed")
+		assert.Equal(t, secrets.EnvironmentType, got, "Should return provider type from env var")
 	})
 }

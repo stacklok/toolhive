@@ -1315,10 +1315,6 @@ const docTemplate = `{
             "v1.UpdateRegistryResponse": {
                 "description": "Response containing update result",
                 "properties": {
-                    "message": {
-                        "description": "Status message",
-                        "type": "string"
-                    },
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
@@ -1451,6 +1447,9 @@ const docTemplate = `{
                     "group": {
                         "description": "Group name this workload belongs to",
                         "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/v1.headerForwardConfig"
                     },
                     "headers": {
                         "items": {
@@ -1658,6 +1657,26 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "v1.headerForwardConfig": {
+                "description": "HeaderForward configures headers to inject into requests to remote MCP servers.\nUse this to add custom headers like X-Tenant-ID or correlation IDs.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.\nKey: HTTP header name, Value: secret name in the secrets manager",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders contains literal header values to inject.\nWARNING: These values are stored and transmitted in plaintext.\nUse AddHeadersFromSecret for sensitive data like API keys.",
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -1945,6 +1964,9 @@ const docTemplate = `{
                     "group": {
                         "description": "Group name this workload belongs to",
                         "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/v1.headerForwardConfig"
                     },
                     "headers": {
                         "items": {
@@ -2804,6 +2826,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "Not Found"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway - Registry validation failed"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout - Registry unreachable"
                     }
                 },
                 "summary": "Update registry configuration",

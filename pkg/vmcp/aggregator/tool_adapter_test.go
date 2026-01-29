@@ -119,7 +119,10 @@ func TestProcessBackendTools(t *testing.T) {
 			wantNames: []string{"renamed_tool1"},
 		},
 		{
-			name:      "excludeAll excludes all tools from workload",
+			// NOTE: processBackendTools does NOT apply ExcludeAll - it's applied
+			// later in MergeCapabilities. This allows the routing table to contain
+			// all tools (for composite tools) while only filtering the advertised tools.
+			name:      "excludeAll is ignored by processBackendTools (applied in MergeCapabilities)",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
@@ -129,25 +132,28 @@ func TestProcessBackendTools(t *testing.T) {
 				Workload:   "github",
 				ExcludeAll: true,
 			},
-			wantCount: 0,
-			wantNames: []string{},
+			wantCount: 2, // All tools pass through - ExcludeAll is applied later
+			wantNames: []string{"create_pr", "merge_pr"},
 		},
 		{
-			name:      "excludeAll takes precedence over filter",
+			// ExcludeAll is ignored here; filter is still applied
+			name:      "excludeAll is ignored but filter still applies",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
+				{Name: "merge_pr", Description: "Merge PR", BackendID: "github"},
 			},
 			workloadConfig: &config.WorkloadToolConfig{
 				Workload:   "github",
 				ExcludeAll: true,
 				Filter:     []string{"create_pr"},
 			},
-			wantCount: 0,
-			wantNames: []string{},
+			wantCount: 1, // Filter is applied, ExcludeAll is not
+			wantNames: []string{"create_pr"},
 		},
 		{
-			name:      "excludeAll takes precedence over overrides",
+			// ExcludeAll is ignored here; overrides are still applied
+			name:      "excludeAll is ignored but overrides still apply",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
@@ -159,8 +165,8 @@ func TestProcessBackendTools(t *testing.T) {
 					"create_pr": {Name: "gh_create_pr"},
 				},
 			},
-			wantCount: 0,
-			wantNames: []string{},
+			wantCount: 1, // Override is applied, ExcludeAll is not
+			wantNames: []string{"gh_create_pr"},
 		},
 	}
 

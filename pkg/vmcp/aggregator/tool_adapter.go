@@ -29,11 +29,10 @@ func processBackendTools(
 		return tools // No configuration for this backend
 	}
 
-	// Check ExcludeAll first - takes precedence over Filter/Overrides
-	if workloadConfig.ExcludeAll {
-		logger.Debugf("ExcludeAll is true for backend %s, returning empty tools list", backendID)
-		return []vmcp.Tool{}
-	}
+	// NOTE: ExcludeAll is NOT applied here. ExcludeAll only affects which tools
+	// are advertised to the LLM, not which tools are available for routing.
+	// This allows composite tools to call backend tools that are excluded from
+	// direct LLM access. ExcludeAll is applied later in MergeCapabilities.
 
 	// If no filter or overrides configured, return tools as-is
 	if len(workloadConfig.Filter) == 0 && len(workloadConfig.Overrides) == 0 {

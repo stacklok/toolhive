@@ -1,0 +1,83 @@
+name: Helm Charts
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint and Test Helm Charts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.14.0
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run helm-docs
+        run: task helm-docs
+
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Error: helm-docs generated changes that are not committed"
+            git diff
+            exit 1
+          fi
+
+      - name: Run chart-testing (lint)
+        run: ct lint --config ct.yaml
+
+      - name: Create KIND cluster
+        uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0
+
+      - name: Build and load image into KIND
+        run: |
+          # Build to local Docker daemon, then load into KIND
+          KO_DOCKER_REPO=ko.local ko build ./cmd/thv-operator \
+            --base-import-paths \
+            --tags=ci-test \
+            --platform=linux/amd64
+
+          KO_DOCKER_REPO=ko.local ko build ./cmd/thv-proxyrunner \
+            --base-import-paths \
+            --tags=ci-test \
+            --platform=linux/amd64
+
+          KO_DOCKER_REPO=ko.local ko build ./cmd/vmcp \
+            --base-import-paths \
+            --tags=ci-test \
+            --platform=linux/amd64
+
+          # Load the image into the KIND cluster
+          kind load docker-image ko.local/thv-operator:ci-test --name chart-testing
+          kind load docker-image ko.local/thv-proxyrunner:ci-test --name chart-testing
+          kind load docker-image ko.local/vmcp:ci-test --name chart-testing
+
+      - name: Run chart-testing (install)
+        run: ct install --config ct.yaml

@@ -1,0 +1,4 @@
+operator:
+  image: ko.local/thv-operator:ci-test
+  toolhiveRunnerImage: ko.local/thv-proxyrunner:ci-test
+  vmcpImage: ko.local/vmcp:ci-test

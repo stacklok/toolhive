@@ -54,6 +54,10 @@ type AuthorizationServerConfig struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+	// This is advertised in /.well-known/openid-configuration and
+	// /.well-known/oauth-authorization-server discovery endpoints.
+	ScopesSupported []string
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -80,6 +84,8 @@ type AuthorizationServerParams struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+	ScopesSupported []string
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -202,6 +208,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		SigningKey:       &jwk,
 		SigningJWKS:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
 		AllowedAudiences: cfg.AllowedAudiences,
+		ScopesSupported:  cfg.ScopesSupported,
 	}, nil
 }
 

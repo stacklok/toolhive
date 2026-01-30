@@ -342,7 +342,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if telemetryProvider != nil {
 		tracerProvider = telemetryProvider.TracerProvider()
 	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools, tracerProvider)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes

@@ -265,6 +265,8 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200		{object}	UpdateRegistryResponse
 //		@Failure		400		{string}	string	"Bad Request"
 //		@Failure		404		{string}	string	"Not Found"
+//		@Failure		502		{string}	string	"Bad Gateway - Registry validation failed"
+//		@Failure		504		{string}	string	"Gateway Timeout - Registry unreachable"
 //		@Router			/api/v1beta/registry/{name} [put]
 func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
@@ -288,7 +290,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Process the registry update
-	responseType, message, err := rr.processRegistryUpdate(&req)
+	responseType, err := rr.processRegistryUpdate(&req)
 	if err != nil {
 		// Check if it's a connectivity error - return 504 Gateway Timeout
 		var connErr *connectivityError
@@ -311,8 +313,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	regpkg.ResetDefaultProvider()
 
 	response := UpdateRegistryResponse{
-		Message: message,
-		Type:    responseType,
+		Type: responseType,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -334,15 +335,15 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 }
 
 // processRegistryUpdate processes the registry update based on request type
-func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (string, string, error) {
+func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (string, error) {
 	// Handle registry reset (unset)
 	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
-		message, err := rr.configService.UnsetRegistry()
+		err := rr.configService.UnsetRegistry()
 		if err != nil {
 			logger.Errorf("Failed to unset registry: %v", err)
-			return "", "", fmt.Errorf("failed to reset registry configuration")
+			return "", fmt.Errorf("failed to reset registry configuration")
 		}
-		return "default", message, nil
+		return "default", nil
 	}
 
 	// Determine which registry type to set
@@ -359,24 +360,24 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 		input = *req.LocalPath
 		allowPrivateIP = false // Not applicable for local files
 	} else {
-		return "", "", fmt.Errorf("no valid registry configuration provided")
+		return "", fmt.Errorf("no valid registry configuration provided")
 	}
 
 	// Use the service to set the registry
-	registryType, message, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
+	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
 	if err != nil {
 		logger.Errorf("Failed to set registry: %v", err)
 		// Check if error is connectivity/timeout related
 		if isConnectivityError(err) {
-			return "", "", &connectivityError{
+			return "", &connectivityError{
 				URL: input,
 				Err: err,
 			}
 		}
-		return "", "", err
+		return "", err
 	}
 
-	return registryType, message, nil
+	return registryType, nil
 }
 
 //	 removeRegistry
@@ -614,8 +615,6 @@ type UpdateRegistryRequest struct {
 //
 //	@Description	Response containing update result
 type UpdateRegistryResponse struct {
-	// Status message
-	Message string `json:"message"`
 	// Registry type after update
 	Type string `json:"type"`
 }

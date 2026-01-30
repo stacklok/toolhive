@@ -19,21 +19,19 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		input              string
-		allowPrivateIP     bool
-		expectedType       string
-		expectError        bool
-		setupFunc          func(t *testing.T) string // Returns path to test file if needed
-		cleanupFunc        func(path string)
-		expectedMessagePat string // Pattern to match in message
+		name           string
+		input          string
+		allowPrivateIP bool
+		expectedType   string
+		expectError    bool
+		setupFunc      func(t *testing.T) string // Returns path to test file if needed
+		cleanupFunc    func(path string)
 	}{
 		{
-			name:               "set local registry file",
-			allowPrivateIP:     false,
-			expectedType:       config.RegistryTypeFile,
-			expectError:        false,
-			expectedMessagePat: "Successfully set local registry file",
+			name:           "set local registry file",
+			allowPrivateIP: false,
+			expectedType:   config.RegistryTypeFile,
+			expectError:    false,
 			setupFunc: func(t *testing.T) string {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
@@ -91,7 +89,7 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 			}
 
 			// Call the service
-			registryType, message, err := service.SetRegistryFromInput(input, tt.allowPrivateIP)
+			registryType, err := service.SetRegistryFromInput(input, tt.allowPrivateIP)
 
 			// Check results
 			if tt.expectError {
@@ -99,9 +97,6 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 			} else {
 				assert.NoError(t, err, "Should not return error")
 				assert.Equal(t, tt.expectedType, registryType, "Registry type should match")
-				if tt.expectedMessagePat != "" {
-					assert.Contains(t, message, tt.expectedMessagePat, "Message should contain expected pattern")
-				}
 			}
 		})
 	}
@@ -131,7 +126,7 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 	service := registry.NewConfiguratorWithProvider(provider)
 
 	// First, set a registry
-	_, _, err := service.SetRegistryFromInput(tmpFile, false)
+	_, err := service.SetRegistryFromInput(tmpFile, false)
 	require.NoError(t, err, "Should be able to set registry")
 
 	// Verify it's set
@@ -140,10 +135,8 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 	assert.NotEmpty(t, source, "Source should not be empty")
 
 	// Now unset it
-	message, err := service.UnsetRegistry()
+	err = service.UnsetRegistry()
 	assert.NoError(t, err, "Should be able to unset registry")
-	assert.Contains(t, message, "Successfully removed", "Message should indicate removal")
-	assert.Contains(t, message, "built-in registry", "Message should mention built-in registry")
 
 	// Verify it's unset
 	registryType, source = service.GetRegistryInfo()
@@ -181,7 +174,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 					}
 				}`)
 				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-				_, _, err := service.SetRegistryFromInput(tmpFile, false)
+				_, err := service.SetRegistryFromInput(tmpFile, false)
 				require.NoError(t, err)
 			},
 			expectedType: config.RegistryTypeFile,

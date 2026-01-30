@@ -1,0 +1,77 @@
+# Create Release PR workflow using releaseo
+#
+# This workflow automates release PR creation by:
+# 1. Bumping the version (major/minor/patch)
+# 2. Updating VERSION, Chart.yaml, and values.yaml
+# 3. Creating a PR via GitHub API
+#
+# Usage: Trigger manually from Actions tab or via `gh workflow run create-release-pr.yml`
+
+name: Create Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Create Release PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Setup helm-docs
+        run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+
+      - name: Create Release PR
+        id: release
+        uses: stacklok/releaseo@add86e3cc417a4442ecef272dc79b46c2eb63246 # v0.0.2
+        with:
+          releaseo_version: v0.0.1
+          bump_type: ${{ inputs.bump_type }}
+          token: ${{ secrets.RELEASE_TOKEN }}
+          version_files: |
+            - file: deploy/charts/operator-crds/Chart.yaml
+              path: version
+            - file: deploy/charts/operator-crds/Chart.yaml
+              path: appVersion
+            - file: deploy/charts/operator/Chart.yaml
+              path: version
+            - file: deploy/charts/operator/Chart.yaml
+              path: appVersion
+              prefix: v
+            - file: deploy/charts/operator/values.yaml
+              path: operator.image
+              prefix: v
+            - file: deploy/charts/operator/values.yaml
+              path: operator.toolhiveRunnerImage
+              prefix: v
+            - file: deploy/charts/operator/values.yaml
+              path: operator.vmcpImage
+              prefix: v
+          helm_docs_args: --chart-search-root=deploy/charts
+
+      - name: Summary
+        run: |
+          echo "## Release PR Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR**: #${{ steps.release.outputs.pr_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL**: ${{ steps.release.outputs.pr_url }}" >> $GITHUB_STEP_SUMMARY

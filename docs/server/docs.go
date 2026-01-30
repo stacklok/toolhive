@@ -1315,10 +1315,6 @@ const docTemplate = `{
             "v1.UpdateRegistryResponse": {
                 "description": "Response containing update result",
                 "properties": {
-                    "message": {
-                        "description": "Status message",
-                        "type": "string"
-                    },
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
@@ -2830,6 +2826,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "Not Found"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway - Registry validation failed"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout - Registry unreachable"
                     }
                 },
                 "summary": "Update registry configuration",

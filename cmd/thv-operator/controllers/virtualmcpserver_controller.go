@@ -16,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -510,18 +511,26 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		return nil
 	}
 
-	// Always ensure RBAC resources exist for status reporting
-	// Status reporting (via K8sReporter) runs in ALL modes (discovered and inline),
-	// so the vMCP runtime needs permissions to update VirtualMCPServer status
-	// regardless of the outgoing auth source mode.
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
-	// Ensure Role with permissions to discover backends and update status
+	// Select RBAC rules based on outgoing auth mode
+	// - inline mode: Minimal permissions (read own spec + update status)
+	// - discovered mode: Full permissions (read secrets, configmaps, MCP resources + update status)
+	rules := func() []rbacv1.PolicyRule {
+		if outgoingAuthSource(vmcp) == OutgoingAuthSourceInline {
+			// inline mode uses minimal permissions (no secret/configmap access)
+			return vmcpInlineRBACRules
+		}
+		// discovered mode (default)
+		return vmcpDiscoveredRBACRules
+	}()
+
+	// Ensure Role with appropriate permissions based on mode
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:      serviceAccountName,
 		Namespace: vmcp.Namespace,
-		Rules:     vmcpRBACRules,
+		Rules:     rules,
 		Owner:     vmcp,
 	})
 	return err
@@ -1536,11 +1545,6 @@ func convertBackendsToStaticBackends(
 	}
 	return static
 }
-
-// discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
-// a list of DiscoveredBackend objects with their current status.
-//
-//nolint:gocyclo
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -55,13 +55,12 @@ func (mr *MockConfiguratorMockRecorder) GetRegistryInfo() *gomock.Call {
 }
 
 // SetRegistryFromInput mocks base method.
-func (m *MockConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, string, error) {
+func (m *MockConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SetRegistryFromInput", input, allowPrivateIP)
 	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(string)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // SetRegistryFromInput indicates an expected call of SetRegistryFromInput.
@@ -71,12 +70,11 @@ func (mr *MockConfiguratorMockRecorder) SetRegistryFromInput(input, allowPrivate
 }
 
 // UnsetRegistry mocks base method.
-func (m *MockConfigurator) UnsetRegistry() (string, error) {
+func (m *MockConfigurator) UnsetRegistry() error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UnsetRegistry")
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
 // UnsetRegistry indicates an expected call of UnsetRegistry.

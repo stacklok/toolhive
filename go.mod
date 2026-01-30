@@ -27,7 +27,7 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/modelcontextprotocol/registry v1.4.0
 	github.com/olekukonko/tablewriter v1.1.3
-	github.com/onsi/ginkgo/v2 v2.28.0
+	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
 	github.com/ory/fosite v0.49.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c

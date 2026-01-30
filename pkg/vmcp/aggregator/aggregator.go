@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aggregator provides capability aggregation for Virtual MCP Server.
 //
 // This package discovers backend MCP servers, queries their capabilities,
@@ -18,6 +21,7 @@ import (
 type BackendDiscoverer interface {
 	// Discover finds all backend workloads in the specified group.
 	// Returns only healthy/running backends.
+	// Results are always sorted alphabetically by backend name to ensure deterministic ordering.
 	// The groupRef format is platform-specific (group name for CLI, MCPGroup name for K8s).
 	Discover(ctx context.Context, groupRef string) ([]vmcp.Backend, error)
 }

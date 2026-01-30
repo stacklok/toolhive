@@ -4,8 +4,12 @@ metadata:
   name: test-vmcp-oidc
   namespace: toolhive-system
 spec:
-  groupRef:
-    name: test-group-controller
+  config:
+    groupRef: test-group-controller
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
   incomingAuth:
     type: oidc
     oidcConfig:
@@ -21,7 +25,3 @@ spec:
           key: clientSecret
   outgoingAuth:
     source: discovered
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"

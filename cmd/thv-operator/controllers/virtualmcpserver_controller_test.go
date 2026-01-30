@@ -36,6 +36,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -65,9 +66,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -113,9 +112,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "missing-group",
-					},
+					Config: vmcpconfig.Config{Group: "missing-group"},
 				},
 			},
 			expectError:    true,
@@ -130,9 +127,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "pending-group",
-					},
+					Config: vmcpconfig.Config{Group: "pending-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -225,9 +220,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -295,6 +288,349 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), rb.Subjects[0].Name)
 }
 
+func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	saName := vmcpServiceAccountName(vmcp.Name)
+
+	// Pre-create RBAC resources with outdated rules
+	existingSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+	}
+	existingRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			},
+		},
+	}
+	existingRB := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: vmcp.Namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: vmcp.Namespace,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, existingSA, existingRole, existingRB).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should update the Role with correct rules
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify Role was updated with correct rules
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules, "Role should be updated with correct rules")
+}
+
+func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idempotent-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources multiple times
+	for i := 0; i < 3; i++ {
+		err := r.ensureRBACResources(context.Background(), vmcp)
+		require.NoError(t, err, "iteration %d should succeed", i)
+	}
+
+	saName := vmcpServiceAccountName(vmcp.Name)
+
+	// Verify resources still exist with correct configuration
+	sa := &corev1.ServiceAccount{}
+	err := fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.NoError(t, err)
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules)
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.NoError(t, err)
+}
+
+// TestVirtualMCPServerEnsureRBACResources_InlineMode tests that inline mode uses
+// minimal RBAC permissions (no secret/configmap access) for security
+func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "inline-mode-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "inline",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources in inline mode
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify Role was created with minimal permissions (inline mode)
+	saName := vmcpServiceAccountName(vmcp.Name)
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err, "Role should be created in inline mode")
+	assert.Equal(t, vmcpInlineRBACRules, role.Rules, "Role should use minimal rules in inline mode")
+
+	// Verify inline mode doesn't have secret/configmap access
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			assert.NotContains(t, resource, "secrets", "Inline mode should not have secret access")
+			assert.NotContains(t, resource, "configmaps", "Inline mode should not have configmap access")
+		}
+	}
+
+	// Verify inline mode still has status update permissions
+	hasStatusPermission := false
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			if resource == "virtualmcpservers/status" {
+				hasStatusPermission = true
+				assert.Contains(t, rule.Verbs, "update", "Should have update permission for status")
+				assert.Contains(t, rule.Verbs, "patch", "Should have patch permission for status")
+			}
+		}
+	}
+	assert.True(t, hasStatusPermission, "Inline mode should have status update permissions")
+}
+
+// TestVirtualMCPServerEnsureRBACResources_DiscoveredMode tests that discovered mode uses
+// full RBAC permissions (including secret/configmap access) for backend discovery
+func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "discovered-mode-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources in discovered mode
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify Role was created with full permissions (discovered mode)
+	saName := vmcpServiceAccountName(vmcp.Name)
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      saName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.NoError(t, err, "Role should be created in discovered mode")
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules, "Role should use full rules in discovered mode")
+
+	// Verify discovered mode has secret/configmap access
+	hasSecretAccess := false
+	hasConfigMapAccess := false
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			if resource == "secrets" {
+				hasSecretAccess = true
+				assert.Contains(t, rule.Verbs, "get", "Should have get permission for secrets")
+			}
+			if resource == "configmaps" {
+				hasConfigMapAccess = true
+				assert.Contains(t, rule.Verbs, "get", "Should have get permission for configmaps")
+			}
+		}
+	}
+	assert.True(t, hasSecretAccess, "Discovered mode should have secret access")
+	assert.True(t, hasConfigMapAccess, "Discovered mode should have configmap access")
+}
+
+// TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources
+// are NOT created when a custom ServiceAccount is provided
+func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	customSA := "custom-vmcp-sa"
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-sa-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config:         vmcpconfig.Config{Group: "test-group"},
+			ServiceAccount: &customSA,
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should return nil without creating resources
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := vmcpServiceAccountName(vmcp.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when custom ServiceAccount is provided")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, role)
+	assert.Error(t, err, "Role should not be created when custom ServiceAccount is provided")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: vmcp.Namespace,
+	}, rb)
+	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
+}
+
 // TestVirtualMCPServerEnsureDeployment tests Deployment creation
 func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	t.Parallel()
@@ -305,9 +641,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -390,9 +724,7 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -471,9 +803,7 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config:      vmcpconfig.Config{Group: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
@@ -504,9 +834,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -791,9 +1119,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -813,9 +1139,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -846,9 +1170,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -889,9 +1211,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
+					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
@@ -1026,9 +1346,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1051,9 +1369,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1073,9 +1389,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1159,9 +1473,7 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1203,9 +1515,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: mcpv1alpha1.GroupRef{
-							Name: testGroupName,
-						},
+						Config: vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1278,9 +1588,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1456,11 +1764,11 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: testGroupName,
-					},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
+					Config: vmcpconfig.Config{
+						Group: testGroupName,
+						Operational: &vmcpconfig.OperationalConfig{
+							LogLevel: "debug",
+						},
 					},
 				},
 			},
@@ -1763,9 +2071,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1937,9 +2243,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2072,9 +2376,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "nonexistent-group",
-			},
+			Config: vmcpconfig.Config{Group: "nonexistent-group"},
 		},
 	}
 
@@ -2130,9 +2432,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2226,9 +2526,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2264,9 +2562,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2323,9 +2619,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2408,9 +2702,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2496,9 +2788,7 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2540,9 +2830,7 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2604,9 +2892,7 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: testGroupName,
-			},
+			Config: vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -362,6 +365,7 @@ extensions:
     type: mcp
     uri: existing-url
     timeout: 60
+    description: ""
 `
 
 		if err := os.WriteFile(configPath, []byte(initialConfig), 0600); err != nil {
@@ -570,11 +574,12 @@ func setupExistingTestYAMLConfig(t *testing.T, testName string) (string, string)
 	testConfig := map[string]interface{}{
 		"extensions": map[string]interface{}{
 			"existingServer": map[string]interface{}{
-				"name":    "existingServer",
-				"enabled": true,
-				"type":    "existing-type",
-				"timeout": 60,
-				"uri":     fmt.Sprintf("existing-url-%s", testName),
+				"name":        "existingServer",
+				"enabled":     true,
+				"type":        "existing-type",
+				"timeout":     60,
+				"description": "",
+				"uri":         fmt.Sprintf("existing-url-%s", testName),
 			},
 		},
 	}

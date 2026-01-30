@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package e2e provides end-to-end testing utilities for ToolHive.
 package e2e
 
@@ -13,6 +16,11 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
 )
+
+// GenerateUniqueServerName creates a unique server name for tests
+func GenerateUniqueServerName(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
+}
 
 // TestConfig holds configuration for e2e tests
 type TestConfig struct {
@@ -318,7 +326,6 @@ func RemoveGroup(config *TestConfig, groupName string) error {
 
 // CreateAndTrackGroup creates a group and tracks it for cleanup
 func CreateAndTrackGroup(config *TestConfig, groupName string, createdGroups *[]string) {
-	createOutput, _ := NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
-	Expect(createOutput).To(ContainSubstring("created successfully"))
+	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
 	*createdGroups = append(*createdGroups, groupName)
 }

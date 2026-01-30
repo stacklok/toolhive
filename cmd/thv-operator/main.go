@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main is the entry point for the ToolHive Kubernetes Operator.
 // It sets up and runs the controller manager for the MCPServer custom resource.
 package main
@@ -262,6 +265,17 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
+	}
+
+	// Set up EmbeddingServer controller
+	if err := (&controllers.EmbeddingServerReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("embeddingserver-controller"),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		ImageValidation:  imageValidation,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
 	}
 
 	return nil

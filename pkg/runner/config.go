@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runner provides functionality for running MCP servers
 package runner
 
@@ -85,6 +88,7 @@ type RunConfig struct {
 	// EnvVars are the parsed environment variables as key-value pairs
 	EnvVars map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// EnvFileDir is the directory path to load environment files from
 	EnvFileDir string `json:"env_file_dir,omitempty" yaml:"env_file_dir,omitempty"`
 
@@ -98,24 +102,30 @@ type RunConfig struct {
 	// ContainerLabels are the labels to apply to the container
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// OIDCConfig contains OIDC configuration
 	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// TokenExchangeConfig contains token exchange configuration for external authentication
 	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuthzConfigPath is the path to the authorization configuration file
 	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuditConfig contains the audit logging configuration
 	AuditConfig *audit.Config `json:"audit_config,omitempty" yaml:"audit_config,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// AuditConfigPath is the path to the audit configuration file
 	AuditConfigPath string `json:"audit_config_path,omitempty" yaml:"audit_config_path,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// TelemetryConfig contains the OpenTelemetry configuration
 	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
 
@@ -143,18 +153,22 @@ type RunConfig struct {
 	// Note: "sse" is deprecated; use "streamable-http" instead.
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
 	ThvCABundle string `json:"thv_ca_bundle,omitempty" yaml:"thv_ca_bundle,omitempty"`
 
+	// DEPRECATED: No longer appears to be used.
 	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
 	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
 
 	// Group is the name of the group this workload belongs to, if any
 	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
 
+	// DEPRECATED: Middleware configuration.
 	// ToolsOverride is a map from an actual tool to its overridden name and/or description
 	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
 
@@ -168,6 +182,13 @@ type RunConfig struct {
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port
 	existingPort int
+
+	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
+	// This is used to handle path-based ingress routing scenarios.
+	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
+
+	// HeaderForward contains configuration for injecting headers into requests to remote servers.
+	HeaderForward *HeaderForwardConfig `json:"header_forward,omitempty" yaml:"header_forward,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -232,6 +253,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 		return nil // No OAuth config to migrate
 	}
 
+	if config.RemoteAuthConfig.ClientSecret == "" {
+		return nil
+	}
+
 	// Check if the client secret is already in CLI format
 	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
 		return nil // Already in CLI format, no migration needed
@@ -265,6 +290,10 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 func migrateBearerToken(config *RunConfig) error {
 	if config.RemoteAuthConfig == nil {
 		return nil // No remote auth config to migrate
+	}
+
+	if config.RemoteAuthConfig.BearerToken == "" {
+		return nil
 	}
 
 	// Check if the bearer token is already in CLI format
@@ -373,7 +402,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Infof("Using target port: %d", selectedTargetPort)
+		logger.Debugf("Using target port: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 
@@ -465,7 +494,36 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		// If it's not in CLI format (plain text), leave it as is
 	}
 
+	// Process HeaderForward.AddHeadersFromSecret
+	if err := c.resolveHeaderForwardSecrets(ctx, secretManager); err != nil {
+		return c, err
+	}
+
 	return c, nil
+}
+
+// resolveHeaderForwardSecrets resolves secret references in HeaderForward.AddHeadersFromSecret
+// and builds the merged resolvedHeaders map for middleware consumption.
+// Only the secret references are persisted to disk; actual values exist only in memory
+// via the non-serialized resolvedHeaders field.
+func (c *RunConfig) resolveHeaderForwardSecrets(ctx context.Context, secretManager secrets.Provider) error {
+	if c.HeaderForward == nil || len(c.HeaderForward.AddHeadersFromSecret) == 0 {
+		return nil
+	}
+	// Build merged map: start with plaintext headers, then overlay resolved secrets.
+	merged := make(map[string]string, len(c.HeaderForward.AddPlaintextHeaders)+len(c.HeaderForward.AddHeadersFromSecret))
+	for k, v := range c.HeaderForward.AddPlaintextHeaders {
+		merged[k] = v
+	}
+	for headerName, secretName := range c.HeaderForward.AddHeadersFromSecret {
+		actualValue, err := secretManager.GetSecret(ctx, secretName)
+		if err != nil {
+			return fmt.Errorf("failed to resolve header secret %q: %w", secretName, err)
+		}
+		merged[headerName] = actualValue
+	}
+	c.HeaderForward.resolvedHeaders = merged
+	return nil
 }
 
 // mergeEnvVars is a helper method to merge environment variables into RunConfig
@@ -540,11 +598,6 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	}
 
 	transportLabel := c.Transport.String()
-	if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeStreamableHTTP {
-		transportLabel = types.TransportTypeStreamableHTTP.String()
-	} else if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeSSE {
-		transportLabel = types.TransportTypeSSE.String()
-	}
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
@@ -573,6 +626,48 @@ type ToolOverride struct {
 	Name string `json:"name,omitempty"`
 	// Description is the redefined description of the tool
 	Description string `json:"description,omitempty"`
+}
+
+// HeaderForwardConfig defines configuration for injecting headers into requests to remote servers.
+// Headers are added server-side, so clients don't need to configure them individually.
+type HeaderForwardConfig struct {
+	// AddPlaintextHeaders is a map of header names to literal values to inject into requests.
+	// WARNING: These values are stored in plaintext in the configuration.
+	// For sensitive values (API keys, tokens), use AddHeadersFromSecret instead.
+	AddPlaintextHeaders map[string]string `json:"add_plaintext_headers,omitempty" yaml:"add_plaintext_headers,omitempty"`
+
+	// AddHeadersFromSecret is a map of header names to secret names.
+	// The key is the header name, the value is the secret name in ToolHive's secrets manager.
+	// Resolved at runtime via WithSecrets() into resolvedHeaders.
+	// The actual secret value is only held in memory, never persisted.
+	AddHeadersFromSecret map[string]string `json:"add_headers_from_secret,omitempty" yaml:"add_headers_from_secret,omitempty"`
+
+	// resolvedHeaders holds the merged set of headers (plaintext + resolved secrets)
+	// for middleware consumption. Never serialized to disk.
+	resolvedHeaders map[string]string
+}
+
+// ResolvedHeaders returns the merged set of headers for middleware use.
+// After WithSecrets() has run, this includes both plaintext and secret-backed headers.
+// If secrets have not been resolved yet, returns only AddPlaintextHeaders.
+// Safe to call on a nil receiver.
+func (h *HeaderForwardConfig) ResolvedHeaders() map[string]string {
+	if h == nil {
+		return nil
+	}
+	if h.resolvedHeaders != nil {
+		return h.resolvedHeaders
+	}
+	return h.AddPlaintextHeaders
+}
+
+// HasHeaders returns true if any headers are configured (plaintext or secret-backed).
+// Safe to call on a nil receiver.
+func (h *HeaderForwardConfig) HasHeaders() bool {
+	if h == nil {
+		return false
+	}
+	return len(h.AddPlaintextHeaders) > 0 || len(h.AddHeadersFromSecret) > 0
 }
 
 // DefaultCallbackPort is the default port for the OAuth callback server

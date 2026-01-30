@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -316,6 +319,66 @@ func TestEnsureRBACResources_Idempotency(t *testing.T) {
 	}
 
 	tc.assertAllRBACResourcesExist(t)
+}
+
+func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+	customSA := "custom-mcpserver-sa"
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server-custom-sa",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:          "test-image:latest",
+			Transport:      "stdio",
+			ProxyPort:      8080,
+			ServiceAccount: &customSA,
+		},
+	}
+
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(mcpServer).Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+
+	// Call ensureRBACResources
+	err := reconciler.ensureRBACResources(context.TODO(), mcpServer)
+	require.NoError(t, err)
+
+	// For MCPServer, proxy runner RBAC is ALWAYS created
+	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", mcpServer.Name)
+
+	// Verify proxy runner RBAC resources WERE created
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+	}, sa)
+	assert.NoError(t, err, "Proxy runner ServiceAccount should be created")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+	}, role)
+	assert.NoError(t, err, "Proxy runner Role should be created")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+	}, rb)
+	assert.NoError(t, err, "Proxy runner RoleBinding should be created")
+
+	// Verify MCP server ServiceAccount was NOT created (because custom SA is provided)
+	mcpServerSAName := mcpServerServiceAccountName(mcpServer.Name)
+	mcpServerSA := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      mcpServerSAName,
+		Namespace: mcpServer.Namespace,
+	}, mcpServerSA)
+	assert.Error(t, err, "MCP server ServiceAccount should not be created when custom ServiceAccount is provided")
 }
 
 func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {

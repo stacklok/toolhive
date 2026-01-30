@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package registry provides MCP server registry management functionality.
 // It supports multiple registry sources including embedded data, local files,
 // remote URLs, and API endpoints, with optional caching and conversion capabilities.

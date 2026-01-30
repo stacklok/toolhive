@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package client provides utilities for managing client configurations
 // and interacting with MCP servers.
 package client
@@ -110,6 +113,8 @@ type mcpClientConfig struct {
 var (
 	// ErrConfigFileNotFound is returned when a client configuration file is not found
 	ErrConfigFileNotFound = fmt.Errorf("client config file not found")
+	// ErrUnsupportedClientType is returned when an unsupported client type is provided
+	ErrUnsupportedClientType = fmt.Errorf("unsupported client type")
 )
 
 var supportedClientIntegrations = []mcpClientConfig{
@@ -395,8 +400,9 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// YAML configuration
 		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
-			"enabled": true,
-			"timeout": 60,
+			"enabled":     true,
+			"timeout":     60,
+			"description": "",
 		},
 	},
 	{
@@ -559,13 +565,13 @@ func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]Con
 		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
-				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
+				logger.Debugf("Client config file not found for %s, creating it...", clientStatus.ClientType)
 				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
 					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
 				}
-				logger.Infof("Successfully created client config file for %s", clientStatus.ClientType)
+				logger.Debugf("Successfully created client config file for %s", clientStatus.ClientType)
 			} else {
 				logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
 				continue
@@ -598,7 +604,7 @@ func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, 
 	}
 
 	if clientCfg == nil {
-		return nil, fmt.Errorf("unsupported client type: %s", clientType)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
 
 	// Build the path to the configuration file
@@ -610,7 +616,13 @@ func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, 
 	}
 
 	// Create the file if it does not exist
-	logger.Infof("Creating new client config file at %s", path)
+	logger.Debugf("Creating new client config file at %s", path)
+
+	// Create parent directories if they don't exist
+	parentDir := filepath.Dir(path)
+	if err := os.MkdirAll(parentDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create parent directories for %s: %w", path, err)
+	}
 
 	var initialContent []byte
 	if clientCfg.Extension == YAML {
@@ -678,7 +690,7 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 	}
 
 	if clientCfg == nil {
-		return nil, fmt.Errorf("unsupported client type: %s", clientType)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
 
 	// Build the path to the configuration file

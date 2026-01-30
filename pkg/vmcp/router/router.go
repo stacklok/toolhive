@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package router provides request routing for Virtual MCP Server.
 //
 // This package routes MCP protocol requests (tools, resources, prompts) to

@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -18,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -231,6 +236,14 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithEndpointPrefix sets the path prefix for SSE endpoint URLs
+func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {
@@ -344,6 +357,8 @@ func WithOIDCConfig(
 				IntrospectionURL:  oidcIntrospectionURL,
 				ClientID:          oidcClientID,
 				ClientSecret:      oidcClientSecret,
+				CACertPath:        thvCABundle,
+				AuthTokenFile:     jwksAuthTokenFile,
 				AllowPrivateIP:    jwksAllowPrivateIP,
 				InsecureAllowHTTP: insecureAllowHTTP,
 				Scopes:            scopes,
@@ -468,10 +483,17 @@ func WithMiddlewareFromFlags(
 		// Add core middlewares (always present)
 		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
 
+		// NOTE: Header forward middleware is NOT added here because secret-backed
+		// headers are not yet resolved at builder time. It is added in Runner.Run()
+		// after WithSecrets() resolves all secret references.
+
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
 		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
+
+		// Add recovery middleware (always present, added last to be outermost wrapper)
+		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
@@ -650,6 +672,19 @@ func addAuditMiddleware(
 	return middlewareConfigs
 }
 
+// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
+// Middleware is applied in reverse order, so adding last means it executes first
+// and catches panics from all other middleware and handlers.
+func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		logger.Warnf("failed to create recovery middleware: %v", err)
+		return middlewareConfigs
+	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
+	return middlewareConfigs
+}
+
 // NewOperatorRunConfigBuilder creates a new RunConfigBuilder configured for operator use
 func NewOperatorRunConfigBuilder(
 	ctx context.Context,
@@ -767,18 +802,27 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		return err
 	}
 
-	// Use registry target port if not overridden and if the mcpTransport is HTTP-based.
+	// Use registry ports if not overridden and if the mcpTransport is HTTP-based.
+	proxyPort := b.port
 	targetPort := b.targetPort
 	if imageMetadata != nil {
 		isHTTPServer := mcpTransport == types.TransportTypeSSE.String() ||
 			mcpTransport == types.TransportTypeStreamableHTTP.String()
-		if targetPort == 0 && isHTTPServer && imageMetadata.TargetPort > 0 {
-			logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
-			targetPort = imageMetadata.TargetPort
+		if isHTTPServer {
+			// Use registry proxy port if not set by CLI
+			if proxyPort == 0 && imageMetadata.ProxyPort > 0 {
+				logger.Debugf("Using registry proxy port: %d", imageMetadata.ProxyPort)
+				proxyPort = imageMetadata.ProxyPort
+			}
+			// Use registry target port if not set by CLI
+			if targetPort == 0 && imageMetadata.TargetPort > 0 {
+				logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
+				targetPort = imageMetadata.TargetPort
+			}
 		}
 	}
 	// Configure ports and target host
-	if _, err = c.WithPorts(b.port, targetPort); err != nil {
+	if _, err = c.WithPorts(proxyPort, targetPort); err != nil {
 		return err
 	}
 
@@ -1029,10 +1073,44 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 	}
 }
 
-// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
-func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
+// WithHeaderForward adds plaintext header forward entries for remote MCP servers.
+// The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForward(headers map[string]string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
-		b.config.EnvFileDir = dirPath
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddPlaintextHeaders == nil {
+			hf.AddPlaintextHeaders = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddPlaintextHeaders, headers)
 		return nil
 	}
+}
+
+// WithHeaderForwardSecrets adds secret-backed header forward entries for remote MCP servers.
+// The headers parameter maps header names to secret names in the secrets manager.
+// Secret values are resolved at runtime via WithSecrets() and never persisted to disk.
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForwardSecrets(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddHeadersFromSecret == nil {
+			hf.AddHeadersFromSecret = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddHeadersFromSecret, headers)
+		return nil
+	}
+}
+
+func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
+	if b.config.HeaderForward == nil {
+		b.config.HeaderForward = &HeaderForwardConfig{}
+	}
+	return b.config.HeaderForward
 }

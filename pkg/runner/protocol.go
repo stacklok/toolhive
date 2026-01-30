@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
@@ -389,7 +392,7 @@ func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool)
 	if isLocalPath {
 		// Check if a Dockerfile already exists
 		if _, err := os.Stat(dockerfilePath); err == nil {
-			logger.Infof("Dockerfile already exists at %s, using existing Dockerfile", dockerfilePath)
+			logger.Debugf("Dockerfile already exists at %s, using existing Dockerfile", dockerfilePath)
 			return nil // Use the existing Dockerfile
 		}
 	}
@@ -557,12 +560,10 @@ func buildImageFromTemplateWithName(
 	logger.Debugf("Building Docker image for %s package: %s", transportType, packageName)
 	logger.Debugf("Using Dockerfile:\n%s", dockerfileContent)
 
-	// Build the Docker image
-	logger.Infof("Building Docker image for %s package: %s", transportType, packageName)
 	if err := imageManager.BuildImage(ctx, buildCtx.Dir, finalImageName); err != nil {
 		return "", fmt.Errorf("failed to build Docker image: %w", err)
 	}
-	logger.Infof("Successfully built Docker image: %s", finalImageName)
+	logger.Debugf("Successfully built Docker image: %s", finalImageName)
 
 	return finalImageName, nil
 }

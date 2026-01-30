@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -96,14 +99,14 @@ func init() {
 		&showAuthFileContent,
 		"show-content",
 		false,
-		"Show the actual file content (contains credentials)",
+		"Show the actual file content (contains credentials) (default false)",
 	)
 
 	setBuildAuthFileCmd.Flags().BoolVar(
 		&authFileFromStdin,
 		"stdin",
 		false,
-		"Read file content from stdin instead of command line argument",
+		"Read file content from stdin instead of command line argument (default false)",
 	)
 }
 
@@ -152,7 +155,6 @@ func setBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to mark build auth file as configured: %w", err)
 	}
 
-	fmt.Printf("Successfully set build auth file: %s (stored securely in secrets)\n", name)
 	return nil
 }
 
@@ -270,7 +272,6 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to remove build auth files: %w", err)
 		}
 
-		fmt.Printf("Successfully removed %d build auth file(s).\n", len(configuredFiles))
 		return nil
 	}
 
@@ -295,6 +296,5 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to remove build auth file: %w", err)
 	}
 
-	fmt.Printf("Successfully removed build auth file: %s\n", name)
 	return nil
 }

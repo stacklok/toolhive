@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -129,18 +132,6 @@ func GetClientStatus(ctx context.Context) ([]MCPClientStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return manager.GetClientStatus(ctx)
-}
-
-// GetClientStatusWithDependencies returns the status of all supported MCP clients using provided dependencies
-func GetClientStatusWithDependencies(
-	ctx context.Context,
-	configProvider config.Provider,
-	homeDir string,
-	groupManager groups.Manager,
-	clientIntegrations []mcpClientConfig,
-) ([]MCPClientStatus, error) {
-	manager := NewTestClientManager(homeDir, groupManager, clientIntegrations, configProvider)
 	return manager.GetClientStatus(ctx)
 }
 

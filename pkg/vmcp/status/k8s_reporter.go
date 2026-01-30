@@ -1,0 +1,210 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+// Package status provides abstractions for vMCP runtime status reporting.
+package status
+
+import (
+	"context"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/logger"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+// K8sReporter implements Reporter for Kubernetes environments.
+// It updates the VirtualMCPServer/status subresource with runtime status information.
+type K8sReporter struct {
+	client    client.Client
+	name      string
+	namespace string
+}
+
+// NewK8sReporter creates a new K8sReporter instance.
+//
+// Parameters:
+//   - restConfig: Kubernetes REST config for creating the client
+//   - name: Name of the VirtualMCPServer resource
+//   - namespace: Namespace of the VirtualMCPServer resource
+//
+// Returns a K8sReporter and any error encountered during client creation.
+func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReporter, error) {
+	if restConfig == nil {
+		return nil, fmt.Errorf("restConfig cannot be nil")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("name cannot be empty")
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace cannot be empty")
+	}
+
+	// Create scheme and register Kubernetes core types and custom CRD types
+	runtimeScheme := runtime.NewScheme()
+
+	// Register standard Kubernetes types (Pods, Services, etc.)
+	if err := clientgoscheme.AddToScheme(runtimeScheme); err != nil {
+		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
+	}
+
+	// Register VirtualMCPServer CRD types
+	if err := mcpv1alpha1.AddToScheme(runtimeScheme); err != nil {
+		return nil, fmt.Errorf("failed to add VirtualMCPServer types to scheme: %w", err)
+	}
+
+	// Create Kubernetes client
+	k8sClient, err := client.New(restConfig, client.Options{
+		Scheme: runtimeScheme,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	return &K8sReporter{
+		client:    k8sClient,
+		name:      name,
+		namespace: namespace,
+	}, nil
+}
+
+// ReportStatus sends a status update to the VirtualMCPServer/status subresource.
+// This method uses optimistic concurrency control with automatic retries on conflicts.
+func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status) error {
+	if shouldSkipStatus(status) {
+		return nil
+	}
+
+	namespacedName := types.NamespacedName{
+		Name:      r.name,
+		Namespace: r.namespace,
+	}
+
+	// Use retry logic to handle concurrent updates gracefully.
+	// If the resource is modified between Get() and Update(), Kubernetes will reject
+	// the update with a conflict error, and retry.RetryOnConflict will automatically retry.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get the latest version of the VirtualMCPServer resource
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		if err := r.client.Get(ctx, namespacedName, vmcpServer); err != nil {
+			return fmt.Errorf("failed to get VirtualMCPServer: %w", err)
+		}
+
+		// Convert vmcp.Status to VirtualMCPServerStatus
+		r.updateStatus(vmcpServer, status)
+
+		// Update the status subresource (may return conflict error if resource was modified)
+		return r.client.Status().Update(ctx, vmcpServer)
+	})
+
+	if err != nil {
+		logger.Errorf("Failed to update VirtualMCPServer status for %s/%s after retries: %v",
+			r.namespace, r.name, err)
+		return fmt.Errorf("failed to update status: %w", err)
+	}
+
+	logger.Debugw("updated VirtualMCPServer status",
+		"namespace", r.namespace,
+		"name", r.name,
+		"phase", status.Phase)
+	return nil
+}
+
+// Start initializes the reporter.
+// Returns a shutdown function for cleanup (no-op for K8sReporter since it's stateless).
+func (*K8sReporter) Start(_ context.Context) (func(context.Context) error, error) {
+	logReporterStart("K8s", "updates VirtualMCPServer/status")
+	return noOpShutdown("K8s"), nil
+}
+
+// updateStatus converts vmcp.Status to VirtualMCPServerStatus and updates the resource.
+// Note: This method does NOT update the URL field, as that is infrastructure-level
+// status owned by the operator (the external service URL). The vMCP runtime only
+// reports operational status (phase, backends, conditions).
+func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, status *vmcptypes.Status) {
+	// Update phase
+	vmcpServer.Status.Phase = convertPhase(status.Phase)
+
+	// Update message
+	vmcpServer.Status.Message = status.Message
+
+	// Update backend count (only counts healthy/ready backends)
+	vmcpServer.Status.BackendCount = status.BackendCount
+
+	// Update discovered backends
+	vmcpServer.Status.DiscoveredBackends = make([]mcpv1alpha1.DiscoveredBackend, 0, len(status.DiscoveredBackends))
+	for _, backend := range status.DiscoveredBackends {
+		// Convert vmcp.DiscoveredBackend to mcpv1alpha1.DiscoveredBackend
+		// Both types have identical fields, so we can use type conversion
+		vmcpServer.Status.DiscoveredBackends = append(vmcpServer.Status.DiscoveredBackends,
+			mcpv1alpha1.DiscoveredBackend(backend))
+	}
+
+	// Update conditions using meta.SetStatusCondition to preserve LastTransitionTime
+	// when the condition Status hasn't changed. This is important for Kubernetes-style
+	// condition semantics - LastTransitionTime should only update on Status transitions.
+	//
+	// Note: Kubernetes conditions are additive - once set, they persist until explicitly removed.
+	// The status building code (monitor.BuildStatus) is responsible for providing the complete
+	// set of conditions that should be present. We trust that if a condition is missing from
+	// the new status, it should be removed from the resource.
+
+	// First, identify which condition types are present in the new status
+	newConditionTypes := make(map[string]bool)
+	for _, cond := range status.Conditions {
+		newConditionTypes[cond.Type] = true
+	}
+
+	// Remove transient condition types that are no longer present.
+	// Transient conditions like "Degraded" only appear when that state is active,
+	// and must be explicitly removed when the system recovers.
+	//
+	// Core conditions (Ready, BackendsDiscovered) should always be present in the new status.
+	// If they're missing, that indicates a bug in the status building code, not normal operation.
+	// We still remove them to stay in sync with the status building code's intent.
+	knownConditionTypes := []string{"Ready", "Degraded", "BackendsDiscovered"}
+	for _, condType := range knownConditionTypes {
+		if !newConditionTypes[condType] {
+			// Log warning for core conditions that should always be present
+			if condType == "Ready" || condType == "BackendsDiscovered" {
+				logger.Warnf("Core condition %s missing from new status - this may indicate a bug in status building", condType)
+			}
+			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
+		}
+	}
+
+	// Now set/update the conditions from the new status
+	for _, newCondition := range status.Conditions {
+		meta.SetStatusCondition(&vmcpServer.Status.Conditions, newCondition)
+	}
+
+	// Update observed generation
+	vmcpServer.Status.ObservedGeneration = vmcpServer.Generation
+}
+
+// convertPhase converts vmcp.Phase to VirtualMCPServerPhase.
+func convertPhase(phase vmcptypes.Phase) mcpv1alpha1.VirtualMCPServerPhase {
+	switch phase {
+	case vmcptypes.PhaseReady:
+		return mcpv1alpha1.VirtualMCPServerPhaseReady
+	case vmcptypes.PhaseDegraded:
+		return mcpv1alpha1.VirtualMCPServerPhaseDegraded
+	case vmcptypes.PhaseFailed:
+		return mcpv1alpha1.VirtualMCPServerPhaseFailed
+	case vmcptypes.PhasePending:
+		return mcpv1alpha1.VirtualMCPServerPhasePending
+	default:
+		return mcpv1alpha1.VirtualMCPServerPhasePending
+	}
+}
+
+// Verify K8sReporter implements Reporter interface
+var _ Reporter = (*K8sReporter)(nil)

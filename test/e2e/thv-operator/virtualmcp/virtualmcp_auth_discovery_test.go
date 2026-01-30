@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -22,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -820,8 +824,12 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					// No TokenCache configured - tokens should be fetched on each request
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
 				},
 				// OIDC incoming auth - clients must present valid OIDC tokens
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
@@ -847,10 +855,6 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				// Backend has token exchange configured, vMCP will discover and use it
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
-				},
-				// No TokenCache configured - tokens should be fetched on each request
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 				// Enable debug logging via PodTemplateSpec
@@ -1158,12 +1162,28 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 
 		It("should list and call tools from all backends with discovered auth", func() {
+			By("Verifying vMCP pods are still running and ready before health check")
+			vmcpLabels := map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, 30*time.Second, 2*time.Second)
+
+			// Create HTTP client with timeout for health checks
+			healthCheckClient := &http.Client{
+				Timeout: 10 * time.Second,
+			}
+
 			By("Verifying HTTP connectivity to VirtualMCPServer health endpoint")
 			Eventually(func() error {
+				// Re-check pod readiness before each health check attempt
+				if err := checkPodsReady(ctx, k8sClient, testNamespace, vmcpLabels); err != nil {
+					return fmt.Errorf("pods not ready: %w", err)
+				}
 				url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
-				resp, err := http.Get(url)
+				resp, err := healthCheckClient.Get(url)
 				if err != nil {
-					return err
+					return fmt.Errorf("health check failed: %w", err)
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {

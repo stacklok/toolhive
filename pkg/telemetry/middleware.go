@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package telemetry
 
 import (
@@ -91,15 +94,9 @@ func NewHTTPMiddleware(
 // Handler implements the middleware function that wraps HTTP handlers.
 // This middleware should be placed after the MCP parsing middleware in the chain
 // to leverage the parsed MCP data.
+// Note: Panic recovery is handled by the dedicated recovery middleware.
 func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Ultimate safety net - telemetry must NEVER crash the service
-		defer func() {
-			if rec := recover(); rec != nil {
-				logger.Errorf("Telemetry middleware panic (non-fatal): %v", rec)
-			}
-		}()
-
 		ctx := r.Context()
 
 		// Handle SSE endpoints specially - they are long-lived connections
@@ -130,15 +127,7 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
 		spanName := m.createSpanName(ctx, r)
 		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
-		// End span with error handling - this is where OTLP export happens
-		defer func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					logger.Debugf("Telemetry span.End() panic (non-fatal): %v", rec)
-				}
-			}()
-			span.End()
-		}()
+		defer span.End()
 
 		// Create a response writer wrapper to capture response details
 		rw := &responseWriter{
@@ -416,25 +405,40 @@ func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duratio
 // responseWriter wraps http.ResponseWriter to capture response details.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
+	statusCode    int
+	bytesWritten  int64
+	headerWritten bool // Guard against double WriteHeader calls
 }
 
-// WriteHeader captures the status code with panic protection.
+// WriteHeader captures the status code. Guards against duplicate calls which
+// can cause panics in Go's reverse proxy (http: superfluous response.WriteHeader call).
 func (rw *responseWriter) WriteHeader(statusCode int) {
+	if rw.headerWritten {
+		return // Silently ignore duplicate WriteHeader calls
+	}
+	rw.headerWritten = true
 	rw.statusCode = statusCode
-
-	// Wrap the actual WriteHeader call to catch any panics (including duplicate calls)
-	defer func() {
-		if rec := recover(); rec != nil {
-			logger.Debugf("WriteHeader panic recovered (non-fatal): %v", rec)
-		}
-	}()
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write captures the number of bytes written.
+// Note: Write() implicitly calls WriteHeader(200) on the underlying ResponseWriter
+// if headers haven't been written yet. This is standard HTTP behavior - once headers
+// are written, the status code cannot be changed. We track this to accurately record
+// what actually happened and to prevent subsequent WriteHeader() calls from panicking.
+//
+// Important: If a non-200 status code is needed, WriteHeader() MUST be called BEFORE Write().
+// Once Write() is called first, the status code is fixed at 200 and cannot be changed.
 func (rw *responseWriter) Write(data []byte) (int, error) {
+	// If headers haven't been written yet, Write() will implicitly write them with status 200.
+	// This is what the underlying ResponseWriter actually does - we're tracking what happened,
+	// not forcing a status code. Mark headers as written to prevent subsequent WriteHeader()
+	// calls from panicking.
+	if !rw.headerWritten {
+		rw.headerWritten = true
+		rw.statusCode = http.StatusOK // Write() implicitly uses 200 - this is what actually happened
+	}
+
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 	return n, err

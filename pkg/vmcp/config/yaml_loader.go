@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package config
 
 import (
@@ -66,8 +69,8 @@ func (l *YAMLLoader) postProcess(cfg *Config) error {
 	}
 
 	// Process composite tools - type inference, defaults, validation
-	for i, tool := range cfg.CompositeTools {
-		if err := l.processCompositeTool(tool); err != nil {
+	for i := range cfg.CompositeTools {
+		if err := l.processCompositeTool(&cfg.CompositeTools[i]); err != nil {
 			return fmt.Errorf("compositeTools[%d]: %w", i, err)
 		}
 	}
@@ -162,8 +165,8 @@ func (l *YAMLLoader) processCompositeTool(tool *CompositeToolConfig) error {
 	}
 
 	// Process each step
-	for _, step := range tool.Steps {
-		l.processWorkflowStep(step)
+	for i := range tool.Steps {
+		l.processWorkflowStep(&tool.Steps[i])
 	}
 
 	return nil

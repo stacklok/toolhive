@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -410,4 +413,77 @@ func TestPromptArgumentConversion(t *testing.T) {
 		assert.Equal(t, "optional_arg", vmcpPrompt.Arguments[1].Name)
 		assert.False(t, vmcpPrompt.Arguments[1].Required)
 	})
+}
+
+func TestConvertContent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("converts text content", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewTextContent("Hello, world!")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "text", result.Type)
+		assert.Equal(t, "Hello, world!", result.Text)
+	})
+
+	t.Run("converts empty text content", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewTextContent("")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "text", result.Type)
+		assert.Equal(t, "", result.Text)
+	})
+
+	t.Run("converts image content", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewImageContent("base64-encoded-image-data", "image/png")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "image", result.Type)
+		assert.Equal(t, "base64-encoded-image-data", result.Data)
+		assert.Equal(t, "image/png", result.MimeType)
+	})
+
+	t.Run("converts image content with empty mime type", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewImageContent("image-data", "")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "image", result.Type)
+		assert.Equal(t, "image-data", result.Data)
+		assert.Equal(t, "", result.MimeType)
+	})
+
+	t.Run("converts audio content", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewAudioContent("base64-encoded-audio-data", "audio/mpeg")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "audio", result.Type)
+		assert.Equal(t, "base64-encoded-audio-data", result.Data)
+		assert.Equal(t, "audio/mpeg", result.MimeType)
+	})
+
+	t.Run("converts audio content with empty mime type", func(t *testing.T) {
+		t.Parallel()
+
+		mcpContent := mcp.NewAudioContent("audio-data", "")
+		result := convertContent(mcpContent)
+
+		assert.Equal(t, "audio", result.Type)
+		assert.Equal(t, "audio-data", result.Data)
+		assert.Equal(t, "", result.MimeType)
+	})
+
+	// Note: We cannot easily test "unknown" content types because mcp.Content is an interface
+	// with an isContent() marker method. The MCP SDK only provides Text, Image, and Audio content types.
+	// If the SDK adds new content types in the future (e.g., embedded resources), convertContent
+	// will return Type: "unknown" for those until we add explicit support.
 }

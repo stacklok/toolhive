@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package images provides centralized container image references for e2e tests.
 // This package serves as a single source of truth for all container images used
 // in end-to-end testing, making it easier to maintain versions and enabling
@@ -9,7 +12,7 @@ package images
 
 const (
 	yardstickServerImageURL = "ghcr.io/stackloklabs/yardstick/yardstick-server"
-	yardstickServerImageTag = "0.0.2"
+	yardstickServerImageTag = "1.1.1"
 	// YardstickServerImage is used in operator tests across multiple transport protocols
 	// (stdio, SSE, streamable-http) and tenancy modes.
 	// Note: This image is also referenced in 8 YAML fixture files under

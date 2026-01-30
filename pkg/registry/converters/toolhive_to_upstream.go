@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package converters provides bidirectional conversion between toolhive registry formats
 // and the upstream MCP (Model Context Protocol) ServerJSON format.
 //
@@ -169,6 +172,8 @@ func createRemotesFromRemoteMetadata(remoteMetadata *registry.RemoteServerMetada
 					Description: header.Description,
 					IsRequired:  header.Required,
 					IsSecret:    header.Secret,
+					Default:     header.Default,
+					Choices:     header.Choices,
 				},
 			},
 		})
@@ -238,6 +243,21 @@ func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]int
 		extensions["provenance"] = imageMetadata.Provenance
 	}
 
+	// Add docker_tags
+	if len(imageMetadata.DockerTags) > 0 {
+		extensions["docker_tags"] = imageMetadata.DockerTags
+	}
+
+	// Add proxy_port (host-side port configuration)
+	if imageMetadata.ProxyPort > 0 {
+		extensions["proxy_port"] = imageMetadata.ProxyPort
+	}
+
+	// Add custom_metadata
+	if len(imageMetadata.CustomMetadata) > 0 {
+		extensions["custom_metadata"] = imageMetadata.CustomMetadata
+	}
+
 	return map[string]interface{}{
 		"io.github.stacklok": map[string]interface{}{
 			imageMetadata.Image: extensions,
@@ -290,6 +310,16 @@ func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[s
 	// Add OAuth config
 	if remoteMetadata.OAuthConfig != nil {
 		extensions["oauth_config"] = remoteMetadata.OAuthConfig
+	}
+
+	// Add env_vars
+	if len(remoteMetadata.EnvVars) > 0 {
+		extensions["env_vars"] = remoteMetadata.EnvVars
+	}
+
+	// Add custom_metadata
+	if len(remoteMetadata.CustomMetadata) > 0 {
+		extensions["custom_metadata"] = remoteMetadata.CustomMetadata
 	}
 
 	return map[string]interface{}{

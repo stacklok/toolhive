@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -88,10 +91,11 @@ func newMCPCommand() *cobra.Command {
 
 func addMCPFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&mcpServerURL, "server", "", "MCP server URL or name from ToolHive registry (required)")
-	cmd.Flags().StringVar(&mcpFormat, "format", FormatText, "Output format (json or text)")
+	AddFormatFlag(cmd, &mcpFormat)
 	cmd.Flags().DurationVar(&mcpTimeout, "timeout", 30*time.Second, "Connection timeout")
 	cmd.Flags().StringVar(&mcpTransport, "transport", "auto", "Transport type (auto, sse, streamable-http)")
 	_ = cmd.MarkFlagRequired("server")
+	cmd.PreRunE = ValidateFormat(&mcpFormat)
 }
 
 // mcpListCmdFunc lists all capabilities (tools, resources, prompts)

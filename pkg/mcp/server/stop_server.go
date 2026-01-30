@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package server
 
 import (
@@ -21,13 +24,13 @@ func (h *Handler) StopServer(ctx context.Context, request mcp.CallToolRequest) (
 	}
 
 	// Stop the workload
-	group, err := h.workloadManager.StopWorkloads(ctx, []string{args.Name})
+	complete, err := h.workloadManager.StopWorkloads(ctx, []string{args.Name})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to stop server: %v", err)), nil
 	}
 
 	// Wait for the stop operation to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to stop server: %v", err)), nil
 	}
 

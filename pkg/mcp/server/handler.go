@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package server provides the MCP (Model Context Protocol) server implementation for ToolHive.
 package server
 

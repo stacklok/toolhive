@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -13,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
@@ -46,7 +50,7 @@ func TestGetWorkload(t *testing.T) {
 					Return(core.Workload{}, runtime.ErrWorkloadNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Workload not found",
+			expectedBody:   "workload not found",
 		},
 		{
 			name:         "invalid workload name",
@@ -56,7 +60,7 @@ func TestGetWorkload(t *testing.T) {
 					Return(core.Workload{}, wt.ErrInvalidWorkloadName)
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid workload name",
+			expectedBody:   "invalid workload name",
 		},
 	}
 
@@ -85,7 +89,7 @@ func TestGetWorkload(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 			w := httptest.NewRecorder()
-			routes.getWorkload(w, req)
+			apierrors.ErrorHandler(routes.getWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
@@ -111,7 +115,7 @@ func TestCreateWorkload(t *testing.T) {
 			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Failed to decode request",
+			expectedBody:   "failed to decode request",
 		},
 		{
 			name:        "workload already exists",
@@ -120,13 +124,14 @@ func TestCreateWorkload(t *testing.T) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "existing-workload").Return(true, nil)
 			},
 			expectedStatus: http.StatusConflict,
-			expectedBody:   "Workload with name existing-workload already exists",
+			expectedBody:   "workload with name existing-workload already exists",
 		},
 		{
 			name:        "invalid proxy mode",
 			requestBody: `{"name": "test-workload", "image": "test-image", "proxy_mode": "invalid"}`,
-			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil).AnyTimes()
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid proxy_mode",
@@ -231,7 +236,7 @@ func TestCreateWorkload(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			w := httptest.NewRecorder()
-			routes.createWorkload(w, req)
+			apierrors.ErrorHandler(routes.createWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
@@ -259,7 +264,7 @@ func TestUpdateWorkload(t *testing.T) {
 			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid JSON",
+			expectedBody:   "invalid JSON",
 		},
 		{
 			name:         "workload not found",
@@ -267,10 +272,10 @@ func TestUpdateWorkload(t *testing.T) {
 			requestBody:  `{"image": "test-image"}`,
 			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "nonexistent").
-					Return(core.Workload{}, fmt.Errorf("workload not found"))
+					Return(core.Workload{}, runtime.ErrWorkloadNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Workload not found",
+			expectedBody:   "workload not found",
 		},
 		{
 			name:         "stop workload fails",
@@ -284,7 +289,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(nil, fmt.Errorf("stop failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "failed to update workload: stop failed",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:         "delete workload fails",
@@ -298,7 +303,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(nil, fmt.Errorf("delete failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "failed to update workload: delete failed",
+			expectedBody:   "Internal Server Error", // 5xx errors return generic message
 		},
 		{
 			name:         "with tool filters",
@@ -427,7 +432,7 @@ func TestUpdateWorkload(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 			w := httptest.NewRecorder()
-			routes.updateWorkload(w, req)
+			apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
@@ -575,7 +580,7 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 			w := httptest.NewRecorder()
-			routes.updateWorkload(w, req)
+			apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code, tt.description)
 			assert.Contains(t, w.Body.String(), tt.expectedBody, tt.description)

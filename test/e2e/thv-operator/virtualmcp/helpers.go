@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package virtualmcp provides helper functions for VirtualMCP E2E tests.
 package virtualmcp
 
@@ -34,7 +37,8 @@ import (
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
-// and ensures the associated pods are actually running and ready
+// and ensures at least one associated pod is actually running and ready.
+// This is used when waiting for a single expected pod (e.g., one replica deployment).
 func WaitForVirtualMCPServerReady(
 	ctx context.Context,
 	c client.Client,
@@ -55,7 +59,7 @@ func WaitForVirtualMCPServerReady(
 		for _, condition := range vmcpServer.Status.Conditions {
 			if condition.Type == "Ready" {
 				if condition.Status == "True" {
-					// Also check that the pods are actually running and ready
+					// Also check that at least one pod is actually running and ready
 					labels := map[string]string{
 						"app.kubernetes.io/name":     "virtualmcpserver",
 						"app.kubernetes.io/instance": name,
@@ -72,7 +76,9 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
-// checkPodsReady checks if all pods matching the given labels are ready
+// checkPodsReady waits for at least one pod matching the given labels to be ready.
+// This is used when checking for a single expected pod (e.g., one replica deployment).
+// Pods not in Running phase are skipped (e.g., Succeeded, Failed from previous deployments).
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
 	podList := &corev1.PodList{}
 	if err := c.List(ctx, podList,
@@ -86,8 +92,9 @@ func checkPodsReady(ctx context.Context, c client.Client, namespace string, labe
 	}
 
 	for _, pod := range podList.Items {
+		// Skip pods that are not running (e.g., Succeeded, Failed from old deployments)
 		if pod.Status.Phase != corev1.PodRunning {
-			return fmt.Errorf("pod %s is in phase %s", pod.Name, pod.Status.Phase)
+			continue
 		}
 
 		containerReady := false
@@ -110,6 +117,17 @@ func checkPodsReady(ctx context.Context, c client.Client, namespace string, labe
 		if !podReady {
 			return fmt.Errorf("pod %s not ready", pod.Name)
 		}
+	}
+
+	// After filtering, ensure we found at least one running pod
+	runningPods := 0
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			runningPods++
+		}
+	}
+	if runningPods == 0 {
+		return fmt.Errorf("no running pods found with labels %v", labels)
 	}
 	return nil
 }
@@ -231,7 +249,8 @@ func GetVirtualMCPServerPods(ctx context.Context, c client.Client, vmcpServerNam
 	return podList, err
 }
 
-// WaitForPodsReady waits for all pods matching labels to be ready
+// WaitForPodsReady waits for at least one pod matching labels to be ready.
+// This is used when waiting for a single expected pod to be ready (e.g., one replica deployment).
 func WaitForPodsReady(
 	ctx context.Context,
 	c client.Client,
@@ -501,6 +520,34 @@ func GetPodLogs(ctx context.Context, podName, namespace, containerName string) (
 
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+// GetMCPServerDeployment retrieves the deployment for an MCPServer by name.
+// MCPServer deployments use the same name as the MCPServer resource.
+func GetMCPServerDeployment(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.Deployment {
+	deployment := &appsv1.Deployment{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      serverName,
+		Namespace: namespace,
+	}, deployment)
+	if err != nil {
+		return nil
+	}
+	return deployment
+}
+
+// GetMCPServerStatefulSet retrieves the StatefulSet for an MCPServer by name.
+// MCPServer StatefulSets use the same name as the MCPServer resource for the workload pods.
+func GetMCPServerStatefulSet(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.StatefulSet {
+	statefulset := &appsv1.StatefulSet{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      serverName,
+		Namespace: namespace,
+	}, statefulset)
+	if err != nil {
+		return nil
+	}
+	return statefulset
 }
 
 // WaitForPodDeletion waits for a pod to be fully deleted from the cluster.

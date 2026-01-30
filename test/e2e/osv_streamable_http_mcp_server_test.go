@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -27,7 +30,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-registry-test")
+				serverName = e2e.GenerateUniqueServerName("osv-registry-test")
 			})
 
 			AfterEach(func() {
@@ -165,7 +168,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			BeforeAll(func() {
 				// Generate unique server name for this context
-				serverName = generateUniqueServerName("osv-functionality-test")
+				serverName = e2e.GenerateUniqueServerName("osv-functionality-test")
 
 				// Start ONE server for ALL OSV-specific tests
 				e2e.NewTHVCommand(config, "run",
@@ -311,7 +314,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			BeforeEach(func() {
 				// Generate unique server name for each lifecycle test
-				serverName = generateUniqueServerName("osv-lifecycle-test")
+				serverName = e2e.GenerateUniqueServerName("osv-lifecycle-test")
 
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
@@ -332,8 +335,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			It("should stop the Streamable HTTP server successfully [Serial]", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
+				e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
 				By("Verifying the server is stopped")
 				Eventually(func() string {
@@ -348,8 +350,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 			It("should restart the Streamable HTTP server successfully [Serial]", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout).To(ContainSubstring(serverName))
+				e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 
 				By("Waiting for the server to be running again")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -374,7 +375,7 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueServerName("osv-error-test")
+				serverName = e2e.GenerateUniqueServerName("osv-error-test")
 			})
 
 			AfterEach(func() {

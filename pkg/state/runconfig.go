@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package state
 
 import (
@@ -58,7 +61,7 @@ func DeleteSavedRunConfig(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete run configuration: %w", err)
 	}
 
-	logger.Infof("Deleted run configuration for %s", name)
+	logger.Debugf("Deleted run configuration for %s", name)
 	return nil
 }
 
@@ -97,7 +100,7 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
 
-	logger.Infof("Saved run configuration for %s", config.GetBaseName())
+	logger.Debugf("Saved run configuration for %s", config.GetBaseName())
 	return nil
 }
 

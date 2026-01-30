@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -19,6 +22,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -209,6 +213,103 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
+			name: "SSE transport sets proxyMode to sse (ignores configured proxyMode)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sse-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "sse",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode set to streamable-http (should be ignored and set to "sse")
+					ProxyMode: streamableHTTPProxyMode,
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "sse-server", config.Name)
+				assert.Equal(t, testImage, config.Image)
+				assert.Equal(t, transporttypes.TransportTypeSSE, config.Transport)
+				assert.Equal(t, 8080, config.Port)
+				assert.Equal(t, 8080, config.TargetPort)
+				// For SSE transport, proxyMode should be set to "sse" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeSSE, config.ProxyMode, "SSE transport should set proxyMode to sse")
+			},
+		},
+		{
+			name: "SSE transport without proxyMode sets proxyMode to sse",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sse-server-no-proxymode",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "sse",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode not specified
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "sse-server-no-proxymode", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeSSE, config.Transport)
+				// For SSE transport, proxyMode should be set to "sse" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeSSE, config.ProxyMode, "SSE transport should set proxyMode to sse")
+			},
+		},
+		{
+			name: "streamable-http transport sets proxyMode to streamable-http (ignores configured proxyMode)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "streamable-http-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode set to sse (should be ignored and set to "streamable-http")
+					ProxyMode: sseProxyMode,
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "streamable-http-server", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport)
+				// For streamable-http transport, proxyMode should be set to "streamable-http" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode, "streamable-http transport should set proxyMode to streamable-http")
+			},
+		},
+		{
+			name: "streamable-http transport without proxyMode sets proxyMode to streamable-http",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "streamable-http-server-no-proxymode",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode not specified
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "streamable-http-server-no-proxymode", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport)
+				// For streamable-http transport, proxyMode should be set to "streamable-http" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode, "streamable-http transport should set proxyMode to streamable-http")
+			},
+		},
+		{
 			name: "comprehensive test with all fields",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -322,14 +423,15 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				// Verify authorization config is set
 				assert.NotNil(t, config.AuthzConfig)
 				assert.Equal(t, "v1", config.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				assert.NotNil(t, config.AuthzConfig.Cedar)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, config.AuthzConfig.Cedar.EntitiesJSON)
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -359,11 +461,13 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				// For ConfigMap type, with new feature, authorization config is embedded in RunConfig
 				require.NotNil(t, config.AuthzConfig)
 				assert.Equal(t, "v1", config.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				require.NotNil(t, config.AuthzConfig.Cedar)
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 1)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "call_tool")
-				assert.Equal(t, "[]", config.AuthzConfig.Cedar.EntitiesJSON)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
+
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 1)
+				assert.Contains(t, cedarCfg.Options.Policies[0], "call_tool")
+				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -404,11 +508,41 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "https://auth.example.com/oauth/introspect", config.OIDCConfig.IntrospectionURL)
 				assert.Equal(t, "toolhive-client", config.OIDCConfig.ClientID)
 				assert.Equal(t, "secret123", config.OIDCConfig.ClientSecret)
-				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
-				// This is likely a bug that should be fixed separately
-				assert.Equal(t, "", config.OIDCConfig.CACertPath)
-				assert.Equal(t, "", config.OIDCConfig.AuthTokenFile)
+				assert.Equal(t, "/etc/ssl/ca-bundle.pem", config.OIDCConfig.CACertPath)
+				assert.Equal(t, "/etc/auth/token", config.OIDCConfig.AuthTokenFile)
 				assert.True(t, config.OIDCConfig.AllowPrivateIP)
+			},
+		},
+		{
+			name: "with inline OIDC using CABundleRef",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-cabundle-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					ProxyPort: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "toolhive-api",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-bundle"},
+								},
+							},
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "oidc-cabundle-server", config.Name)
+				assert.NotNil(t, config.OIDCConfig)
+				assert.Equal(t, "/config/certs/my-ca-bundle/ca.crt", config.OIDCConfig.CACertPath)
 			},
 		},
 	}
@@ -748,14 +882,15 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				// Verify authorization configuration is properly serialized
 				assert.NotNil(t, runConfig.AuthzConfig, "AuthzConfig should be present in runconfig.json")
 				assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
-				assert.NotNil(t, runConfig.AuthzConfig.Cedar)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
-				assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+				cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -807,9 +942,8 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.Equal(t, "https://auth.example.com/oauth/introspect", runConfig.OIDCConfig.IntrospectionURL)
 				assert.Equal(t, "toolhive-client", runConfig.OIDCConfig.ClientID)
 				assert.Equal(t, "secret123", runConfig.OIDCConfig.ClientSecret)
-				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
-				assert.Equal(t, "", runConfig.OIDCConfig.CACertPath)
-				assert.Equal(t, "", runConfig.OIDCConfig.AuthTokenFile)
+				assert.Equal(t, "/etc/ssl/ca-bundle.pem", runConfig.OIDCConfig.CACertPath)
+				assert.Equal(t, "/etc/auth/token", runConfig.OIDCConfig.AuthTokenFile)
 				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
 			},
 		},
@@ -968,12 +1102,14 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 
 		require.NotNil(t, runConfig.AuthzConfig)
 		assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
-		assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
-		require.NotNil(t, runConfig.AuthzConfig.Cedar)
-		assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
-		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+		assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
+
+		cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+		require.NoError(t, err)
+		assert.Len(t, cedarCfg.Options.Policies, 2)
+		assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+		assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 	})
 }
 
@@ -1062,6 +1198,102 @@ func TestValidateRunConfig(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "invalid secret format",
+		},
+		{
+			name: "SSE transport with mismatched proxyMode should fail",
+			config: &runner.RunConfig{
+				Name:       "sse-mismatch",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
+				TargetPort: 8080,
+				ProxyMode:  transporttypes.ProxyModeStreamableHTTP, // Mismatch: should be "sse"
+			},
+			expectErr: true,
+			errMsg:    "does not match transportType",
+		},
+		{
+			name: "streamable-http transport with mismatched proxyMode should fail",
+			config: &runner.RunConfig{
+				Name:       "streamable-mismatch",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
+				TargetPort: 8080,
+				ProxyMode:  transporttypes.ProxyModeSSE, // Mismatch: should be "streamable-http"
+			},
+			expectErr: true,
+			errMsg:    "does not match transportType",
+		},
+		{
+			name: "SSE transport with correct proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:       "sse-correct",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
+				TargetPort: 8080,
+				ProxyMode:  transporttypes.ProxyModeSSE, // Correct: matches transportType
+			},
+			expectErr: false,
+		},
+		{
+			name: "streamable-http transport with correct proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:       "streamable-correct",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
+				TargetPort: 8080,
+				ProxyMode:  transporttypes.ProxyModeStreamableHTTP, // Correct: matches transportType
+			},
+			expectErr: false,
+		},
+		{
+			name: "SSE transport without proxyMode should pass (controller sets it)",
+			config: &runner.RunConfig{
+				Name:       "sse-no-proxymode",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
+				TargetPort: 8080,
+				// ProxyMode not set - controller will set it to "sse"
+			},
+			expectErr: false,
+		},
+		{
+			name: "streamable-http transport without proxyMode should pass (controller sets it)",
+			config: &runner.RunConfig{
+				Name:       "streamable-no-proxymode",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
+				TargetPort: 8080,
+				// ProxyMode not set - controller will set it to "streamable-http"
+			},
+			expectErr: false,
+		},
+		{
+			name: "stdio transport with valid proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "stdio-valid-proxymode",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStdio,
+				Port:      8080,
+				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Valid for stdio
+			},
+			expectErr: false,
+		},
+		{
+			name: "stdio transport with SSE proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "stdio-sse-proxymode",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStdio,
+				Port:      8080,
+				ProxyMode: transporttypes.ProxyModeSSE, // Valid for stdio
+			},
+			expectErr: false,
 		},
 	}
 
@@ -1465,9 +1697,6 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 			var runConfig runner.RunConfig
 			err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
 			require.NoError(t, err)
-
-			// Verify EnvFileDir is set correctly
-			assert.Equal(t, tc.expectedEnvDir, runConfig.EnvFileDir, "EnvFileDir should match expected value")
 
 			// Verify basic RunConfig fields
 			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)

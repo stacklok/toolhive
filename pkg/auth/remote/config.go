@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package remote
 
 import (
@@ -44,6 +47,13 @@ type Config struct {
 	// Bearer token configuration (alternative to OAuth)
 	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
 	BearerTokenFile string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
+
+	// Cached OAuth token reference for persistence across restarts.
+	// The refresh token is stored securely in the secret manager, and this field
+	// contains the reference to retrieve it (e.g., "OAUTH_REFRESH_TOKEN_workload").
+	// This enables session restoration without requiring a new browser-based login.
+	CachedRefreshTokenRef string    `json:"cached_refresh_token_ref,omitempty" yaml:"cached_refresh_token_ref,omitempty"`
+	CachedTokenExpiry     time.Time `json:"cached_token_expiry,omitempty" yaml:"cached_token_expiry,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -115,6 +125,22 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 
 // DefaultCallbackPort is the default port for the OAuth callback server
 const DefaultCallbackPort = 8666
+
+// HasValidCachedTokens returns true if the config has a cached token reference that can be used
+// to create a TokenSource without requiring a new OAuth flow.
+// Note: This only checks if a refresh token reference exists, not if the token is actually valid.
+// The actual validity will be determined when the token is used.
+func (c *Config) HasValidCachedTokens() bool {
+	// We need at least a refresh token reference to restore the session
+	return c.CachedRefreshTokenRef != ""
+}
+
+// ClearCachedTokens removes any cached OAuth token references from the config.
+// Note: This does not delete the actual secret from the secret manager.
+func (c *Config) ClearCachedTokens() {
+	c.CachedRefreshTokenRef = ""
+	c.CachedTokenExpiry = time.Time{}
+}
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.
 // This function should only be called when the user has not explicitly provided a resource indicator.

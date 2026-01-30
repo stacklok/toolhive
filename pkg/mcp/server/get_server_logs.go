@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package server
 
 import (
@@ -21,8 +24,8 @@ func (h *Handler) GetServerLogs(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Get logs
-	logs, err := h.workloadManager.GetLogs(ctx, args.Name, false)
+	// Get logs (0 = unlimited for MCP tools)
+	logs, err := h.workloadManager.GetLogs(ctx, args.Name, false, 0)
 	if err != nil {
 		// Check if it's a not found error
 		if strings.Contains(err.Error(), "not found") {

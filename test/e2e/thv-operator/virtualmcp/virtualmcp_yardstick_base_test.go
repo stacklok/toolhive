@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -10,11 +13,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -108,14 +111,14 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: mcpv1alpha1.GroupRef{
-					Name: mcpGroupName,
+				Config: vmcpconfig.Config{
+					Group: mcpGroupName,
+					Aggregation: &vmcpconfig.AggregationConfig{
+						ConflictResolution: "prefix",
+					},
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
-				},
-				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 			},
@@ -229,6 +232,95 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			// Use shared helper to test tool listing and calling
 			TestToolListingAndCall(vmcpNodePort, "toolhive-yardstick-test", "echo", "hello123")
 		})
+
+		It("should preserve metadata when calling tools through vMCP", func() {
+			By("Creating and initializing MCP client")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-metadata-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Listing tools from VirtualMCPServer")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty())
+
+			// Find an echo tool to call
+			var toolToCall string
+			for _, tool := range tools.Tools {
+				if strings.Contains(tool.Name, "echo") {
+					toolToCall = tool.Name
+					break
+				}
+			}
+			Expect(toolToCall).ToNot(BeEmpty(), "Should find an echo tool")
+
+			By(fmt.Sprintf("Calling tool: %s with metadata", toolToCall))
+			// Yardstick server echoes back metadata from requests to responses
+			// This tests the full round-trip: client → vMCP → backend → vMCP → client
+			testTraceID := "test-trace-123"
+			testRequestID := "req-456"
+			callRequest := mcp.CallToolRequest{}
+			callRequest.Params.Name = toolToCall
+			callRequest.Params.Arguments = map[string]interface{}{
+				"input": "testmetadatapreservation",
+			}
+			callRequest.Params.Meta = &mcp.Meta{
+				AdditionalFields: map[string]interface{}{
+					"traceId":   testTraceID,
+					"requestId": testRequestID,
+				},
+			}
+
+			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+			Expect(err).ToNot(HaveOccurred(), "Tool call should succeed")
+			Expect(result).ToNot(BeNil())
+
+			By("Verifying metadata preservation through vMCP")
+			// Yardstick echoes back _meta fields from the request
+			// This validates the full metadata preservation path:
+			// 1. vMCP accepts _meta in client requests
+			// 2. vMCP forwards _meta to backend (yardstick)
+			// 3. Backend echoes _meta in response
+			// 4. vMCP preserves _meta from backend response back to client
+
+			GinkgoWriter.Printf("Tool call result - IsError: %v\n", result.IsError)
+
+			if result.Meta == nil {
+				GinkgoWriter.Printf("[DEBUG] Result.Meta is nil - metadata was not preserved\n")
+				GinkgoWriter.Printf("[DEBUG] This could indicate:\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not forwarded from vMCP to backend\n")
+				GinkgoWriter.Printf("[DEBUG]   - Backend not returning metadata (check yardstick logs)\n")
+				GinkgoWriter.Printf("[DEBUG]   - Metadata not preserved from backend response to client\n")
+			}
+
+			Expect(result.Meta).ToNot(BeNil(),
+				"Yardstick should echo back metadata from request. "+
+					"Check: 1) vMCP forwarding _meta to backend, 2) backend echoing _meta, 3) vMCP preserving _meta from response")
+
+			GinkgoWriter.Printf("Metadata preserved through vMCP:\n")
+			if result.Meta.ProgressToken != nil {
+				GinkgoWriter.Printf("  progressToken: %v\n", result.Meta.ProgressToken)
+			}
+
+			Expect(result.Meta.AdditionalFields).ToNot(BeEmpty(),
+				"Yardstick should preserve additional metadata fields from request")
+
+			// Verify the custom fields we sent are echoed back
+			traceID, hasTraceID := result.Meta.AdditionalFields["traceId"]
+			Expect(hasTraceID).To(BeTrue(), "Should preserve traceId field")
+			Expect(traceID).To(Equal(testTraceID), "TraceId value should match what was sent")
+
+			requestID, hasRequestID := result.Meta.AdditionalFields["requestId"]
+			Expect(hasRequestID).To(BeTrue(), "Should preserve requestId field")
+			Expect(requestID).To(Equal(testRequestID), "RequestId value should match what was sent")
+
+			for key, value := range result.Meta.AdditionalFields {
+				GinkgoWriter.Printf("  %s: %v\n", key, value)
+			}
+
+			GinkgoWriter.Printf("[PASS] vMCP correctly preserves metadata end-to-end\n")
+		})
 	})
 
 	Context("when verifying VirtualMCPServer status", func() {
@@ -240,8 +332,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-			Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal("prefix"))
+			Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+			Expect(string(vmcpServer.Spec.Config.Aggregation.ConflictResolution)).To(Equal("prefix"))
 		})
 
 		It("should discover both yardstick backends in the group", func() {
@@ -266,157 +358,10 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
 		})
 
-		It("should reflect backend health changes in status", func() {
-			By("Verifying VirtualMCPServer initially has 2 backends")
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
-			Expect(vmcpServer.Status.BackendCount).To(Equal(2))
-			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2))
-
-			By("Updating backend to use invalid image to make it unhealthy")
-			// Update yardstick-a to use a non-existent image, causing ImagePullBackOff
-			Eventually(func() error {
-				backend := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name,
-					Namespace: testNamespace,
-				}, backend)
-				if err != nil {
-					return err
-				}
-				backend.Spec.Image = "non-existent-image:invalid"
-				return k8sClient.Update(ctx, backend)
-			}, timeout, pollingInterval).Should(Succeed())
-			By("Waiting for MCPServer to transition to Pending state (proxy not ready)")
-			Eventually(func() mcpv1alpha1.MCPServerPhase {
-				backend := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name,
-					Namespace: testNamespace,
-				}, backend)
-				if err != nil {
-					return ""
-				}
-				return backend.Status.Phase
-			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhasePending),
-				"MCPServer should be Pending when backend container has image pull issues but proxy is still running")
-
-			By("Waiting for VirtualMCPServer to transition to Degraded phase")
-			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcpServer)
-				if err != nil {
-					return ""
-				}
-				return vmcpServer.Status.Phase
-			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.VirtualMCPServerPhaseDegraded),
-				"VirtualMCPServer should enter Degraded phase when a backend is unavailable")
-
-			By("Verifying backend count reflects one ready backend")
-			// Re-fetch VirtualMCPServer to ensure we have the latest status
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
-			Expect(vmcpServer.Status.BackendCount).To(Equal(1), "Should have 1 ready backend")
-
-			By("Verifying discovered backends list shows one unavailable backend")
-			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2), "Should track both backends")
-
-			// Check that one backend is unavailable and one is ready
-			backendStatuses := make(map[string]string)
-			for _, backend := range vmcpServer.Status.DiscoveredBackends {
-				backendStatuses[backend.Name] = backend.Status
-			}
-			Expect(backendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusUnavailable))
-			Expect(backendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
-
-			By("Restoring backend to use valid image")
-			// Restore yardstick-a's image back to the valid YardstickImage
-			Eventually(func() error {
-				backend := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name,
-					Namespace: testNamespace,
-				}, backend)
-				if err != nil {
-					return err
-				}
-				backend.Spec.Image = images.YardstickServerImage
-				return k8sClient.Update(ctx, backend)
-			}, timeout, pollingInterval).Should(Succeed())
-			By("Deleting the Deployment pod to force immediate recreation with new image")
-			// Manually delete the pod to force immediate recreation rather than waiting
-			// for the normal rolling update process, which speeds up the E2E test
-			podToDelete := &corev1.Pod{}
-			Eventually(func() error {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name + "-0", // Pod name pattern
-					Namespace: testNamespace,
-				}, podToDelete)
-				if err != nil {
-					return err
-				}
-				return k8sClient.Delete(ctx, podToDelete)
-			}, timeout, pollingInterval).Should(Succeed())
-
-			By("Waiting for backend to be Running again")
-			Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name,
-					Namespace: testNamespace,
-				}, server)
-				if err != nil {
-					return fmt.Errorf("failed to get server: %w", err)
-				}
-				if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-					return nil
-				}
-				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
-			}, timeout, pollingInterval).Should(Succeed())
-
-			By("Waiting for VirtualMCPServer to return to Ready phase")
-			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcpServer)
-				if err != nil {
-					return ""
-				}
-				return vmcpServer.Status.Phase
-			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
-				"VirtualMCPServer should return to Ready phase when all backends are restored")
-
-			By("Verifying both backends are ready")
-			// Re-fetch VirtualMCPServer to ensure we have the latest status
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
-			Expect(vmcpServer.Status.BackendCount).To(Equal(2), "Should have 2 ready backends")
-			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2), "Should track both backends")
-
-			restoredBackendStatuses := make(map[string]string)
-			for _, backend := range vmcpServer.Status.DiscoveredBackends {
-				restoredBackendStatuses[backend.Name] = backend.Status
-			}
-			Expect(restoredBackendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
-			Expect(restoredBackendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
-		})
 	})
 
 	Context("when testing group membership changes trigger reconciliation", func() {
 		backend3Name := "yardstick-c"
-		backend4Name := "yardstick-d"
 
 		It("should have two discovered backends initially", func() {
 			status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
@@ -445,10 +390,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return err
 				}
 
-				if status.BackendCount != 3 {
-					return fmt.Errorf("expected 3 backends, got %d", status.BackendCount)
-				}
-
+				// Check DiscoveredBackends first (this includes all backends regardless of health)
 				if len(status.DiscoveredBackends) != 3 {
 					return fmt.Errorf("expected 3 discovered backends, got %d", len(status.DiscoveredBackends))
 				}
@@ -462,88 +404,31 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return fmt.Errorf("new backend %s not found in discovered backends: %v", backend3Name, backendNames)
 				}
 
+				// BackendCount only includes healthy backends, so check this separately
+				// We expect all backends to eventually become healthy
+				if status.BackendCount != 3 {
+					return fmt.Errorf("expected 3 healthy backends, got %d (discovered: %v)", status.BackendCount, backendNames)
+				}
+
 				return nil
 			}, timeout, pollingInterval).Should(Succeed(), "VirtualMCPServer should discover the new backend")
 
 		})
 
-		It("should remove a backend when deleted from the group", func() {
-			By("Creating a dedicated backend MCPServer for deletion test")
-			CreateMCPServerAndWait(ctx, k8sClient, backend4Name, testNamespace,
-				mcpGroupName, images.YardstickServerImage, timeout, pollingInterval)
-
-			By("Waiting for VirtualMCPServer to discover the new backend (should have 4 backends)")
-			Eventually(func() error {
-				status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
-				if err != nil {
-					return err
-				}
-				if status.BackendCount != 4 {
-					return fmt.Errorf("expected 4 backends before deletion, got %d", status.BackendCount)
-				}
-				return nil
-			}, timeout, pollingInterval).Should(Succeed())
-
-			By("Deleting the dedicated backend MCPServer from the group")
-			backend4 := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      backend4Name,
-					Namespace: testNamespace,
-				},
-			}
-			Expect(k8sClient.Delete(ctx, backend4)).To(Succeed())
-
-			By("Waiting for VirtualMCPServer to reconcile and remove the deleted backend")
-			Eventually(func() error {
-				status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
-				if err != nil {
-					return err
-				}
-
-				if status.BackendCount != 3 {
-					return fmt.Errorf("expected 3 backends after removal, got %d", status.BackendCount)
-				}
-
-				if len(status.DiscoveredBackends) != 3 {
-					return fmt.Errorf("expected 3 discovered backends after removal, got %d", len(status.DiscoveredBackends))
-				}
-
-				backendNames := make([]string, len(status.DiscoveredBackends))
-				for i, backend := range status.DiscoveredBackends {
-					backendNames[i] = backend.Name
-				}
-
-				if slices.Contains(backendNames, backend4Name) {
-					return fmt.Errorf("deleted backend %s still found in discovered backends: %v", backend4Name, backendNames)
-				}
-
-				return nil
-			}, timeout, pollingInterval).Should(Succeed(), "VirtualMCPServer should remove the deleted backend")
-
-		})
-
-		It("should remain ready throughout membership changes", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(HasCondition(vmcpServer, "Ready", "True")).To(BeTrue(),
-				"VirtualMCPServer should remain ready after membership changes")
-		})
+		// Note: Backend removal and recovery are tested comprehensively in
+		// virtualmcp_status_reporting_test.go with fast intervals (5s) for quick testing.
+		// That test also verifies phase transitions (Ready→Degraded→Ready) which provides
+		// more thorough coverage than duplicating the test here.
 
 		AfterAll(func() {
 			By("Cleaning up additional backends from membership test")
-			for _, backendName := range []string{backend3Name, backend4Name} {
-				backend := &mcpv1alpha1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      backendName,
-						Namespace: testNamespace,
-					},
-				}
-				_ = k8sClient.Delete(ctx, backend)
+			backend3 := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backend3Name,
+					Namespace: testNamespace,
+				},
 			}
+			_ = k8sClient.Delete(ctx, backend3)
 		})
 	})
 })

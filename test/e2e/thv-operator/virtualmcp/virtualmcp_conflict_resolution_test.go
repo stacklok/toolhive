@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -12,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -22,7 +27,7 @@ type conflictResolutionTestSetup struct {
 	backend1Name    string
 	backend2Name    string
 	namespace       string
-	aggregation     *mcpv1alpha1.AggregationConfig
+	aggregation     *vmcpconfig.AggregationConfig
 	timeout         time.Duration
 	pollingInterval time.Duration
 }
@@ -48,13 +53,13 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 			Namespace: setup.namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: setup.groupName,
+			Config: vmcpconfig.Config{
+				Group:       setup.groupName,
+				Aggregation: setup.aggregation,
 			},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
-			Aggregation: setup.aggregation,
 			ServiceType: "NodePort",
 		},
 	}
@@ -127,9 +132,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
-					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPrefix,
+					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 						PrefixFormat: "{workload}_",
 					},
 				},
@@ -285,9 +290,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionPriority,
-					ConflictResolutionConfig: &mcpv1alpha1.ConflictResolutionConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPriority,
+					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 						PriorityOrder: []string{backend1Name, backend2Name},
 					},
 				},
@@ -396,12 +401,12 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				}, vmcpServer)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal(mcpv1alpha1.ConflictResolutionPriority))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder).To(HaveLen(2))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder[0]).To(Equal(backend1Name))
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder[1]).To(Equal(backend2Name))
+				Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolution).To(Equal(vmcp.ConflictStrategyPriority))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder).To(HaveLen(2))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder[0]).To(Equal(backend1Name))
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolutionConfig.PriorityOrder[1]).To(Equal(backend2Name))
 			})
 		})
 	})
@@ -424,18 +429,18 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: mcpv1alpha1.ConflictResolutionManual,
-					Tools: []mcpv1alpha1.WorkloadToolConfig{
+				aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyManual,
+					Tools: []*vmcpconfig.WorkloadToolConfig{
 						{
 							Workload: backend1Name,
-							Overrides: map[string]mcpv1alpha1.ToolOverride{
+							Overrides: map[string]*vmcpconfig.ToolOverride{
 								"echo": {Name: "echo_backend1"},
 							},
 						},
 						{
 							Workload: backend2Name,
-							Overrides: map[string]mcpv1alpha1.ToolOverride{
+							Overrides: map[string]*vmcpconfig.ToolOverride{
 								"echo": {Name: "echo_backend2"},
 							},
 						},
@@ -490,19 +495,19 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				}, vmcpServer)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(vmcpServer.Spec.Aggregation).ToNot(BeNil())
-				Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal(mcpv1alpha1.ConflictResolutionManual))
-				Expect(vmcpServer.Spec.Aggregation.Tools).To(HaveLen(2))
+				Expect(vmcpServer.Spec.Config.Aggregation).ToNot(BeNil())
+				Expect(vmcpServer.Spec.Config.Aggregation.ConflictResolution).To(Equal(vmcp.ConflictStrategyManual))
+				Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 				// Verify backend1 overrides
-				var backend1Config *mcpv1alpha1.WorkloadToolConfig
-				var backend2Config *mcpv1alpha1.WorkloadToolConfig
-				for i := range vmcpServer.Spec.Aggregation.Tools {
-					if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend1Name {
-						backend1Config = &vmcpServer.Spec.Aggregation.Tools[i]
+				var backend1Config *vmcpconfig.WorkloadToolConfig
+				var backend2Config *vmcpconfig.WorkloadToolConfig
+				for i := range vmcpServer.Spec.Config.Aggregation.Tools {
+					if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
+						backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					}
-					if vmcpServer.Spec.Aggregation.Tools[i].Workload == backend2Name {
-						backend2Config = &vmcpServer.Spec.Aggregation.Tools[i]
+					if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend2Name {
+						backend2Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
 					}
 				}
 

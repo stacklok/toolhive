@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllerutil
 
 import (
@@ -116,8 +119,14 @@ func AddExternalAuthConfigOptions(
 		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
 		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeBearerToken:
+		return fmt.Errorf("bearerToken authentication is not yet implemented")
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No config to add for unauthenticated
+		return nil
+	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+		// Embedded auth server config is handled separately (via volume mounts)
+		// Controller integration will be in a future task
 		return nil
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)

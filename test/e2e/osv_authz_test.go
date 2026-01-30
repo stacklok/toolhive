@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -37,7 +40,7 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 			var cancel context.CancelFunc
 
 			BeforeAll(func() {
-				serverName = generateUniqueServerName("osv-authz-test")
+				serverName = e2e.GenerateUniqueServerName("osv-authz-test")
 
 				// Create a temporary authorization config file
 				// This policy allows anybody to call only the query_vulnerability tool

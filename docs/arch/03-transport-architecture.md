@@ -310,6 +310,31 @@ Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 | **Start/Stop/Restart** | Yes | Yes (proxy only) |
 | **Logs** | Container logs | N/A |
 | **Permission Profile** | Yes | N/A |
+| **Health Checks** | Always enabled | Disabled by default (opt-in via env var) |
+
+### Health Checks for Remote Workloads
+
+**Implementation**: `pkg/transport/http.go:shouldEnableHealthCheck`
+
+ToolHive performs health checks to verify that workloads are running and responding correctly. The behavior differs based on workload type:
+
+**Local workloads (containers):**
+- Health checks are **always enabled**
+- Verifies container is running and responding
+- Critical for detecting container failures
+
+**Remote workloads:**
+- Health checks are **disabled by default**
+- Rationale: Avoid unnecessary network traffic to remote servers
+- Can be enabled with environment variable: `TOOLHIVE_REMOTE_HEALTHCHECKS=true` or `TOOLHIVE_REMOTE_HEALTHCHECKS=1`
+- Useful when you want to monitor remote server availability through ToolHive
+
+**Usage example:**
+```bash
+# Enable health checks for remote workloads
+export TOOLHIVE_REMOTE_HEALTHCHECKS=true
+thv proxy --remote-url https://example.com/mcp my-remote-server
+```
 
 ### Kubernetes Support for Remote MCPs
 
@@ -524,6 +549,37 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, Port, Proto, Prefix).
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
+
+### SSE Endpoint URL Rewriting
+
+**Problem**: When using path-based ingress routing that strips path prefixes:
+
+1. Ingress receives `GET /playwright/sse`, rewrites to `GET /sse`
+2. Backend MCP server responds with `event: endpoint\ndata: /sse?sessionId=abc`
+3. Client constructs incorrect URL without prefix
+
+**Solution**: The transparent proxy rewrites SSE endpoint URLs with the correct prefix.
+
+**Priority order for prefix determination:**
+1. Explicit `--endpoint-prefix` configuration (highest priority)
+2. `X-Forwarded-Prefix` header (when `--trust-proxy-headers` is true)
+3. No rewriting (default)
+
+**Example:**
+```bash
+thv run --transport sse --endpoint-prefix /playwright playwright
+```
+
+**Kubernetes CRD:**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+spec:
+  endpointPrefix: /playwright
+  trustProxyHeaders: true
+```
+
+**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
 
 ## Transport Factory
 

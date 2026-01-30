@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package transport provides utilities for handling different transport modes
 // for communication between the client and MCP server, including stdio transport
 // with automatic re-attachment on Docker/container restarts.
@@ -184,7 +187,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Info("Streamable HTTP proxy started, processing messages...")
+		logger.Debug("Streamable HTTP proxy started, processing messages...")
 	case types.ProxyModeSSE:
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
@@ -196,7 +199,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Info("HTTP SSE proxy started, processing messages...")
+		logger.Debug("HTTP SSE proxy started, processing messages...")
 	default:
 		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
@@ -444,7 +447,7 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 			return nil, attachErr // Retry
 		}
 
-		logger.Info("Successfully re-attached to container - restarting message processing")
+		logger.Debug("Successfully re-attached to container - restarting message processing")
 
 		// Close old stdout and log any errors
 		if closeErr := stdout.Close(); closeErr != nil {
@@ -460,7 +463,7 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		// Start ONLY the stdout reader, not the full processMessages
 		// The existing processMessages goroutine is still running and handling stdin
 		go t.processStdout(ctx, newStdout)
-		logger.Info("Restarted stdout processing with new pipe")
+		logger.Debug("Restarted stdout processing with new pipe")
 		return nil, nil // Success
 	}
 
@@ -510,7 +513,7 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 						return
 					}
 
-					logger.Info("Container stdout closed - exiting read loop")
+					logger.Debug("Container stdout closed - exiting read loop")
 				} else {
 					logger.Errorf("Error reading from container stdout: %v", err)
 				}
@@ -597,9 +600,9 @@ func isSpace(r rune) bool {
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.
 func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string) {
 	// Log the raw line for debugging
-	logger.Infof("JSON-RPC raw: %s", line)
+	logger.Debugf("JSON-RPC raw: %s", line)
 	jsonData := sanitizeJSONString(line)
-	logger.Infof("Sanitized JSON: %s", jsonData)
+	logger.Debugf("Sanitized JSON: %s", jsonData)
 
 	if jsonData == "" || jsonData == "[]" {
 		return
@@ -613,7 +616,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	}
 
 	// Log the message
-	logger.Infof("Received JSON-RPC message: %T", msg)
+	logger.Debugf("Received JSON-RPC message: %T", msg)
 
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
@@ -636,11 +639,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
-	logger.Info("Writing to container stdin")
+	logger.Debug("Writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	logger.Info("Wrote to container stdin")
+	logger.Debug("Wrote to container stdin")
 
 	return nil
 }
@@ -653,7 +656,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 	case err, ok := <-t.errorCh:
 		// Check if the channel is closed
 		if !ok {
-			logger.Infof("Container monitor channel closed for %s", t.containerName)
+			logger.Debugf("Container monitor channel closed for %s", t.containerName)
 			return
 		}
 
@@ -675,7 +678,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		select {
 		case <-t.shutdownCh:
 			// Transport is already stopping or stopped
-			logger.Infof("Transport for %s is already stopping or stopped", t.containerName)
+			logger.Debugf("Transport for %s is already stopping or stopped", t.containerName)
 			return
 		default:
 			// Transport is still running, stop it

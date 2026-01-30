@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package authz
 
 import (
@@ -14,6 +17,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
@@ -26,7 +30,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 	// Initialize logger for tests
 	logger.Initialize()
 	// Create a realistic Cedar authorizer with role-based policies
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			// Basic users can only access weather and news tools
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { principal.claim_role == "user" };`,
@@ -256,7 +260,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(mockHandler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)
@@ -328,7 +332,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 func TestIntegrationNonListOperations(t *testing.T) {
 	t.Parallel()
 	// Create a Cedar authorizer with specific permissions
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { principal.claim_role == "user" };`,
 			`permit(principal, action == Action::"call_tool", resource) when { principal.claim_role == "admin" };`,
@@ -425,7 +429,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(mockHandler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)

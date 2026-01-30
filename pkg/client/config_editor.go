@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -91,7 +94,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Infof("Successfully updated the client config file for MCPServer %s", serverName)
+	logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
 
 	return nil
 }
@@ -134,7 +137,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	if err != nil {
 		// If the patch fails because the path doesn't exist, that's fine - nothing to remove
 		if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
-			logger.Infof("MCPServer %s not found in client config file, nothing to remove", serverName)
+			logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
 			return nil
 		}
 		// For other errors, return the error
@@ -149,7 +152,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 		logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
+	logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
 
 	return nil
 }
@@ -223,7 +226,7 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	logger.Infof("Successfully updated YAML client config file for server %s", serverName)
+	logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
 	return nil
 }
 
@@ -283,7 +286,7 @@ func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	logger.Infof("Successfully removed server %s from YAML config file", serverName)
+	logger.Debugf("Successfully removed server %s from YAML config file", serverName)
 	return nil
 }
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package app provides the entry point for the toolhive command-line application.
 package app
 
@@ -55,6 +58,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.AddCommand(inspectorCommand())
 	rootCmd.AddCommand(newMCPCommand())
 	rootCmd.AddCommand(groupCmd)
+	rootCmd.AddCommand(statusCmd)
 
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true

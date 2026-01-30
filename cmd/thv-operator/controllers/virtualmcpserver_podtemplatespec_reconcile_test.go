@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -14,6 +17,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -58,9 +62,7 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: groupName,
-			},
+			Config:          vmcpconfig.Config{Group: groupName},
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplate),
 		},
 	}
@@ -134,9 +136,7 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: groupName,
-			},
+			Config: vmcpconfig.Config{Group: groupName},
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
 			},
@@ -252,9 +252,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: groupName,
-					},
+					Config:          vmcpconfig.Config{Group: groupName},
 					PodTemplateSpec: podTemplateSpecToRawExtension(t, &tt.existingPodTemplate),
 				},
 			}
@@ -291,9 +289,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: groupName,
-					},
+					Config:          vmcpconfig.Config{Group: groupName},
 					PodTemplateSpec: tt.newPodTemplateSpec,
 				},
 			}

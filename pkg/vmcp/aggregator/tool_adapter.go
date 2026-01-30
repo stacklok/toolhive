@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aggregator provides capability aggregation for Virtual MCP Server.
 package aggregator
 
@@ -25,6 +28,11 @@ func processBackendTools(
 	if workloadConfig == nil {
 		return tools // No configuration for this backend
 	}
+
+	// NOTE: ExcludeAll is NOT applied here. ExcludeAll only affects which tools
+	// are advertised to the LLM, not which tools are available for routing.
+	// This allows composite tools to call backend tools that are excluded from
+	// direct LLM access. ExcludeAll is applied later in MergeCapabilities.
 
 	// If no filter or overrides configured, return tools as-is
 	if len(workloadConfig.Filter) == 0 && len(workloadConfig.Overrides) == 0 {

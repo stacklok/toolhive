@@ -53,7 +53,7 @@ metadata:
   namespace: default
 spec:
   groupRef: my-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
   - name: TRANSPORT
@@ -146,8 +146,21 @@ metadata:
   name: vmcp-simple-composite
   namespace: default
 spec:
-  groupRef:
-    name: my-services
+  config:
+    groupRef: my-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    # Reference the composite tool definition
+    compositeToolRefs:
+      - name: fetch-and-validate
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   incomingAuth:
     type: anonymous
@@ -160,22 +173,6 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Reference the composite tool definition
-  compositeToolRefs:
-    - name: fetch-and-validate
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
 
 ---
 # Example usage from MCP client:

@@ -1,7 +1,11 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package export provides functionality for exporting ToolHive configurations to various formats.
 package export
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -10,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -136,16 +141,21 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	}
 
 	// Convert authz config
-	if config.AuthzConfig != nil && config.AuthzConfig.Cedar != nil && len(config.AuthzConfig.Cedar.Policies) > 0 {
-		mcpServer.Spec.AuthzConfig = &v1alpha1.AuthzConfigRef{
-			Type: v1alpha1.AuthzConfigTypeInline,
-			Inline: &v1alpha1.InlineAuthzConfig{
-				Policies: config.AuthzConfig.Cedar.Policies,
-			},
-		}
+	if config.AuthzConfig != nil && len(config.AuthzConfig.RawConfig()) > 0 {
+		// Extract Cedar config from the config (v1.0 schema has cedar field at top level)
+		var cedarConfig cedar.Config
+		if err := json.Unmarshal(config.AuthzConfig.RawConfig(), &cedarConfig); err == nil &&
+			cedarConfig.Options != nil && len(cedarConfig.Options.Policies) > 0 {
+			mcpServer.Spec.AuthzConfig = &v1alpha1.AuthzConfigRef{
+				Type: v1alpha1.AuthzConfigTypeInline,
+				Inline: &v1alpha1.InlineAuthzConfig{
+					Policies: cedarConfig.Options.Policies,
+				},
+			}
 
-		if config.AuthzConfig.Cedar.EntitiesJSON != "" {
-			mcpServer.Spec.AuthzConfig.Inline.EntitiesJSON = config.AuthzConfig.Cedar.EntitiesJSON
+			if cedarConfig.Options.EntitiesJSON != "" {
+				mcpServer.Spec.AuthzConfig.Inline.EntitiesJSON = cedarConfig.Options.EntitiesJSON
+			}
 		}
 	}
 

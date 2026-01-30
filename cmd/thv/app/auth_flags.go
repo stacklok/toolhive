@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -146,19 +149,22 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 // AddRemoteAuthFlags adds the common remote authentication flags to a command
 func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false,
-		"Enable OAuth/OIDC authentication to remote MCP server")
+		"Enable OAuth/OIDC authentication to remote MCP server (default false)")
 	cmd.Flags().StringVar(&config.RemoteAuthIssuer, "remote-auth-issuer", "",
 		"OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)")
 	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "",
-		"OAuth client ID for remote server authentication")
+		"OAuth client ID for remote server authentication (optional if the authorization server supports dynamic "+
+			"client registration (RFC 7591))")
 	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "",
-		"OAuth client secret for remote server authentication (optional for PKCE)")
+		"OAuth client secret for remote server authentication (optional if the authorization server supports dynamic "+
+			"client registration (RFC 7591) or if using PKCE)")
 	cmd.Flags().StringVar(&config.RemoteAuthClientSecretFile, "remote-auth-client-secret-file", "",
-		"Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)")
+		"Path to file containing OAuth client secret (alternative to --remote-auth-client-secret) (optional if the "+
+			"authorization server supports dynamic client registration (RFC 7591) or if using PKCE)")
 	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{},
 		"OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')")
 	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
-		"Skip opening browser for remote server OAuth flow")
+		"Skip opening browser for remote server OAuth flow (default false)")
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", runner.DefaultCallbackPort,
@@ -173,6 +179,11 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"Bearer token for remote server authentication (alternative to OAuth)")
 	cmd.Flags().StringVar(&config.RemoteAuthBearerTokenFile, "remote-auth-bearer-token-file", "",
 		"Path to file containing bearer token (alternative to --remote-auth-bearer-token)")
+
+	cmd.MarkFlagsMutuallyExclusive("remote-auth-issuer", "remote-auth-authorize-url")
+	cmd.MarkFlagsMutuallyExclusive("remote-auth-issuer", "remote-auth-token-url")
+	cmd.MarkFlagsMutuallyExclusive("remote-auth-client-secret", "remote-auth-client-secret-file")
+	cmd.MarkFlagsMutuallyExclusive("remote-auth-bearer-token", "remote-auth-bearer-token-file")
 
 	// Token Exchange flags
 	cmd.Flags().StringVar(&config.TokenExchangeURL, "token-exchange-url", "",
@@ -191,4 +202,6 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"Type of subject token to exchange. Accepts: access_token (default), id_token (required for Google STS)")
 	cmd.Flags().StringVar(&config.TokenExchangeHeaderName, "token-exchange-header-name", "",
 		"Custom header name for injecting exchanged token (default: replaces Authorization header)")
+
+	cmd.MarkFlagsMutuallyExclusive("token-exchange-client-secret", "token-exchange-client-secret-file")
 }

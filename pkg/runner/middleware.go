@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
@@ -9,7 +12,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
@@ -17,15 +22,17 @@ import (
 // GetSupportedMiddlewareFactories returns a map of supported middleware types to their factory functions
 func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	return map[string]types.MiddlewareFactory{
-		auth.MiddlewareType:              auth.CreateMiddleware,
-		tokenexchange.MiddlewareType:     tokenexchange.CreateMiddleware,
-		mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
-		mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
-		mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
-		usagemetrics.MiddlewareType:      usagemetrics.CreateMiddleware,
-		telemetry.MiddlewareType:         telemetry.CreateMiddleware,
-		authz.MiddlewareType:             authz.CreateMiddleware,
-		audit.MiddlewareType:             audit.CreateMiddleware,
+		auth.MiddlewareType:                   auth.CreateMiddleware,
+		tokenexchange.MiddlewareType:          tokenexchange.CreateMiddleware,
+		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
+		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
+		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+		usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
+		telemetry.MiddlewareType:              telemetry.CreateMiddleware,
+		authz.MiddlewareType:                  authz.CreateMiddleware,
+		audit.MiddlewareType:                  audit.CreateMiddleware,
+		recovery.MiddlewareType:               recovery.CreateMiddleware,
+		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
 	}
 }
 
@@ -143,6 +150,24 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		middlewareConfigs = append(middlewareConfigs, *auditConfig)
 	}
 
+	// Header forward middleware (if configured for remote servers).
+	// Added near the end so it executes closest to the backend handler (innermost).
+	// By this point, WithSecrets() has resolved any secret-backed headers
+	// into resolvedHeaders, so we pass the merged map to the factory.
+	middlewareConfigs, err = addHeaderForwardMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
+	// Recovery middleware (always present, added last to be outermost wrapper)
+	// Middleware is applied in reverse order, so adding last means it executes first
+	// and catches panics from all other middleware and handlers.
+	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create recovery middleware config: %w", err)
+	}
+	middlewareConfigs = append(middlewareConfigs, *recoveryConfig)
+
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
@@ -168,6 +193,22 @@ func addTokenExchangeMiddleware(
 		return nil, fmt.Errorf("failed to create token exchange middleware config: %w", err)
 	}
 	return append(middlewares, *tokenExchangeMwConfig), nil
+}
+
+// addHeaderForwardMiddleware adds header forward middleware if configured for remote servers
+func addHeaderForwardMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig) ([]types.MiddlewareConfig, error) {
+	if config.RemoteURL == "" || !config.HeaderForward.HasHeaders() {
+		return middlewares, nil
+	}
+
+	headerForwardParams := headerfwd.HeaderForwardMiddlewareParams{
+		AddHeaders: config.HeaderForward.ResolvedHeaders(),
+	}
+	headerForwardConfig, err := types.NewMiddlewareConfig(headerfwd.HeaderForwardMiddlewareName, headerForwardParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create header forward middleware config: %w", err)
+	}
+	return append(middlewares, *headerForwardConfig), nil
 }
 
 // addUsageMetricsMiddleware adds usage metrics middleware if enabled

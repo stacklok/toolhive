@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -114,6 +117,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		runner.WithTransportAndPorts(transport, int(proxy.GetProxyPort()), 0),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(proxy.Spec.TrustProxyHeaders),
+		runner.WithEndpointPrefix(proxy.Spec.EndpointPrefix),
 		runner.WithToolsFilter(toolsFilter),
 	}
 
@@ -149,6 +153,9 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, proxy.Spec.Audit)
+
+	// Add header forward configuration if specified
+	addHeaderForwardConfigOptions(proxy, &options)
 
 	// Use the RunConfigBuilder for operator context
 	// Deployer is nil for remote proxies because they connect to external services
@@ -218,5 +225,36 @@ func labelsForRunConfigRemoteProxy(proxyName string) map[string]string {
 		"toolhive.stacklok.io/component":        "run-config",
 		"toolhive.stacklok.io/mcp-remote-proxy": proxyName,
 		"toolhive.stacklok.io/managed-by":       "toolhive-operator",
+	}
+}
+
+// addHeaderForwardConfigOptions adds header forward configuration options to the builder options slice.
+// This handles both plaintext headers (stored directly in RunConfig) and secret-backed headers
+// (which are mounted as env vars and referenced by identifier in RunConfig).
+func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[]runner.RunConfigBuilderOption) {
+	if proxy.Spec.HeaderForward == nil {
+		return
+	}
+
+	// Add plaintext headers directly
+	if len(proxy.Spec.HeaderForward.AddPlaintextHeaders) > 0 {
+		*options = append(*options, runner.WithHeaderForward(proxy.Spec.HeaderForward.AddPlaintextHeaders))
+	}
+
+	// Build AddHeadersFromSecret map: header name → secret identifier
+	// The secret identifier is used by secrets.EnvironmentProvider to look up
+	// the env var (TOOLHIVE_SECRET_<identifier>). The actual secret values are
+	// mounted as env vars by buildHeaderForwardSecretEnvVars() in the deployment.
+	if len(proxy.Spec.HeaderForward.AddHeadersFromSecret) > 0 {
+		headerSecrets := make(map[string]string, len(proxy.Spec.HeaderForward.AddHeadersFromSecret))
+		for _, headerSecret := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
+			if headerSecret.ValueSecretRef == nil {
+				continue
+			}
+			// Get the secret identifier (not the full env var name)
+			_, secretIdentifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+			headerSecrets[headerSecret.HeaderName] = secretIdentifier
+		}
+		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))
 	}
 }

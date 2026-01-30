@@ -41,6 +41,21 @@ func (m *MockStore) EXPECT() *MockStoreMockRecorder {
 	return m.recorder
 }
 
+// CreateExclusive mocks base method.
+func (m *MockStore) CreateExclusive(ctx context.Context, name string) (io.WriteCloser, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateExclusive", ctx, name)
+	ret0, _ := ret[0].(io.WriteCloser)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CreateExclusive indicates an expected call of CreateExclusive.
+func (mr *MockStoreMockRecorder) CreateExclusive(ctx, name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateExclusive", reflect.TypeOf((*MockStore)(nil).CreateExclusive), ctx, name)
+}
+
 // Delete mocks base method.
 func (m *MockStore) Delete(ctx context.Context, name string) error {
 	m.ctrl.T.Helper()

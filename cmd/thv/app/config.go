@@ -1,9 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -100,7 +103,7 @@ func init() {
 		"allow-private-ip",
 		"p",
 		false,
-		"Allow setting the registry URL or API endpoint, even if it references a private IP address",
+		"Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)",
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
@@ -119,7 +122,6 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully set CA certificate path: %s\n", filepath.Clean(certPath))
 	return nil
 }
 
@@ -143,7 +145,7 @@ func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
 
 func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	provider := config.NewDefaultProvider()
-	certPath, exists, _ := provider.GetCACert()
+	_, exists, _ := provider.GetCACert()
 
 	if !exists {
 		fmt.Println("No CA certificate is currently configured.")
@@ -155,75 +157,44 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully removed CA certificate configuration: %s\n", certPath)
 	return nil
 }
 
 func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
-	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateRegistryIp)
 
-	provider := config.NewDefaultProvider()
-
-	switch registryType {
-	case config.RegistryTypeURL:
-		err := provider.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
-		if err != nil {
-			return err
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set a remote registry file: %s\n", cleanPath)
-		if allowPrivateRegistryIp {
-			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
-			fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
-				"Make sure you trust any remote registries you configure with ToolHive.\n")
-		} else {
-			fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
-				" as it's not needed for the provided registry.\n")
-		}
-		return nil
-	case config.RegistryTypeAPI:
-		err := provider.SetRegistryAPI(cleanPath, allowPrivateRegistryIp)
-		if err != nil {
-			return err
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set registry API endpoint: %s\n", cleanPath)
-		if allowPrivateRegistryIp {
-			fmt.Print("Successfully enabled use of private IP addresses for the registry API\n")
-			fmt.Print("Caution: allowing registry API URLs containing private IP addresses may decrease your security.\n" +
-				"Make sure you trust any registry APIs you configure with ToolHive.\n")
-		}
-		return nil
-	case config.RegistryTypeFile:
-		err := provider.SetRegistryFile(cleanPath)
-		if err != nil {
-			return err
-		}
-		// Reset the cached provider so it re-initializes with the new config
-		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set local registry file: %s\n", cleanPath)
-		return nil
-	default:
-		return fmt.Errorf("unsupported registry type")
+	service := registry.NewConfigurator()
+	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
+	if err != nil {
+		// Enhance error message for better user experience
+		return enhanceRegistryError(err, input, registryType)
 	}
+
+	// Reset the registry provider cache to pick up the new configuration
+	registry.ResetDefaultProvider()
+
+	// Add additional security warnings for private IP usage
+	if allowPrivateRegistryIp {
+		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any registries you configure with ToolHive.\n")
+	}
+
+	return nil
 }
 
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	provider := config.NewDefaultProvider()
-	url, localPath, _, registryType := provider.GetRegistryConfig()
+	service := registry.NewConfigurator()
+	registryType, source := service.GetRegistryInfo()
 
 	switch registryType {
 	case config.RegistryTypeAPI:
-		fmt.Printf("Current registry: %s (API endpoint)\n", url)
+		fmt.Printf("Current registry: %s (API endpoint)\n", source)
 	case config.RegistryTypeURL:
-		fmt.Printf("Current registry: %s (remote file)\n", url)
+		fmt.Printf("Current registry: %s (remote file)\n", source)
 	case config.RegistryTypeFile:
-		fmt.Printf("Current registry: %s (local file)\n", localPath)
+		fmt.Printf("Current registry: %s (local file)\n", source)
 		// Check if the file still exists
-		if _, err := os.Stat(localPath); err != nil {
+		if _, err := os.Stat(source); err != nil {
 			fmt.Printf("Warning: The configured local registry file is not accessible: %v\n", err)
 		}
 	default:
@@ -233,29 +204,67 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	provider := config.NewDefaultProvider()
-	url, localPath, _, registryType := provider.GetRegistryConfig()
-
-	if registryType == "default" {
-		fmt.Println("No custom registry is currently configured.")
-		return nil
-	}
-
-	err := provider.UnsetRegistry()
+	service := registry.NewConfigurator()
+	err := service.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	// Reset the cached provider so it re-initializes with the new config
+	// Reset the registry provider cache to pick up the default configuration
 	registry.ResetDefaultProvider()
 
-	if url != "" {
-		fmt.Printf("Successfully removed registry URL: %s\n", url)
-	} else if localPath != "" {
-		fmt.Printf("Successfully removed local registry file: %s\n", localPath)
-	}
-	fmt.Println("Will use built-in registry.")
 	return nil
+}
+
+// enhanceRegistryError enhances registry errors with helpful user-facing messages.
+// Error type mapping (matches API HTTP status codes):
+//   - Timeout/Unreachable errors → 504 Gateway Timeout
+//   - Validation errors → 502 Bad Gateway
+func enhanceRegistryError(err error, url, registryType string) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check if this is a RegistryError with structured error information
+	var regErr *config.RegistryError
+	if errors.As(err, &regErr) {
+		// Check for timeout errors (504 Gateway Timeout)
+		if errors.Is(regErr.Err, config.ErrRegistryTimeout) {
+			return fmt.Errorf("connection timed out after 5 seconds\n"+
+				"The %s at %s is not responding.\n"+
+				"Possible causes:\n"+
+				"  - The URL is incorrect\n"+
+				"  - The registry server is down or slow to respond\n"+
+				"  - Network connectivity issues\n"+
+				"Original error: %v", registryType, url, regErr.Err)
+		}
+
+		// Check for unreachable errors (504 Gateway Timeout)
+		if errors.Is(regErr.Err, config.ErrRegistryUnreachable) {
+			return fmt.Errorf("connection failed\n"+
+				"The %s at %s is not reachable.\n"+
+				"Please check:\n"+
+				"  - The URL is correct: %s\n"+
+				"  - The registry server is running and accessible\n"+
+				"  - Your network connection\n"+
+				"  - Firewall or proxy settings\n"+
+				"Original error: %v", registryType, url, url, regErr.Err)
+		}
+
+		// Check for validation errors (502 Bad Gateway)
+		if errors.Is(regErr.Err, config.ErrRegistryValidationFailed) {
+			return fmt.Errorf("validation failed\n"+
+				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n"+
+				"Please verify:\n"+
+				"  - The URL points to a valid MCP registry\n"+
+				"  - The registry format is correct\n"+
+				"  - The registry contains at least one server\n"+
+				"Original error: %v", registryType, url, regErr.Err)
+		}
+	}
+
+	// For other errors, return the original error with minimal enhancement
+	return fmt.Errorf("failed to set %s: %w", registryType, err)
 }
 
 func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
@@ -278,10 +287,5 @@ func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	if disable {
-		fmt.Println("Usage metrics disabled.")
-	} else {
-		fmt.Println("Usage metrics enabled.")
-	}
 	return nil
 }

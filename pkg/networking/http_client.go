@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package networking
 
 import (
@@ -14,6 +17,12 @@ import (
 
 	"golang.org/x/oauth2"
 )
+
+// HTTPClient is an interface for making HTTP requests.
+// This interface is satisfied by *http.Client and allows for dependency injection in testing.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
 
 var privateIPBlocks []*net.IPNet
 
@@ -130,6 +139,12 @@ func (b *HttpClientBuilder) WithInsecureAllowHTTP(allow bool) *HttpClientBuilder
 	return b
 }
 
+// WithTimeout sets the HTTP client timeout
+func (b *HttpClientBuilder) WithTimeout(timeout time.Duration) *HttpClientBuilder {
+	b.clientTimeout = timeout
+	return b
+}
+
 // Build creates the configured HTTP client
 func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	transport := &http.Transport{
@@ -184,7 +199,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 
 	client := &http.Client{
 		Transport: clientTransport,
-		Timeout:   HttpTimeout,
+		Timeout:   b.clientTimeout,
 	}
 
 	return client, nil

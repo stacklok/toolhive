@@ -1,8 +1,14 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode"
@@ -382,4 +388,126 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 	}
 
 	return nil
+}
+
+// TestConfigTypesDocumentedInCRDAPI verifies that all struct types referenced by Config
+// are documented in the CRD API documentation.
+//
+// This test ensures that when new types are added to the config package,
+// they are also included in the generated API documentation.
+//
+// If this test fails, you need to:
+// 1. Add the +gendoc marker to the struct that needs to be documented
+// 2. Ensure the package has a doc.go with +groupName marker
+// 3. Run 'task operator-manifests' from the repo root to regenerate docs
+func TestConfigTypesDocumentedInCRDAPI(t *testing.T) {
+	t.Parallel()
+
+	// Find the repo root by looking for go.mod
+	_, filename, _, ok := runtime.Caller(0)
+	require.True(t, ok, "failed to get caller info")
+
+	repoRoot := filepath.Dir(filename)
+	for !fileExists(filepath.Join(repoRoot, "go.mod")) && repoRoot != "/" {
+		repoRoot = filepath.Dir(repoRoot)
+	}
+	require.NotEqual(t, "/", repoRoot, "could not find repo root")
+
+	// Read the CRD API documentation
+	crdAPIPath := filepath.Join(repoRoot, "docs", "operator", "crd-api.md")
+	content, err := os.ReadFile(crdAPIPath)
+	require.NoError(t, err, "failed to read crd-api.md")
+	crdAPIContent := string(content)
+
+	// Collect all struct types referenced by Config
+	var cfg Config
+	visited := make(map[reflect.Type]bool)
+	types := collectStructTypes(reflect.TypeOf(cfg), visited)
+
+	// Check that each type has a definition in the CRD API docs
+	var missingTypes []string
+	for _, typeName := range types {
+		// The heading format is: #### pkg.subpkg.TypeName
+		// The anchor format is: #pkgsubpkgtypename (dots removed, lowercase)
+		// We search for the heading pattern
+		heading := fmt.Sprintf("#### %s", typeName)
+		if !strings.Contains(crdAPIContent, heading) {
+			missingTypes = append(missingTypes, typeName)
+		}
+	}
+
+	if len(missingTypes) > 0 {
+		t.Errorf("The following types from pkg/vmcp/config are not documented in crd-api.md:\n"+
+			"  %s\n\n"+
+			"To fix this:\n"+
+			"1. Add '// +gendoc' marker above the struct definition\n"+
+			"2. Ensure the package has a doc.go with '// +groupName=toolhive.stacklok.dev'\n"+
+			"3. Run 'task crdref-gen' from cmd/thv-operator to regenerate CRD docs",
+			strings.Join(missingTypes, "\n  "))
+	}
+}
+
+// collectStructTypes recursively collects all struct type names referenced by a type.
+// Returns a list of type names in the format "pkg.TypeName" for types in the toolhive codebase.
+func collectStructTypes(t reflect.Type, visited map[reflect.Type]bool) []string {
+	var types []string
+
+	// Unwrap pointers, slices, maps
+	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+		if t.Kind() == reflect.Map {
+			// Also check map key/value types
+			types = append(types, collectStructTypes(t.Key(), visited)...)
+			t = t.Elem()
+		} else {
+			t = t.Elem()
+		}
+	}
+
+	if t.Kind() != reflect.Struct {
+		return types
+	}
+
+	// Skip external packages
+	pkgPath := t.PkgPath()
+	if pkgPath == "" || !strings.HasPrefix(pkgPath, "github.com/stacklok/toolhive") {
+		return types
+	}
+
+	// Skip pkg/json.Data types - they are generic container types that don't need documentation
+	if strings.HasSuffix(pkgPath, "/pkg/json") && strings.HasPrefix(t.Name(), "Data[") {
+		return types
+	}
+
+	// Avoid infinite recursion
+	if visited[t] {
+		return types
+	}
+	visited[t] = true
+
+	// Extract package prefix (last two path segments)
+	parts := strings.Split(pkgPath, "/")
+	var prefix string
+	if len(parts) >= 2 {
+		prefix = parts[len(parts)-2] + "." + parts[len(parts)-1]
+	} else {
+		prefix = parts[len(parts)-1]
+	}
+
+	types = append(types, prefix+"."+t.Name())
+
+	// Recurse into fields
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.IsExported() {
+			types = append(types, collectStructTypes(field.Type, visited)...)
+		}
+	}
+
+	return types
+}
+
+// fileExists checks if a file exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -75,6 +78,8 @@ func mcpServeCmdFunc(cmd *cobra.Command, _ []string) error {
 	<-sigChan
 
 	// Graceful shutdown
+	// Use Background context for server shutdown after signal received. We need a fresh
+	// context with its own timeout to ensure the shutdown operation completes successfully.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 

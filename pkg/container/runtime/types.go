@@ -1,15 +1,20 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runtime provides interfaces and types for container runtimes,
 // including creating, starting, stopping, and monitoring containers.
 package runtime
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/env"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
@@ -158,9 +163,11 @@ type Runtime interface {
 
 	// GetWorkloadLogs retrieves logs from the primary container of the workload.
 	// If follow is true, the logs will be streamed continuously.
+	// The lines parameter specifies the maximum number of lines to return from the end of the logs.
+	// If lines is 0, all logs are returned.
 	// For workloads with multiple containers, this returns logs from the
 	// main MCP server container.
-	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error)
+	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool, lines int) (string, error)
 
 	// GetWorkloadInfo retrieves detailed information about a workload.
 	// This includes status, resource usage, network configuration,
@@ -312,5 +319,8 @@ func IsKubernetesRuntimeWithEnv(envReader env.Reader) bool {
 // Common errors
 var (
 	// ErrWorkloadNotFound indicates that the specified workload was not found.
-	ErrWorkloadNotFound = fmt.Errorf("workload not found")
+	ErrWorkloadNotFound = thverrors.WithCode(
+		errors.New("workload not found"),
+		http.StatusNotFound,
+	)
 )

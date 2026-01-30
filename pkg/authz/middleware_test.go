@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package authz
 
 import (
@@ -16,6 +19,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -30,7 +34,7 @@ func TestMiddleware(t *testing.T) {
 	logger.Initialize()
 
 	// Create a Cedar authorizer
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
@@ -202,6 +206,165 @@ func TestMiddleware(t *testing.T) {
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
 		},
+		{
+			name:   "Resources subscribe requires authorization",
+			method: "resources/subscribe",
+			params: map[string]interface{}{
+				"uri": "data",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Resources unsubscribe requires authorization",
+			method: "resources/unsubscribe",
+			params: map[string]interface{}{
+				"uri": "secret",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Resources templates list is authorized and filtered",
+			method: "resources/templates/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Roots list is always allowed",
+			method: "roots/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Logging setLevel is always allowed",
+			method: "logging/setLevel",
+			params: map[string]interface{}{
+				"level": "debug",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Completion complete is always allowed",
+			method: "completion/complete",
+			params: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"name": "greeting",
+				},
+				"argument": map[string]interface{}{
+					"name":  "name",
+					"value": "Jo",
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Notifications are always allowed",
+			method: "notifications/message",
+			params: map[string]interface{}{
+				"method": "test",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Unknown method is denied by default",
+			method: "unknown/method",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Sampling createMessage is denied by default (security-sensitive)",
+			method: "sampling/createMessage",
+			params: map[string]interface{}{
+				"messages": []interface{}{
+					map[string]interface{}{
+						"role":    "user",
+						"content": map[string]interface{}{"type": "text", "text": "Hello"},
+					},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Elicitation create is denied by default",
+			method: "elicitation/create",
+			params: map[string]interface{}{
+				"message": "Enter your name",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Tasks list is denied by default",
+			method: "tasks/list",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Tasks get is denied by default",
+			method: "tasks/get",
+			params: map[string]interface{}{
+				"taskId": "task-123",
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
 	}
 
 	// Run test cases
@@ -239,7 +402,7 @@ func TestMiddleware(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(handler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
 
 			// Serve the request
 			middleware.ServeHTTP(rr, req)
@@ -255,7 +418,7 @@ func TestMiddleware(t *testing.T) {
 func TestMiddlewareWithGETRequest(t *testing.T) {
 	t.Parallel()
 	// Create a Cedar authorizer
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
@@ -271,7 +434,7 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	})
 
 	// Apply the middleware chain: MCP parsing first, then authorization
-	middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(handler))
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
 
 	// Create a GET request
 	req, err := http.NewRequest(http.MethodGet, "/messages", nil)
@@ -297,17 +460,17 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 	t.Run("create middleware with config data", func(t *testing.T) {
 		t.Parallel()
 
-		// Create config data
-		configData := &Config{
+		// Create config data using the new API
+		configData := mustNewConfig(t, cedar.Config{
 			Version: "1.0",
-			Type:    ConfigTypeCedarV1,
-			Cedar: &CedarConfig{
+			Type:    cedar.ConfigType,
+			Options: &cedar.ConfigOptions{
 				Policies: []string{
 					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 				},
 				EntitiesJSON: "[]",
 			},
-		}
+		})
 
 		// Create middleware parameters with ConfigData
 		params := FactoryMiddlewareParams{
@@ -318,10 +481,13 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
 		require.NoError(t, err)
 
-		// Create mock runner
+		// Create mock runner and config
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
+		mockConfig := mocks.NewMockRunnerConfig(ctrl)
+		mockConfig.EXPECT().GetName().Return("test-server").AnyTimes()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
 		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
@@ -332,17 +498,17 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 	t.Run("create middleware with config path (backwards compatibility)", func(t *testing.T) {
 		t.Parallel()
 
-		// Create a temporary config file
-		configData := &Config{
+		// Create a temporary config file using the new API
+		configData := mustNewConfig(t, cedar.Config{
 			Version: "1.0",
-			Type:    ConfigTypeCedarV1,
-			Cedar: &CedarConfig{
+			Type:    cedar.ConfigType,
+			Options: &cedar.ConfigOptions{
 				Policies: []string{
 					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 				},
 				EntitiesJSON: "[]",
 			},
-		}
+		})
 
 		tmpFile, err := os.CreateTemp("", "authz_config_*.json")
 		require.NoError(t, err)
@@ -364,10 +530,13 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
 		require.NoError(t, err)
 
-		// Create mock runner
+		// Create mock runner and config
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
+		mockConfig := mocks.NewMockRunnerConfig(ctrl)
+		mockConfig.EXPECT().GetName().Return("test-server").AnyTimes()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
 		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
@@ -378,17 +547,17 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 	t.Run("config data takes precedence over config path", func(t *testing.T) {
 		t.Parallel()
 
-		// Create config data
-		configData := &Config{
+		// Create config data using the new API
+		configData := mustNewConfig(t, cedar.Config{
 			Version: "1.0",
-			Type:    ConfigTypeCedarV1,
-			Cedar: &CedarConfig{
+			Type:    cedar.ConfigType,
+			Options: &cedar.ConfigOptions{
 				Policies: []string{
 					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 				},
 				EntitiesJSON: "[]",
 			},
-		}
+		})
 
 		// Create middleware parameters with both ConfigData and ConfigPath
 		// ConfigData should take precedence, so ConfigPath can be invalid
@@ -401,10 +570,13 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
 		require.NoError(t, err)
 
-		// Create mock runner
+		// Create mock runner and config
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
+		mockConfig := mocks.NewMockRunnerConfig(ctrl)
+		mockConfig.EXPECT().GetName().Return("test-server").AnyTimes()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
 		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware - should succeed even with invalid path because ConfigData takes precedence
@@ -475,10 +647,13 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
 		require.NoError(t, err)
 
-		// Create mock runner
+		// Create mock runner and config (GetConfig is called before validation)
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
+		mockConfig := mocks.NewMockRunnerConfig(ctrl)
+		mockConfig.EXPECT().GetName().Return("test-server").AnyTimes()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
 		// Should not call AddMiddleware since creation should fail
 
 		// Test CreateMiddleware - should fail
@@ -612,8 +787,8 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 			t.Parallel()
 
 			// Create a Cedar authorizer
-			authorizer, err := NewCedarAuthorizer(
-				CedarAuthorizerConfig{
+			authorizer, err := cedar.NewCedarAuthorizer(
+				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
 				},
@@ -639,7 +814,7 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				authorizer.Middleware,
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)
@@ -782,8 +957,8 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			t.Parallel()
 
 			// Create a Cedar authorizer
-			authorizer, err := NewCedarAuthorizer(
-				CedarAuthorizerConfig{
+			authorizer, err := cedar.NewCedarAuthorizer(
+				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
 				},
@@ -809,7 +984,7 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				authorizer.Middleware,
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)
@@ -839,6 +1014,80 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			}
 			if tc.expectedError {
 				require.NotNil(t, rpc["error"])
+			}
+		})
+	}
+}
+
+// TestConvertToJSONRPC2ID tests the convertToJSONRPC2ID function with various ID types
+func TestConvertToJSONRPC2ID(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		input       interface{}
+		expectError bool
+	}{
+		{
+			name:        "nil ID",
+			input:       nil,
+			expectError: false,
+		},
+		{
+			name:        "string ID",
+			input:       "test-id",
+			expectError: false,
+		},
+		{
+			name:        "int ID",
+			input:       42,
+			expectError: false,
+		},
+		{
+			name:        "int64 ID",
+			input:       int64(123456789),
+			expectError: false,
+		},
+		{
+			name:        "float64 ID (JSON number)",
+			input:       float64(99.0),
+			expectError: false,
+		},
+		{
+			name:        "unsupported type (slice)",
+			input:       []string{"invalid"},
+			expectError: true,
+		},
+		{
+			name:        "unsupported type (map)",
+			input:       map[string]string{"key": "value"},
+			expectError: true,
+		},
+		{
+			name:        "unsupported type (struct)",
+			input:       struct{ Name string }{Name: "test"},
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := convertToJSONRPC2ID(tc.input)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "unsupported ID type")
+			} else {
+				assert.NoError(t, err)
+				// For nil input, we expect an empty ID
+				if tc.input == nil {
+					assert.Equal(t, jsonrpc2.ID{}, result)
+				} else {
+					// For other valid inputs, we just verify no error
+					assert.NotNil(t, result)
+				}
 			}
 		})
 	}

@@ -1,21 +1,44 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package session
 
-import "errors"
+import (
+	"errors"
+	"net/http"
+
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
+)
 
 // Common session errors
 var (
 	// ErrSessionDisconnected is returned when trying to send to a disconnected session
-	ErrSessionDisconnected = errors.New("session is disconnected")
+	ErrSessionDisconnected = thverrors.WithCode(
+		errors.New("session is disconnected"),
+		http.StatusServiceUnavailable,
+	)
 
 	// ErrMessageChannelFull is returned when the message channel is full
-	ErrMessageChannelFull = errors.New("message channel is full")
+	ErrMessageChannelFull = thverrors.WithCode(
+		errors.New("message channel is full"),
+		http.StatusServiceUnavailable,
+	)
 
 	// ErrSessionNotFound is returned when a session cannot be found
-	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionNotFound = thverrors.WithCode(
+		errors.New("session not found"),
+		http.StatusNotFound,
+	)
 
 	// ErrSessionAlreadyExists is returned when trying to create a session with an existing ID
-	ErrSessionAlreadyExists = errors.New("session already exists")
+	ErrSessionAlreadyExists = thverrors.WithCode(
+		errors.New("session already exists"),
+		http.StatusConflict,
+	)
 
 	// ErrInvalidSessionType is returned when an invalid session type is provided
-	ErrInvalidSessionType = errors.New("invalid session type")
+	ErrInvalidSessionType = thverrors.WithCode(
+		errors.New("invalid session type"),
+		http.StatusBadRequest,
+	)
 )

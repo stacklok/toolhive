@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main is the entry point for the ToolHive CLI.
 package main
 
@@ -41,6 +44,14 @@ func main() {
 		// Check and perform auto-discovery migration if needed
 		// Handles the auto-discovery flag depreciation, only executes once on old config files
 		client.CheckAndPerformAutoDiscoveryMigration()
+
+		// Check and perform telemetry config migration if needed
+		// Converts telemetry_config.samplingRate from float64 to string in run configs
+		migration.CheckAndPerformTelemetryConfigMigration()
+
+		// Check and perform middleware telemetry migration if needed
+		// Ensures middleware-based telemetry configs are properly migrated
+		migration.CheckAndPerformMiddlewareTelemetryMigration()
 
 		// Check and perform default group migration if needed
 		// Migrates existing workloads to the default group, only executes once

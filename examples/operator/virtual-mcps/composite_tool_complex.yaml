@@ -60,7 +60,7 @@ metadata:
   namespace: default
 spec:
   groupRef: data-processing-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
   - name: TRANSPORT
@@ -84,7 +84,7 @@ metadata:
   namespace: default
 spec:
   groupRef: data-processing-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
   - name: TRANSPORT
@@ -288,8 +288,25 @@ metadata:
   name: vmcp-data-processor
   namespace: default
 spec:
-  groupRef:
-    name: data-processing-services
+  config:
+    groupRef: data-processing-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    # Reference the composite tool definition
+    compositeToolRefs:
+      - name: multi-source-data-processor
+    operational:
+      timeouts:
+        default: 5m
+        perWorkload:
+          yardstick-streamable: 3m
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   incomingAuth:
     type: anonymous
@@ -302,23 +319,3 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Reference the composite tool definition
-  compositeToolRefs:
-    - name: multi-source-data-processor
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-
-  operational:
-    timeouts:
-      default: 5m
-      perWorkload:
-        yardstick-streamable: 3m
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail

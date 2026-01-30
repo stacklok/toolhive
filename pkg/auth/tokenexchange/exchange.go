@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package tokenexchange provides OAuth 2.0 Token Exchange (RFC 8693) support.
 package tokenexchange
 

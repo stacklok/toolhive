@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -73,7 +76,7 @@ var groupRunCmd = &cobra.Command{
 func validateGroupArg() func(cmd *cobra.Command, args []string) error {
 	return func(_ *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return fmt.Errorf("group name is required")
+			return fmt.Errorf("group name is required. Hint: use 'thv group list' to see available groups")
 		}
 		if err := validation.ValidateGroupName(args[0]); err != nil {
 			return fmt.Errorf("invalid group name: %w", err)
@@ -97,12 +100,7 @@ func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
-	if err := manager.Create(ctx, groupName); err != nil {
-		return err
-	}
-
-	fmt.Printf("Group '%s' created successfully.\n", groupName)
-	return nil
+	return manager.Create(ctx, groupName)
 }
 
 func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -153,7 +151,10 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	if strings.EqualFold(groupName, groups.DefaultGroup) {
-		return fmt.Errorf("cannot delete the %s group", groups.DefaultGroup)
+		return fmt.Errorf(
+			"cannot delete the %s group. "+
+				"Hint: the 'default' group is reserved for workloads that are not assigned to any other group",
+			groups.DefaultGroup)
 	}
 	manager, err := groups.NewManager()
 	if err != nil {
@@ -166,7 +167,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("group '%s' does not exist", groupName)
+		return fmt.Errorf("group '%s' does not exist. Hint: use 'thv group list' to see available groups", groupName)
 	}
 
 	// Create workloads manager
@@ -199,7 +200,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	// Handle workloads if any exist
 	if len(groupWorkloads) > 0 {
 		if withWorkloadsFlag {
-			err = deleteWorkloadsInGroup(ctx, workloadsManager, groupWorkloads, groupName)
+			err = deleteWorkloadsInGroup(ctx, workloadsManager, groupWorkloads)
 		} else {
 			err = moveWorkloadsToGroup(ctx, workloadsManager, groupWorkloads, groupName, groups.DefaultGroup)
 		}
@@ -212,7 +213,6 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
 
-	fmt.Printf("Group '%s' deleted successfully\n", groupName)
 	return nil
 }
 
@@ -264,7 +264,6 @@ func deleteWorkloadsInGroup(
 	ctx context.Context,
 	workloadManager workloads.Manager,
 	groupWorkloads []core.Workload,
-	groupName string,
 ) error {
 	// Extract workload names for deletion
 	var workloadNames []string
@@ -273,17 +272,16 @@ func deleteWorkloadsInGroup(
 	}
 
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	complete, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
 	// Wait for the deletion to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
-	fmt.Printf("Deleted %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }
 
@@ -313,7 +311,6 @@ func moveWorkloadsToGroup(
 		return fmt.Errorf("failed to update client configurations with new group: %w", err)
 	}
 
-	fmt.Printf("Moved %d workload(s) from group '%s' to group '%s'\n", len(groupWorkloads), groupFrom, groupTo)
 	return nil
 }
 
@@ -362,10 +359,6 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("group '%s' not found in registry", groupName)
 	}
 
-	totalServers := len(registryGroup.Servers) + len(registryGroup.RemoteServers)
-	fmt.Printf("Found registry group '%s' with %d servers (%d container, %d remote)\n",
-		registryGroup.Name, totalServers, len(registryGroup.Servers), len(registryGroup.RemoteServers))
-
 	// Validate all preconditions before making any changes
 	if err := validateGroupRunPreconditions(ctx, groupName, registryGroup, groupSecrets, groupEnvVars); err != nil {
 		return err
@@ -381,10 +374,8 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := groupManager.Create(ctx, groupName); err != nil {
 		return fmt.Errorf("failed to create group '%s': %w", groupName, err)
 	}
-	fmt.Printf("Created runtime group '%s'\n", groupName)
 
 	// Deploy servers - continue on failure but warn user
-	var successfulServers []string
 	var failedServers []string
 
 	// Deploy container servers
@@ -396,9 +387,6 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 			failedServers = append(failedServers, serverName)
 			continue
 		}
-
-		successfulServers = append(successfulServers, serverName)
-		fmt.Printf("Started server '%s'\n", serverName)
 	}
 
 	// Deploy remote servers
@@ -410,15 +398,9 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 			failedServers = append(failedServers, serverName)
 			continue
 		}
-
-		successfulServers = append(successfulServers, serverName)
-		fmt.Printf("Started remote server '%s'\n", serverName)
 	}
 
-	// Report deployment results
-	if len(successfulServers) > 0 {
-		fmt.Printf("Successfully deployed %d servers in group '%s': %v\n", len(successfulServers), groupName, successfulServers)
-	}
+	// Report deployment failures
 	if len(failedServers) > 0 {
 		fmt.Printf("Warning: %d servers failed to deploy: %v\n", len(failedServers), failedServers)
 	}
@@ -453,7 +435,10 @@ func validateRuntimeGroupDoesNotExist(ctx context.Context, groupName string) err
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return fmt.Errorf("runtime group '%s' already exists", groupName)
+		return fmt.Errorf(
+			"runtime group '%s' already exists. "+
+				"Hint: use 'thv group rm %s' to remove it first, or choose a different group name",
+			groupName, groupName)
 	}
 	return nil
 }
@@ -476,7 +461,10 @@ func validateServersDoNotExist(ctx context.Context, registryGroup *types.Group) 
 			return fmt.Errorf("failed to check if server '%s' exists: %w", serverName, err)
 		}
 		if exists {
-			return fmt.Errorf("MCP server '%s' already exists", serverName)
+			return fmt.Errorf(
+				"MCP server '%s' already exists. "+
+					"Hint: use 'thv rm %s' to remove it first, or rename the existing server",
+				serverName, serverName)
 		}
 	}
 
@@ -487,7 +475,10 @@ func validateServersDoNotExist(ctx context.Context, registryGroup *types.Group) 
 			return fmt.Errorf("failed to check if server '%s' exists: %w", serverName, err)
 		}
 		if exists {
-			return fmt.Errorf("MCP server '%s' already exists", serverName)
+			return fmt.Errorf(
+				"MCP server '%s' already exists. "+
+					"Hint: use 'thv rm %s' to remove it first, or rename the existing server",
+				serverName, serverName)
 		}
 	}
 
@@ -708,7 +699,7 @@ func init() {
 
 	// Add --with-workloads flag to group rm command
 	groupRmCmd.Flags().BoolVar(&withWorkloadsFlag, "with-workloads", false,
-		"Delete all workloads in the group along with the group")
+		"Delete all workloads in the group along with the group (default false)")
 
 	// Add flags to group run command
 	groupRunCmd.Flags().StringArrayVar(&groupSecrets, "secret", []string{},

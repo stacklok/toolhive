@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -5,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -55,8 +60,8 @@ Examples:
 		ValidArgsFunction: completeLogsArgs,
 	}
 
-	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs)")
-	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs")
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs) (default false)")
+	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs (default false)")
 
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
@@ -91,6 +96,12 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	follow := viper.GetBool("follow")
 	proxy := viper.GetBool("proxy")
 
+	if follow {
+		var cancel context.CancelFunc
+		ctx, cancel = signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+	}
+
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
@@ -98,10 +109,11 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	if proxy {
 		if follow {
-			return getProxyLogs(workloadName)
+			return getProxyLogs(ctx, workloadName)
 		}
 		// Use the shared manager method for non-follow proxy logs
-		logs, err := manager.GetProxyLogs(ctx, workloadName)
+		// CLI gets all logs (0 = unlimited)
+		logs, err := manager.GetProxyLogs(ctx, workloadName, 0)
 		if err != nil {
 			logger.Infof("Proxy logs not found for workload %s", workloadName)
 			return nil
@@ -110,7 +122,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	logs, err := manager.GetLogs(ctx, workloadName, follow)
+	// CLI gets all logs (0 = unlimited)
+	logs, err := manager.GetLogs(ctx, workloadName, follow, 0)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			logger.Infof("Workload %s not found", workloadName)
@@ -241,7 +254,7 @@ func reportPruneResults(prunedFiles, errs []string) {
 }
 
 // getProxyLogs reads and displays the proxy logs for a given workload in follow mode
-func getProxyLogs(workloadName string) error {
+func getProxyLogs(ctx context.Context, workloadName string) error {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -257,11 +270,11 @@ func getProxyLogs(workloadName string) error {
 		return nil
 	}
 
-	return followProxyLogFile(cleanLogFilePath)
+	return followProxyLogFile(ctx, cleanLogFilePath)
 }
 
 // followProxyLogFile implements tail -f functionality for proxy logs
-func followProxyLogFile(logFilePath string) error {
+func followProxyLogFile(ctx context.Context, logFilePath string) error {
 	// Clean the file path to prevent path traversal
 	cleanLogFilePath := filepath.Clean(logFilePath)
 
@@ -290,6 +303,11 @@ func followProxyLogFile(logFilePath string) error {
 	}
 
 	// Follow the file for new content
+	contentCheckInterval := 100 * time.Millisecond
+
+	ticker := time.NewTicker(contentCheckInterval)
+	defer ticker.Stop()
+
 	for {
 		// Read any new content
 		buffer := make([]byte, 1024)
@@ -302,7 +320,12 @@ func followProxyLogFile(logFilePath string) error {
 			fmt.Print(string(buffer[:n]))
 		}
 
-		// Sleep briefly before checking for more content
-		time.Sleep(100 * time.Millisecond)
+		// Wait for next iteration or cancellation
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			// Continue to next iteration
+		}
 	}
 }

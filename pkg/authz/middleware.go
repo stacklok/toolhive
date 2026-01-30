@@ -1,4 +1,9 @@
-// Package authz provides authorization utilities using Cedar policies.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+// Package authz provides authorization utilities for MCP servers.
+// It supports a pluggable authorizer architecture where different authorization
+// backends (e.g., Cedar, OPA) can be registered and used based on configuration.
 package authz
 
 import (
@@ -9,6 +14,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
@@ -16,20 +22,61 @@ import (
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
+// Methods with empty Feature and Operation are always allowed (protocol-level).
+// Methods not in this map are denied by default for security.
 var MCPMethodToFeatureOperation = map[string]struct {
-	Feature   MCPFeature
-	Operation MCPOperation
+	Feature   authorizers.MCPFeature
+	Operation authorizers.MCPOperation
 }{
-	"tools/call":      {Feature: MCPFeatureTool, Operation: MCPOperationCall},
-	"tools/list":      {Feature: MCPFeatureTool, Operation: MCPOperationList},
-	"prompts/get":     {Feature: MCPFeaturePrompt, Operation: MCPOperationGet},
-	"prompts/list":    {Feature: MCPFeaturePrompt, Operation: MCPOperationList},
-	"resources/read":  {Feature: MCPFeatureResource, Operation: MCPOperationRead},
-	"resources/list":  {Feature: MCPFeatureResource, Operation: MCPOperationList},
-	"features/list":   {Feature: "", Operation: MCPOperationList},
-	"ping":            {Feature: "", Operation: ""}, // Always allowed
-	"progress/update": {Feature: "", Operation: ""}, // Always allowed
-	"initialize":      {Feature: "", Operation: ""}, // Always allowed
+	// Core protocol methods - always allowed
+	"initialize":      {Feature: "", Operation: ""}, // Protocol initialization
+	"ping":            {Feature: "", Operation: ""}, // Health check
+	"progress/update": {Feature: "", Operation: ""}, // Progress reporting
+
+	// Tool operations - require authorization
+	"tools/call": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall},
+	"tools/list": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationList},
+
+	// Prompt operations - require authorization
+	"prompts/get":  {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationGet},
+	"prompts/list": {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationList},
+
+	// Resource operations - require authorization
+	"resources/read":           {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+	"resources/list":           {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
+	"resources/templates/list": {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
+	"resources/subscribe":      {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+	"resources/unsubscribe":    {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+
+	// Discovery and capability methods - always allowed
+	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
+	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
+
+	// Logging and client preferences - always allowed
+	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging
+
+	// Argument completion - always allowed (UX feature)
+	"completion/complete": {Feature: "", Operation: ""}, // Argument completion for prompts/resources
+
+	// Notifications (server-to-client, informational) - always allowed
+	"notifications/message":                {Feature: "", Operation: ""}, // General notifications
+	"notifications/initialized":            {Feature: "", Operation: ""}, // Initialization complete
+	"notifications/progress":               {Feature: "", Operation: ""}, // Progress updates
+	"notifications/cancelled":              {Feature: "", Operation: ""}, // Request cancellation
+	"notifications/roots/list_changed":     {Feature: "", Operation: ""}, // Roots changed
+	"notifications/tools/list_changed":     {Feature: "", Operation: ""}, // Tools changed
+	"notifications/prompts/list_changed":   {Feature: "", Operation: ""}, // Prompts changed
+	"notifications/resources/list_changed": {Feature: "", Operation: ""}, // Resources changed
+	"notifications/resources/updated":      {Feature: "", Operation: ""}, // Resource updated
+	"notifications/tasks/status":           {Feature: "", Operation: ""}, // Task status update
+
+	// NOTE: The following MCP methods are NOT included and will be DENIED by default:
+	// - elicitation/create: User input prompting (requires new authorization feature)
+	// - sampling/createMessage: LLM text generation (security-sensitive, requires new authorization feature)
+	// - tasks/list, tasks/get, tasks/cancel, tasks/result: Task management (requires new authorization feature)
+	//
+	// To enable these methods, add appropriate authorization features/operations or add them
+	// to the always-allowed list above after security review.
 }
 
 // shouldSkipInitialAuthorization checks if the request should skip authorization
@@ -110,34 +157,18 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 }
 
-// Middleware creates an HTTP middleware that authorizes MCP requests using Cedar policies.
+// Middleware creates an HTTP middleware that authorizes MCP requests.
 // This middleware extracts the MCP message from the request, determines the feature,
-// operation, and resource ID, and authorizes the request using Cedar policies.
+// operation, and resource ID, and authorizes the request using the configured authorizer.
 //
 // For list operations (tools/list, prompts/list, resources/list), the middleware allows
 // the request to proceed but intercepts the response to filter out items that the user
 // is not authorized to access based on the corresponding call/get/read policies.
 //
-// Example usage:
-//
-//	// Create a Cedar authorizer with a policy that covers all tools and resources
-//	cedarAuthorizer, _ := authz.NewCedarAuthorizer(authz.CedarAuthorizerConfig{
-//	    Policies: []string{
-//	        `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-//	        `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
-//	        `permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
-//	    },
-//	})
-//
-//	// Create a transport with the middleware
-//	middlewares := []types.Middleware{
-//	    jwtValidator.Middleware, // JWT middleware should be applied first
-//	    cedarAuthorizer.Middleware, // Cedar middleware is applied second
-//	}
-//
-//	proxy := httpsse.NewHTTPSSEProxy(8080, "my-container", middlewares...)
-//	proxy.Start(context.Background())
-func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
+// The authorizer parameter should implement the authorizers.Authorizer interface,
+// which can be created using authz.CreateMiddlewareFromConfig() or directly
+// from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
+func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
@@ -163,13 +194,22 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		// Get the feature and operation from the method
 		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
-			// Unknown method, let the next handler deal with it
+			// Unknown method - deny by default for security
+			// Methods must be explicitly added to MCPMethodToFeatureOperation to be allowed
+			handleUnauthorized(w, parsedRequest.ID,
+				fmt.Errorf("unknown MCP method: %s (not configured for authorization)", parsedRequest.Method))
+			return
+		}
+
+		// Methods with empty feature and operation are always allowed (protocol-level)
+		if featureOp.Feature == "" && featureOp.Operation == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Handle list operations differently - allow them through but filter the response
-		if featureOp.Operation == MCPOperationList {
+		if featureOp.Operation == authorizers.MCPOperationList {
+
 			// Create a response filtering writer to intercept and filter the response
 			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method)
 
@@ -257,7 +297,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("either config_data or config_path is required for authorization middleware")
 	}
 
-	middleware, err := authzConfig.CreateMiddleware()
+	middleware, err := CreateMiddlewareFromConfig(authzConfig, runner.GetConfig().GetName())
 	if err != nil {
 		return fmt.Errorf("failed to create authorization middleware: %w", err)
 	}

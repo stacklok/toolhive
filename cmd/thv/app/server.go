@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -91,6 +94,9 @@ var serveCmd = &cobra.Command{
 			// Ensure MCP server is shut down on context cancellation
 			go func() {
 				<-ctx.Done()
+				// Use Background context for MCP server shutdown. The parent context is already
+				// cancelled at this point, so we need a fresh context with its own timeout to
+				// ensure the shutdown operation completes successfully.
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer shutdownCancel()
 				if err := mcpServer.Shutdown(shutdownCtx); err != nil {

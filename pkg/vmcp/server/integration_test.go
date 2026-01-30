@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package server_test
 
 import (
@@ -116,6 +119,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		mockBackendClient,
 		conflictResolver,
 		nil, // no tool configs
+		nil, // no tracer provider in tests
 	)
 
 	// Step 3: Run aggregation on mock backends
@@ -288,8 +292,11 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Mock CallTool for tool execution
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any()).
-		Return(map[string]any{"result": "success"}, nil).
+		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{"result": "success"},
+			Content:           []vmcp.Content{},
+		}, nil).
 		AnyTimes()
 
 	// Create real components
@@ -305,7 +312,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Create discovery manager
 	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
-	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil)
+	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil)
 	discoveryMgr, err := discovery.NewManager(agg)
 	require.NoError(t, err)
 
@@ -495,7 +502,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 			Times(2)
 
 		resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -533,7 +540,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 
 		resolver, err := aggregator.NewPriorityConflictResolver([]string{"backend1", "backend2"})
 		require.NoError(t, err)
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -619,15 +626,21 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(map[string]any{
-			"result": "Sunny, 72°F",
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{
+			StructuredContent: map[string]any{
+				"result": "Sunny, 72°F",
+			},
+			Content: []vmcp.Content{},
 		}, nil).
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
 		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
-		Return([]byte(`{"temp": 72, "condition": "sunny"}`), nil).
+		Return(&vmcp.ResourceReadResult{
+			Contents: []byte(`{"temp": 72, "condition": "sunny"}`),
+			MimeType: "application/json",
+		}, nil).
 		AnyTimes()
 
 	// Create backends
@@ -647,7 +660,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
 			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
 			return agg.AggregateCapabilities(ctx, backends)
 		}).
 		AnyTimes()

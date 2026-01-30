@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package export
 
 import (
@@ -13,11 +16,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// mustNewAuthzConfig creates a new authz.Config or fails the test.
+func mustNewAuthzConfig(t *testing.T, cedarOpts cedar.ConfigOptions) *authz.Config {
+	t.Helper()
+	config, err := authz.NewConfig(cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedarOpts,
+	})
+	require.NoError(t, err, "Failed to create authz config")
+	return config
+}
 
 func TestWriteK8sManifest(t *testing.T) {
 	t.Parallel()
@@ -164,15 +180,12 @@ func TestWriteK8sManifest(t *testing.T) {
 				Name:      "test",
 				BaseName:  "test",
 				Transport: types.TransportTypeStdio,
-				AuthzConfig: &authz.Config{
-					Type: authz.ConfigTypeCedarV1,
-					Cedar: &authz.CedarConfig{
-						Policies: []string{
-							"permit(principal, action, resource);",
-						},
-						EntitiesJSON: "[]",
+				AuthzConfig: mustNewAuthzConfig(t, cedar.ConfigOptions{
+					Policies: []string{
+						"permit(principal, action, resource);",
 					},
-				},
+					EntitiesJSON: "[]",
+				}),
 			},
 			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
 				t.Helper()

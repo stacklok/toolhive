@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package k8s_test
 
 import (
@@ -130,7 +133,7 @@ func TestBackendWatcher_StartValidation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-validation", registry)
 	require.NoError(t, err)
 
 	// Start watcher in background with a short timeout
@@ -242,7 +245,7 @@ func TestBackendWatcher_ContextCancellation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-cancellation", registry)
 	require.NoError(t, err)
 
 	// Create a context that's already cancelled

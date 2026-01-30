@@ -244,7 +244,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -316,7 +316,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -427,7 +427,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -492,7 +492,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
@@ -535,7 +535,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -584,7 +584,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -624,7 +624,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Config: vmcpconfig.Config{Group: "test-group"},
 					// No OutgoingAuth specified
 				},
 			},
@@ -776,170 +776,6 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestDiscoverBackendsWithExternalAuthConfigIntegration tests the full integration
-// of ExternalAuthConfig discovery and resolution in the discoverBackends flow
-func TestDiscoverBackendsWithExternalAuthConfigIntegration(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-
-	// Create a VirtualMCPServer with discovered mode
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "discovered",
-			},
-		},
-	}
-
-	// Create MCPGroup
-	mcpGroup := &mcpv1alpha1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-group",
-			Namespace: "default",
-		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase:   mcpv1alpha1.MCPGroupPhaseReady,
-			Servers: []string{"backend-1", "backend-2"},
-		},
-	}
-
-	// Create MCPServers - one with ExternalAuthConfig, one without
-	mcpServers := []mcpv1alpha1.MCPServer{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "backend-1",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  "test-group",
-				Image:     "test-image:latest",
-				Transport: "streamable-http",
-				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
-					Name: "auth-config-1",
-				},
-			},
-			Status: mcpv1alpha1.MCPServerStatus{
-				Phase: mcpv1alpha1.MCPServerPhaseRunning,
-				URL:   "http://mcp-backend-1-proxy.default.svc.cluster.local:8080",
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "backend-2",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  "test-group",
-				Image:     "test-image:latest",
-				Transport: "streamable-http",
-				// No ExternalAuthConfigRef
-			},
-			Status: mcpv1alpha1.MCPServerStatus{
-				Phase: mcpv1alpha1.MCPServerPhaseRunning,
-				URL:   "http://mcp-backend-2-proxy.default.svc.cluster.local:8080",
-			},
-		},
-	}
-
-	// Create ExternalAuthConfig
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "auth-config-1",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL:         "https://oauth.example.com/token",
-				ClientID:         "test-client-id",
-				Audience:         "backend-service",
-				Scopes:           []string{"read", "write"},
-				SubjectTokenType: "access_token",
-			},
-		},
-	}
-
-	// Build objects list for fake client
-	objects := []client.Object{vmcp, mcpGroup, authConfig}
-	for i := range mcpServers {
-		objects = append(objects, &mcpServers[i])
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(objects...).
-		Build()
-
-	r := &VirtualMCPServerReconciler{
-		Client:           fakeClient,
-		Scheme:           scheme,
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}
-
-	ctx := context.Background()
-
-	// Test that buildOutgoingAuthConfig correctly discovers and converts ExternalAuthConfig
-	typedWorkloads := []workloads.TypedWorkload{
-		{
-			Name: "backend-1",
-			Type: workloads.WorkloadTypeMCPServer,
-		},
-		{
-			Name: "backend-2",
-			Type: workloads.WorkloadTypeMCPServer,
-		},
-	}
-	authConfigResult, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-	require.NoError(t, err)
-	require.NotNil(t, authConfigResult)
-
-	// Verify that backend-1 has token_exchange auth configured
-	assert.Contains(t, authConfigResult.Backends, "backend-1")
-	assert.Equal(t, "token_exchange", authConfigResult.Backends["backend-1"].Type)
-	assert.NotNil(t, authConfigResult.Backends["backend-1"].TokenExchange)
-	assert.Equal(t, "https://oauth.example.com/token", authConfigResult.Backends["backend-1"].TokenExchange.TokenURL)
-	assert.Equal(t, "test-client-id", authConfigResult.Backends["backend-1"].TokenExchange.ClientID)
-	assert.Equal(t, "backend-service", authConfigResult.Backends["backend-1"].TokenExchange.Audience)
-
-	// Verify that backend-2 does not have auth config (no ExternalAuthConfigRef)
-	assert.NotContains(t, authConfigResult.Backends, "backend-2")
-
-	// Test that discoverBackends uses the auth config
-	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
-	require.NoError(t, err)
-
-	// Verify that backend-1 has authConfigRef in status
-	backend1Found := false
-	for _, backend := range discoveredBackends {
-		if backend.Name == "backend-1" {
-			backend1Found = true
-			assert.Equal(t, "auth-config-1", backend.AuthConfigRef)
-			assert.Equal(t, mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef, backend.AuthType)
-			break
-		}
-	}
-	assert.True(t, backend1Found, "backend-1 should be discovered")
-
-	// Verify that backend-2 does not have authConfigRef
-	backend2Found := false
-	for _, backend := range discoveredBackends {
-		if backend.Name == "backend-2" {
-			backend2Found = true
-			assert.Empty(t, backend.AuthConfigRef)
-			assert.Empty(t, backend.AuthType)
-			break
-		}
-	}
-	assert.True(t, backend2Found, "backend-2 should be discovered")
 }
 
 // TestGenerateUniqueTokenExchangeEnvVarName tests the generateUniqueTokenExchangeEnvVarName function

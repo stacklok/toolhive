@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package config provides the configuration model for Virtual MCP Server.
 package config
 
@@ -16,6 +19,9 @@ const (
 	// defaultUnhealthyThreshold is the default number of consecutive failures
 	// before marking a backend as unhealthy.
 	defaultUnhealthyThreshold = 3
+
+	// defaultStatusReportingInterval is the default interval for reporting status updates.
+	defaultStatusReportingInterval = 30 * time.Second
 
 	// defaultPartialFailureMode defines the default behavior when some backends fail.
 	// "fail" means the entire request fails if any backend is unavailable.
@@ -46,9 +52,10 @@ func DefaultOperationalConfig() *OperationalConfig {
 			PerWorkload: nil,
 		},
 		FailureHandling: &FailureHandlingConfig{
-			HealthCheckInterval: Duration(defaultHealthCheckInterval),
-			UnhealthyThreshold:  defaultUnhealthyThreshold,
-			PartialFailureMode:  defaultPartialFailureMode,
+			HealthCheckInterval:     Duration(defaultHealthCheckInterval),
+			UnhealthyThreshold:      defaultUnhealthyThreshold,
+			StatusReportingInterval: Duration(defaultStatusReportingInterval),
+			PartialFailureMode:      defaultPartialFailureMode,
 			CircuitBreaker: &CircuitBreakerConfig{
 				Enabled:          defaultCircuitBreakerEnabled,
 				FailureThreshold: defaultCircuitBreakerFailureThreshold,

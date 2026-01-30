@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package composer provides composite tool workflow execution for Virtual MCP Server.
 package composer
 
@@ -13,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -192,6 +196,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusTimedOut)
 				finalState.StartTime = result.StartTime
+				// Use Background context for final state persistence after workflow timeout.
+				// The execution context is already cancelled/timed out, but we need to persist
+				// the final state for audit and status tracking purposes.
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -214,6 +221,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 		if e.stateStore != nil {
 			finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
 			finalState.StartTime = result.StartTime
+			// Use Background context for final state persistence after workflow failure.
+			// The execution context may already be cancelled, but we need to persist
+			// the final failure state for audit and status tracking purposes.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -249,6 +259,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
 				finalState.StartTime = result.StartTime
+				// Use Background context for final state persistence after workflow failure.
+				// The execution context may already be cancelled, but we need to persist
+				// the final failure state for audit and status tracking purposes.
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
@@ -270,6 +283,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 	if e.stateStore != nil {
 		finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusCompleted)
 		finalState.StartTime = result.StartTime
+		// Use Background context for final state persistence after workflow completion.
+		// The execution context may already be cancelled or expired, but we need to persist
+		// the final completed state for audit and status tracking purposes.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState); err != nil {
@@ -414,7 +430,7 @@ func (e *workflowEngine) executeToolStep(
 		return e.handleToolStepFailure(step, workflowCtx, retryCount, err)
 	}
 
-	return e.handleToolStepSuccess(step, workflowCtx, output, retryCount)
+	return e.handleToolStepSuccess(ctx, step, workflowCtx, output, retryCount)
 }
 
 // callToolWithRetry calls a tool with retry logic using exponential backoff.
@@ -436,13 +452,42 @@ func (e *workflowEngine) callToolWithRetry(
 	attemptCount := 0
 	operation := func() (map[string]any, error) {
 		attemptCount++
-		output, err := e.backendClient.CallTool(ctx, target, step.Tool, args)
+		// TODO: For composite tools, we may want to propagate metadata from the parent request
+		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
 		if err != nil {
 			logger.Warnf("Tool call failed for step %s (attempt %d/%d): %v",
 				step.ID, attemptCount, maxRetries+1, err)
 			return nil, err
 		}
-		return output, nil
+
+		// Safety check: result should never be nil if err is nil, but check defensively
+		if result == nil {
+			logger.Errorf("Tool call for step %s returned nil result without error", step.ID)
+			return nil, fmt.Errorf("nil tool result for step %s", step.ID)
+		}
+
+		// Check if tool execution failed (MCP protocol-level error)
+		// Per new BackendClient semantics: IsError=true means tool execution failed,
+		// not just a transport error. We need to treat this as a step failure.
+		if result.IsError {
+			// Extract error message from Content or StructuredContent
+			errorMsg := e.extractErrorMessage(result)
+			logger.Warnf("Tool %s execution failed for step %s (attempt %d/%d): %s",
+				step.Tool, step.ID, attemptCount, maxRetries+1, errorMsg)
+			return nil, fmt.Errorf("%w: %s", vmcp.ErrToolExecutionFailed, errorMsg)
+		}
+
+		// Extract output map from result.
+		// Workflow logic uses map[string]any for template variable substitution.
+		// Prefer StructuredContent (already a map), fall back to Content array conversion.
+		// The _meta field is not needed for workflow execution, so we don't extract it.
+		if result.StructuredContent != nil {
+			return result.StructuredContent, nil
+		}
+
+		// Fallback: convert Content array to map for backward compatibility.
+		// This happens when backends return only Content without StructuredContent.
+		return conversion.ContentArrayToMap(result.Content), nil
 	}
 
 	// Execute with retry
@@ -456,6 +501,36 @@ func (e *workflowEngine) callToolWithRetry(
 	)
 
 	return output, attemptCount - 1, err // Return retry count (attempts - 1)
+}
+
+// extractErrorMessage extracts a user-friendly error message from a failed tool call result.
+// It tries Content array first, then StructuredContent, then falls back to a generic message.
+func (*workflowEngine) extractErrorMessage(result *vmcp.ToolCallResult) string {
+	// Try to extract from Content array (first text item)
+	if len(result.Content) > 0 {
+		for _, content := range result.Content {
+			if content.Type == "text" && content.Text != "" {
+				return content.Text
+			}
+		}
+	}
+
+	// Try to extract from StructuredContent
+	if result.StructuredContent != nil {
+		// Try common error field names
+		if errMsg, ok := result.StructuredContent["error"].(string); ok && errMsg != "" {
+			return errMsg
+		}
+		if errMsg, ok := result.StructuredContent["message"].(string); ok && errMsg != "" {
+			return errMsg
+		}
+		if errMsg, ok := result.StructuredContent["text"].(string); ok && errMsg != "" {
+			return errMsg
+		}
+	}
+
+	// Fallback to generic message
+	return "tool execution error"
 }
 
 // getRetryConfig extracts retry configuration from step.
@@ -488,7 +563,7 @@ func (*workflowEngine) handleToolStepFailure(
 	retryCount int,
 	err error,
 ) error {
-	finalErr := fmt.Errorf("%w: tool %s in step %s: %v",
+	finalErr := fmt.Errorf("%w: tool %s in step %s: %w",
 		ErrToolCallFailed, step.Tool, step.ID, err)
 	workflowCtx.RecordStepFailure(step.ID, finalErr)
 
@@ -511,6 +586,7 @@ func (*workflowEngine) handleToolStepFailure(
 
 // handleToolStepSuccess handles a successful tool step.
 func (e *workflowEngine) handleToolStepSuccess(
+	ctx context.Context,
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 	output map[string]any,
@@ -524,7 +600,7 @@ func (e *workflowEngine) handleToolStepSuccess(
 	}
 
 	// Checkpoint workflow state
-	e.checkpointWorkflowState(workflowCtx)
+	e.checkpointWorkflowState(ctx, workflowCtx)
 
 	logger.Debugf("Step %s completed successfully", step.ID)
 	return nil
@@ -732,7 +808,7 @@ func (*workflowEngine) buildWorkflowStatus(workflowCtx *WorkflowContext, status 
 }
 
 // checkpointWorkflowState saves the current workflow state to the state store.
-func (e *workflowEngine) checkpointWorkflowState(workflowCtx *WorkflowContext) {
+func (e *workflowEngine) checkpointWorkflowState(ctx context.Context, workflowCtx *WorkflowContext) {
 	if e.stateStore == nil {
 		return
 	}
@@ -740,11 +816,11 @@ func (e *workflowEngine) checkpointWorkflowState(workflowCtx *WorkflowContext) {
 	// Build workflow status
 	state := e.buildWorkflowStatus(workflowCtx, WorkflowStatusRunning)
 
-	// Save state (use background context to avoid cancellation issues)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Save state with timeout derived from parent context to respect cancellation
+	saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, state); err != nil {
+	if err := e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, state); err != nil {
 		logger.Warnf("Failed to checkpoint workflow state for %s: %v", workflowCtx.WorkflowID, err)
 	}
 }

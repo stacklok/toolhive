@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package templates provides utilities for parsing and analyzing Go templates.
 package templates
 
@@ -9,8 +12,9 @@ import (
 
 // ExtractReferences finds all field references in a template string.
 // Returns the full field paths (e.g., ".steps.step1.output", ".params.message").
+// It uses FuncMap() to ensure templates with custom functions can be parsed.
 func ExtractReferences(tmplStr string) ([]string, error) {
-	tmpl, err := template.New("extract").Parse(tmplStr)
+	tmpl, err := template.New("extract").Funcs(FuncMap()).Parse(tmplStr)
 	if err != nil {
 		return nil, err
 	}

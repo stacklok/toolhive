@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package types
 
 import (
@@ -64,10 +67,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		port = 0
 	}
 
-	// check if we have the label for transport type (toolhive-transport)
-	transportType := labels.GetTransportType(container.Labels)
+	transportTypeLabel := labels.GetTransportType(container.Labels)
 
-	tType, err := types.ParseTransportType(transportType)
+	tType, err := types.ParseTransportType(transportTypeLabel)
 	if err != nil {
 		// If we can't parse the transport type, default to SSE.
 		tType = types.TransportTypeSSE
@@ -82,8 +84,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	// Generate URL for the MCP server
 	url := ""
 	if port > 0 {
-		url = transport.GenerateMCPServerURL(transportType, runConfig.ProxyMode, transport.LocalhostIPv4, port, name, "")
+		url = transport.GenerateMCPServerURL(tType.String(), runConfig.ProxyMode, transport.LocalhostIPv4, port, name, "")
 	}
+
 	// Filter out standard ToolHive labels to show only user-defined labels
 	userLabels := make(map[string]string)
 	for key, value := range container.Labels {
@@ -108,6 +111,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		Port:          port,
 		Labels:        userLabels,
 		Group:         runConfig.Group,
+		StartedAt:     container.StartedAt,
 	}, nil
 }
 
@@ -117,6 +121,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 func GetEffectiveProxyMode(transportType types.TransportType, proxyMode string) string {
 	// If the underlying transport is stdio, return the proxy mode (could be empty)
 	if transportType == types.TransportTypeStdio {
+		if proxyMode == "" {
+			return types.ProxyModeStreamableHTTP.String()
+		}
 		return proxyMode
 	}
 

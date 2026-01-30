@@ -27,6 +27,10 @@ jobs:
     name: Codegen
     uses: ./.github/workflows/verify-gen.yml
   # Tier 2: Expensive integration tests - only run after all fast checks pass
+  helm-charts:
+    name: Helm Charts
+    uses: ./.github/workflows/helm-charts-test.yml
+    secrets: inherit
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, codegen]

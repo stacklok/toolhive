@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package server
 
 import (
@@ -21,13 +24,13 @@ func (h *Handler) RemoveServer(ctx context.Context, request mcp.CallToolRequest)
 	}
 
 	// Delete the workload
-	group, err := h.workloadManager.DeleteWorkloads(ctx, []string{args.Name})
+	complete, err := h.workloadManager.DeleteWorkloads(ctx, []string{args.Name})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to remove server: %v", err)), nil
 	}
 
 	// Wait for the delete operation to complete
-	if err := group.Wait(); err != nil {
+	if err := complete(); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to remove server: %v", err)), nil
 	}
 

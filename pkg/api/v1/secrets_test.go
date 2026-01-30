@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -15,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -43,9 +47,9 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 		expectedCode int
 	}{
 		{
-			name: "valid none provider setup",
+			name: "valid environment provider setup",
 			requestBody: setupSecretsRequest{
-				ProviderType: string(secrets.NoneType),
+				ProviderType: string(secrets.EnvironmentType),
 			},
 			expectedCode: http.StatusCreated,
 		},
@@ -75,7 +79,7 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			routes := NewSecretsRoutesWithProvider(configProvider)
-			routes.setupSecretsProvider(w, req)
+			apierrors.ErrorHandler(routes.setupSecretsProvider).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
 
@@ -107,13 +111,13 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 				ProviderType: "invalid",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Invalid secrets provider type: invalid (valid types: encrypted, 1password, none)",
+			errorMessage: "invalid secrets provider type: invalid (valid types: encrypted, 1password, environment)",
 		},
 		{
 			name:         "invalid json body",
 			requestBody:  "invalid json",
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Invalid request body",
+			errorMessage: "invalid request body",
 		},
 	}
 
@@ -146,7 +150,7 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			routes := NewSecretsRoutesWithProvider(configProvider)
-			routes.setupSecretsProvider(w, req)
+			apierrors.ErrorHandler(routes.setupSecretsProvider).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
 			assert.Contains(t, w.Body.String(), tt.errorMessage)
@@ -171,7 +175,7 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 				Value: "test-value",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Both 'key' and 'value' are required",
+			errorMessage: "both 'key' and 'value' are required",
 		},
 		{
 			name: "missing value",
@@ -180,13 +184,13 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 				Value: "",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Both 'key' and 'value' are required",
+			errorMessage: "both 'key' and 'value' are required",
 		},
 		{
 			name:         "invalid json body",
 			requestBody:  "invalid json",
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Invalid request body",
+			errorMessage: "invalid request body",
 		},
 	}
 
@@ -219,7 +223,7 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			routes := NewSecretsRoutesWithProvider(configProvider)
-			routes.createSecret(w, req)
+			apierrors.ErrorHandler(routes.createSecret).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
 			assert.Contains(t, w.Body.String(), tt.errorMessage)
@@ -245,7 +249,7 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 				Value: "new-value",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Secret key is required",
+			errorMessage: "secret key is required",
 		},
 		{
 			name:      "missing value",
@@ -254,14 +258,14 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 				Value: "",
 			},
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Value is required",
+			errorMessage: "value is required",
 		},
 		{
 			name:         "invalid json body",
 			secretKey:    "test-key",
 			requestBody:  "invalid json",
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Invalid request body",
+			errorMessage: "invalid request body",
 		},
 	}
 
@@ -301,7 +305,7 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			routes := NewSecretsRoutesWithProvider(configProvider)
-			routes.updateSecret(w, req)
+			apierrors.ErrorHandler(routes.updateSecret).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
 			assert.Contains(t, w.Body.String(), tt.errorMessage)
@@ -323,7 +327,7 @@ func TestDeleteSecret_InvalidRequests(t *testing.T) {
 			name:         "empty secret key",
 			secretKey:    "",
 			expectedCode: http.StatusBadRequest,
-			errorMessage: "Secret key is required",
+			errorMessage: "secret key is required",
 		},
 	}
 
@@ -354,7 +358,7 @@ func TestDeleteSecret_InvalidRequests(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			routes := NewSecretsRoutesWithProvider(configProvider)
-			routes.deleteSecret(w, req)
+			apierrors.ErrorHandler(routes.deleteSecret).ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
 			assert.Contains(t, w.Body.String(), tt.errorMessage)
@@ -415,13 +419,13 @@ func TestRequestResponseTypes(t *testing.T) {
 		t.Parallel()
 		resp := getSecretsProviderResponse{
 			Name:         "test-provider",
-			ProviderType: "none",
+			ProviderType: "environment",
 			Capabilities: providerCapabilitiesResponse{
-				CanRead:    false,
+				CanRead:    true,
 				CanWrite:   false,
 				CanDelete:  false,
-				CanList:    true,
-				CanCleanup: true,
+				CanList:    false,
+				CanCleanup: false,
 			},
 		}
 		data, err := json.Marshal(resp)
@@ -485,10 +489,10 @@ func TestErrorHandling(t *testing.T) {
 		w := httptest.NewRecorder()
 
 		routes := NewSecretsRoutesWithProvider(configProvider)
-		routes.setupSecretsProvider(w, req)
+		apierrors.ErrorHandler(routes.setupSecretsProvider).ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Contains(t, w.Body.String(), "Invalid request body")
+		assert.Contains(t, w.Body.String(), "invalid request body")
 	})
 
 	t.Run("empty request body", func(t *testing.T) {
@@ -510,7 +514,7 @@ func TestErrorHandling(t *testing.T) {
 		w := httptest.NewRecorder()
 
 		routes := NewSecretsRoutesWithProvider(configProvider)
-		routes.createSecret(w, req)
+		apierrors.ErrorHandler(routes.createSecret).ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
@@ -529,12 +533,12 @@ func TestErrorHandling(t *testing.T) {
 		// Create a test config provider
 		configProvider := config.NewPathProvider(configPath)
 
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"provider_type": "none"}`))
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"provider_type": "environment"}`))
 		// Deliberately not setting Content-Type header
 		w := httptest.NewRecorder()
 
 		routes := NewSecretsRoutesWithProvider(configProvider)
-		routes.setupSecretsProvider(w, req)
+		apierrors.ErrorHandler(routes.setupSecretsProvider).ServeHTTP(w, req)
 
 		// Should still work as the handler doesn't strictly require content-type
 		assert.Equal(t, http.StatusCreated, w.Code)
@@ -564,7 +568,7 @@ func TestRouterIntegration(t *testing.T) {
 
 		// Test POST / endpoint
 		setupReq := setupSecretsRequest{
-			ProviderType: string(secrets.NoneType),
+			ProviderType: string(secrets.EnvironmentType),
 		}
 		body, err := json.Marshal(setupReq)
 		require.NoError(t, err)

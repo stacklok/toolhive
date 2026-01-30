@@ -65,7 +65,7 @@ metadata:
     environment: production
 spec:
   groupRef: production-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
   - name: TRANSPORT
@@ -114,7 +114,7 @@ metadata:
     environment: production
 spec:
   groupRef: production-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
   - name: TRANSPORT
@@ -140,8 +140,23 @@ metadata:
     environment: production
 spec:
   # Reference to the MCPGroup containing backend MCPServers
-  groupRef:
-    name: production-services
+  config:
+    groupRef: production-services
+    # Aggregation configuration with priority conflict resolution
+    aggregation:
+      conflictResolution: priority
+      conflictResolutionConfig:
+        # Priority order for backends (first has highest priority)
+        priorityOrder:
+          - yardstick-streamable
+          - fetch
+          - yardstick-sse
+    # Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   # Incoming authentication (client -> vMCP)
   # Using OIDC for secure authentication
@@ -185,16 +200,6 @@ spec:
   outgoingAuth:
     source: discovered
 
-  # Aggregation configuration with priority conflict resolution
-  aggregation:
-    conflictResolution: priority
-    conflictResolutionConfig:
-      # Priority order for backends (first has highest priority)
-      priorityOrder:
-        - yardstick-streamable
-        - fetch
-        - yardstick-sse
-
   # Service configuration
   serviceType: LoadBalancer
 
@@ -227,10 +232,3 @@ spec:
                     operator: In
                     values:
                       - production
-
-  # Operational settings
-  operational:
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail

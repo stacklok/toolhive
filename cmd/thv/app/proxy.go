@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -113,6 +116,10 @@ var (
 
 	// Remote server authentication flags
 	remoteAuthFlags RemoteAuthFlags
+
+	// Header forwarding flags
+	remoteForwardHeaders       []string
+	remoteForwardHeadersSecret []string
 )
 
 // Environment variable names
@@ -139,6 +146,13 @@ func init() {
 
 	// Add remote server authentication flags
 	AddRemoteAuthFlags(proxyCmd, &remoteAuthFlags)
+
+	// Add header forwarding flags
+	// Using StringArrayVar (not StringSliceVar) to avoid comma-splitting in header values
+	proxyCmd.Flags().StringArrayVar(&remoteForwardHeaders, "remote-forward-headers", []string{},
+		"Headers to inject into requests to remote server (format: Name=Value, can be repeated)")
+	proxyCmd.Flags().StringArrayVar(&remoteForwardHeadersSecret, "remote-forward-headers-secret", []string{},
+		"Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -211,26 +225,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	var middlewares []types.NamedMiddleware
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
-	var oidcConfig *auth.TokenValidatorConfig
-	if IsOIDCEnabled(cmd) {
-		// Get OIDC flag values
-		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
-		audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
-		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
-		introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
-		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
-		clientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
-
-		oidcConfig = &auth.TokenValidatorConfig{
-			Issuer:           issuer,
-			Audience:         audience,
-			JWKSURL:          jwksURL,
-			IntrospectionURL: introspectionURL,
-			ClientID:         clientID,
-			ClientSecret:     clientSecret,
-			ResourceURL:      resourceURL,
-		}
-	}
+	oidcConfig := getProxyOIDCConfig(cmd)
 
 	// Get authentication middleware for incoming requests
 	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
@@ -247,6 +242,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Add header forward middleware if headers are configured
+	if err := addHeaderForwardMiddleware(
+		&middlewares, remoteForwardHeaders, remoteForwardHeadersSecret,
+	); err != nil {
+		return err
+	}
+
 	// Create the transparent proxy
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI)
@@ -258,11 +260,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyTargetURI,
 		nil,
 		authInfoHandler,
+		nil, // prefixHandlers - not configured for proxy command
 		false,
 		false, // isRemote
 		"",
-		nil, // onHealthCheckFailed - not needed for local proxies
-		nil, // onUnauthorizedResponse - not needed for local proxies
+		nil,   // onHealthCheckFailed - not needed for local proxies
+		nil,   // onUnauthorizedResponse - not needed for local proxies
+		"",    // endpointPrefix - not configured for proxy command
+		false, // trustProxyHeaders - not configured for proxy command
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)
@@ -278,9 +283,28 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := proxy.CloseListener(); err != nil {
 		logger.Warnf("Error closing proxy listener: %v", err)
 	}
+	// Use Background context for proxy shutdown. The parent context is already cancelled
+	// at this point, so we need a fresh context with its own timeout to ensure the
+	// shutdown operation completes successfully.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return proxy.Stop(shutdownCtx)
+}
+
+// getProxyOIDCConfig returns the OIDC token validator config from CLI flags, or nil if OIDC is not enabled.
+func getProxyOIDCConfig(cmd *cobra.Command) *auth.TokenValidatorConfig {
+	if !IsOIDCEnabled(cmd) {
+		return nil
+	}
+	return &auth.TokenValidatorConfig{
+		Issuer:           GetStringFlagOrEmpty(cmd, "oidc-issuer"),
+		Audience:         GetStringFlagOrEmpty(cmd, "oidc-audience"),
+		JWKSURL:          GetStringFlagOrEmpty(cmd, "oidc-jwks-url"),
+		IntrospectionURL: GetStringFlagOrEmpty(cmd, "oidc-introspection-url"),
+		ClientID:         GetStringFlagOrEmpty(cmd, "oidc-client-id"),
+		ClientSecret:     GetStringFlagOrEmpty(cmd, "oidc-client-secret"),
+		ResourceURL:      resourceURL,
+	}
 }
 
 // shouldDetectAuth determines if we should try to detect authentication requirements
@@ -408,7 +432,7 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			}
 		}
 		*middlewares = append(*middlewares, types.NamedMiddleware{
-			Name:     "token-exchange",
+			Name:     tokenexchange.MiddlewareType,
 			Function: tokenExchangeMiddleware,
 		})
 	} else if tokenSource != nil {
@@ -419,6 +443,50 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			Function: tokenMiddleware,
 		})
 	}
+	return nil
+}
+
+// addHeaderForwardMiddleware adds header forward middleware to the middleware chain if headers are configured.
+// Secret references are resolved immediately via the secrets manager.
+func addHeaderForwardMiddleware(
+	middlewares *[]types.NamedMiddleware, headers []string, secretHeaders []string,
+) error {
+	// Parse plaintext headers from flags
+	addHeaders, err := parseHeaderForwardFlags(headers)
+	if err != nil {
+		return fmt.Errorf("failed to parse header forward flags: %w", err)
+	}
+
+	// Resolve secret-backed headers
+	if len(secretHeaders) > 0 {
+		secretMap, err := parseHeaderSecretFlags(secretHeaders)
+		if err != nil {
+			return err
+		}
+		resolved, err := resolveHeaderSecrets(secretMap)
+		if err != nil {
+			return err
+		}
+		for name, value := range resolved {
+			addHeaders[name] = value
+		}
+	}
+
+	// Skip if no headers configured
+	if len(addHeaders) == 0 {
+		return nil
+	}
+
+	// Create the header forward middleware
+	mwFunc, err := middleware.CreateHeaderForwardMiddleware(addHeaders)
+	if err != nil {
+		return fmt.Errorf("failed to create header forward middleware: %w", err)
+	}
+	*middlewares = append(*middlewares, types.NamedMiddleware{
+		Name:     middleware.HeaderForwardMiddlewareName,
+		Function: mwFunc,
+	})
+
 	return nil
 }
 

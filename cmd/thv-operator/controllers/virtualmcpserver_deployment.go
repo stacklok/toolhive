@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -5,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -50,8 +52,29 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account
-var vmcpRBACRules = []rbacv1.PolicyRule{
+// RBAC rules for VirtualMCPServer service account in inline mode
+// These minimal rules only allow vMCP to:
+// - Read its own VirtualMCPServer spec
+// - Update VirtualMCPServer status (via K8sReporter)
+// No access to secrets or other Kubernetes resources since config is provided inline
+var vmcpInlineRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"update", "patch"},
+	},
+}
+
+// RBAC rules for VirtualMCPServer service account in discovered mode
+// These rules allow vMCP to:
+// - Discover backends and configurations at runtime (read secrets, configmaps, and MCP resources)
+// - Update VirtualMCPServer status (via K8sReporter)
+var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps", "secrets"},
@@ -59,8 +82,18 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"update", "patch"},
 	},
 }
 
@@ -81,6 +114,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
+	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -100,7 +134,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+					ServiceAccountName: serviceAccountName,
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -158,7 +192,7 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 	// Add --debug flag if log level is set to debug
 	// Note: vmcp binary currently only supports --debug flag, not other log levels
 	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
-	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.LogLevel == logLevelDebug {
+	if vmcp.Spec.Config.Operational != nil && vmcp.Spec.Config.Operational.LogLevel == logLevelDebug {
 		args = append(args, "--debug")
 	}
 
@@ -238,14 +272,6 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 	}
 
 	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-
-	// For testing: Skip OIDC discovery for example/test issuers
-	if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
-		env = append(env, corev1.EnvVar{
-			Name:  "VMCP_SKIP_OIDC_DISCOVERY",
-			Value: "true",
-		})
-	}
 
 	if inline.ClientSecretRef != nil {
 		env = append(env, corev1.EnvVar{
@@ -450,8 +476,18 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
+	case mcpv1alpha1.ExternalAuthTypeBearerToken:
+		// Bearer token secrets are handled differently (via RemoteAuthConfig in RunConfig)
+		// No environment variable mounting needed for bearer tokens
+		return nil, nil
+
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
+		return nil, nil
+
+	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+		// Embedded auth server secrets are handled separately (via volume mounts, not env vars)
+		// Controller integration will be in a future task
 		return nil, nil
 
 	default:

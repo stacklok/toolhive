@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package authz
 
 import (
@@ -13,6 +16,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -23,7 +27,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 	logger.Initialize()
 
 	// Create a Cedar authorizer with specific tool permissions
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
@@ -218,7 +222,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	t.Parallel()
 	// Create a Cedar authorizer
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
@@ -267,7 +271,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	t.Parallel()
 	// Create a Cedar authorizer
-	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},

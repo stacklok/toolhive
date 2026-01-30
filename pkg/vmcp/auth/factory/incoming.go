@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package factory
 
 import (
@@ -6,23 +9,30 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // NewIncomingAuthMiddleware creates HTTP middleware for incoming authentication
-// based on the vMCP configuration.
+// and authorization based on the vMCP configuration.
 //
 // This factory handles all incoming auth types:
 //   - "oidc": OIDC token validation
 //   - "local": Local OS user authentication
 //   - "anonymous": Anonymous user (no authentication required)
 //
+// If Authz is configured, authorization middleware is also created and composed
+// with the authentication middleware (auth runs first, then authz).
+//
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
 // Returns:
-//   - Authentication middleware function
+//   - Composed middleware function (auth + authz if configured)
 //   - AuthInfo handler (for /.well-known/oauth-protected-resource endpoint, may be nil)
 //   - Error if middleware creation fails
 func NewIncomingAuthMiddleware(
@@ -52,7 +62,63 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, err
 	}
 
+	// If authorization is configured, create authz middleware and compose with auth
+	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
+		authzMiddleware, err := newCedarAuthzMiddleware(cfg.Authz)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
+		}
+
+		// Compose: auth runs first (outer), then parser, then authz (inner)
+		// Request flow: auth → parser → authz → handler
+		// The parser middleware is required because authz middleware reads parsed MCP data from context
+		composedMiddleware := func(next http.Handler) http.Handler {
+			// authz wraps the handler
+			withAuthz := authzMiddleware(next)
+			// parser wraps authz (authz needs parsed MCP request from context)
+			withParser := mcp.ParsingMiddleware(withAuthz)
+			// auth wraps parser
+			return authMiddleware(withParser)
+		}
+
+		logger.Info("Authorization middleware enabled with Cedar policies")
+		return composedMiddleware, authInfoHandler, nil
+	}
+
 	return authMiddleware, authInfoHandler, nil
+}
+
+// newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
+func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) http.Handler, error) {
+	if authzCfg == nil || len(authzCfg.Policies) == 0 {
+		return nil, fmt.Errorf("cedar authorization requires at least one policy")
+	}
+
+	logger.Infof("Creating Cedar authorization middleware with %d policies", len(authzCfg.Policies))
+
+	// Build the Cedar config structure expected by the authorizer factory
+	cedarConfig := cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     authzCfg.Policies,
+			EntitiesJSON: "[]",
+		},
+	}
+
+	// Create the authz Config using the factory method
+	authzConfig, err := authorizers.NewConfig(cedarConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authz config: %w", err)
+	}
+
+	// Create the middleware using the existing factory
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
+	}
+
+	return middlewareFn, nil
 }
 
 // newOIDCAuthMiddleware creates OIDC authentication middleware.

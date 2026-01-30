@@ -58,13 +58,6 @@ graph LR
 
 **Implementation**: `pkg/secrets/environment.go`
 
-### 4. None
-
-- **Storage**: None (testing only)
-- **Capabilities**: All operations (no-op)
-
-**Implementation**: `pkg/secrets/none.go`
-
 ## Kubernetes Mode
 
 In Kubernetes/operator mode, ToolHive uses **native Kubernetes Secrets** instead of the provider system. This is a fundamentally different architecture from CLI mode.

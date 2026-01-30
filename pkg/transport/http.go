@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
@@ -6,10 +9,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -41,6 +47,13 @@ type HTTPTransport struct {
 	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
+	prefixHandlers    map[string]http.Handler
+
+	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
+	endpointPrefix string
+
+	// trustProxyHeaders indicates whether to trust X-Forwarded-* headers
+	trustProxyHeaders bool
 
 	// Remote MCP server support
 	remoteURL string
@@ -87,6 +100,9 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
+	prefixHandlers map[string]http.Handler,
+	endpointPrefix string,
+	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
@@ -109,6 +125,9 @@ func NewHTTPTransport(
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
+		prefixHandlers:    prefixHandlers,
+		endpointPrefix:    endpointPrefix,
+		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 	}
 }
@@ -161,6 +180,32 @@ func (t *HTTPTransport) checkAndMarkUnauthorized() bool {
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
 func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunction {
 	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
+}
+
+// hasTokenExchangeMiddleware checks if any middleware in the slice is a token exchange middleware.
+// When token exchange is configured, it handles its own Authorization header injection,
+// so the oauth-token-injection middleware should be skipped to avoid overwriting the exchanged token.
+func hasTokenExchangeMiddleware(middlewares []types.NamedMiddleware) bool {
+	for _, mw := range middlewares {
+		if mw.Name == tokenexchange.MiddlewareType {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldEnableHealthCheck determines whether health checks should be enabled based on workload type.
+// For local workloads, health checks are always enabled.
+// For remote workloads, health checks are only enabled if explicitly opted in via the
+// TOOLHIVE_REMOTE_HEALTHCHECKS environment variable (set to "true" or "1").
+func shouldEnableHealthCheck(isRemote bool) bool {
+	if !isRemote {
+		// Always enable health checks for local workloads
+		return true
+	}
+	// For remote workloads, only enable if explicitly opted in via environment variable
+	envVal := os.Getenv("TOOLHIVE_REMOTE_HEALTHCHECKS")
+	return strings.ToLower(envVal) == "true" || envVal == "1"
 }
 
 // Mode returns the transport mode.
@@ -234,14 +279,20 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Add the transport's existing middlewares
 	middlewares = append(middlewares, t.middlewares...)
 
-	// Add OAuth token injection middleware for remote authentication if we have a token source
-	if t.remoteURL != "" && t.tokenSource != nil {
+	isRemote := t.remoteURL != ""
+
+	// Add OAuth token injection middleware for remote authentication if we have a token source.
+	// Skip if token exchange is configured (it handles its own Authorization header injection).
+	if isRemote && t.tokenSource != nil && !hasTokenExchangeMiddleware(t.middlewares) {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",
 			Function: tokenMiddleware,
 		})
 	}
+
+	// Determine whether to enable health checks based on workload type
+	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
@@ -250,11 +301,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		true,
-		t.remoteURL != "",
+		t.prefixHandlers,
+		enableHealthCheck,
+		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,
 		t.onUnauthorizedResponse,
+		t.endpointPrefix,
+		t.trustProxyHeaders,
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
@@ -263,7 +317,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
-	if t.remoteURL != "" {
+	if isRemote {
 		return nil
 	}
 

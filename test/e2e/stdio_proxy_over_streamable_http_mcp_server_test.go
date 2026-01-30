@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -26,7 +29,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 		var serverName string
 
 		BeforeEach(func() {
-			serverName = generateUniqueServerName("time-streamable-test")
+			serverName = e2e.GenerateUniqueServerName("time-streamable-test")
 		})
 
 		AfterEach(func() {

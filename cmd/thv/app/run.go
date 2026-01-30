@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -149,15 +152,18 @@ func init() {
 }
 
 func cleanupAndWait(workloadManager workloads.Manager, name string) {
+	// Use Background context for cleanup operations. This function is called after the
+	// workload has exited, and we need a fresh context with its own timeout to ensure
+	// cleanup completes successfully regardless of the parent context state.
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 
-	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	complete, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
 	if err != nil {
 		logger.Warnf("Failed to delete workload %q: %v", name, err)
-	} else if group != nil {
-		if err := group.Wait(); err != nil {
-			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+	} else if complete != nil {
+		if err := complete(); err != nil {
+			logger.Warnf("DeleteWorkloads error for %q: %v", name, err)
 		}
 	}
 }
@@ -217,7 +223,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 
 	if runFlags.Name == "" {
 		runFlags.Name = getworkloadDefaultName(ctx, serverOrImage)
-		logger.Infof("No workload name specified, using generated name: %s", runFlags.Name)
+		logger.Debugf("No workload name specified, using generated name: %s", runFlags.Name)
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
 	if err != nil {
@@ -334,7 +340,7 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
 	err := <-errCh
 	if !process.IsDetached() {
-		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		logger.Errorf("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
 		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
 	return err

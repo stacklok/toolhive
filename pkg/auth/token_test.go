@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package auth
 
 import (
@@ -17,6 +20,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+
+	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
@@ -377,12 +382,14 @@ func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
 		}
 		issuerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 
-		doc := OIDCDiscoveryDocument{
-			Issuer:                issuerURL,
-			AuthorizationEndpoint: issuerURL + "/auth",
-			TokenEndpoint:         issuerURL + "/token",
-			UserinfoEndpoint:      issuerURL + "/userinfo",
-			JWKSURI:               jwksURL,
+		doc := oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:                issuerURL,
+				AuthorizationEndpoint: issuerURL + "/auth",
+				TokenEndpoint:         issuerURL + "/token",
+				UserinfoEndpoint:      issuerURL + "/userinfo",
+				JWKSURI:               jwksURL,
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -511,8 +518,21 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 	})
 }
 
+//nolint:tparallel // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
-	t.Parallel()
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
+
+	// Ensure OIDC discovery is not skipped for this test
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		}
+	})
+	os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
 
 	// Generate a new RSA key pair for signing tokens
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -690,8 +710,10 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 
 	t.Run("failed OIDC discovery", func(t *testing.T) {
 		t.Parallel()
+		// Use a .com domain that doesn't exist (not RFC-reserved like .example)
+		// so that OIDC discovery will actually be attempted and fail
 		config := TokenValidatorConfig{
-			Issuer:   "https://non-existent-domain.example",
+			Issuer:   "https://non-existent-domain-toolhive-test-12345.com",
 			Audience: "test-audience",
 			ClientID: "test-client",
 			// No CA cert or AllowPrivateIP for this test - it should fail
@@ -710,6 +732,79 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
 		}
 	})
+}
+
+//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
+func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) {
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
+
+	// Set and restore environment variable
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		}
+	})
+	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+
+	ctx := context.Background()
+
+	// When TOOLHIVE_SKIP_OIDC_DISCOVERY=true without explicit JWKSURL, should fail
+	config := TokenValidatorConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "test-audience",
+		ClientID: "test-client",
+		// JWKSURL intentionally omitted
+	}
+
+	_, err := NewTokenValidator(ctx, config)
+	if err == nil {
+		t.Fatal("Expected error when TOOLHIVE_SKIP_OIDC_DISCOVERY=true without JWKSURL")
+	}
+	if !strings.Contains(err.Error(), "requires explicit JWKSURL") {
+		t.Errorf("Expected error about requiring explicit JWKSURL, got: %v", err)
+	}
+}
+
+//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
+func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T) {
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
+
+	// Set and restore environment variable
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		}
+	})
+	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+
+	ctx := context.Background()
+
+	// When TOOLHIVE_SKIP_OIDC_DISCOVERY=true with explicit JWKSURL, should succeed
+	explicitJWKSURL := "https://issuer.example.com/jwks"
+	config := TokenValidatorConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "test-audience",
+		ClientID: "test-client",
+		JWKSURL:  explicitJWKSURL,
+	}
+
+	validator, err := NewTokenValidator(ctx, config)
+	if err != nil {
+		t.Fatalf("Failed to create token validator: %v", err)
+	}
+
+	// Verify that the explicit JWKS URL was used
+	if validator.jwksURL != explicitJWKSURL {
+		t.Errorf("Expected JWKS URL %s but got %s", explicitJWKSURL, validator.jwksURL)
+	}
 }
 
 func TestTokenValidator_OpaqueToken(t *testing.T) {

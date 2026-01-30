@@ -30,6 +30,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -158,10 +159,12 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "authz-proxy", config.Name)
 				assert.NotNil(t, config.AuthzConfig)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				assert.NotNil(t, config.AuthzConfig.Cedar)
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "tools/list")
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
+
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies[0], "tools/list")
 			},
 		},
 		{
@@ -189,6 +192,134 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "trust-headers-proxy", config.Name)
 				assert.True(t, config.TrustProxyHeaders)
+			},
+		},
+		{
+			name: "with header forward plaintext only",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "plaintext-headers-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{
+							"X-Tenant-ID":   "tenant-123",
+							"X-Correlation": "corr-abc",
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "plaintext-headers-proxy", config.Name)
+				require.NotNil(t, config.HeaderForward)
+				assert.Equal(t, "tenant-123", config.HeaderForward.AddPlaintextHeaders["X-Tenant-ID"])
+				assert.Equal(t, "corr-abc", config.HeaderForward.AddPlaintextHeaders["X-Correlation"])
+				assert.Empty(t, config.HeaderForward.AddHeadersFromSecret)
+			},
+		},
+		{
+			name: "with header forward secrets",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secret-headers-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "api-secret",
+									Key:  "key",
+								},
+							},
+							{
+								HeaderName: "Authorization",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "auth-secret",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "secret-headers-proxy", config.Name)
+				require.NotNil(t, config.HeaderForward)
+				assert.Empty(t, config.HeaderForward.AddPlaintextHeaders)
+				// Verify secret identifiers (not actual secrets)
+				require.Len(t, config.HeaderForward.AddHeadersFromSecret, 2)
+				assert.Equal(t, "HEADER_FORWARD_X_API_KEY_SECRET_HEADERS_PROXY", config.HeaderForward.AddHeadersFromSecret["X-API-Key"])
+				assert.Equal(t, "HEADER_FORWARD_AUTHORIZATION_SECRET_HEADERS_PROXY", config.HeaderForward.AddHeadersFromSecret["Authorization"])
+			},
+		},
+		{
+			name: "with header forward mixed plaintext and secrets",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mixed-headers-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      8080,
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{
+							"X-Tenant-ID": "tenant-456",
+						},
+						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "api-secret",
+									Key:  "key",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "mixed-headers-proxy", config.Name)
+				require.NotNil(t, config.HeaderForward)
+				// Verify plaintext header
+				assert.Equal(t, "tenant-456", config.HeaderForward.AddPlaintextHeaders["X-Tenant-ID"])
+				// Verify secret identifier (not actual secret)
+				assert.Equal(t, "HEADER_FORWARD_X_API_KEY_MIXED_HEADERS_PROXY", config.HeaderForward.AddHeadersFromSecret["X-API-Key"])
 			},
 		},
 	}

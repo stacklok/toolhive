@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -19,8 +22,9 @@ func createGooseConfig() *mcpClientConfig {
 		MCPServersUrlLabel:   "uri",
 		YAMLStorageType:      YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
-			"enabled": true,
-			"timeout": 60,
+			"enabled":     true,
+			"timeout":     60,
+			"description": "",
 		},
 	}
 }
@@ -54,11 +58,12 @@ func TestGenericYAMLConverter_ConvertFromMCPServer_Goose(t *testing.T) {
 				Url:  "http://example.com",
 			},
 			expected: map[string]interface{}{
-				"name":    "test-server",
-				"enabled": true,
-				"type":    "mcp",
-				"timeout": 60,
-				"uri":     "http://example.com",
+				"name":        "test-server",
+				"enabled":     true,
+				"type":        "mcp",
+				"timeout":     60,
+				"description": "",
+				"uri":         "http://example.com",
 			},
 		},
 		{
@@ -69,11 +74,12 @@ func TestGenericYAMLConverter_ConvertFromMCPServer_Goose(t *testing.T) {
 				ServerUrl: "https://api.example.com",
 			},
 			expected: map[string]interface{}{
-				"name":    "another-server",
-				"enabled": true,
-				"type":    "custom",
-				"timeout": 60,
-				"uri":     "https://api.example.com",
+				"name":        "another-server",
+				"enabled":     true,
+				"type":        "custom",
+				"timeout":     60,
+				"description": "",
+				"uri":         "https://api.example.com",
 			},
 		},
 	}
@@ -196,11 +202,12 @@ func TestGenericYAMLConverter_UpsertEntry_MapStorage(t *testing.T) {
 		}
 
 		entry := map[string]interface{}{
-			"name":    "new-server",
-			"enabled": true,
-			"type":    "mcp",
-			"timeout": 60,
-			"uri":     "https://new.example.com",
+			"name":        "new-server",
+			"enabled":     true,
+			"type":        "mcp",
+			"timeout":     60,
+			"description": "",
+			"uri":         "https://new.example.com",
 		}
 
 		err := converter.UpsertEntry(config, "new-server", entry)

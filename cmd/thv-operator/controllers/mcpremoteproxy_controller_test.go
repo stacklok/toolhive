@@ -743,6 +743,208 @@ func TestEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name), rb.RoleRef.Name)
 }
 
+func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
+	t.Parallel()
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-proxy",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			Port:      8080,
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	saName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	// Pre-create RBAC resources with outdated rules
+	existingSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: proxy.Namespace,
+		},
+	}
+	existingRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: proxy.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			},
+		},
+	}
+	existingRB := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: proxy.Namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: proxy.Namespace,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy, existingSA, existingRole, existingRB).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should update the Role with correct rules
+	err := reconciler.ensureRBACResources(context.TODO(), proxy)
+	require.NoError(t, err)
+
+	// Verify Role was updated with correct rules
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      saName,
+		Namespace: proxy.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, remoteProxyRBACRules, role.Rules, "Role should be updated with correct rules")
+}
+
+func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
+	t.Parallel()
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idempotent-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			Port:      8080,
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources multiple times
+	for i := 0; i < 3; i++ {
+		err := reconciler.ensureRBACResources(context.TODO(), proxy)
+		require.NoError(t, err, "iteration %d should succeed", i)
+	}
+
+	saName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	// Verify resources still exist with correct configuration
+	sa := &corev1.ServiceAccount{}
+	err := fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      saName,
+		Namespace: proxy.Namespace,
+	}, sa)
+	assert.NoError(t, err)
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      saName,
+		Namespace: proxy.Namespace,
+	}, role)
+	assert.NoError(t, err)
+	assert.Equal(t, remoteProxyRBACRules, role.Rules)
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      saName,
+		Namespace: proxy.Namespace,
+	}, rb)
+	assert.NoError(t, err)
+}
+
+// TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount tests that RBAC resources
+// are NOT created when a custom ServiceAccount is provided
+func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	customSA := "custom-proxy-sa"
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-sa-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL:      "https://mcp.example.com",
+			Port:           8080,
+			ServiceAccount: &customSA,
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources - should return nil without creating resources
+	err := reconciler.ensureRBACResources(context.TODO(), proxy)
+	require.NoError(t, err)
+
+	// Verify NO RBAC resources were created
+	generatedSAName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, sa)
+	assert.Error(t, err, "ServiceAccount should not be created when custom ServiceAccount is provided")
+
+	role := &rbacv1.Role{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, role)
+	assert.Error(t, err, "Role should not be created when custom ServiceAccount is provided")
+
+	rb := &rbacv1.RoleBinding{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      generatedSAName,
+		Namespace: proxy.Namespace,
+	}, rb)
+	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
+}
+
 // TestUpdateMCPRemoteProxyStatus tests status update logic
 func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()

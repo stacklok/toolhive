@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package server implements the Virtual MCP Server that aggregates
 // multiple backend MCP servers into a unified interface.
 package server
@@ -22,7 +25,7 @@ import (
 //
 // Returns error if any composite tool configuration is invalid or duplicate names exist.
 func ConvertConfigToWorkflowDefinitions(
-	compositeTools []*config.CompositeToolConfig,
+	compositeTools []config.CompositeToolConfig,
 ) (map[string]*composer.WorkflowDefinition, error) {
 	if len(compositeTools) == 0 {
 		return nil, nil
@@ -30,7 +33,8 @@ func ConvertConfigToWorkflowDefinitions(
 
 	workflowDefs := make(map[string]*composer.WorkflowDefinition, len(compositeTools))
 
-	for _, ct := range compositeTools {
+	for i := range compositeTools {
+		ct := &compositeTools[i]
 		// Validate basic requirements
 		if ct.Name == "" {
 			return nil, fmt.Errorf("composite tool name is required")
@@ -77,15 +81,15 @@ func ConvertConfigToWorkflowDefinitions(
 }
 
 // convertSteps converts configuration steps to workflow steps.
-func convertSteps(configSteps []*config.WorkflowStepConfig) ([]composer.WorkflowStep, error) {
+func convertSteps(configSteps []config.WorkflowStepConfig) ([]composer.WorkflowStep, error) {
 	if len(configSteps) == 0 {
 		return nil, fmt.Errorf("workflow must have at least one step")
 	}
 
 	steps := make([]composer.WorkflowStep, 0, len(configSteps))
 
-	for i, cs := range configSteps {
-		step, err := convertSingleStep(i, cs)
+	for i := range configSteps {
+		step, err := convertSingleStep(i, &configSteps[i])
 		if err != nil {
 			return nil, err
 		}

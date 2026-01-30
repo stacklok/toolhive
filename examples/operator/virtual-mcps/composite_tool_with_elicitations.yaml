@@ -40,7 +40,7 @@ metadata:
   namespace: default
 spec:
   groupRef: deployment-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
   - name: TRANSPORT
@@ -203,8 +203,23 @@ metadata:
   name: vmcp-interactive-deploy
   namespace: default
 spec:
-  groupRef:
-    name: deployment-services
+  config:
+    groupRef: deployment-services
+    # Conflict resolution for backend tools
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    # Reference the composite tool definition with elicitations
+    compositeToolRefs:
+      - name: interactive-deploy
+    operational:
+      timeouts:
+        default: 30m
+      failureHandling:
+        healthCheckInterval: 30s
+        unhealthyThreshold: 3
+        partialFailureMode: fail
 
   incomingAuth:
     type: anonymous
@@ -217,24 +232,6 @@ spec:
 
   outgoingAuth:
     source: discovered
-
-  # Reference the composite tool definition with elicitations
-  compositeToolRefs:
-    - name: interactive-deploy
-
-  # Conflict resolution for backend tools
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-
-  operational:
-    timeouts:
-      default: 30m
-    failureHandling:
-      healthCheckInterval: 30s
-      unhealthyThreshold: 3
-      partialFailureMode: fail
 
 ---
 # Example usage from MCP client:

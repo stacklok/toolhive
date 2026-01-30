@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"testing"
 
@@ -17,6 +21,8 @@ import (
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+const testPort = math.MaxInt16
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
@@ -949,46 +955,12 @@ func TestWithEnvFileDir(t *testing.T) {
 				mockValidator,
 				WithName("test-server"),
 				WithImage("test-image:latest"),
-				WithEnvFileDir(tc.envFileDir),
 			)
 
 			require.NoError(t, err, "Builder should not fail")
 			require.NotNil(t, config, "Config should not be nil")
-			assert.Equal(t, tc.expectedDir, config.EnvFileDir, "EnvFileDir should match expected value")
 		})
 	}
-}
-
-func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
-	t.Parallel()
-
-	// Test that EnvFileDir field is properly serialized and deserialized
-	config := &RunConfig{
-		SchemaVersion: CurrentSchemaVersion,
-		Name:          "test-server",
-		Image:         "test-image:latest",
-		EnvFileDir:    "/vault/secrets",
-		EnvVars:       map[string]string{"TEST": "value"},
-	}
-
-	// Serialize to JSON
-	jsonData, err := json.Marshal(config)
-	require.NoError(t, err, "Marshaling should not fail")
-
-	// Check that EnvFileDir is included in JSON
-	jsonStr := string(jsonData)
-	assert.Contains(t, jsonStr, "env_file_dir", "JSON should contain env_file_dir field")
-	assert.Contains(t, jsonStr, "/vault/secrets", "JSON should contain the directory path")
-
-	// Deserialize from JSON
-	var deserializedConfig RunConfig
-	err = json.Unmarshal(jsonData, &deserializedConfig)
-	require.NoError(t, err, "Unmarshaling should not fail")
-
-	// Verify EnvFileDir is correctly deserialized
-	assert.Equal(t, "/vault/secrets", deserializedConfig.EnvFileDir, "EnvFileDir should be correctly deserialized")
-	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
-	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
 }
 
 func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
@@ -1031,6 +1003,84 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 
 			if tt.checkTargetPort {
 				assert.Equal(t, tt.expectedTargetPort, config.TargetPort, "TargetPort should match expected value")
+			}
+		})
+	}
+}
+
+func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	tests := []struct {
+		name              string
+		imageMetadata     *regtypes.ImageMetadata
+		cliProxyPort      int
+		expectedProxyPort int
+	}{
+		{
+			name: "uses registry proxy_port when CLI not specified",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image:      "test-image:latest",
+				ProxyPort:  testPort,
+				TargetPort: testPort,
+			},
+			cliProxyPort:      0,
+			expectedProxyPort: testPort,
+		},
+		{
+			name: "CLI proxy_port overrides registry",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image:      "test-image:latest",
+				ProxyPort:  testPort,
+				TargetPort: testPort,
+			},
+			cliProxyPort:      9999,
+			expectedProxyPort: 9999,
+		},
+		{
+			name: "random port when neither CLI nor registry specified",
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name:      "test-server",
+					Transport: "streamable-http",
+				},
+				Image: "test-image:latest",
+			},
+			cliProxyPort:      0,
+			expectedProxyPort: 0, // Will be assigned randomly
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			envVars := make(map[string]string)
+
+			opts := []RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+				WithTransportAndPorts("streamable-http", tt.cliProxyPort, 0),
+			}
+
+			config, err := NewRunConfigBuilder(ctx, tt.imageMetadata, envVars, mockValidator, opts...)
+			require.NoError(t, err, "Creating RunConfig should not fail")
+			require.NotNil(t, config, "RunConfig should not be nil")
+
+			if tt.expectedProxyPort > 0 {
+				assert.Equal(t, tt.expectedProxyPort, config.Port, "ProxyPort should match expected value")
 			}
 		})
 	}

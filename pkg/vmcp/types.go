@@ -142,6 +142,30 @@ func (s BackendHealthStatus) ToCRDStatus() string {
 	}
 }
 
+// IsHealthyForRouting determines if a backend is healthy enough to accept requests
+// and have its capabilities included in aggregation.
+//
+// Returns true for:
+//   - BackendHealthy: Backend is fully operational
+//   - BackendDegraded: Backend is slow but still functional
+//
+// Returns false for:
+//   - BackendUnhealthy: Backend is not responding
+//   - BackendUnknown: Backend health is unknown
+//   - BackendUnauthenticated: Backend authentication failed
+//   - Any other status: Err on the side of caution
+func (s BackendHealthStatus) IsHealthyForRouting() bool {
+	switch s {
+	case BackendHealthy, BackendDegraded:
+		return true
+	case BackendUnhealthy, BackendUnknown, BackendUnauthenticated:
+		return false
+	default:
+		// Unknown status - err on the side of caution
+		return false
+	}
+}
+
 // Condition represents a specific aspect of vMCP server status.
 type Condition = metav1.Condition
 

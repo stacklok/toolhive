@@ -35,6 +35,7 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 						WorkloadID:   "backend1",
 						WorkloadName: "Backend 1",
 						BaseURL:      "http://backend1:8080",
+						HealthStatus: vmcp.BackendHealthy,
 					},
 				},
 				Resources: make(map[string]*vmcp.BackendTarget),
@@ -72,6 +73,60 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 			toolName:      "test_tool",
 			expectError:   true,
 			errorContains: "routing table tools map not initialized",
+		},
+		{
+			name: "backend is unhealthy",
+			setupTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"test_tool": {
+						WorkloadID:   "backend1",
+						WorkloadName: "Backend 1",
+						BaseURL:      "http://backend1:8080",
+						HealthStatus: vmcp.BackendUnhealthy,
+					},
+				},
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts:   make(map[string]*vmcp.BackendTarget),
+			},
+			toolName:      "test_tool",
+			expectError:   true,
+			errorContains: "backend unavailable",
+		},
+		{
+			name: "backend is unauthenticated",
+			setupTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"test_tool": {
+						WorkloadID:   "backend1",
+						WorkloadName: "Backend 1",
+						BaseURL:      "http://backend1:8080",
+						HealthStatus: vmcp.BackendUnauthenticated,
+					},
+				},
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts:   make(map[string]*vmcp.BackendTarget),
+			},
+			toolName:      "test_tool",
+			expectError:   true,
+			errorContains: "backend unavailable",
+		},
+		{
+			name: "backend is degraded but still works",
+			setupTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"test_tool": {
+						WorkloadID:   "backend1",
+						WorkloadName: "Backend 1",
+						BaseURL:      "http://backend1:8080",
+						HealthStatus: vmcp.BackendDegraded,
+					},
+				},
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts:   make(map[string]*vmcp.BackendTarget),
+			},
+			toolName:    "test_tool",
+			expectedID:  "backend1",
+			expectError: false,
 		},
 	}
 
@@ -126,6 +181,7 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 						WorkloadID:   "backend2",
 						WorkloadName: "Backend 2",
 						BaseURL:      "http://backend2:8080",
+						HealthStatus: vmcp.BackendHealthy,
 					},
 				},
 				Prompts: make(map[string]*vmcp.BackendTarget),
@@ -162,6 +218,42 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 			uri:           "file:///test",
 			expectError:   true,
 			errorContains: "routing table resources map not initialized",
+		},
+		{
+			name: "backend is unhealthy",
+			setupTable: &vmcp.RoutingTable{
+				Tools: make(map[string]*vmcp.BackendTarget),
+				Resources: map[string]*vmcp.BackendTarget{
+					"file:///path/to/resource": {
+						WorkloadID:   "backend2",
+						WorkloadName: "Backend 2",
+						BaseURL:      "http://backend2:8080",
+						HealthStatus: vmcp.BackendUnhealthy,
+					},
+				},
+				Prompts: make(map[string]*vmcp.BackendTarget),
+			},
+			uri:           "file:///path/to/resource",
+			expectError:   true,
+			errorContains: "backend unavailable",
+		},
+		{
+			name: "backend is degraded but still works",
+			setupTable: &vmcp.RoutingTable{
+				Tools: make(map[string]*vmcp.BackendTarget),
+				Resources: map[string]*vmcp.BackendTarget{
+					"file:///path/to/resource": {
+						WorkloadID:   "backend2",
+						WorkloadName: "Backend 2",
+						BaseURL:      "http://backend2:8080",
+						HealthStatus: vmcp.BackendDegraded,
+					},
+				},
+				Prompts: make(map[string]*vmcp.BackendTarget),
+			},
+			uri:         "file:///path/to/resource",
+			expectedID:  "backend2",
+			expectError: false,
 		},
 	}
 
@@ -217,6 +309,7 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 						WorkloadID:   "backend3",
 						WorkloadName: "Backend 3",
 						BaseURL:      "http://backend3:8080",
+						HealthStatus: vmcp.BackendHealthy,
 					},
 				},
 			},
@@ -252,6 +345,42 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 			promptName:    "test",
 			expectError:   true,
 			errorContains: "routing table prompts map not initialized",
+		},
+		{
+			name: "backend is unhealthy",
+			setupTable: &vmcp.RoutingTable{
+				Tools:     make(map[string]*vmcp.BackendTarget),
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts: map[string]*vmcp.BackendTarget{
+					"greeting": {
+						WorkloadID:   "backend3",
+						WorkloadName: "Backend 3",
+						BaseURL:      "http://backend3:8080",
+						HealthStatus: vmcp.BackendUnhealthy,
+					},
+				},
+			},
+			promptName:    "greeting",
+			expectError:   true,
+			errorContains: "backend unavailable",
+		},
+		{
+			name: "backend is degraded but still works",
+			setupTable: &vmcp.RoutingTable{
+				Tools:     make(map[string]*vmcp.BackendTarget),
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts: map[string]*vmcp.BackendTarget{
+					"greeting": {
+						WorkloadID:   "backend3",
+						WorkloadName: "Backend 3",
+						BaseURL:      "http://backend3:8080",
+						HealthStatus: vmcp.BackendDegraded,
+					},
+				},
+			},
+			promptName:  "greeting",
+			expectedID:  "backend3",
+			expectError: false,
 		},
 	}
 
@@ -292,14 +421,14 @@ func TestDefaultRouter_ConcurrentAccess(t *testing.T) {
 	// Setup routing table
 	table := &vmcp.RoutingTable{
 		Tools: map[string]*vmcp.BackendTarget{
-			"tool1": {WorkloadID: "backend1"},
-			"tool2": {WorkloadID: "backend2"},
+			"tool1": {WorkloadID: "backend1", HealthStatus: vmcp.BackendHealthy},
+			"tool2": {WorkloadID: "backend2", HealthStatus: vmcp.BackendHealthy},
 		},
 		Resources: map[string]*vmcp.BackendTarget{
-			"res1": {WorkloadID: "backend1"},
+			"res1": {WorkloadID: "backend1", HealthStatus: vmcp.BackendHealthy},
 		},
 		Prompts: map[string]*vmcp.BackendTarget{
-			"prompt1": {WorkloadID: "backend2"},
+			"prompt1": {WorkloadID: "backend2", HealthStatus: vmcp.BackendHealthy},
 		},
 	}
 

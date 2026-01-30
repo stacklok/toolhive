@@ -433,6 +433,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			Timeout:            defaults.Timeout,
 			DegradedThreshold:  defaults.DegradedThreshold,
 		}
+
+		// Configure circuit breaker if enabled
+		if cfg.Operational.FailureHandling.CircuitBreaker != nil && cfg.Operational.FailureHandling.CircuitBreaker.Enabled {
+			healthMonitorConfig.CircuitBreaker = &health.CircuitBreakerConfig{
+				Enabled:          true,
+				FailureThreshold: cfg.Operational.FailureHandling.CircuitBreaker.FailureThreshold,
+				Timeout:          time.Duration(cfg.Operational.FailureHandling.CircuitBreaker.Timeout),
+			}
+			logger.Infof("Circuit breaker enabled (failure threshold: %d, timeout: %v)",
+				cfg.Operational.FailureHandling.CircuitBreaker.FailureThreshold,
+				time.Duration(cfg.Operational.FailureHandling.CircuitBreaker.Timeout))
+		}
+
 		logger.Info("Health monitoring configured from operational settings")
 	}
 

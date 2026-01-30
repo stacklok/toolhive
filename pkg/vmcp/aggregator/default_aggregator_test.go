@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -35,7 +36,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -59,7 +60,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.Error(t, err)
@@ -90,7 +91,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -120,7 +121,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 				return nil, errors.New("connection timeout")
 			}).Times(2)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -140,7 +141,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.Error(t, err)
@@ -171,7 +172,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeFail)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -204,7 +205,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeFail)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -263,7 +264,7 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		}
 		registry := vmcp.NewImmutableRegistry(backends)
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeFail)
 		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
 
 		require.NoError(t, err)
@@ -331,7 +332,7 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil, config.PartialFailureModeFail)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -343,5 +344,132 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		assert.Equal(t, 2, result.Metadata.BackendCount)
 		assert.Equal(t, 2, result.Metadata.ToolCount)
 		assert.Equal(t, 1, result.Metadata.ResourceCount)
+	})
+}
+
+func TestDefaultAggregator_PartialFailureMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fail mode - all backends unhealthy - returns error", func(t *testing.T) {
+		t.Parallel()
+
+		// Create resolved capabilities from one unhealthy backend
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{
+				"tool1": {ResolvedName: "tool1", BackendID: "backend1"},
+			},
+		}
+
+		// Create registry with unhealthy backend
+		backends := []vmcp.Backend{
+			{
+				ID:           "backend1",
+				Name:         "Backend 1",
+				BaseURL:      "http://backend1:8080",
+				HealthStatus: vmcp.BackendUnhealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		// Create aggregator in fail mode
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeFail)
+		_, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "all backends unavailable")
+	})
+
+	t.Run("fail mode - mixed healthy/unhealthy - succeeds with warning", func(t *testing.T) {
+		t.Parallel()
+
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{
+				"tool1": {ResolvedName: "tool1", BackendID: "backend1"},
+				"tool2": {ResolvedName: "tool2", BackendID: "backend2"},
+			},
+		}
+
+		backends := []vmcp.Backend{
+			{
+				ID:           "backend1",
+				Name:         "Backend 1",
+				BaseURL:      "http://backend1:8080",
+				HealthStatus: vmcp.BackendHealthy,
+			},
+			{
+				ID:           "backend2",
+				Name:         "Backend 2",
+				BaseURL:      "http://backend2:8080",
+				HealthStatus: vmcp.BackendUnhealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeFail)
+		result, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+
+		require.NoError(t, err)
+		assert.Len(t, result.Tools, 1) // Only tool from healthy backend
+		assert.Equal(t, "tool1", result.Tools[0].Name)
+	})
+
+	t.Run("best_effort mode - all backends unhealthy - returns empty", func(t *testing.T) {
+		t.Parallel()
+
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{
+				"tool1": {ResolvedName: "tool1", BackendID: "backend1"},
+			},
+		}
+
+		backends := []vmcp.Backend{
+			{
+				ID:           "backend1",
+				Name:         "Backend 1",
+				BaseURL:      "http://backend1:8080",
+				HealthStatus: vmcp.BackendUnhealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeBestEffort)
+		result, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+
+		require.NoError(t, err)        // Best effort doesn't error
+		assert.Len(t, result.Tools, 0) // No tools from unhealthy backends
+	})
+
+	t.Run("best_effort mode - mixed healthy/unhealthy - continues", func(t *testing.T) {
+		t.Parallel()
+
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{
+				"tool1": {ResolvedName: "tool1", BackendID: "backend1"},
+				"tool2": {ResolvedName: "tool2", BackendID: "backend2"},
+			},
+		}
+
+		backends := []vmcp.Backend{
+			{
+				ID:           "backend1",
+				Name:         "Backend 1",
+				BaseURL:      "http://backend1:8080",
+				HealthStatus: vmcp.BackendHealthy,
+			},
+			{
+				ID:           "backend2",
+				Name:         "Backend 2",
+				BaseURL:      "http://backend2:8080",
+				HealthStatus: vmcp.BackendUnhealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil, config.PartialFailureModeBestEffort)
+		result, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+
+		require.NoError(t, err)
+		assert.Len(t, result.Tools, 1) // Only tool from healthy backend
+		assert.Equal(t, "tool1", result.Tools[0].Name)
 	})
 }

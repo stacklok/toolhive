@@ -29,6 +29,19 @@ const (
 	TransportStreamableHTTP = "streamable-http"
 )
 
+// Partial failure mode constants define behavior when backends are unavailable.
+const (
+	// PartialFailureModeFail returns an error if all backends are unavailable.
+	// When some backends are healthy, continues with available backends (logs warning).
+	// This is the default and safest mode, ensuring at least one backend is operational.
+	PartialFailureModeFail = "fail"
+
+	// PartialFailureModeBestEffort continues with available backends when some are unavailable.
+	// This provides degraded functionality rather than complete failure.
+	// Useful when partial results are acceptable.
+	PartialFailureModeBestEffort = "best_effort"
+)
+
 // StaticModeAllowedTransports lists all transport types allowed for static backend configuration.
 // This must be kept in sync with the CRD enum validation in StaticBackendConfig.Transport.
 var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP}

@@ -342,7 +342,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if telemetryProvider != nil {
 		tracerProvider = telemetryProvider.TracerProvider()
 	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools, tracerProvider)
+
+	// Get failure mode from config (default to "fail" if not specified)
+	failureMode := config.PartialFailureModeFail
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.PartialFailureMode != "" {
+		failureMode = cfg.Operational.FailureHandling.PartialFailureMode
+	}
+
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools, tracerProvider, failureMode)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes

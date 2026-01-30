@@ -20,6 +20,7 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -160,8 +161,8 @@ func NewVMCPServer(
 		conflictResolver = aggregator.NewPrefixConflictResolver(config.prefixFormat)
 	}
 
-	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
+	// Create aggregator (use fail mode by default for tests)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil, vmcpconfig.PartialFailureModeFail)
 
 	// Create discovery manager
 	discoveryMgr, err := discovery.NewManager(agg)

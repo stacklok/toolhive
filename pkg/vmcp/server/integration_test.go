@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
@@ -120,6 +121,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		conflictResolver,
 		nil, // no tool configs
 		nil, // no tracer provider in tests
+		config.PartialFailureModeFail,
 	)
 
 	// Step 3: Run aggregation on mock backends
@@ -312,7 +314,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Create discovery manager
 	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
-	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil)
+	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil, config.PartialFailureModeFail)
 	discoveryMgr, err := discovery.NewManager(agg)
 	require.NoError(t, err)
 
@@ -502,7 +504,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 			Times(2)
 
 		resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil, config.PartialFailureModeFail)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -540,7 +542,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 
 		resolver, err := aggregator.NewPriorityConflictResolver([]string{"backend1", "backend2"})
 		require.NoError(t, err)
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil, config.PartialFailureModeFail)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -661,7 +663,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
 			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil, config.PartialFailureModeFail)
 			return agg.AggregateCapabilities(ctx, backends)
 		}).
 		AnyTimes()

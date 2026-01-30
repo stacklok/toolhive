@@ -26,17 +26,20 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	tracer           trace.Tracer
+	failureMode      string // "fail" or "best_effort"
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
 // workloadConfigs specifies per-backend tool filtering and overrides.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
+// failureMode determines behavior when backends are unavailable ("fail" or "best_effort").
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
 	workloadConfigs []*config.WorkloadToolConfig,
 	tracerProvider trace.TracerProvider,
+	failureMode string,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
@@ -54,11 +57,17 @@ func NewDefaultAggregator(
 		tracer = noop.NewTracerProvider().Tracer("github.com/stacklok/toolhive/pkg/vmcp/aggregator")
 	}
 
+	// Default to fail mode if not specified or invalid
+	if failureMode != config.PartialFailureModeBestEffort {
+		failureMode = config.PartialFailureModeFail
+	}
+
 	return &defaultAggregator{
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
 		tracer:           tracer,
+		failureMode:      failureMode,
 	}
 }
 
@@ -290,7 +299,7 @@ func (a *defaultAggregator) MergeCapabilities(
 		span.End()
 	}()
 
-	logger.Debugf("Merging capabilities into final view")
+	logger.Debugf("Merging capabilities into final view (failure mode: %s)", a.failureMode)
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
@@ -298,6 +307,10 @@ func (a *defaultAggregator) MergeCapabilities(
 		Resources: make(map[string]*vmcp.BackendTarget),
 		Prompts:   make(map[string]*vmcp.BackendTarget),
 	}
+
+	// Track backend health for failure mode enforcement
+	healthyBackends := make(map[string]bool)
+	unhealthyBackends := make(map[string]string) // Maps backend ID to health status
 
 	// Convert resolved tools to final vmcp.Tool format
 	tools := make([]vmcp.Tool, 0, len(resolved.Tools))
@@ -308,6 +321,13 @@ func (a *defaultAggregator) MergeCapabilities(
 			logger.Warnf("Backend %s not found in registry for tool %s, skipping",
 				resolvedTool.BackendID, resolvedTool.ResolvedName)
 			continue
+		}
+
+		// Track backend health
+		if backend.HealthStatus.IsHealthyForRouting() {
+			healthyBackends[backend.ID] = true
+		} else {
+			unhealthyBackends[backend.ID] = string(backend.HealthStatus)
 		}
 
 		// Filter out tools from unhealthy backends
@@ -418,7 +438,43 @@ func (a *defaultAggregator) MergeCapabilities(
 	logger.Infof("Merged capabilities: %d tools, %d resources, %d prompts",
 		aggregated.Metadata.ToolCount, aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
 
+	// Enforce partial failure mode
+	if err := a.enforceFailureMode(healthyBackends, unhealthyBackends); err != nil {
+		return nil, err
+	}
+
 	return aggregated, nil
+}
+
+// enforceFailureMode checks backend health and enforces the configured failure mode.
+// In fail mode, returns error if all backends are unavailable.
+// In best_effort mode, logs info about unavailable backends.
+func (a *defaultAggregator) enforceFailureMode(healthyBackends map[string]bool, unhealthyBackends map[string]string) error {
+	if a.failureMode == config.PartialFailureModeFail {
+		// In fail mode, check if we have any healthy backends
+		if len(healthyBackends) == 0 && len(unhealthyBackends) > 0 {
+			// All backends are unhealthy - fail the aggregation
+			backendStatuses := make([]string, 0, len(unhealthyBackends))
+			for backendID, status := range unhealthyBackends {
+				backendStatuses = append(backendStatuses, fmt.Sprintf("%s(%s)", backendID, status))
+			}
+			return fmt.Errorf("all backends unavailable in fail mode: %v", backendStatuses)
+		}
+
+		// Log warning if some backends are unhealthy
+		if len(unhealthyBackends) > 0 {
+			logger.Warnf("Fail mode: %d healthy backends, %d unhealthy backends (continuing with healthy)",
+				len(healthyBackends), len(unhealthyBackends))
+		}
+	} else {
+		// In best_effort mode, just log if we're operating with reduced capacity
+		if len(unhealthyBackends) > 0 {
+			logger.Infof("Best effort mode: %d healthy backends, %d unhealthy backends (continuing with available)",
+				len(healthyBackends), len(unhealthyBackends))
+		}
+	}
+
+	return nil
 }
 
 // AggregateCapabilities is a convenience method that performs the full aggregation pipeline:

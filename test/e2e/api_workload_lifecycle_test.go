@@ -753,6 +753,141 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 					"Should reject requests specifying both names and group")
 			})
 		})
+
+		Context("when stopping workloads by group", func() {
+			var groupName string
+			var workloadNames []string
+
+			BeforeEach(func() {
+				groupName = fmt.Sprintf("bulk-stop-group-%d", time.Now().UnixNano())
+				workloadNames = []string{
+					e2e.GenerateUniqueServerName("group-stop-1"),
+					e2e.GenerateUniqueServerName("group-stop-2"),
+					e2e.GenerateUniqueServerName("group-stop-3"),
+				}
+			})
+
+			AfterEach(func() {
+				for _, name := range workloadNames {
+					deleteWorkload(apiServer, name)
+				}
+				deleteGroup(apiServer, groupName)
+			})
+
+			It("should stop all workloads in a group", func() {
+				By("Creating a test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for group to be created")
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Creating multiple workloads in the group")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+						"group": groupName,
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Stopping all workloads by group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				stopResp := bulkStopWorkloads(apiServer, bulkReq)
+				defer stopResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(stopResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads in group are stopped")
+				Eventually(func() int {
+					stoppedCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusStopped {
+								stoppedCount++
+							}
+						}
+					}
+					return stoppedCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+			})
+
+			It("should handle stopping workloads in empty group", func() {
+				By("Creating an empty test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for group to be created")
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Attempting to stop workloads in empty group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				resp := bulkStopWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response is successful (idempotent)")
+				Expect(resp.StatusCode).To(Equal(http.StatusAccepted),
+					"Should accept bulk stop for empty group")
+			})
+
+			It("should return error for non-existent group", func() {
+				By("Attempting to stop workloads in non-existent group")
+				bulkReq := map[string]interface{}{
+					"group": "non-existent-group-12345",
+				}
+				resp := bulkStopWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status indicates error")
+				Expect(resp.StatusCode).To(SatisfyAny(
+					Equal(http.StatusNotFound),
+					Equal(http.StatusBadRequest),
+				), "Should return error for non-existent group")
+			})
+		})
 	})
 
 	Describe("POST /api/v1beta/workloads/restart - Bulk restart workloads", func() {
@@ -833,6 +968,243 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 
 				By("Verifying response status is 400 Bad Request")
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+
+			It("should reject request with both names and group", func() {
+				By("Attempting bulk restart with both names and group")
+				bulkReq := map[string]interface{}{
+					"names": []string{"workload1"},
+					"group": "test-group",
+				}
+				resp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should reject requests specifying both names and group")
+			})
+		})
+
+		Context("when restarting workloads by group", func() {
+			var groupName string
+			var workloadNames []string
+
+			BeforeEach(func() {
+				groupName = fmt.Sprintf("bulk-restart-group-%d", time.Now().UnixNano())
+				workloadNames = []string{
+					e2e.GenerateUniqueServerName("group-restart-1"),
+					e2e.GenerateUniqueServerName("group-restart-2"),
+				}
+			})
+
+			AfterEach(func() {
+				for _, name := range workloadNames {
+					deleteWorkload(apiServer, name)
+				}
+				deleteGroup(apiServer, groupName)
+			})
+
+			It("should restart all workloads in a group", func() {
+				By("Creating a test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for group to be created")
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Creating multiple workloads in the group")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+						"group": groupName,
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Restarting all workloads by group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				restartResp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer restartResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(restartResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads in group return to running state")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+			})
+
+			It("should restart stopped workloads in a group", func() {
+				By("Creating a test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Creating workloads in the group")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+						"group": groupName,
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Stopping all workloads")
+				stopReq := map[string]interface{}{
+					"group": groupName,
+				}
+				stopResp := bulkStopWorkloads(apiServer, stopReq)
+				stopResp.Body.Close()
+				Expect(stopResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Waiting for all workloads to be stopped")
+				Eventually(func() int {
+					stoppedCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusStopped {
+								stoppedCount++
+							}
+						}
+					}
+					return stoppedCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Restarting all stopped workloads by group")
+				restartReq := map[string]interface{}{
+					"group": groupName,
+				}
+				restartResp := bulkRestartWorkloads(apiServer, restartReq)
+				defer restartResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(restartResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads are running again")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+			})
+
+			It("should handle restarting workloads in empty group", func() {
+				By("Creating an empty test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Attempting to restart workloads in empty group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				resp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response is successful (idempotent)")
+				Expect(resp.StatusCode).To(Equal(http.StatusAccepted),
+					"Should accept bulk restart for empty group")
+			})
+
+			It("should return error for non-existent group", func() {
+				By("Attempting to restart workloads in non-existent group")
+				bulkReq := map[string]interface{}{
+					"group": "non-existent-group-12345",
+				}
+				resp := bulkRestartWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status indicates error")
+				Expect(resp.StatusCode).To(SatisfyAny(
+					Equal(http.StatusNotFound),
+					Equal(http.StatusBadRequest),
+				), "Should return error for non-existent group")
 			})
 		})
 	})
@@ -925,6 +1297,245 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 
 				By("Verifying response status is 400 Bad Request")
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			})
+
+			It("should reject request with both names and group", func() {
+				By("Attempting bulk delete with both names and group")
+				bulkReq := map[string]interface{}{
+					"names": []string{"workload1"},
+					"group": "test-group",
+				}
+				resp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status is 400 Bad Request")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Should reject requests specifying both names and group")
+			})
+		})
+
+		Context("when deleting workloads by group", func() {
+			var groupName string
+			var workloadNames []string
+
+			BeforeEach(func() {
+				groupName = fmt.Sprintf("bulk-delete-group-%d", time.Now().UnixNano())
+				workloadNames = []string{
+					e2e.GenerateUniqueServerName("group-delete-1"),
+					e2e.GenerateUniqueServerName("group-delete-2"),
+				}
+			})
+
+			AfterEach(func() {
+				// Cleanup any remaining workloads
+				for _, name := range workloadNames {
+					deleteWorkload(apiServer, name)
+				}
+				deleteGroup(apiServer, groupName)
+			})
+
+			It("should delete all workloads in a group", func() {
+				By("Creating a test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				By("Waiting for group to be created")
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Creating multiple workloads in the group")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+						"group": groupName,
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Deleting all workloads by group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				deleteResp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer deleteResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(deleteResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads in group are deleted")
+				Eventually(func() int {
+					foundCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name {
+								foundCount++
+							}
+						}
+					}
+					return foundCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(0),
+					"All workloads in group should be deleted")
+			})
+
+			It("should delete stopped workloads in a group", func() {
+				By("Creating a test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Creating workloads in the group")
+				for _, name := range workloadNames {
+					createReq := map[string]interface{}{
+						"name":  name,
+						"image": "osv",
+						"group": groupName,
+					}
+					resp := createWorkload(apiServer, createReq)
+					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				}
+
+				By("Waiting for all workloads to be running")
+				Eventually(func() int {
+					runningCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
+								runningCount++
+							}
+						}
+					}
+					return runningCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Stopping all workloads in the group")
+				stopReq := map[string]interface{}{
+					"group": groupName,
+				}
+				stopResp := bulkStopWorkloads(apiServer, stopReq)
+				stopResp.Body.Close()
+				Expect(stopResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Waiting for all workloads to be stopped")
+				Eventually(func() int {
+					stoppedCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name && w.Status == runtime.WorkloadStatusStopped {
+								stoppedCount++
+							}
+						}
+					}
+					return stoppedCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(len(workloadNames)))
+
+				By("Deleting all stopped workloads by group")
+				deleteReq := map[string]interface{}{
+					"group": groupName,
+				}
+				deleteResp := bulkDeleteWorkloads(apiServer, deleteReq)
+				defer deleteResp.Body.Close()
+
+				By("Verifying response status is 202 Accepted")
+				Expect(deleteResp.StatusCode).To(Equal(http.StatusAccepted))
+
+				By("Verifying all workloads are deleted")
+				Eventually(func() int {
+					foundCount := 0
+					workloads := listWorkloads(apiServer, true)
+					for _, w := range workloads {
+						for _, name := range workloadNames {
+							if w.Name == name {
+								foundCount++
+							}
+						}
+					}
+					return foundCount
+				}, 60*time.Second, 2*time.Second).Should(Equal(0))
+			})
+
+			It("should handle deleting workloads in empty group", func() {
+				By("Creating an empty test group")
+				createReq := map[string]interface{}{"name": groupName}
+				groupResp := createGroup(apiServer, createReq)
+				groupResp.Body.Close()
+				Expect(groupResp.StatusCode).To(Equal(http.StatusCreated))
+
+				Eventually(func() bool {
+					groupList := listGroups(apiServer)
+					for _, g := range groupList {
+						if g.Name == groupName {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("Attempting to delete workloads in empty group")
+				bulkReq := map[string]interface{}{
+					"group": groupName,
+				}
+				resp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response is successful (idempotent)")
+				Expect(resp.StatusCode).To(Equal(http.StatusAccepted),
+					"Should accept bulk delete for empty group")
+			})
+
+			It("should return error for non-existent group", func() {
+				By("Attempting to delete workloads in non-existent group")
+				bulkReq := map[string]interface{}{
+					"group": "non-existent-group-12345",
+				}
+				resp := bulkDeleteWorkloads(apiServer, bulkReq)
+				defer resp.Body.Close()
+
+				By("Verifying response status indicates error")
+				Expect(resp.StatusCode).To(SatisfyAny(
+					Equal(http.StatusNotFound),
+					Equal(http.StatusBadRequest),
+				), "Should return error for non-existent group")
 			})
 		})
 	})

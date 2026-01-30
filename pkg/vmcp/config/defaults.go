@@ -20,6 +20,9 @@ const (
 	// before marking a backend as unhealthy.
 	defaultUnhealthyThreshold = 3
 
+	// defaultStatusReportingInterval is the default interval for reporting status updates.
+	defaultStatusReportingInterval = 30 * time.Second
+
 	// defaultPartialFailureMode defines the default behavior when some backends fail.
 	// "fail" means the entire request fails if any backend is unavailable.
 	defaultPartialFailureMode = "fail"
@@ -49,9 +52,10 @@ func DefaultOperationalConfig() *OperationalConfig {
 			PerWorkload: nil,
 		},
 		FailureHandling: &FailureHandlingConfig{
-			HealthCheckInterval: Duration(defaultHealthCheckInterval),
-			UnhealthyThreshold:  defaultUnhealthyThreshold,
-			PartialFailureMode:  defaultPartialFailureMode,
+			HealthCheckInterval:     Duration(defaultHealthCheckInterval),
+			UnhealthyThreshold:      defaultUnhealthyThreshold,
+			StatusReportingInterval: Duration(defaultStatusReportingInterval),
+			PartialFailureMode:      defaultPartialFailureMode,
 			CircuitBreaker: &CircuitBreakerConfig{
 				Enabled:          defaultCircuitBreakerEnabled,
 				FailureThreshold: defaultCircuitBreakerFailureThreshold,

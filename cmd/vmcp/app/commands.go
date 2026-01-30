@@ -188,6 +188,17 @@ func getVersion() string {
 	return "dev"
 }
 
+// getStatusReportingInterval extracts the status reporting interval from config.
+// Returns 0 if not configured, which will use the default interval.
+func getStatusReportingInterval(cfg *config.Config) time.Duration {
+	if cfg.Operational != nil &&
+		cfg.Operational.FailureHandling != nil &&
+		cfg.Operational.FailureHandling.StatusReportingInterval > 0 {
+		return time.Duration(cfg.Operational.FailureHandling.StatusReportingInterval)
+	}
+	return 0
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("Loading configuration from: %s", configPath)
@@ -331,7 +342,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if telemetryProvider != nil {
 		tracerProvider = telemetryProvider.TracerProvider()
 	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools, tracerProvider)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
@@ -432,18 +443,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	serverCfg := &vmcpserver.Config{
-		Name:                cfg.Name,
-		Version:             getVersion(),
-		GroupRef:            cfg.Group,
-		Host:                host,
-		Port:                port,
-		AuthMiddleware:      authMiddleware,
-		AuthInfoHandler:     authInfoHandler,
-		TelemetryProvider:   telemetryProvider,
-		AuditConfig:         cfg.Audit,
-		HealthMonitorConfig: healthMonitorConfig,
-		Watcher:             backendWatcher,
-		StatusReporter:      statusReporter,
+		Name:                    cfg.Name,
+		Version:                 getVersion(),
+		GroupRef:                cfg.Group,
+		Host:                    host,
+		Port:                    port,
+		AuthMiddleware:          authMiddleware,
+		AuthInfoHandler:         authInfoHandler,
+		TelemetryProvider:       telemetryProvider,
+		AuditConfig:             cfg.Audit,
+		HealthMonitorConfig:     healthMonitorConfig,
+		StatusReportingInterval: getStatusReportingInterval(cfg),
+		Watcher:                 backendWatcher,
+		StatusReporter:          statusReporter,
 	}
 
 	if cfg.Optimizer != nil {

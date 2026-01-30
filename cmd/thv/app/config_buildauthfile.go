@@ -155,7 +155,6 @@ func setBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to mark build auth file as configured: %w", err)
 	}
 
-	fmt.Printf("Successfully set build auth file: %s (stored securely in secrets)\n", name)
 	return nil
 }
 
@@ -273,7 +272,6 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to remove build auth files: %w", err)
 		}
 
-		fmt.Printf("Successfully removed %d build auth file(s).\n", len(configuredFiles))
 		return nil
 	}
 
@@ -298,6 +296,5 @@ func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to remove build auth file: %w", err)
 	}
 
-	fmt.Printf("Successfully removed build auth file: %s\n", name)
 	return nil
 }

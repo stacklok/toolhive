@@ -180,19 +180,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Extract UBI metadata
-        id: ubi-meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
-        with:
-          images: ${{ env.BASE_REPO }}
-          tags: |
-            type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
-            type=raw,value=latest-ubi,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-          labels: |
-            name=toolhive-operator
-            vendor=Stacklok
-            maintainer=Stacklok
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
@@ -214,34 +201,17 @@ jobs:
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-operator \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
 
-      - name: Build and Push UBI Image to GHCR
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          file: containers/operator/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.ubi-meta.outputs.tags }}
-          build-args: |
-            CODEDIR=cmd/thv-operator
-            VERSION=${{ steps.version-string.outputs.tag }}-ubi
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
-          labels: ${{ steps.ubi-meta.outputs.labels }}
-
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
           TAG=${{ steps.version-string.outputs.tag }}
-          UBI_TAG="${{ steps.version-string.outputs.tag }}-ubi"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
-          cosign sign -y $BASE_REPO:$UBI_TAG
 
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
-            cosign sign -y $BASE_REPO:latest-ubi
           fi
 
   proxyrunner-image-build-and-publish:
@@ -281,19 +251,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Extract UBI metadata
-        id: ubi-meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
-        with:
-          images: ${{ env.BASE_REPO }}
-          tags: |
-            type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
-            type=raw,value=latest-ubi,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-          labels: |
-            name=toolhive-proxyrunner
-            vendor=Stacklok
-            maintainer=Stacklok
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
@@ -313,34 +270,17 @@ jobs:
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-proxyrunner \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-proxyrunner",org.opencontainers.image.vendor=Stacklok
 
-      - name: Build and Push UBI Image to GHCR
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          file: containers/operator/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.ubi-meta.outputs.tags }}
-          build-args: |
-            CODEDIR=cmd/thv-proxyrunner
-            VERSION=${{ steps.version-string.outputs.tag }}-ubi
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
-          labels: ${{ steps.ubi-meta.outputs.labels }}
-
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
           TAG=${{ steps.version-string.outputs.tag }}
-          UBI_TAG="${{ steps.version-string.outputs.tag }}-ubi"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
-          cosign sign -y $BASE_REPO:$UBI_TAG
 
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
-            cosign sign -y $BASE_REPO:latest-ubi
           fi
 
   vmcp-image-build-and-publish:

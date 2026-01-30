@@ -80,7 +80,9 @@ type MCPServerSpec struct {
 	Transport string `json:"transport,omitempty"`
 
 	// ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
-	// This setting is only used when Transport is "stdio"
+	// This setting is ONLY applicable when Transport is "stdio".
+	// For direct transports (sse, streamable-http), this field is ignored.
+	// The default value is applied by Kubernetes but will be ignored for non-stdio transports.
 	// +kubebuilder:validation:Enum=sse;streamable-http
 	// +kubebuilder:default=streamable-http
 	// +optional

@@ -71,8 +71,9 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 }
 
 // GetProviderType returns the secrets provider type from the environment variable or application config.
-// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
-// Returns ErrSecretsNotSetup if secrets have not been configured yet.
+// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable (allowing Kubernetes deployments
+// to override without local setup), and falls back to the config file.
+// Returns ErrSecretsNotSetup only if the environment variable is not set and secrets have not been configured.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 	return s.GetProviderTypeWithEnv(&env.OSReader{})
 }
@@ -80,14 +81,15 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 // GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
 // This method allows for dependency injection of environment variable access for testing.
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
-	// Check if secrets setup has been completed
-	if !s.SetupCompleted {
-		return "", secrets.ErrSecretsNotSetup
-	}
-
-	// First check the environment variable
+	// First check the environment variable - this allows Kubernetes deployments
+	// to override the secrets provider without requiring local setup
 	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
 		return validateProviderType(envVar)
+	}
+
+	// Check if secrets setup has been completed (only for config file fallback)
+	if !s.SetupCompleted {
+		return "", secrets.ErrSecretsNotSetup
 	}
 
 	// Fall back to config file
@@ -129,7 +131,7 @@ func applyBackwardCompatibility(config *Config) error {
 	// Hack - if the secrets provider type is set to the old `basic` type,
 	// just change it to `encrypted`.
 	if config.Secrets.ProviderType == "basic" {
-		fmt.Println("cleaning up basic secrets provider")
+		logger.Debugf("cleaning up basic secrets provider, migrating to encrypted type")
 		// Attempt to cleanup path, treat errors as non fatal.
 		oldPath, err := xdg.DataFile("toolhive/secrets")
 		if err == nil {

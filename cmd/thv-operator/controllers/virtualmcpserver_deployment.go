@@ -52,9 +52,29 @@ const (
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
 )
 
-// RBAC rules for VirtualMCPServer service account in dynamic mode
-// These rules allow vMCP to discover backends and configurations at runtime
-var vmcpRBACRules = []rbacv1.PolicyRule{
+// RBAC rules for VirtualMCPServer service account in inline mode
+// These minimal rules only allow vMCP to:
+// - Read its own VirtualMCPServer spec
+// - Update VirtualMCPServer status (via K8sReporter)
+// No access to secrets or other Kubernetes resources since config is provided inline
+var vmcpInlineRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"update", "patch"},
+	},
+}
+
+// RBAC rules for VirtualMCPServer service account in discovered mode
+// These rules allow vMCP to:
+// - Discover backends and configurations at runtime (read secrets, configmaps, and MCP resources)
+// - Update VirtualMCPServer status (via K8sReporter)
+var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps", "secrets"},
@@ -64,6 +84,11 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 		APIGroups: []string{"toolhive.stacklok.dev"},
 		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers"},
+		Verbs:     []string{"get"},
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
@@ -458,6 +483,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
+		return nil, nil
+
+	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+		// Embedded auth server secrets are handled separately (via volume mounts, not env vars)
+		// Controller integration will be in a future task
 		return nil, nil
 
 	default:

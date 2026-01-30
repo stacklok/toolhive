@@ -25,24 +25,30 @@ type defaultAggregator struct {
 	backendClient    vmcp.BackendClient
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
+	excludeAllTools  bool                                  // Global flag to exclude all tools
 	tracer           trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
-// workloadConfigs specifies per-backend tool filtering and overrides.
+// aggregationConfig specifies aggregation settings including tool filtering/overrides and excludeAllTools.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
-	workloadConfigs []*config.WorkloadToolConfig,
+	aggregationConfig *config.AggregationConfig,
 	tracerProvider trace.TracerProvider,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
-	for _, wlConfig := range workloadConfigs {
-		if wlConfig != nil {
-			toolConfigMap[wlConfig.Workload] = wlConfig
+	var excludeAllTools bool
+
+	if aggregationConfig != nil {
+		excludeAllTools = aggregationConfig.ExcludeAllTools
+		for _, wlConfig := range aggregationConfig.Tools {
+			if wlConfig != nil {
+				toolConfigMap[wlConfig.Workload] = wlConfig
+			}
 		}
 	}
 
@@ -58,6 +64,7 @@ func NewDefaultAggregator(
 		backendClient:    backendClient,
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
+		excludeAllTools:  excludeAllTools,
 		tracer:           tracer,
 	}
 }
@@ -91,6 +98,10 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	}
 
 	// Apply per-backend tool filtering and overrides (before conflict resolution)
+	// NOTE: ExcludeAll (both global and per-workload) is NOT applied here.
+	// This is intentional - we need all tools in the routing table so composite
+	// tools can call backend tools. ExcludeAll is applied in MergeCapabilities
+	// to control which tools are advertised to the LLM.
 	processedTools := processBackendTools(ctx, backend.ID, capabilities.Tools, a.toolConfigMap[backend.ID])
 
 	// Convert to BackendCapabilities
@@ -300,15 +311,24 @@ func (a *defaultAggregator) MergeCapabilities(
 	}
 
 	// Convert resolved tools to final vmcp.Tool format
+	// The routing table gets ALL tools (for composite tool routing)
+	// The advertised tools list only gets non-excluded tools (for LLM)
 	tools := make([]vmcp.Tool, 0, len(resolved.Tools))
 	for _, resolvedTool := range resolved.Tools {
-		tools = append(tools, vmcp.Tool{
-			Name:        resolvedTool.ResolvedName,
-			Description: resolvedTool.Description,
-			InputSchema: resolvedTool.InputSchema,
-			BackendID:   resolvedTool.BackendID,
-		})
+		// Check if this tool should be excluded from the advertised list
+		// ExcludeAll only affects advertising, not routing
+		shouldAdvertise := a.shouldAdvertiseTool(resolvedTool.BackendID)
 
+		if shouldAdvertise {
+			tools = append(tools, vmcp.Tool{
+				Name:        resolvedTool.ResolvedName,
+				Description: resolvedTool.Description,
+				InputSchema: resolvedTool.InputSchema,
+				BackendID:   resolvedTool.BackendID,
+			})
+		}
+
+		// ALWAYS add to routing table (for composite tools to call excluded backend tools)
 		// Look up full backend information from registry
 		backend := registry.Get(ctx, resolvedTool.BackendID)
 		if backend == nil {
@@ -465,4 +485,28 @@ func (a *defaultAggregator) AggregateCapabilities(
 		aggregated.Metadata.ResourceCount, aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
+}
+
+// shouldAdvertiseTool returns true if a tool from the given backend should be
+// advertised to the LLM (included in tools/list response).
+//
+// ExcludeAll settings control advertising, not routing:
+// - Tools excluded via ExcludeAll are NOT advertised to the LLM
+// - BUT they ARE available in the routing table for composite tools to use
+//
+// This enables the use case where you want to hide raw backend tools from
+// direct LLM access while still allowing curated composite workflows to use them.
+func (a *defaultAggregator) shouldAdvertiseTool(backendID string) bool {
+	// Global ExcludeAllTools takes precedence - excludes all tools from all backends
+	if a.excludeAllTools {
+		return false
+	}
+
+	// Check per-workload ExcludeAll setting
+	if wlConfig, exists := a.toolConfigMap[backendID]; exists && wlConfig.ExcludeAll {
+		return false
+	}
+
+	// Tool should be advertised
+	return true
 }

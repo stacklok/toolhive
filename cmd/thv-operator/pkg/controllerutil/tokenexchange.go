@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -96,11 +97,18 @@ func GenerateTokenExchangeEnvVars(
 // AddExternalAuthConfigOptions adds external authentication configuration options to builder options
 // This creates token exchange configuration which will be automatically converted to middleware by
 // PopulateMiddlewareConfigs() when the runner starts. This ensures correct middleware ordering.
+//
+// The oidcConfig parameter is used for embedded auth server configuration to populate:
+//   - AllowedAudiences from oidcConfig.ResourceURL
+//   - ScopesSupported from oidcConfig.Scopes
+//
+// For embedded auth server type, oidcConfig is REQUIRED and must have ResourceURL set.
 func AddExternalAuthConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	if externalAuthConfigRef == nil {
@@ -125,9 +133,7 @@ func AddExternalAuthConfigOptions(
 		// No config to add for unauthenticated
 		return nil
 	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
-		// Embedded auth server config is handled separately (via volume mounts)
-		// Controller integration will be in a future task
-		return nil
+		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, externalAuthConfigRef, oidcConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

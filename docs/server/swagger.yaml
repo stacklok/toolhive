@@ -110,6 +110,269 @@ components:
             type: string
           type: array
       type: object
+    authserver.OAuth2UpstreamRunConfig:
+      description: |-
+        OAuth2Config contains OAuth 2.0-specific configuration.
+        Required when Type is "oauth2", must be nil when Type is "oidc".
+      properties:
+        authorization_endpoint:
+          description: AuthorizationEndpoint is the URL for the OAuth authorization
+            endpoint.
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier registered with
+            the upstream IDP.
+          type: string
+        client_secret_env_var:
+          description: |-
+            ClientSecretEnvVar is the name of an environment variable containing the client secret.
+            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
+          type: string
+        client_secret_file:
+          description: |-
+            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
+            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
+          type: string
+        redirect_uri:
+          description: |-
+            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+            When not specified, defaults to `{issuer}/oauth/callback`.
+          type: string
+        scopes:
+          description: Scopes are the OAuth scopes to request from the upstream IDP.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        token_endpoint:
+          description: TokenEndpoint is the URL for the OAuth token endpoint.
+          type: string
+        userinfo:
+          $ref: '#/components/schemas/authserver.UserInfoRunConfig'
+      type: object
+    authserver.OIDCUpstreamRunConfig:
+      description: |-
+        OIDCConfig contains OIDC-specific configuration.
+        Required when Type is "oidc", must be nil when Type is "oauth2".
+      properties:
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier registered with
+            the upstream IDP.
+          type: string
+        client_secret_env_var:
+          description: |-
+            ClientSecretEnvVar is the name of an environment variable containing the client secret.
+            Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
+          type: string
+        client_secret_file:
+          description: |-
+            ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
+            Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
+          type: string
+        issuer_url:
+          description: |-
+            IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
+            Must be a valid HTTPS URL.
+          type: string
+        redirect_uri:
+          description: |-
+            RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+            When not specified, defaults to `{issuer}/oauth/callback`.
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes to request from the upstream IDP.
+            If not specified, defaults to ["openid", "offline_access"].
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        userinfo_override:
+          $ref: '#/components/schemas/authserver.UserInfoRunConfig'
+      type: object
+    authserver.RunConfig:
+      description: |-
+        EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
+        When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
+        This is the serializable RunConfig; secrets are referenced by file paths or env var names.
+      properties:
+        allowed_audiences:
+          description: |-
+            AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+            Per RFC 8707, the "resource" parameter in authorization and token requests is
+            validated against this list. Required for MCP compliance.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        hmac_secret_files:
+          description: |-
+            HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
+            and refresh tokens (opaque tokens).
+            First file is the current secret (must be at least 32 bytes), subsequent files
+            are for rotation/verification of existing tokens.
+            If empty, an ephemeral secret will be auto-generated (development only).
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        issuer:
+          description: |-
+            Issuer is the issuer identifier for this authorization server.
+            This will be included in the "iss" claim of issued tokens.
+            Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+          type: string
+        schema_version:
+          description: SchemaVersion is the version of the RunConfig schema.
+          type: string
+        scopes_supported:
+          description: |-
+            ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+            If empty, defaults to ["openid", "offline_access"].
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        signing_key_config:
+          $ref: '#/components/schemas/authserver.SigningKeyRunConfig'
+        token_lifespans:
+          $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
+        upstreams:
+          description: |-
+            Upstreams configures connections to upstream Identity Providers.
+            At least one upstream is required - the server delegates authentication to these providers.
+            Currently only a single upstream is supported.
+          items:
+            $ref: '#/components/schemas/authserver.UpstreamRunConfig'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.SigningKeyRunConfig:
+      description: |-
+        SigningKeyConfig configures the signing key provider for JWT operations.
+        If nil or empty, an ephemeral signing key will be auto-generated (development only).
+      properties:
+        fallback_key_files:
+          description: |-
+            FallbackKeyFiles are filenames of additional keys for verification (relative to KeyDir).
+            These keys are included in the JWKS endpoint for token verification but are NOT
+            used for signing new tokens. Useful for key rotation.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        key_dir:
+          description: |-
+            KeyDir is the directory containing PEM-encoded private key files.
+            All key filenames are relative to this directory.
+            In Kubernetes, this is typically a mounted Secret volume.
+          type: string
+        signing_key_file:
+          description: |-
+            SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
+            This key is used for signing new tokens.
+          type: string
+      type: object
+    authserver.TokenLifespanRunConfig:
+      description: |-
+        TokenLifespans configures the duration that various tokens are valid.
+        If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
+      properties:
+        access_token_lifespan:
+          description: |-
+            AccessTokenLifespan is the duration that access tokens are valid.
+            If empty, defaults to 1 hour.
+          type: string
+        auth_code_lifespan:
+          description: |-
+            AuthCodeLifespan is the duration that authorization codes are valid.
+            If empty, defaults to 10 minutes.
+          type: string
+        refresh_token_lifespan:
+          description: |-
+            RefreshTokenLifespan is the duration that refresh tokens are valid.
+            If empty, defaults to 7 days (168h).
+          type: string
+      type: object
+    authserver.UpstreamProviderType:
+      description: 'Type specifies the provider type: "oidc" or "oauth2".'
+      enum:
+      - oidc
+      - oauth2
+      type: string
+      x-enum-varnames:
+      - UpstreamProviderTypeOIDC
+      - UpstreamProviderTypeOAuth2
+    authserver.UpstreamRunConfig:
+      properties:
+        name:
+          description: |-
+            Name uniquely identifies this upstream.
+            Used for routing decisions and session binding in multi-upstream scenarios.
+            If empty when only one upstream is configured, defaults to "default".
+          type: string
+        oauth2_config:
+          $ref: '#/components/schemas/authserver.OAuth2UpstreamRunConfig'
+        oidc_config:
+          $ref: '#/components/schemas/authserver.OIDCUpstreamRunConfig'
+        type:
+          $ref: '#/components/schemas/authserver.UpstreamProviderType'
+      type: object
+    authserver.UserInfoFieldMappingRunConfig:
+      description: |-
+        FieldMapping contains custom field mapping configuration for non-standard providers.
+        If nil, standard OIDC field names are used ("sub", "name", "email").
+      properties:
+        email_fields:
+          description: |-
+            EmailFields is an ordered list of field names to try for the email address.
+            The first non-empty value found will be used.
+            Default: ["email"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name_fields:
+          description: |-
+            NameFields is an ordered list of field names to try for the display name.
+            The first non-empty value found will be used.
+            Default: ["name"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_fields:
+          description: |-
+            SubjectFields is an ordered list of field names to try for the user ID.
+            The first non-empty value found will be used.
+            Default: ["sub"]
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.UserInfoRunConfig:
+      description: UserInfo contains configuration for fetching user information (required
+        for OAuth2).
+      properties:
+        additional_headers:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalHeaders contains extra headers to include in the userinfo request.
+            Useful for providers that require specific headers (e.g., GitHub's Accept header).
+          type: object
+        endpoint_url:
+          description: EndpointURL is the URL of the userinfo endpoint.
+          type: string
+        field_mapping:
+          $ref: '#/components/schemas/authserver.UserInfoFieldMappingRunConfig'
+        http_method:
+          description: |-
+            HTTPMethod is the HTTP method to use for the userinfo request.
+            If not specified, defaults to GET.
+          type: string
+      type: object
     authz.Config:
       description: |-
         DEPRECATED: Middleware configuration.
@@ -853,6 +1116,8 @@ components:
         debug:
           description: Debug indicates whether debug mode is enabled
           type: boolean
+        embedded_auth_server_config:
+          $ref: '#/components/schemas/authserver.RunConfig'
         endpoint_prefix:
           description: |-
             EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.

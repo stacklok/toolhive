@@ -16,6 +16,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -144,9 +145,21 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
-	// Add external auth configuration if specified
+	// Resolve OIDC config for embedded auth server configuration
+	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
+	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
+	var resolvedOIDCConfig *oidc.OIDCConfig
+	resolver := oidc.NewResolver(r.Client)
+	resolvedOIDCConfig, err := resolver.Resolve(ctx, proxy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+	}
+
+	// Add external auth configuration if specified (updated call)
+	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, &options,
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
+		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}

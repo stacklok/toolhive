@@ -205,7 +205,7 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 	// - Storage: where to persist authorization codes, tokens, and client data
 	// - Strategy: how to generate and validate tokens
 	// - Factories: which OAuth grant types to enable (each adds handlers for specific flows)
-	provider := compose.Compose(
+	return compose.Compose(
 		authServerConfig.Config,
 		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
@@ -213,6 +213,4 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
 		compose.OAuth2PKCEFactory,              // PKCE for public clients
 	)
-
-	return provider
 }

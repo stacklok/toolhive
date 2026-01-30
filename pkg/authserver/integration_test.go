@@ -182,7 +182,6 @@ func parseTokenResponse(t *testing.T, resp *http.Response) map[string]interface{
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	defer resp.Body.Close()
 
 	var result map[string]interface{}
 	err = json.Unmarshal(body, &result)

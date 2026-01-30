@@ -873,6 +873,26 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "runner.HeaderForwardConfig": {
+                "description": "HeaderForward contains configuration for injecting headers into requests to remote servers.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret is a map of header names to secret names.\nThe key is the header name, the value is the secret name in ToolHive's secrets manager.\nResolved at runtime via WithSecrets() into resolvedHeaders.\nThe actual secret value is only held in memory, never persisted.",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders is a map of header names to literal values to inject into requests.\nWARNING: These values are stored in plaintext in the configuration.\nFor sensitive values (API keys, tokens), use AddHeadersFromSecret instead.",
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
             "runner.RunConfig": {
                 "properties": {
                     "audit_config": {
@@ -934,6 +954,9 @@ const docTemplate = `{
                     "group": {
                         "description": "Group is the name of the group this workload belongs to, if any",
                         "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/runner.HeaderForwardConfig"
                     },
                     "host": {
                         "description": "Host is the host for the HTTP proxy",
@@ -1292,10 +1315,6 @@ const docTemplate = `{
             "v1.UpdateRegistryResponse": {
                 "description": "Response containing update result",
                 "properties": {
-                    "message": {
-                        "description": "Status message",
-                        "type": "string"
-                    },
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
@@ -1428,6 +1447,9 @@ const docTemplate = `{
                     "group": {
                         "description": "Group name this workload belongs to",
                         "type": "string"
+                    },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/v1.headerForwardConfig"
                     },
                     "headers": {
                         "items": {
@@ -1635,6 +1657,26 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "v1.headerForwardConfig": {
+                "description": "HeaderForward configures headers to inject into requests to remote MCP servers.\nUse this to add custom headers like X-Tenant-ID or correlation IDs.",
+                "properties": {
+                    "add_headers_from_secret": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.\nKey: HTTP header name, Value: secret name in the secrets manager",
+                        "type": "object"
+                    },
+                    "add_plaintext_headers": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AddPlaintextHeaders contains literal header values to inject.\nWARNING: These values are stored and transmitted in plaintext.\nUse AddHeadersFromSecret for sensitive data like API keys.",
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -1923,6 +1965,9 @@ const docTemplate = `{
                         "description": "Group name this workload belongs to",
                         "type": "string"
                     },
+                    "header_forward": {
+                        "$ref": "#/components/schemas/v1.headerForwardConfig"
+                    },
                     "headers": {
                         "items": {
                             "$ref": "#/components/schemas/registry.Header"
@@ -2161,7 +2206,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Register a new client",
@@ -2215,7 +2260,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Register multiple clients",
@@ -2259,7 +2304,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Unregister multiple clients",
@@ -2294,7 +2339,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     }
                 },
                 "summary": "Unregister a client",
@@ -2338,7 +2383,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid request"
+                        "description": "Invalid request or unsupported client type"
                     },
                     "404": {
                         "content": {
@@ -2781,6 +2826,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "Not Found"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway - Registry validation failed"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout - Registry unreachable"
                     }
                 },
                 "summary": "Update registry configuration",

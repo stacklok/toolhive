@@ -95,7 +95,7 @@
 //	    EndpointURL: "https://api.example.com/user",
 //	    HTTPMethod:  "GET",  // or "POST" per OIDC Core Section 5.3.1
 //	    FieldMapping: &upstream.UserInfoFieldMapping{
-//	        SubjectField: "user_id",  // custom field for non-OIDC providers
+//	        SubjectFields: []string{"user_id"},  // custom field for non-OIDC providers
 //	    },
 //	}
 package upstream

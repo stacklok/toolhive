@@ -120,6 +120,11 @@ type Config struct {
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
 
+	// StatusReportingInterval is the interval for reporting status updates.
+	// If zero, defaults to 30 seconds.
+	// Lower values provide faster status updates but increase API server load.
+	StatusReportingInterval time.Duration
+
 	// Watcher is the optional Kubernetes backend watcher for dynamic mode.
 	// Only set when running in K8s with outgoingAuth.source: discovered.
 	// Used for /readyz endpoint to gate readiness on cache sync.
@@ -540,6 +545,27 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to start status reporter: %w", err)
 		}
 		s.shutdownFuncs = append(s.shutdownFuncs, shutdown)
+
+		// Create internal context for status reporting goroutine lifecycle
+		// This ensures the goroutine is cleaned up on all exit paths
+		statusReportingCtx, statusReportingCancel := context.WithCancel(ctx)
+
+		// Prepare status reporting config
+		statusConfig := DefaultStatusReportingConfig()
+		statusConfig.Reporter = s.statusReporter
+		if s.config.StatusReportingInterval > 0 {
+			statusConfig.Interval = s.config.StatusReportingInterval
+		}
+
+		// Start periodic status reporting in background
+		go s.periodicStatusReporting(statusReportingCtx, statusConfig)
+
+		// Append cancel function to shutdownFuncs for cleanup
+		// Done after starting goroutine to avoid race if Stop() is called immediately
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			statusReportingCancel()
+			return nil
+		})
 	}
 
 	// Wait for either context cancellation or server error
@@ -548,6 +574,12 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("Context cancelled, shutting down server")
 		return s.Stop(context.Background())
 	case err := <-errCh:
+		// HTTP server error - log and tear down cleanly
+		logger.Errorf("HTTP server error: %v", err)
+		if stopErr := s.Stop(context.Background()); stopErr != nil {
+			// Combine errors if Stop() also fails
+			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
+		}
 		return err
 	}
 }
@@ -592,7 +624,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Run shutdown functions (e.g., status reporter, future components)
+	// Run shutdown functions (e.g., status reporter cleanup, future components)
 	for _, shutdown := range s.shutdownFuncs {
 		if err := shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("failed to execute shutdown function: %w", err))

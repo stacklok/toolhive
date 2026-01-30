@@ -331,8 +331,12 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 
 	// Populate backend auth fields with typed strategy
 	backend.AuthConfig = strategy
+	// Also store the reference to the MCPExternalAuthConfig resource name
+	// This is used for status reporting and debugging
+	backend.AuthConfigRef = authConfigRef.Name
 
-	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s, configRef=%s",
+		resourceKind, resourceName, strategy.Type, authConfigRef.Name)
 	return nil
 }
 

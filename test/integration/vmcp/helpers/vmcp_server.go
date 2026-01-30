@@ -161,7 +161,7 @@ func NewVMCPServer(
 	}
 
 	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
 
 	// Create discovery manager
 	discoveryMgr, err := discovery.NewManager(agg)

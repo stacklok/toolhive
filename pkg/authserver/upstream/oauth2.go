@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=oauth2.go OAuth2Provider
+
 package upstream
 
 import (
@@ -26,7 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ory/fosite"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -95,19 +96,19 @@ const defaultTokenExpiration = time.Hour
 // This provides compile-time type safety by separating OIDC and OAuth2 configuration.
 type CommonOAuthConfig struct {
 	// ClientID is the OAuth client ID registered with the upstream IDP.
-	ClientID string
+	ClientID string `json:"client_id" yaml:"client_id"`
 
 	// ClientSecret is the OAuth client secret registered with the upstream IDP.
 	// Optional for public clients (RFC 6749 Section 2.1) which authenticate using
 	// PKCE instead of a client secret. Required for confidential clients.
-	ClientSecret string
+	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
-	Scopes []string
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect
 	// after authentication.
-	RedirectURI string
+	RedirectURI string `json:"redirect_uri" yaml:"redirect_uri"`
 }
 
 // Validate checks that CommonOAuthConfig has all required fields.
@@ -123,17 +124,17 @@ func (c *CommonOAuthConfig) Validate() error {
 
 // OAuth2Config contains configuration for pure OAuth 2.0 providers without OIDC discovery.
 type OAuth2Config struct {
-	CommonOAuthConfig
+	CommonOAuthConfig `yaml:",inline"`
 
 	// AuthorizationEndpoint is the URL for the OAuth authorization endpoint.
-	AuthorizationEndpoint string
+	AuthorizationEndpoint string `json:"authorization_endpoint" yaml:"authorization_endpoint"`
 
 	// TokenEndpoint is the URL for the OAuth token endpoint.
-	TokenEndpoint string
+	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
 
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.
-	UserInfo *UserInfoConfig
+	UserInfo *UserInfoConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
 }
 
 // Validate checks that OAuth2Config has all required fields.
@@ -162,22 +163,7 @@ func (c *OAuth2Config) Validate() error {
 // This is our own callback URL where upstream IDPs redirect back to us. The upstream
 // IDP validates this against their registered redirect URIs, so we only do basic checks.
 func validateRedirectURI(uri string) error {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return errors.New("redirect_uri must be an absolute URI without a fragment")
-	}
-
-	// Use fosite for RFC 6749 Section 3.1.2 validation (absolute URI, no fragment)
-	if !fosite.IsValidRedirectURI(parsed) {
-		return errors.New("redirect_uri must be an absolute URI without a fragment")
-	}
-
-	// Use fosite for RFC 8252 scheme security (HTTPS required, HTTP only for loopback)
-	if !fosite.IsRedirectURISecureStrict(context.Background(), parsed) {
-		return errors.New("redirect_uri must use http (for loopback) or https scheme")
-	}
-
-	return nil
+	return oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict)
 }
 
 // convertOAuth2Token converts an oauth2.Token to our Tokens type.
@@ -509,7 +495,7 @@ func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken stri
 		return nil, fmt.Errorf("failed to parse userinfo response: %w", err)
 	}
 
-	// Use configured field mapping for subject extraction
+	// Use configured field mapping for claim extraction
 	mapping := cfg.FieldMapping
 
 	// Extract and validate required subject claim
@@ -520,11 +506,14 @@ func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken stri
 
 	userInfo := &UserInfo{
 		Subject: sub,
+		Name:    mapping.ResolveName(claims),
+		Email:   mapping.ResolveEmail(claims),
 		Claims:  claims,
 	}
 
 	logger.Debugw("user info retrieved",
 		"subject", userInfo.Subject,
+		"has_email", userInfo.Email != "",
 	)
 
 	return userInfo, nil

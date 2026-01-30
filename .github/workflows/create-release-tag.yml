@@ -1,0 +1,157 @@
+# Create Release Tag Workflow
+#
+# This workflow is triggered when the VERSION file is updated on main.
+# It verifies the release PR, creates a git tag, and creates a GitHub Release.
+# The tag then triggers the releaser workflow for image and Helm chart publishing.
+
+name: Create Release Tag
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'VERSION'
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: VERSION file does not contain valid semver: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Read version: $VERSION"
+
+      - name: Verify release PR
+        id: verify
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Get commit details
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          COMMIT_SHA=$(git rev-parse HEAD)
+
+          echo "Commit SHA: $COMMIT_SHA"
+          echo "Commit message: $COMMIT_MSG"
+          echo ""
+
+          # Track verification status
+          VERIFIED=true
+
+          # Check 1: Verify commit message matches release pattern
+          # Squash merge: "Release v1.0.0 (#123)"
+          # Merge commit: "Merge pull request #123 from user/release/v1.0.0"
+          # Direct: "Release v1.0.0"
+          if [[ "$COMMIT_MSG" =~ ^Release\ v[0-9]+\.[0-9]+\.[0-9]+ ]] || \
+             [[ "$COMMIT_MSG" =~ release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "✅ Commit message matches release pattern"
+            echo "message_verified=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Commit message does not match release pattern"
+            echo "Expected: 'Release v{semver}' or merge from 'release/v{semver}'"
+            echo "Got: '$COMMIT_MSG'"
+            echo "message_verified=false" >> $GITHUB_OUTPUT
+            VERIFIED=false
+          fi
+
+          # Check 2: Verify the version in commit message matches VERSION file
+          if [[ "$COMMIT_MSG" =~ v${VERSION} ]]; then
+            echo "✅ VERSION file matches version in commit message"
+            echo "version_match=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ VERSION file does not match version in commit message"
+            echo "VERSION file: $VERSION"
+            echo "Commit message: $COMMIT_MSG"
+            echo "version_match=false" >> $GITHUB_OUTPUT
+            VERIFIED=false
+          fi
+
+          echo ""
+          if [ "$VERIFIED" = true ]; then
+            echo "✅ All verification checks passed"
+            echo "verified=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Verification failed"
+            echo ""
+            echo "This could indicate:"
+            echo "  - A manual VERSION file edit (not via release PR)"
+            echo "  - An unexpected commit message format"
+            echo ""
+            echo "Blocking release. Please investigate."
+            echo "verified=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Tag $TAG does not exist"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create tag and GitHub Release
+        if: steps.check-tag.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git "$TAG"
+          echo "Created and pushed tag: $TAG"
+
+          # Create GitHub Release (triggers releaser.yml via release event)
+          # Note: Must use PAT (GH_TOKEN) because GITHUB_TOKEN cannot trigger other workflows
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --generate-notes
+          echo "Created GitHub Release: $TAG"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Summary
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+
+          if [ "${{ steps.check-tag.outputs.exists }}" == "true" ]; then
+            echo "## Tag Already Exists" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Tag \`$TAG\` already exists. No action taken." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Release Tag Created" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Verification Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Commit Message | ✅ Release pattern |" >> $GITHUB_STEP_SUMMARY
+            echo "| VERSION Match | ✅ Matches commit |" >> $GITHUB_STEP_SUMMARY
+            echo "| File Changes | ✅ Only release files |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Release Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Tag | \`$TAG\` |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The following workflows will now run:" >> $GITHUB_STEP_SUMMARY
+            echo "- \`releaser.yml\` - Build image and publish Helm chart to GHCR" >> $GITHUB_STEP_SUMMARY
+          fi

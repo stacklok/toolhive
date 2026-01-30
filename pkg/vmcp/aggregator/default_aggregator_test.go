@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -35,7 +36,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -59,7 +60,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.Error(t, err)
@@ -90,7 +91,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -120,7 +121,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 				return nil, errors.New("connection timeout")
 			}).Times(2)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -140,7 +141,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.Error(t, err)
@@ -171,7 +172,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -204,7 +205,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -263,7 +264,7 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		}
 		registry := vmcp.NewImmutableRegistry(backends)
 
-		agg := NewDefaultAggregator(nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
 		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
 
 		require.NoError(t, err)
@@ -331,7 +332,7 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -343,5 +344,204 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		assert.Equal(t, 2, result.Metadata.BackendCount)
 		assert.Equal(t, 2, result.Metadata.ToolCount)
 		assert.Equal(t, 1, result.Metadata.ResourceCount)
+	})
+}
+
+func TestDefaultAggregator_ExcludeAllTools(t *testing.T) {
+	t.Parallel()
+
+	// NOTE: ExcludeAll is applied in MergeCapabilities, NOT in QueryCapabilities.
+	// This allows the routing table to contain all tools (for composite tools)
+	// while only filtering the advertised tools list.
+
+	t.Run("QueryCapabilities returns all tools even with global excludeAllTools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		// Backend returns tools - they should still be returned by QueryCapabilities
+		// because ExcludeAll is applied later in MergeCapabilities
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")),
+			withResources(newTestResource("test://resource", "backend1")),
+			withPrompts(newTestPrompt("test_prompt", "backend1")),
+			withLogging(true))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with ExcludeAllTools: true
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: true,
+		}
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		assert.Equal(t, "backend1", result.BackendID)
+		// Tools should still be present (ExcludeAll is applied in MergeCapabilities)
+		assert.Len(t, result.Tools, 1)
+		assert.Equal(t, "test_tool", result.Tools[0].Name)
+		// Resources and prompts should be preserved
+		assert.Len(t, result.Resources, 1)
+		assert.Len(t, result.Prompts, 1)
+		assert.True(t, result.SupportsLogging)
+	})
+
+	t.Run("global excludeAllTools false allows tools through", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with ExcludeAllTools: false (default)
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: false,
+		}
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		// Tools should come through
+		assert.Len(t, result.Tools, 1)
+		assert.Equal(t, "test_tool", result.Tools[0].Name)
+	})
+
+	t.Run("nil aggregationConfig allows tools through", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
+
+		expectedCaps := newTestCapabilityList(
+			withTools(newTestTool("test_tool", "backend1")))
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
+
+		// Create aggregator with nil aggregationConfig (default behavior)
+		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		result, err := agg.QueryCapabilities(context.Background(), backend)
+
+		require.NoError(t, err)
+		// Tools should come through
+		assert.Len(t, result.Tools, 1)
+		assert.Equal(t, "test_tool", result.Tools[0].Name)
+	})
+}
+
+func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies that ExcludeAll only affects the advertised tools list,
+	// NOT the routing table. This is important because composite tools need to
+	// route to backend tools that may be excluded from direct LLM access.
+	//
+	// Use case: A vMCP server may want to hide raw backend tools from the LLM
+	// (using ExcludeAll) while still allowing curated composite tool workflows
+	// to use those backend tools internally.
+
+	t.Run("per-workload excludeAll preserves routing table for composite tools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("github", withBackendName("GitHub")),
+		}
+
+		// Backend has tools that should be available for composite tools
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("create_issue", "github"),
+				newTestTool("list_issues", "github"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Configure ExcludeAll for the github backend
+		aggregationConfig := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{
+				{
+					Workload:   "github",
+					ExcludeAll: true,
+				},
+			},
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Advertised tools should be empty (excluded from LLM)
+		assert.Empty(t, result.Tools, "ExcludeAll should hide tools from LLM")
+
+		// BUT the routing table should still contain the tools (for composite tools)
+		assert.NotNil(t, result.RoutingTable)
+		assert.Contains(t, result.RoutingTable.Tools, "create_issue",
+			"Routing table should contain excluded tools for composite tool use")
+		assert.Contains(t, result.RoutingTable.Tools, "list_issues",
+			"Routing table should contain excluded tools for composite tool use")
+
+		// Verify the routing targets are properly configured
+		createIssueTarget := result.RoutingTable.Tools["create_issue"]
+		assert.NotNil(t, createIssueTarget)
+		assert.Equal(t, "github", createIssueTarget.WorkloadID)
+	})
+
+	t.Run("global excludeAllTools preserves routing table for composite tools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("slack", withBackendName("Slack")),
+		}
+
+		// Backend has tools
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("send_message", "slack"),
+				newTestTool("list_channels", "slack"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Configure global ExcludeAllTools
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: true,
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Advertised tools should be empty
+		assert.Empty(t, result.Tools, "Global ExcludeAllTools should hide all tools from LLM")
+
+		// BUT routing table should still contain tools for composite tools
+		assert.NotNil(t, result.RoutingTable)
+		assert.Contains(t, result.RoutingTable.Tools, "send_message",
+			"Routing table should contain globally excluded tools for composite tool use")
+		assert.Contains(t, result.RoutingTable.Tools, "list_channels",
+			"Routing table should contain globally excluded tools for composite tool use")
 	})
 }

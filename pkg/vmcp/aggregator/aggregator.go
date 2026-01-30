@@ -21,6 +21,7 @@ import (
 type BackendDiscoverer interface {
 	// Discover finds all backend workloads in the specified group.
 	// Returns only healthy/running backends.
+	// Results are always sorted alphabetically by backend name to ensure deterministic ordering.
 	// The groupRef format is platform-specific (group name for CLI, MCPGroup name for K8s).
 	Discover(ctx context.Context, groupRef string) ([]vmcp.Backend, error)
 }

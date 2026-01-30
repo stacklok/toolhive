@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package oauth provides shared RFC-defined types and constants for OAuth 2.0 and OpenID Connect.
-// It contains only protocol-level definitions with no business logic, serving as a shared
-// foundation for both OAuth clients and servers.
+// Package oauth provides shared RFC-defined types, constants, and validation utilities
+// for OAuth 2.0 and OpenID Connect. It serves as a shared foundation for both OAuth
+// clients and servers, including redirect URI validation per RFC 6749 and RFC 8252.
 package oauth

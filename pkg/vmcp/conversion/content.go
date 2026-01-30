@@ -1,0 +1,58 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+// Package conversion provides utilities for converting between MCP SDK types and vmcp wrapper types.
+// This package centralizes conversion logic to ensure consistency and eliminate duplication.
+package conversion
+
+import (
+	"fmt"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+// ContentArrayToMap converts a vmcp.Content array to a map for template variable substitution.
+// This is used by composite tool workflows and backend result handling.
+//
+// Conversion rules:
+//   - First text content: key="text"
+//   - Subsequent text content: key="text_1", "text_2", etc.
+//   - Image content: key="image_0", "image_1", etc.
+//   - Audio content: ignored (not supported for template substitution)
+//   - Resource content: ignored (handled separately, not converted to map)
+//   - Unknown content types: ignored (warnings logged at conversion boundaries)
+//
+// This ensures consistent behavior between client response handling and workflow step output processing.
+func ContentArrayToMap(content []vmcp.Content) map[string]any {
+	result := make(map[string]any)
+	if len(content) == 0 {
+		return result
+	}
+
+	textIndex := 0
+	imageIndex := 0
+
+	for _, item := range content {
+		switch item.Type {
+		case "text":
+			key := "text"
+			if textIndex > 0 {
+				key = fmt.Sprintf("text_%d", textIndex)
+			}
+			result[key] = item.Text
+			textIndex++
+
+		case "image":
+			key := fmt.Sprintf("image_%d", imageIndex)
+			result[key] = item.Data
+			imageIndex++
+
+			// Default case (implicit):
+			// - Audio content is ignored (not supported for template substitution)
+			// - Resource content is ignored (handled separately, not converted to map)
+			// - Unknown content types are ignored (warnings logged at conversion boundaries)
+		}
+	}
+
+	return result
+}

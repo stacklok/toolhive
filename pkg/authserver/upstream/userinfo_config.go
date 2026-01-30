@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -27,49 +26,115 @@ import (
 // UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
 // This allows adapting non-standard provider responses to the canonical UserInfo structure.
 //
+// Each field supports an ordered list of claim names to try. The first non-empty value
+// found will be used. This enables compatibility with providers that use non-standard
+// claim names (e.g., GitHub uses "id" instead of "sub", "login" instead of "preferred_username").
+//
 // Example for GitHub:
 //
 //	mapping := &UserInfoFieldMapping{
-//	    SubjectField: "id",
+//	    SubjectFields: []string{"id", "login"},
+//	    NameFields:    []string{"name", "login"},
+//	    EmailFields:   []string{"email"},
 //	}
 type UserInfoFieldMapping struct {
-	// SubjectField is the field name for the user ID (e.g., "sub" for OIDC, "id" for GitHub).
-	// Default: "sub"
-	SubjectField string
+	// SubjectFields is an ordered list of field names to try for the user ID.
+	// The first non-empty value found will be used.
+	// Default: ["sub"]
+	SubjectFields []string `json:"subject_fields,omitempty" yaml:"subject_fields,omitempty"`
+
+	// NameFields is an ordered list of field names to try for the display name.
+	// The first non-empty value found will be used.
+	// Default: ["name"]
+	NameFields []string `json:"name_fields,omitempty" yaml:"name_fields,omitempty"`
+
+	// EmailFields is an ordered list of field names to try for the email address.
+	// The first non-empty value found will be used.
+	// Default: ["email"]
+	EmailFields []string `json:"email_fields,omitempty" yaml:"email_fields,omitempty"`
 }
 
-// DefaultSubjectField is the default field name for subject resolution.
-const DefaultSubjectField = "sub"
+// Default field names for standard OIDC claims.
+var (
+	// DefaultSubjectFields is the default field name for subject resolution.
+	DefaultSubjectFields = []string{"sub"}
 
-// GetSubjectField returns the configured subject field or the default.
-func (m *UserInfoFieldMapping) GetSubjectField() string {
-	if m != nil && m.SubjectField != "" {
-		return m.SubjectField
+	// DefaultNameFields is the default field name for name resolution.
+	DefaultNameFields = []string{"name"}
+
+	// DefaultEmailFields is the default field name for email resolution.
+	DefaultEmailFields = []string{"email"}
+)
+
+// GetSubjectFields returns the configured subject fields or the default.
+func (m *UserInfoFieldMapping) GetSubjectFields() []string {
+	if m != nil && len(m.SubjectFields) > 0 {
+		return m.SubjectFields
 	}
-	return DefaultSubjectField
+	return DefaultSubjectFields
+}
+
+// GetNameFields returns the configured name fields or the default.
+func (m *UserInfoFieldMapping) GetNameFields() []string {
+	if m != nil && len(m.NameFields) > 0 {
+		return m.NameFields
+	}
+	return DefaultNameFields
+}
+
+// GetEmailFields returns the configured email fields or the default.
+func (m *UserInfoFieldMapping) GetEmailFields() []string {
+	if m != nil && len(m.EmailFields) > 0 {
+		return m.EmailFields
+	}
+	return DefaultEmailFields
+}
+
+// ResolveField attempts to extract a string value from claims using an ordered list of field names.
+// Returns the first non-empty string value found, or an empty string if none found.
+// This function handles type conversion gracefully - non-string values are skipped.
+func ResolveField(claims map[string]any, fields []string) string {
+	for _, field := range fields {
+		if val, ok := claims[field]; ok {
+			switch v := val.(type) {
+			case string:
+				if v != "" {
+					return v
+				}
+			case float64:
+				// Handle numeric IDs (e.g., GitHub returns numeric "id")
+				return fmt.Sprintf("%.0f", v)
+			case int:
+				return fmt.Sprintf("%d", v)
+			case int64:
+				return fmt.Sprintf("%d", v)
+			}
+		}
+	}
+	return ""
 }
 
 // ResolveSubject extracts the subject (user ID) from claims using the configured mapping.
 // Returns an error if no subject can be resolved (subject is required).
 func (m *UserInfoFieldMapping) ResolveSubject(claims map[string]any) (string, error) {
-	field := m.GetSubjectField()
-	val, ok := claims[field]
-	if !ok {
-		return "", fmt.Errorf("subject claim not found (tried field: %q)", field)
+	fields := m.GetSubjectFields()
+	sub := ResolveField(claims, fields)
+	if sub == "" {
+		return "", fmt.Errorf("subject claim not found (tried fields: %v)", fields)
 	}
+	return sub, nil
+}
 
-	switch v := val.(type) {
-	case string:
-		if v == "" {
-			return "", fmt.Errorf("subject claim %q is empty", field)
-		}
-		return v, nil
-	case float64:
-		// JSON numbers are always float64; format as integer for user IDs
-		return strconv.FormatFloat(v, 'f', 0, 64), nil
-	default:
-		return "", fmt.Errorf("subject claim %q has unsupported type %T", field, val)
-	}
+// ResolveName extracts the display name from claims using the configured mapping.
+// Returns an empty string if no name is found (name is optional).
+func (m *UserInfoFieldMapping) ResolveName(claims map[string]any) string {
+	return ResolveField(claims, m.GetNameFields())
+}
+
+// ResolveEmail extracts the email from claims using the configured mapping.
+// Returns an empty string if no email is found (email is optional).
+func (m *UserInfoFieldMapping) ResolveEmail(claims map[string]any) string {
+	return ResolveField(claims, m.GetEmailFields())
 }
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.
@@ -77,17 +142,17 @@ func (m *UserInfoFieldMapping) ResolveSubject(claims map[string]any) (string, er
 // Authentication is always performed using Bearer token in the Authorization header.
 type UserInfoConfig struct {
 	// EndpointURL is the URL of the userinfo endpoint (required).
-	EndpointURL string
+	EndpointURL string `json:"endpoint_url" yaml:"endpoint_url"`
 
 	// HTTPMethod is the HTTP method to use (default: GET).
-	HTTPMethod string
+	HTTPMethod string `json:"http_method,omitempty" yaml:"http_method,omitempty"`
 
 	// AdditionalHeaders contains extra headers to include in the request.
-	AdditionalHeaders map[string]string
+	AdditionalHeaders map[string]string `json:"additional_headers,omitempty" yaml:"additional_headers,omitempty"`
 
 	// FieldMapping contains custom field mapping configuration.
 	// If nil, standard OIDC field names are used ("sub", "name", "email").
-	FieldMapping *UserInfoFieldMapping
+	FieldMapping *UserInfoFieldMapping `json:"field_mapping,omitempty" yaml:"field_mapping,omitempty"`
 }
 
 // Validate checks that UserInfoConfig has all required fields and valid values.

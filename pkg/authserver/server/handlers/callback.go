@@ -266,13 +266,16 @@ func (h *Handler) handleUpstreamError(
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
-				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrAccessDenied.WithHint(errorDescription))
+				// Use generic error hint to avoid exposing upstream IDP details to clients.
+				// Detailed error information is logged above for server-side diagnostics.
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrAccessDenied.WithHint("upstream authentication failed"))
 				return
 			}
 			// ar is nil means stored redirect URI was corrupt - fall through to error page
 		}
 	}
 
-	// Cannot redirect to client, show error page
-	http.Error(w, "upstream authentication failed: "+errorParam, http.StatusBadGateway)
+	// Cannot redirect to client, show generic error page.
+	// Detailed error information is logged above for server-side diagnostics.
+	http.Error(w, "upstream authentication failed", http.StatusBadGateway)
 }

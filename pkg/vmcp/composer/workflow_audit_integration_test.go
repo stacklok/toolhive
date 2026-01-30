@@ -243,12 +243,15 @@ func TestWorkflowEngine_WithAuditor_RetryStep(t *testing.T) {
 
 	// Fail twice, succeed on third attempt (CallTool is called three times)
 	gomock.InOrder(
-		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any()).
+		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("temp failure")),
-		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any()).
+		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("temp failure")),
-		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any()).
-			Return(map[string]any{"success": true}, nil),
+		te.Backend.EXPECT().CallTool(gomock.Any(), target, "flaky_tool", gomock.Any(), gomock.Any()).
+			Return(&vmcp.ToolCallResult{
+				StructuredContent: map[string]any{"success": true},
+				Content:           []vmcp.Content{},
+			}, nil),
 	)
 
 	ctx := context.Background()

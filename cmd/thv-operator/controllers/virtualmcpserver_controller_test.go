@@ -369,7 +369,7 @@ func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 		Namespace: vmcp.Namespace,
 	}, role)
 	assert.NoError(t, err)
-	assert.Equal(t, vmcpRBACRules, role.Rules, "Role should be updated with correct rules")
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules, "Role should be updated with correct rules")
 }
 
 func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
@@ -422,7 +422,7 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 		Namespace: vmcp.Namespace,
 	}, role)
 	assert.NoError(t, err)
-	assert.Equal(t, vmcpRBACRules, role.Rules)
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules)
 
 	rb := &rbacv1.RoleBinding{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
@@ -432,19 +432,19 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
+// TestVirtualMCPServerEnsureRBACResources_InlineMode tests that inline mode uses
+// minimal RBAC permissions (no secret/configmap access) for security
+func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 	t.Parallel()
 
-	// Static mode: OutgoingAuth.Source set to "inline"
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "static-vmcp",
+			Name:      "inline-mode-vmcp",
 			Namespace: "default",
+			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{
-				Group: "test-group",
-			},
+			Config: vmcpconfig.Config{Group: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "inline",
 			},
@@ -466,33 +466,107 @@ func TestVirtualMCPServerEnsureRBACResources_StaticMode(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	// Call ensureRBACResources in static mode - should return nil without creating resources
+	// Call ensureRBACResources in inline mode
 	err := r.ensureRBACResources(context.Background(), vmcp)
 	require.NoError(t, err)
 
+	// Verify Role was created with minimal permissions (inline mode)
 	saName := vmcpServiceAccountName(vmcp.Name)
-
-	// Verify NO RBAC resources were created in static mode
-	sa := &corev1.ServiceAccount{}
-	err = fakeClient.Get(context.Background(), types.NamespacedName{
-		Name:      saName,
-		Namespace: vmcp.Namespace,
-	}, sa)
-	assert.Error(t, err, "ServiceAccount should not be created in static mode")
-
 	role := &rbacv1.Role{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
 	}, role)
-	assert.Error(t, err, "Role should not be created in static mode")
+	assert.NoError(t, err, "Role should be created in inline mode")
+	assert.Equal(t, vmcpInlineRBACRules, role.Rules, "Role should use minimal rules in inline mode")
 
-	rb := &rbacv1.RoleBinding{}
+	// Verify inline mode doesn't have secret/configmap access
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			assert.NotContains(t, resource, "secrets", "Inline mode should not have secret access")
+			assert.NotContains(t, resource, "configmaps", "Inline mode should not have configmap access")
+		}
+	}
+
+	// Verify inline mode still has status update permissions
+	hasStatusPermission := false
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			if resource == "virtualmcpservers/status" {
+				hasStatusPermission = true
+				assert.Contains(t, rule.Verbs, "update", "Should have update permission for status")
+				assert.Contains(t, rule.Verbs, "patch", "Should have patch permission for status")
+			}
+		}
+	}
+	assert.True(t, hasStatusPermission, "Inline mode should have status update permissions")
+}
+
+// TestVirtualMCPServerEnsureRBACResources_DiscoveredMode tests that discovered mode uses
+// full RBAC permissions (including secret/configmap access) for backend discovery
+func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "discovered-mode-vmcp",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: "test-group"},
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "discovered",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// Call ensureRBACResources in discovered mode
+	err := r.ensureRBACResources(context.Background(), vmcp)
+	require.NoError(t, err)
+
+	// Verify Role was created with full permissions (discovered mode)
+	saName := vmcpServiceAccountName(vmcp.Name)
+	role := &rbacv1.Role{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{
 		Name:      saName,
 		Namespace: vmcp.Namespace,
-	}, rb)
-	assert.Error(t, err, "RoleBinding should not be created in static mode")
+	}, role)
+	assert.NoError(t, err, "Role should be created in discovered mode")
+	assert.Equal(t, vmcpDiscoveredRBACRules, role.Rules, "Role should use full rules in discovered mode")
+
+	// Verify discovered mode has secret/configmap access
+	hasSecretAccess := false
+	hasConfigMapAccess := false
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			if resource == "secrets" {
+				hasSecretAccess = true
+				assert.Contains(t, rule.Verbs, "get", "Should have get permission for secrets")
+			}
+			if resource == "configmaps" {
+				hasConfigMapAccess = true
+				assert.Contains(t, rule.Verbs, "get", "Should have get permission for configmaps")
+			}
+		}
+	}
+	assert.True(t, hasSecretAccess, "Discovered mode should have secret access")
+	assert.True(t, hasConfigMapAccess, "Discovered mode should have configmap access")
 }
 
 // TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount tests that RBAC resources

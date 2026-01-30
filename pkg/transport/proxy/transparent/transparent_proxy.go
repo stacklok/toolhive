@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -260,7 +261,7 @@ type tracingTransport struct {
 
 func (p *TransparentProxy) setServerInitialized() {
 	if p.isServerInitialized.CompareAndSwap(false, true) {
-		logger.Infof("Server was initialized successfully for %s", p.targetURI)
+		logger.Debugf("Server was initialized successfully for %s", p.targetURI)
 	}
 }
 
@@ -323,7 +324,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
 		if ct != "" {
-			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
+			logger.Debugf("Detected Mcp-Session-Id header: %s", ct)
 			if _, ok := t.p.sessionManager.Get(ct); !ok {
 				if err := t.p.sessionManager.AddWithID(ct); err != nil {
 					logger.Errorf("Failed to create session from header %s: %v", ct, err)
@@ -365,7 +366,7 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		return false
 	}
 	if rpc.Method == "initialize" {
-		logger.Infof("Detected initialize method call for %s", t.p.targetURI)
+		logger.Debugf("Detected initialize method call for %s", t.p.targetURI)
 		return true
 	}
 	return false
@@ -423,7 +424,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i].Function(finalHandler)
-		logger.Infof("Applied middleware: %s", p.middlewares[i].Name)
+		logger.Debugf("Applied middleware: %s", p.middlewares[i].Name)
 	}
 
 	// Add the proxy handler for all paths except /health
@@ -444,17 +445,20 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Info("Prometheus metrics endpoint enabled at /metrics")
+		logger.Debug("Prometheus metrics endpoint enabled at /metrics")
 	}
 
 	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
 	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
 		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
+		logger.Debug("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
+	// (e.g., after laptop sleep where zombie processes may hold ports)
+	lc := socket.ListenConfig()
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
@@ -524,7 +528,7 @@ func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
 	case <-retryTimer.C:
 		retryAlive := p.healthChecker.CheckHealth(ctx)
 		if retryAlive.Status == healthcheck.StatusHealthy {
-			logger.Infof("Health check recovered for %s after retry", p.targetURI)
+			logger.Debugf("Health check recovered for %s after retry", p.targetURI)
 			return true
 		}
 		return false
@@ -581,7 +585,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			return
 		case <-ticker.C:
 			if !p.serverInitialized() {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
+				logger.Debugf("MCP server not initialized yet, skipping health check for %s", p.targetURI)
 				continue
 			}
 
@@ -597,7 +601,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 
 			// Reset failure count on successful health check
 			if consecutiveFailures > 0 {
-				logger.Infof("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
+				logger.Debugf("Health check recovered for %s after %d failures", p.targetURI, consecutiveFailures)
 			}
 			consecutiveFailures = 0
 		}
@@ -628,7 +632,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}
-		logger.Infof("Server for %s stopped successfully", p.targetURI)
+		logger.Debugf("Server for %s stopped successfully", p.targetURI)
 		p.server = nil
 	}
 

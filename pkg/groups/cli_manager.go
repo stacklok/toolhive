@@ -9,9 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -38,20 +40,43 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 	if err := validation.ValidateGroupName(name); err != nil {
 		return fmt.Errorf("%w: %s - %w", ErrInvalidGroupName, name, err)
 	}
-	// Check if group already exists
-	exists, err := m.groupStore.Exists(ctx, name)
-	if err != nil {
-		return fmt.Errorf("failed to check if group exists: %w", err)
-	}
-	if exists {
-		return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
-	}
 
 	group := &Group{
 		Name:              name,
 		RegisteredClients: []string{},
 	}
-	return m.saveGroup(ctx, group)
+
+	// Use CreateExclusive for atomic check-and-create to prevent race conditions
+	writer, err := m.groupStore.CreateExclusive(ctx, name)
+	if err != nil {
+		// Check if the error is a conflict (group already exists)
+		if thverrors.Code(err) == http.StatusConflict {
+			return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
+		}
+		return fmt.Errorf("failed to create group: %w", err)
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			// Non-fatal: writer cleanup failure
+			logger.Warnf("Failed to close writer: %v", err)
+		}
+	}()
+
+	// Write the group data
+	encoder := json.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(group); err != nil {
+		return fmt.Errorf("failed to write group: %w", err)
+	}
+
+	// Ensure the writer is flushed
+	if syncer, ok := writer.(interface{ Sync() error }); ok {
+		if err := syncer.Sync(); err != nil {
+			return fmt.Errorf("failed to sync group file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // Get retrieves a group by name
@@ -130,14 +155,14 @@ func (m *cliManager) RegisterClients(ctx context.Context, groupNames []string, c
 			}
 
 			if alreadyRegistered {
-				logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
+				logger.Debugf("Client %s is already registered with group %s, skipping", clientName, groupName)
 				continue
 			}
 
 			// Add the client to the group
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
-			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
+			logger.Debugf("Successfully registered client %s with group %s", clientName, groupName)
 		}
 
 		// Only save if the group was actually modified
@@ -169,7 +194,7 @@ func (m *cliManager) UnregisterClients(ctx context.Context, groupNames []string,
 					// Remove client from slice
 					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
 					groupModified = true
-					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
+					logger.Debugf("Successfully unregistered client %s from group %s", clientName, groupName)
 					break
 				}
 			}

@@ -130,13 +130,6 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
-	// Populate default middlewares from old config fields if not already populated
-	if len(r.Config.MiddlewareConfigs) == 0 {
-		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
-			return fmt.Errorf("failed to populate middleware configs: %w", err)
-		}
-	}
-
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -148,6 +141,66 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
+	}
+
+	// Set proxy mode for stdio transport
+	transportConfig.ProxyMode = r.Config.ProxyMode
+
+	// Process secrets before middleware population so that resolved values
+	// (e.g., header forward secrets) are available to middleware factories.
+	hasRegularSecrets := len(r.Config.Secrets) > 0
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
+		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
+	hasHeaderForwardSecrets := r.Config.HeaderForward != nil && len(r.Config.HeaderForward.AddHeadersFromSecret) > 0
+
+	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v, hasHeaderForwardSecrets=%v",
+		hasRegularSecrets, hasRemoteAuthSecret, hasHeaderForwardSecrets)
+	if hasRemoteAuthSecret {
+		if r.Config.RemoteAuthConfig.ClientSecret != "" {
+			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+		}
+		if r.Config.RemoteAuthConfig.BearerToken != "" {
+			logger.Debugf("RemoteAuthConfig.BearerToken: %s", r.Config.RemoteAuthConfig.BearerToken)
+		}
+	}
+
+	if hasRegularSecrets || hasRemoteAuthSecret || hasHeaderForwardSecrets {
+		logger.Debugf("Calling WithSecrets to process secrets")
+		cfgprovider := config.NewDefaultProvider()
+		cfg := cfgprovider.GetConfig()
+
+		providerType, err := cfg.Secrets.GetProviderType()
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager %w", err)
+		}
+
+		// Process secrets (including RemoteAuthConfig and header forward secret resolution)
+		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
+			return err
+		}
+	}
+
+	// Populate default middlewares from config fields if not already populated.
+	// This runs after WithSecrets so resolved values are available.
+	if len(r.Config.MiddlewareConfigs) == 0 {
+		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
+			return fmt.Errorf("failed to populate middleware configs: %w", err)
+		}
+	} else {
+		// MiddlewareConfigs was pre-populated (e.g., by WithMiddlewareFromFlags).
+		// Header forward is appended here (consistent with PopulateMiddlewareConfigs
+		// which also places it at the end) after secret resolution, because
+		// secret-backed header values are not available at builder time.
+		var err error
+		r.Config.MiddlewareConfigs, err = addHeaderForwardMiddleware(r.Config.MiddlewareConfigs, r.Config)
+		if err != nil {
+			return fmt.Errorf("failed to add header forward middleware: %w", err)
+		}
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -169,45 +222,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
-
-	// Set proxy mode for stdio transport
-	transportConfig.ProxyMode = r.Config.ProxyMode
-
-	// Process secrets if provided (regular secrets or RemoteAuthConfig secrets in CLI format)
-	hasRegularSecrets := len(r.Config.Secrets) > 0
-	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil &&
-		(r.Config.RemoteAuthConfig.ClientSecret != "" || r.Config.RemoteAuthConfig.BearerToken != "")
-
-	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
-	if hasRemoteAuthSecret {
-		if r.Config.RemoteAuthConfig.ClientSecret != "" {
-			logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
-		}
-		if r.Config.RemoteAuthConfig.BearerToken != "" {
-			logger.Debugf("RemoteAuthConfig.BearerToken: %s", r.Config.RemoteAuthConfig.BearerToken)
-		}
-	}
-
-	if hasRegularSecrets || hasRemoteAuthSecret {
-		logger.Debugf("Calling WithSecrets to process secrets")
-		cfgprovider := config.NewDefaultProvider()
-		cfg := cfgprovider.GetConfig()
-
-		providerType, err := cfg.Secrets.GetProviderType()
-		if err != nil {
-			return fmt.Errorf("error determining secrets provider type: %w", err)
-		}
-
-		secretManager, err := secrets.CreateSecretProvider(providerType)
-		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %w", err)
-		}
-
-		// Process secrets (including RemoteAuthConfig.ClientSecret and BearerToken resolution)
-		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
-			return err
-		}
-	}
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)

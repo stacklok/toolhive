@@ -306,7 +306,7 @@ func registerClientsWithGroups(
 	clientManager client.Manager,
 	runningWorkloads []core.Workload,
 ) error {
-	fmt.Printf("Filtering workloads to groups: %v\n", groupNames)
+	logger.Debugf("Filtering workloads to groups: %v\n", groupNames)
 
 	groupManager, err := groups.NewManager()
 	if err != nil {
@@ -348,7 +348,7 @@ func registerClientsGlobally(
 		err := config.UpdateConfig(func(c *config.Config) {
 			for _, registeredClient := range c.Clients.RegisteredClients {
 				if registeredClient == string(clientToRegister.Name) {
-					fmt.Printf("Client %s is already registered, skipping...\n", clientToRegister.Name)
+					logger.Debugf("Client %s is already registered, skipping...\n", clientToRegister.Name)
 					return
 				}
 			}
@@ -359,7 +359,7 @@ func registerClientsGlobally(
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 		}
 
-		fmt.Printf("Successfully registered client: %s\n", clientToRegister.Name)
+		logger.Debugf("Successfully registered client: %s\n", clientToRegister.Name)
 	}
 
 	// Add the workloads to the client's configuration file
@@ -407,7 +407,7 @@ func removeClientFromGroups(
 	groupManager groups.Manager,
 	clientManager client.Manager,
 ) error {
-	fmt.Printf("Filtering workloads to groups: %v\n", groupNames)
+	logger.Debugf("Filtering workloads to groups: %v\n", groupNames)
 
 	// Remove client from specific groups only
 	filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
@@ -427,7 +427,7 @@ func removeClientFromGroups(
 		return fmt.Errorf("failed to unregister client from groups: %w", err)
 	}
 
-	fmt.Printf("Successfully removed client %s from groups: %v\n", clientToRemove.Name, groupNames)
+	logger.Debugf("Successfully removed client %s from groups: %v\n", clientToRemove.Name, groupNames)
 
 	return nil
 }
@@ -469,7 +469,7 @@ func removeClientGlobally(
 			if registeredClient == string(clientToRemove.Name) {
 				// Remove client from slice
 				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-				logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
+				logger.Debugf("Successfully unregistered client: %s\n", clientToRemove.Name)
 				return
 			}
 		}

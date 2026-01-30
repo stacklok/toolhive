@@ -645,6 +645,14 @@ spec:
                             - fail
                             - best_effort
                             type: string
+                          statusReportingInterval:
+                            default: 30s
+                            description: |-
+                              StatusReportingInterval is the interval for reporting status updates to Kubernetes.
+                              This controls how often the vMCP runtime reports backend health and phase changes.
+                              Lower values provide faster status updates but increase API server load.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           unhealthyThreshold:
                             default: 3
                             description: UnhealthyThreshold is the number of consecutive
@@ -1340,7 +1348,9 @@ spec:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
               backendCount:
-                description: BackendCount is the number of discovered backends
+                description: |-
+                  BackendCount is the number of healthy/ready backends
+                  (excludes unavailable, degraded, and unknown backends)
                 type: integer
               conditions:
                 description: Conditions represent the latest available observations

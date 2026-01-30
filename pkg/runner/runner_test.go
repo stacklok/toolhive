@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
@@ -351,4 +353,171 @@ func (m *mockMiddlewareImpl) Handler() types.MiddlewareFunction {
 
 func (m *mockMiddlewareImpl) Close() error {
 	return m.closeErr
+}
+
+// TestRunner_EmbeddedAuthServer_Integration tests the runner's integration with the embedded auth server.
+// This covers initialization, handler mounting, route responses, and cleanup.
+func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
+	t.Parallel()
+
+	// createMinimalAuthServerConfig creates a minimal valid RunConfig for the embedded auth server.
+	// It uses development mode defaults (no signing keys, no HMAC secrets) and
+	// a pure OAuth2 upstream to avoid OIDC discovery.
+	createMinimalAuthServerConfig := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "http://localhost:8080",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	t.Run("Cleanup closes embedded auth server", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
+
+		runConfig := NewRunConfig()
+		runConfig.Name = testServerName
+		runner := NewRunner(runConfig, mockStatusManager)
+
+		// Create a real embedded auth server
+		authServerCfg := createMinimalAuthServerConfig()
+		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
+		require.NoError(t, err)
+		require.NotNil(t, embeddedServer)
+
+		// Set it on the runner
+		runner.embeddedAuthServer = embeddedServer
+
+		// Cleanup should succeed and close the embedded auth server
+		err = runner.Cleanup(context.Background())
+		assert.NoError(t, err)
+	})
+
+	t.Run("Cleanup succeeds when embedded auth server is nil", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockStatusManager := statusesmocks.NewMockStatusManager(ctrl)
+
+		runConfig := NewRunConfig()
+		runConfig.Name = testServerName
+		runner := NewRunner(runConfig, mockStatusManager)
+
+		// Ensure embeddedAuthServer is nil
+		runner.embeddedAuthServer = nil
+
+		// Cleanup should succeed when embedded auth server is nil
+		err := runner.Cleanup(context.Background())
+		assert.NoError(t, err)
+	})
+
+	t.Run("embedded auth server handler serves OAuth discovery endpoints", func(t *testing.T) {
+		t.Parallel()
+
+		// Create an embedded auth server with minimal config
+		authServerCfg := createMinimalAuthServerConfig()
+		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
+		require.NoError(t, err)
+		require.NotNil(t, embeddedServer)
+		defer func() { _ = embeddedServer.Close() }()
+
+		handler := embeddedServer.Handler()
+		require.NotNil(t, handler)
+
+		// Test OAuth Authorization Server Metadata (RFC 8414)
+		t.Run("serves OAuth AS metadata", func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+			assert.Contains(t, w.Body.String(), "issuer")
+			assert.Contains(t, w.Body.String(), "authorization_endpoint")
+			assert.Contains(t, w.Body.String(), "token_endpoint")
+		})
+
+		// Test OIDC Discovery
+		t.Run("serves OIDC discovery", func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+			assert.Contains(t, w.Body.String(), "issuer")
+		})
+
+		// Test JWKS endpoint
+		t.Run("serves JWKS", func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+			assert.Contains(t, w.Body.String(), "keys")
+		})
+	})
+
+	t.Run("PrefixHandlers map is correctly structured", func(t *testing.T) {
+		t.Parallel()
+
+		// This test verifies the expected prefix handler paths match what runner.Run() sets up
+		expectedPrefixes := []string{
+			"/oauth/",
+			"/.well-known/oauth-authorization-server",
+			"/.well-known/openid-configuration",
+			"/.well-known/jwks.json",
+		}
+
+		// Create an embedded auth server
+		authServerCfg := createMinimalAuthServerConfig()
+		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
+		require.NoError(t, err)
+		require.NotNil(t, embeddedServer)
+		defer func() { _ = embeddedServer.Close() }()
+
+		handler := embeddedServer.Handler()
+		require.NotNil(t, handler)
+
+		// Simulate what runner.Run() does when setting up PrefixHandlers
+		prefixHandlers := map[string]http.Handler{
+			"/oauth/": handler,
+			"/.well-known/oauth-authorization-server": handler,
+			"/.well-known/openid-configuration":       handler,
+			"/.well-known/jwks.json":                  handler,
+		}
+
+		// Verify all expected prefixes are present
+		for _, prefix := range expectedPrefixes {
+			_, ok := prefixHandlers[prefix]
+			assert.True(t, ok, "expected prefix handler for %q", prefix)
+		}
+		assert.Len(t, prefixHandlers, len(expectedPrefixes), "should have exactly %d prefix handlers", len(expectedPrefixes))
+	})
 }

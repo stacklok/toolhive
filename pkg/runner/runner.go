@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -66,6 +67,10 @@ type Runner struct {
 	// It is cancelled during Cleanup() to stop monitoring
 	monitoringCtx    context.Context
 	monitoringCancel context.CancelFunc
+
+	// embeddedAuthServer is the embedded OAuth/OIDC authorization server.
+	// Only initialized when Config.EmbeddedAuthServerConfig is set.
+	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -222,6 +227,26 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
+
+	// Initialize embedded auth server if configured
+	if r.Config.EmbeddedAuthServerConfig != nil {
+		var err error
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create embedded auth server: %w", err)
+		}
+		logger.Debug("Embedded authorization server initialized")
+
+		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
+		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
+		handler := r.embeddedAuthServer.Handler()
+		transportConfig.PrefixHandlers = map[string]http.Handler{
+			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
+			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
+			"/.well-known/openid-configuration":       handler, // OIDC Discovery
+			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
+		}
+	}
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
@@ -671,6 +696,16 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 		if err := middleware.Close(); err != nil {
 			logger.Warnf("Failed to close middleware %d: %v", i, err)
 			lastErr = err
+		}
+	}
+
+	// Close embedded auth server
+	if r.embeddedAuthServer != nil {
+		if err := r.embeddedAuthServer.Close(); err != nil {
+			logger.Warnf("Failed to close embedded auth server: %v", err)
+			if lastErr == nil {
+				lastErr = err
+			}
 		}
 	}
 

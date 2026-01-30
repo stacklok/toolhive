@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=oauth2.go OAuth2Provider
+
 package upstream
 
 import (

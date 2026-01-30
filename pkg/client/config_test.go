@@ -320,54 +320,62 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	t.Parallel()
 	logger.Initialize()
 
-	// Setup a temporary home directory for testing
-	tempHome := t.TempDir()
+	// Helper function to create isolated test setup for each subtest
+	setupSubtest := func(t *testing.T) (string, []mcpClientConfig, config.Provider) {
+		t.Helper()
 
-	// Create mock client configs explicitly (don't modify global variable)
-	mockClientConfigs := createMockClientConfigs()
+		// Create isolated temporary home directory for this subtest
+		tempHome := t.TempDir()
 
-	// Create test config files using mock configs
-	createTestConfigFilesWithConfigs(t, tempHome, mockClientConfigs)
+		// Create mock client configs
+		mockClientConfigs := createMockClientConfigs()
 
-	// Set up config for all sub-tests
-	testConfig := &config.Config{
-		Secrets: config.Secrets{
-			ProviderType: "encrypted",
-		},
-		Clients: config.Clients{
-			RegisteredClients: []string{
-				string(VSCode),
-				string(VSCodeInsider),
-				string(Cursor),
-				string(RooCode),
-				string(ClaudeCode),
-				string(Cline),
-				string(Windsurf),
-				string(WindsurfJetBrains),
-				string(AmpCli),
-				string(AmpVSCode),
-				string(AmpCursor),
-				string(AmpVSCodeInsider),
-				string(AmpWindsurf),
-				string(LMStudio),
-				string(Goose),
-				string(Trae),
-				string(Continue),
-				string(OpenCode),
-				string(Kiro),
-				string(Antigravity),
-				string(Zed),
+		// Create test config files using mock configs
+		createTestConfigFilesWithConfigs(t, tempHome, mockClientConfigs)
+
+		// Set up config
+		testConfig := &config.Config{
+			Secrets: config.Secrets{
+				ProviderType: "encrypted",
 			},
-		},
-	}
+			Clients: config.Clients{
+				RegisteredClients: []string{
+					string(VSCode),
+					string(VSCodeInsider),
+					string(Cursor),
+					string(RooCode),
+					string(ClaudeCode),
+					string(Cline),
+					string(Windsurf),
+					string(WindsurfJetBrains),
+					string(AmpCli),
+					string(AmpVSCode),
+					string(AmpCursor),
+					string(AmpVSCodeInsider),
+					string(AmpWindsurf),
+					string(LMStudio),
+					string(Goose),
+					string(Trae),
+					string(Continue),
+					string(OpenCode),
+					string(Kiro),
+					string(Antigravity),
+					string(Zed),
+				},
+			},
+		}
 
-	configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
-	t.Cleanup(cleanup)
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		t.Cleanup(cleanup)
+
+		return tempHome, mockClientConfigs, configProvider
+	}
 
 	t.Run("FindAllConfiguredClients", func(t *testing.T) {
 		t.Parallel()
-		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
-		mockClientConfigs := createMockClientConfigs()
+
+		// Create isolated resources for this subtest
+		tempHome, mockClientConfigs, configProvider := setupSubtest(t)
 
 		// Create ClientManager with test dependencies using the mock client integrations
 		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
@@ -390,8 +398,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 
 	t.Run("VerifyConfigFileContents", func(t *testing.T) {
 		t.Parallel()
-		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
-		mockClientConfigs := createMockClientConfigs()
+
+		// Create isolated resources for this subtest
+		tempHome, mockClientConfigs, configProvider := setupSubtest(t)
 
 		// Create ClientManager with test dependencies using the mock client integrations
 		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
@@ -467,8 +476,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 
 	t.Run("AddAndVerifyMCPServer", func(t *testing.T) {
 		t.Parallel()
-		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
-		mockClientConfigs := createMockClientConfigs()
+
+		// Create isolated resources for this subtest
+		tempHome, mockClientConfigs, configProvider := setupSubtest(t)
 
 		// Create ClientManager with test dependencies using the mock client integrations
 		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)

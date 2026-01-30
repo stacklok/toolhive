@@ -28,8 +28,6 @@ const (
 	// TokenTypeOAuthRefreshToken represents a cached OAuth refresh token
 	// #nosec G101 - this is a type identifier, not a credential
 	TokenTypeOAuthRefreshToken TokenType = "oauth_refresh_token"
-	// TokenTypeOAuthClientID represents a cached OAuth client ID from Dynamic Client Registration
-	TokenTypeOAuthClientID TokenType = "oauth_client_id" // #nosec G101
 )
 
 // tokenTypeConfig holds configuration for each token type
@@ -54,11 +52,6 @@ var tokenTypeConfigs = map[TokenType]tokenTypeConfig{
 		prefix:       "OAUTH_REFRESH_TOKEN_",
 		target:       "oauth_refresh",
 		errorContext: "OAuth refresh token",
-	},
-	TokenTypeOAuthClientID: {
-		prefix:       "OAUTH_CLIENT_ID_",
-		target:       "oauth_client_id",
-		errorContext: "OAuth client ID",
 	},
 }
 

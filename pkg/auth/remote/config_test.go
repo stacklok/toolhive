@@ -175,14 +175,14 @@ func TestConfig_HasCachedClientCredentials(t *testing.T) {
 		{
 			name: "has cached client ID only",
 			config: Config{
-				CachedClientID: "OAUTH_CLIENT_ID_test",
+				CachedClientID: "test_client_id",
 			},
 			expected: true,
 		},
 		{
 			name: "has both cached credentials",
 			config: Config{
-				CachedClientID:        "OAUTH_CLIENT_ID_test",
+				CachedClientID:        "test_client_id",
 				CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
 			},
 			expected: true,
@@ -211,7 +211,7 @@ func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	t.Parallel()
 
 	config := Config{
-		CachedClientID:        "OAUTH_CLIENT_ID_test",
+		CachedClientID:        "test_client_id",
 		CachedClientSecretRef: "OAUTH_CLIENT_SECRET_test",
 	}
 

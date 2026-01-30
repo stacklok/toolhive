@@ -744,24 +744,27 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 	err := mcpv1alpha1.AddToScheme(scheme)
 	require.NoError(t, err)
 
-	// Valid embedded auth server config
-	validExternalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "embedded-auth-config",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				Issuer: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "hmac-secret", Key: "hmac"},
+	// Helper function to create a fresh external auth config for each test
+	// This avoids data races when running subtests in parallel
+	newExternalAuthConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "embedded-auth-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
 				},
 			},
-		},
+		}
 	}
 
 	tests := []struct {
@@ -809,7 +812,7 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithRuntimeObjects(validExternalAuthConfig).
+				WithRuntimeObjects(newExternalAuthConfig()).
 				Build()
 
 			ctx := context.Background()

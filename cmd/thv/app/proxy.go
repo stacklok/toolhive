@@ -260,6 +260,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyTargetURI,
 		nil,
 		authInfoHandler,
+		nil, // prefixHandlers - not configured for proxy command
 		false,
 		false, // isRemote
 		"",

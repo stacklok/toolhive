@@ -27,6 +27,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -41,6 +42,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		mcpServer      *mcpv1alpha1.MCPServer
 		externalAuth   *mcpv1alpha1.MCPExternalAuthConfig
 		clientSecret   *corev1.Secret
+		oidcConfig     *oidc.OIDCConfig // OIDC config for embedded auth server
 		expectError    bool
 		errContains    string
 		validateConfig func(*testing.T, []runner.RunConfigBuilderOption)
@@ -247,6 +249,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					},
 				},
 			},
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid", "offline_access"},
+			},
 			expectError: false,
 			validateConfig: func(t *testing.T, opts []runner.RunConfigBuilderOption) {
 				t.Helper()
@@ -277,8 +283,87 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					EmbeddedAuthServer: nil, // Missing embedded config
 				},
 			},
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
 			expectError: true,
 			errContains: "embedded auth server configuration is nil",
+		},
+		{
+			name: "embedded auth server without OIDC config fails",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "embedded-auth-config-no-oidc",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-config-no-oidc",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+					},
+				},
+			},
+			oidcConfig:  nil, // No OIDC config
+			expectError: true,
+			errContains: "OIDC config is required for embedded auth server",
+		},
+		{
+			name: "embedded auth server without resourceUrl fails",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "embedded-auth-config-no-resource",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-config-no-resource",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+					},
+				},
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "", // Empty resource URL
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "OIDC config resourceUrl is required for embedded auth server",
 		},
 		{
 			name: "token exchange spec is nil",
@@ -530,7 +615,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 			ctx := t.Context()
 			var options []runner.RunConfigBuilderOption
 
-			err := ctrlutil.AddExternalAuthConfigOptions(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Spec.ExternalAuthConfigRef, &options)
+			err := ctrlutil.AddExternalAuthConfigOptions(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Spec.ExternalAuthConfigRef, tt.oidcConfig, &options)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -667,6 +752,16 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "embedded-auth-config",
 					},
+					// OIDCConfig is required for embedded auth server
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type:        mcpv1alpha1.OIDCConfigTypeInline,
+						ResourceURL: "http://embedded-auth-server.default.svc.cluster.local:8080",
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://kubernetes.default.svc",
+							Audience: "toolhive",
+							Scopes:   []string{"openid", "offline_access", "mcp:tools"},
+						},
+					},
 				},
 			},
 			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
@@ -725,6 +820,12 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				// Verify upstream provider
 				require.Len(t, config.EmbeddedAuthServerConfig.Upstreams, 1)
 				assert.Equal(t, "okta", config.EmbeddedAuthServerConfig.Upstreams[0].Name)
+
+				// Verify AllowedAudiences and ScopesSupported from OIDC config
+				assert.Equal(t, []string{"http://embedded-auth-server.default.svc.cluster.local:8080"},
+					config.EmbeddedAuthServerConfig.AllowedAudiences)
+				assert.Equal(t, []string{"openid", "offline_access", "mcp:tools"},
+					config.EmbeddedAuthServerConfig.ScopesSupported)
 			},
 		},
 	}

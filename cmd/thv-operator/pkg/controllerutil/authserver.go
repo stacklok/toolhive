@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -221,14 +222,21 @@ func GenerateAuthServerEnvVars(
 // The function:
 // 1. Fetches the MCPExternalAuthConfig by name
 // 2. Checks if the type is embeddedAuthServer
-// 3. Adds the appropriate runner options for embedded auth server configuration
+// 3. Validates that oidcConfig is provided with ResourceURL (required for RFC 8707 compliance)
+// 4. Adds the appropriate runner options for embedded auth server configuration
+//
+// The oidcConfig parameter provides:
+//   - AllowedAudiences: from oidcConfig.ResourceURL (REQUIRED)
+//   - ScopesSupported: from oidcConfig.Scopes (optional, defaults to ["openid", "offline_access"])
 //
 // Returns nil if externalAuthConfigRef is nil or if the auth type is not embeddedAuthServer.
+// Returns error if oidcConfig is nil or oidcConfig.ResourceURL is empty when using embedded auth server.
 func AddEmbeddedAuthServerConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	if externalAuthConfigRef == nil {
@@ -251,8 +259,16 @@ func AddEmbeddedAuthServerConfigOptions(
 		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
+	// Validate OIDC config is provided with ResourceURL (required for embedded auth server)
+	if oidcConfig == nil {
+		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
+	}
+	if oidcConfig.ResourceURL == "" {
+		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	}
+
 	// Build the embedded auth server config for runner
-	embeddedConfig := buildEmbeddedAuthServerRunnerConfig(authServerConfig)
+	embeddedConfig := buildEmbeddedAuthServerRunnerConfig(authServerConfig, oidcConfig)
 
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
@@ -262,12 +278,19 @@ func AddEmbeddedAuthServerConfigOptions(
 
 // buildEmbeddedAuthServerRunnerConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
+//
+// The oidcConfig parameter provides:
+//   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
+//   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
 func buildEmbeddedAuthServerRunnerConfig(
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+	oidcConfig *oidc.OIDCConfig,
 ) *authserver.RunConfig {
 	config := &authserver.RunConfig{
-		SchemaVersion: authserver.CurrentSchemaVersion,
-		Issuer:        authConfig.Issuer,
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           authConfig.Issuer,
+		AllowedAudiences: []string{oidcConfig.ResourceURL},
+		ScopesSupported:  oidcConfig.Scopes,
 	}
 
 	// Build signing key configuration

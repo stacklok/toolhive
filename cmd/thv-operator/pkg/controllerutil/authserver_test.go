@@ -14,7 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 func TestGenerateAuthServerVolumes(t *testing.T) {
@@ -504,13 +506,20 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 	t.Parallel()
 
+	// Default OIDC config used for most tests
+	defaultOIDCConfig := &oidc.OIDCConfig{
+		ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+		Scopes:      []string{"openid", "offline_access"},
+	}
+
 	tests := []struct {
 		name       string
 		authConfig *mcpv1alpha1.EmbeddedAuthServerConfig
+		oidcConfig *oidc.OIDCConfig
 		checkFunc  func(t *testing.T, config *authserver.RunConfig)
 	}{
 		{
-			name: "basic config",
+			name: "basic config with allowed audiences and scopes from OIDC config",
 			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
@@ -520,6 +529,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
+			oidcConfig: defaultOIDCConfig,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				assert.Equal(t, authserver.CurrentSchemaVersion, config.SchemaVersion)
@@ -528,6 +538,9 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 				assert.Equal(t, AuthServerKeysMountPath, config.SigningKeyConfig.KeyDir)
 				assert.Contains(t, config.SigningKeyConfig.SigningKeyFile, "key-0.pem")
 				assert.Len(t, config.HMACSecretFiles, 1)
+				// Verify AllowedAudiences and ScopesSupported from OIDC config
+				assert.Equal(t, []string{"http://test-server.default.svc.cluster.local:8080"}, config.AllowedAudiences)
+				assert.Equal(t, []string{"openid", "offline_access"}, config.ScopesSupported)
 			},
 		},
 		{
@@ -543,6 +556,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
+			oidcConfig: defaultOIDCConfig,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.NotNil(t, config.SigningKeyConfig)
@@ -568,6 +582,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					AuthCodeLifespan:     "5m",
 				},
 			},
+			oidcConfig: defaultOIDCConfig,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.NotNil(t, config.TokenLifespans)
@@ -599,6 +614,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					},
 				},
 			},
+			oidcConfig: defaultOIDCConfig,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.Len(t, config.Upstreams, 1)
@@ -646,6 +662,7 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					},
 				},
 			},
+			oidcConfig: defaultOIDCConfig,
 			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
 				t.Helper()
 				require.Len(t, config.Upstreams, 1)
@@ -664,16 +681,154 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 					upstream.OAuth2Config.UserInfo.FieldMapping.SubjectFields)
 			},
 		},
+		{
+			name: "with nil scopes uses auth server defaults",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://my-service.ns.svc.cluster.local:8080",
+				Scopes:      nil, // nil scopes should be passed through
+			},
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.Equal(t, []string{"http://my-service.ns.svc.cluster.local:8080"}, config.AllowedAudiences)
+				assert.Nil(t, config.ScopesSupported, "nil scopes should be passed through to use auth server defaults")
+			},
+		},
+		{
+			name: "with custom scopes from OIDC config",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://custom-service.ns.svc.cluster.local:9000",
+				Scopes:      []string{"openid", "profile", "email", "custom:scope"},
+			},
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.Equal(t, []string{"http://custom-service.ns.svc.cluster.local:9000"}, config.AllowedAudiences)
+				assert.Equal(t, []string{"openid", "profile", "email", "custom:scope"}, config.ScopesSupported)
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config := buildEmbeddedAuthServerRunnerConfig(tt.authConfig)
+			config := buildEmbeddedAuthServerRunnerConfig(tt.authConfig, tt.oidcConfig)
 
 			require.NotNil(t, config)
 			tt.checkFunc(t, config)
+		})
+	}
+}
+
+func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	err := mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	// Valid embedded auth server config
+	validExternalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "embedded-auth-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		oidcConfig  *oidc.OIDCConfig
+		expectError bool
+		errContains string
+	}{
+		{
+			name:        "nil OIDC config returns error",
+			oidcConfig:  nil,
+			expectError: true,
+			errContains: "OIDC config is required for embedded auth server",
+		},
+		{
+			name: "empty ResourceURL returns error",
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "OIDC config resourceUrl is required for embedded auth server",
+		},
+		{
+			name: "valid OIDC config succeeds",
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid", "offline_access"},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid OIDC config with nil scopes succeeds",
+			oidcConfig: &oidc.OIDCConfig{
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      nil,
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(validExternalAuthConfig).
+				Build()
+
+			ctx := context.Background()
+			var options []runner.RunConfigBuilderOption
+
+			err := AddEmbeddedAuthServerConfigOptions(
+				ctx, fakeClient, "default",
+				&mcpv1alpha1.ExternalAuthConfigRef{Name: "embedded-auth-config"},
+				tt.oidcConfig,
+				&options,
+			)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, options, 1, "Should have one embedded auth server config option")
+			}
 		})
 	}
 }

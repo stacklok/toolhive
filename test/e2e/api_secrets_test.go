@@ -389,11 +389,8 @@ var _ = Describe("Secrets API", Label("api", "secrets", "e2e"), func() {
 				resp := updateSecret(apiServer, "test-key", "")
 				defer resp.Body.Close()
 
-				By("Verifying response status is 400 or 405")
-				Expect(resp.StatusCode).To(SatisfyAny(
-					Equal(http.StatusBadRequest),
-					Equal(http.StatusMethodNotAllowed),
-				))
+				By("Verifying response status is 400")
+				Expect(resp.StatusCode).To(SatisfyAny(Equal(http.StatusBadRequest)))
 			})
 
 			It("should reject malformed JSON", func() {

@@ -483,41 +483,4 @@ func TestRunner_EmbeddedAuthServer_Integration(t *testing.T) {
 			assert.Contains(t, w.Body.String(), "keys")
 		})
 	})
-
-	t.Run("PrefixHandlers map is correctly structured", func(t *testing.T) {
-		t.Parallel()
-
-		// This test verifies the expected prefix handler paths match what runner.Run() sets up
-		expectedPrefixes := []string{
-			"/oauth/",
-			"/.well-known/oauth-authorization-server",
-			"/.well-known/openid-configuration",
-			"/.well-known/jwks.json",
-		}
-
-		// Create an embedded auth server
-		authServerCfg := createMinimalAuthServerConfig()
-		embeddedServer, err := authserverrunner.NewEmbeddedAuthServer(context.Background(), authServerCfg)
-		require.NoError(t, err)
-		require.NotNil(t, embeddedServer)
-		defer func() { _ = embeddedServer.Close() }()
-
-		handler := embeddedServer.Handler()
-		require.NotNil(t, handler)
-
-		// Simulate what runner.Run() does when setting up PrefixHandlers
-		prefixHandlers := map[string]http.Handler{
-			"/oauth/": handler,
-			"/.well-known/oauth-authorization-server": handler,
-			"/.well-known/openid-configuration":       handler,
-			"/.well-known/jwks.json":                  handler,
-		}
-
-		// Verify all expected prefixes are present
-		for _, prefix := range expectedPrefixes {
-			_, ok := prefixHandlers[prefix]
-			assert.True(t, ok, "expected prefix handler for %q", prefix)
-		}
-		assert.Len(t, prefixHandlers, len(expectedPrefixes), "should have exactly %d prefix handlers", len(expectedPrefixes))
-	})
 }

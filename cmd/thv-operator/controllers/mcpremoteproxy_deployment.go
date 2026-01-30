@@ -40,11 +40,11 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
-		} else {
-			volumes = append(volumes, authServerVolumes...)
-			volumeMounts = append(volumeMounts, authServerMounts...)
-			env = append(env, authServerEnvVars...)
+			return nil
 		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
 	}
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)

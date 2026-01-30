@@ -1054,11 +1054,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
-		} else {
-			volumes = append(volumes, authServerVolumes...)
-			volumeMounts = append(volumeMounts, authServerMounts...)
-			env = append(env, authServerEnvVars...)
+			return nil
 		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
 	}
 
 	// Prepare container resources

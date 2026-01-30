@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // defaultProxyHost is the default host for proxy binding
@@ -81,6 +82,9 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
+	ctx := context.Background()
+	ctxLogger := log.FromContext(ctx)
+
 	proxyHost := defaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
 		proxyHost = envHost
@@ -98,7 +102,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	if m.Spec.ToolConfigRef != nil {
 		// ToolConfigRef takes precedence over inline ToolsFilter
-		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}
@@ -125,9 +129,17 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// This avoids redundancy and follows the same pattern as regular flags.
 	var k8sPodPatch string
 
-	proxyMode := m.Spec.ProxyMode
-	if proxyMode == "" {
-		proxyMode = "streamable-http" // Default to streamable-http (SSE is deprecated)
+	// ProxyMode handling:
+	// - For stdio transports: proxyMode determines how the stdio server is proxied (sse or streamable-http)
+	// - For direct transports (sse, streamable-http): proxyMode is set to match the transport type for consistency
+	transportType := transporttypes.TransportType(m.Spec.Transport)
+	effectiveProxyMode := types.GetEffectiveProxyMode(transportType, m.Spec.ProxyMode)
+
+	if m.Spec.ProxyMode != effectiveProxyMode {
+		ctxLogger.Info("proxyMode is set to effective proxy mode for the transport",
+			"transport", m.Spec.Transport,
+			"configuredProxyMode", m.Spec.ProxyMode,
+			"effectiveProxyMode", effectiveProxyMode)
 	}
 
 	options := []runner.RunConfigBuilderOption{
@@ -135,7 +147,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
 		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
-		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
+		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
 		runner.WithEndpointPrefix(m.Spec.EndpointPrefix),
@@ -325,6 +337,26 @@ func (*MCPServerReconciler) validateTransportAndPorts(config *runner.RunConfig) 
 	}
 	if !validTransport {
 		return fmt.Errorf("invalid transport type: %s, must be one of: stdio, sse, streamable-http", config.Transport)
+	}
+
+	// Validate proxyMode:
+	// - For stdio transports: proxyMode must "streamable-http"
+	// - For direct transports: proxyMode should match transportType (set automatically by controller)
+	if config.Transport == transporttypes.TransportTypeStdio {
+		// For stdio, validate that proxyMode is valid
+		if config.ProxyMode != "" {
+			if config.ProxyMode != transporttypes.ProxyModeSSE && config.ProxyMode != transporttypes.ProxyModeStreamableHTTP {
+				return fmt.Errorf("invalid proxyMode %s for stdio transport, must be 'sse' or 'streamable-http'", config.ProxyMode)
+			}
+		}
+	} else {
+		// For direct transports, proxyMode should match transportType
+		// This is set automatically by the controller, but validate for consistency
+		expectedProxyMode := transporttypes.ProxyMode(config.Transport.String())
+		if config.ProxyMode != "" && config.ProxyMode != expectedProxyMode {
+			return fmt.Errorf("proxyMode %s does not match transportType %s for direct transport. "+
+				"For direct transports, proxyMode should match transportType", config.ProxyMode, config.Transport)
+		}
 	}
 
 	// Validate ports for HTTP-based transports

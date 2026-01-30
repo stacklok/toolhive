@@ -213,6 +213,103 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
+			name: "SSE transport sets proxyMode to sse (ignores configured proxyMode)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sse-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "sse",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode set to streamable-http (should be ignored and set to "sse")
+					ProxyMode: streamableHTTPProxyMode,
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "sse-server", config.Name)
+				assert.Equal(t, testImage, config.Image)
+				assert.Equal(t, transporttypes.TransportTypeSSE, config.Transport)
+				assert.Equal(t, 8080, config.Port)
+				assert.Equal(t, 8080, config.TargetPort)
+				// For SSE transport, proxyMode should be set to "sse" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeSSE, config.ProxyMode, "SSE transport should set proxyMode to sse")
+			},
+		},
+		{
+			name: "SSE transport without proxyMode sets proxyMode to sse",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sse-server-no-proxymode",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "sse",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode not specified
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "sse-server-no-proxymode", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeSSE, config.Transport)
+				// For SSE transport, proxyMode should be set to "sse" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeSSE, config.ProxyMode, "SSE transport should set proxyMode to sse")
+			},
+		},
+		{
+			name: "streamable-http transport sets proxyMode to streamable-http (ignores configured proxyMode)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "streamable-http-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode set to sse (should be ignored and set to "streamable-http")
+					ProxyMode: sseProxyMode,
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "streamable-http-server", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport)
+				// For streamable-http transport, proxyMode should be set to "streamable-http" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode, "streamable-http transport should set proxyMode to streamable-http")
+			},
+		},
+		{
+			name: "streamable-http transport without proxyMode sets proxyMode to streamable-http",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "streamable-http-server-no-proxymode",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: "streamable-http",
+					ProxyPort: 8080,
+					McpPort:   8080,
+					// ProxyMode not specified
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "streamable-http-server-no-proxymode", config.Name)
+				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport)
+				// For streamable-http transport, proxyMode should be set to "streamable-http" (matches transportType)
+				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode, "streamable-http transport should set proxyMode to streamable-http")
+			},
+		},
+		{
 			name: "comprehensive test with all fields",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1101,6 +1198,102 @@ func TestValidateRunConfig(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "invalid secret format",
+		},
+		{
+			name: "SSE transport with mismatched proxyMode should fail",
+			config: &runner.RunConfig{
+				Name:      "sse-mismatch",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeSSE,
+				Port:      8080,
+				TargetPort: 8080,
+				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Mismatch: should be "sse"
+			},
+			expectErr: true,
+			errMsg:    "does not match transportType",
+		},
+		{
+			name: "streamable-http transport with mismatched proxyMode should fail",
+			config: &runner.RunConfig{
+				Name:      "streamable-mismatch",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStreamableHTTP,
+				Port:      8080,
+				TargetPort: 8080,
+				ProxyMode: transporttypes.ProxyModeSSE, // Mismatch: should be "streamable-http"
+			},
+			expectErr: true,
+			errMsg:    "does not match transportType",
+		},
+		{
+			name: "SSE transport with correct proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "sse-correct",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeSSE,
+				Port:      8080,
+				TargetPort: 8080,
+				ProxyMode: transporttypes.ProxyModeSSE, // Correct: matches transportType
+			},
+			expectErr: false,
+		},
+		{
+			name: "streamable-http transport with correct proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "streamable-correct",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStreamableHTTP,
+				Port:      8080,
+				TargetPort: 8080,
+				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Correct: matches transportType
+			},
+			expectErr: false,
+		},
+		{
+			name: "SSE transport without proxyMode should pass (controller sets it)",
+			config: &runner.RunConfig{
+				Name:       "sse-no-proxymode",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
+				TargetPort: 8080,
+				// ProxyMode not set - controller will set it to "sse"
+			},
+			expectErr: false,
+		},
+		{
+			name: "streamable-http transport without proxyMode should pass (controller sets it)",
+			config: &runner.RunConfig{
+				Name:       "streamable-no-proxymode",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
+				TargetPort: 8080,
+				// ProxyMode not set - controller will set it to "streamable-http"
+			},
+			expectErr: false,
+		},
+		{
+			name: "stdio transport with valid proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "stdio-valid-proxymode",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStdio,
+				Port:      8080,
+				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Valid for stdio
+			},
+			expectErr: false,
+		},
+		{
+			name: "stdio transport with SSE proxyMode should pass",
+			config: &runner.RunConfig{
+				Name:      "stdio-sse-proxymode",
+				Image:     "test:latest",
+				Transport: transporttypes.TransportTypeStdio,
+				Port:      8080,
+				ProxyMode: transporttypes.ProxyModeSSE, // Valid for stdio
+			},
+			expectErr: false,
 		},
 	}
 

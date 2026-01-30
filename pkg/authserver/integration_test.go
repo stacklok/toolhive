@@ -480,7 +480,9 @@ func TestIntegration_FullPKCEFlow(t *testing.T) {
 	require.True(t, ok, "scp claim should be an array")
 	scopeStrings := make([]string, len(scope))
 	for i, s := range scope {
-		scopeStrings[i] = s.(string)
+		scopeStr, ok := s.(string)
+		require.True(t, ok, "each scope should be a string, got %T at index %d", s, i)
+		scopeStrings[i] = scopeStr
 	}
 	assert.ElementsMatch(t, requestedScopes, scopeStrings, "granted scopes should match requested scopes")
 }

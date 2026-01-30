@@ -255,7 +255,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 			buildArgs:     []string{"start"},
 			wantContains: []string{
 				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
-				"FROM node:22-alpine",
+				"FROM node:24-alpine",
 			},
 			wantErr: false,
 		},

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
@@ -25,8 +26,10 @@ import (
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 type EmbeddedAuthServer struct {
-	server  authserver.Server
-	storage storage.Storage
+	server    authserver.Server
+	storage   storage.Storage
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -102,9 +105,14 @@ func (e *EmbeddedAuthServer) Handler() http.Handler {
 }
 
 // Close releases resources held by the EmbeddedAuthServer.
+// This method is idempotent - subsequent calls after the first will return
+// the same error (if any) without attempting to close resources again.
 // Should be called during runner shutdown.
 func (e *EmbeddedAuthServer) Close() error {
-	return e.server.Close()
+	e.closeOnce.Do(func() {
+		e.closeErr = e.server.Close()
+	})
+	return e.closeErr
 }
 
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
@@ -133,6 +141,7 @@ func loadHMACSecrets(files []string) (*servercrypto.HMACSecrets, error) {
 	}
 
 	// Read current (first) secret
+	// #nosec G304 - file path is from configuration, not user input
 	current, err := os.ReadFile(files[0])
 	if err != nil {
 		return nil, fmt.Errorf("failed to read HMAC secret from %s: %w", files[0], err)
@@ -308,7 +317,7 @@ func resolveSecret(file, envVar string) (string, error) {
 		}
 		return value, nil
 	}
-	logger.Infof("No client secret configured (neither file nor env var specified)")
+	logger.Debugf("No client secret configured (neither file nor env var specified)")
 	return "", nil
 }
 

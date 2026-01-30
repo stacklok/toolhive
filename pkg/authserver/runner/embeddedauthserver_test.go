@@ -607,9 +607,10 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		err = server.Close()
 		require.NoError(t, err)
 
-		// Note: Close() is currently not idempotent - the underlying MemoryStorage.Close()
-		// panics on second call due to closing a closed channel. If idempotent Close()
-		// is needed, the storage layer should be updated to handle this gracefully.
+		// Close is idempotent - calling it again should not panic and should return
+		// the same error (nil in this case)
+		err = server.Close()
+		require.NoError(t, err)
 	})
 
 	t.Run("invalid issuer URL returns error", func(t *testing.T) {

@@ -20,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
-	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -206,33 +205,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
-
-	// Check for Vault Agent Injection and add env-file-dir if needed
-	vaultDetected := false
-
-	// Check for Vault injection in pod template annotations
-	if m.Spec.PodTemplateSpec != nil && m.Spec.PodTemplateSpec.Raw != nil {
-		// Try to unmarshal the raw extension to check annotations
-		var podTemplateSpec corev1.PodTemplateSpec
-		if err := json.Unmarshal(m.Spec.PodTemplateSpec.Raw, &podTemplateSpec); err == nil {
-			if podTemplateSpec.Annotations != nil {
-				vaultDetected = hasVaultAgentInjection(podTemplateSpec.Annotations)
-			}
-		}
-	}
-
-	// Also check resource overrides annotations using the accessor for safe access
-	if !vaultDetected {
-		accessor := accessors.NewMCPServerFieldAccessor()
-		_, annotations := accessor.GetProxyDeploymentTemplateLabelsAndAnnotations(m)
-		if len(annotations) > 0 {
-			vaultDetected = hasVaultAgentInjection(annotations)
-		}
-	}
-
-	if vaultDetected {
-		options = append(options, runner.WithEnvFileDir("/vault/secrets"))
-	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
@@ -515,15 +487,4 @@ func convertVolumesFromMCPServer(vols []mcpv1alpha1.Volume) []string {
 		volumes = append(volumes, volStr)
 	}
 	return volumes
-}
-
-// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
-func hasVaultAgentInjection(annotations map[string]string) bool {
-	if annotations == nil {
-		return false
-	}
-
-	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
-	value, exists := annotations["vault.hashicorp.com/agent-inject"]
-	return exists && value == "true"
 }

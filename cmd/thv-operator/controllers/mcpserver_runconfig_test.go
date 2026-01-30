@@ -1698,9 +1698,6 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 			err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
 			require.NoError(t, err)
 
-			// Verify EnvFileDir is set correctly
-			assert.Equal(t, tc.expectedEnvDir, runConfig.EnvFileDir, "EnvFileDir should match expected value")
-
 			// Verify basic RunConfig fields
 			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)
 			assert.Equal(t, tc.mcpServer.Spec.Image, runConfig.Image)

@@ -49,6 +49,7 @@ func ReadMarkerFile() (*CliSourceMarker, error) {
 // ReadMarkerFileFromPath reads and parses the CLI source marker file from
 // a specific path. This is useful for testing.
 func ReadMarkerFileFromPath(path string) (*CliSourceMarker, error) {
+	// #nosec G304 -- path is always the marker file path from GetMarkerFilePath or tests
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

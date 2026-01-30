@@ -18,11 +18,11 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		setupFile   func(t *testing.T, dir string) string
-		wantErr     error
-		wantMarker  bool
-		validateFn  func(t *testing.T, marker *CliSourceMarker)
+		name       string
+		setupFile  func(t *testing.T, dir string) string
+		wantErr    error
+		wantMarker bool
+		validateFn func(t *testing.T, marker *CliSourceMarker)
 	}{
 		{
 			name: "valid marker file",
@@ -151,11 +151,12 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // These tests modify HOME env var and cannot run in parallel
 func TestCheckDesktopAlignment(t *testing.T) {
 	// Save and restore original ReadMarkerFile behavior
 	// We test with actual files instead of mocking
 
-	t.Run("no marker file - no conflict", func(t *testing.T) {
+	t.Run("no marker file - no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		// Use a temporary directory that doesn't have a marker file
 		dir := t.TempDir()
 
@@ -171,7 +172,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		assert.False(t, result.HasConflict)
 	})
 
-	t.Run("target binary does not exist - no conflict", func(t *testing.T) {
+	t.Run("target binary does not exist - no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
@@ -205,7 +206,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		assert.False(t, result.HasConflict, "should not conflict when target doesn't exist")
 	})
 
-	t.Run("current binary matches target - no conflict", func(t *testing.T) {
+	t.Run("current binary matches target - no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
@@ -248,7 +249,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		assert.False(t, result.HasConflict, "should not conflict when paths match")
 	})
 
-	t.Run("current binary differs from target - conflict", func(t *testing.T) {
+	t.Run("current binary differs from target - conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
@@ -353,7 +354,7 @@ func TestPathsEqual(t *testing.T) {
 	}
 
 	// Add platform-specific tests
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" { //nolint:goconst // platform checks are clearer inline
 		tests = append(tests, struct {
 			name   string
 			path1  string

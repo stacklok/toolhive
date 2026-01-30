@@ -33,11 +33,7 @@ container-based isolation for running MCP servers.`,
 		logger.Initialize()
 
 		// Check for desktop app conflict
-		if err := desktop.ValidateDesktopAlignment(); err != nil {
-			return err
-		}
-
-		return nil
+		return desktop.ValidateDesktopAlignment()
 	},
 }
 

@@ -646,8 +646,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// Create backends
 	backends := []vmcp.Backend{
 		{
-			ID:   "weather-service",
-			Name: "Weather Service",
+			ID:           "weather-service",
+			Name:         "Weather Service",
+			HealthStatus: vmcp.BackendHealthy,
 		},
 	}
 

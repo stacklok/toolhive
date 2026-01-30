@@ -36,6 +36,13 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
+const (
+	// ConditionTypeReady represents the standard Kubernetes "Ready" condition type.
+	// This is defined here for test convenience to avoid magic strings.
+	// It matches the condition type used in VirtualMCPServer.Status.Conditions.
+	ConditionTypeReady = "Ready"
+)
+
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
 // and ensures at least one associated pod is actually running and ready.
 // This is used when waiting for a single expected pod (e.g., one replica deployment).
@@ -57,7 +64,7 @@ func WaitForVirtualMCPServerReady(
 		}
 
 		for _, condition := range vmcpServer.Status.Conditions {
-			if condition.Type == "Ready" {
+			if condition.Type == ConditionTypeReady {
 				if condition.Status == "True" {
 					// Also check that at least one pod is actually running and ready
 					labels := map[string]string{

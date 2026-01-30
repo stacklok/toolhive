@@ -71,6 +71,13 @@ func routeCapability(
 		return nil, fmt.Errorf("%w: %s", notFoundErr, key)
 	}
 
+	// Check if the backend is healthy before routing
+	if !target.HealthStatus.IsHealthyForRouting() {
+		logger.Warnf("%s %s found but backend %s is unavailable (status: %s)",
+			entityType, key, target.WorkloadName, target.HealthStatus)
+		return nil, fmt.Errorf("%w: backend %s is %s", ErrBackendUnavailable, target.WorkloadName, target.HealthStatus)
+	}
+
 	logger.Debugf("Routed %s %s to backend %s", entityType, key, target.WorkloadID)
 	return target, nil
 }

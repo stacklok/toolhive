@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
@@ -28,8 +29,15 @@ container-based isolation for running MCP servers.`,
 			logger.Errorf("Error displaying help: %v", err)
 		}
 	},
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
+	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 		logger.Initialize()
+
+		// Check for desktop app conflict
+		if err := desktop.ValidateDesktopAlignment(); err != nil {
+			return err
+		}
+
+		return nil
 	},
 }
 

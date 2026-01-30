@@ -489,3 +489,136 @@ func TestStatusTracker_ThresholdOf1(t *testing.T) {
 	state, _ := tracker.GetState("backend-1")
 	assert.Equal(t, 1, state.ConsecutiveFailures)
 }
+
+func TestStatusTracker_CircuitBreakerInitialization(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	// Initialize circuit breaker for backend
+	tracker.InitializeCircuitBreaker("backend-1", 5, 60*time.Second)
+
+	// Verify circuit breaker exists and is in closed state
+	cbState, exists := tracker.GetCircuitBreakerState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, cbState)
+
+	// Verify CanAttemptHealthCheck returns true initially
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.False(t, tracker.IsCircuitOpen("backend-1"))
+}
+
+func TestStatusTracker_CircuitBreakerRecordSuccess(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+
+	// Record failure to increment circuit breaker count
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitClosed, cbState)
+
+	// Record success - should reset circuit breaker
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, CircuitClosed, state.CircuitState)
+	assert.Equal(t, 0, state.ConsecutiveFailures)
+}
+
+func TestStatusTracker_CircuitBreakerRecordFailure(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+
+	testErr := errors.New("health check failed")
+
+	// Record first failure - should stay closed
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitClosed, cbState)
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Record second failure - should open circuit
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	cbState, _ = tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitOpen, cbState)
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.True(t, tracker.IsCircuitOpen("backend-1"))
+}
+
+func TestStatusTracker_CircuitBreakerStateInSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+
+	// Get initial state snapshot
+	state, exists := tracker.GetState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, state.CircuitState)
+	assert.False(t, state.CircuitLastChanged.IsZero())
+
+	// Open circuit
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+
+	// Get state snapshot after opening
+	state2, _ := tracker.GetState("backend-1")
+	assert.Equal(t, CircuitOpen, state2.CircuitState)
+	assert.True(t, state2.CircuitLastChanged.After(state.CircuitLastChanged))
+}
+
+func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	// Don't initialize circuit breaker
+	// CanAttemptHealthCheck should always return true
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Record multiple failures
+	for i := 0; i < 10; i++ {
+		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+	}
+
+	// Still should allow health checks (no circuit breaker)
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.False(t, tracker.IsCircuitOpen("backend-1"))
+
+	// Circuit breaker state should not exist
+	_, exists := tracker.GetCircuitBreakerState("backend-1")
+	assert.False(t, exists)
+}
+
+func TestStatusTracker_CircuitBreakerHalfOpen(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	tracker.InitializeCircuitBreaker("backend-1", 2, 50*time.Millisecond)
+
+	testErr := errors.New("health check failed")
+
+	// Open the circuit
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+
+	assert.True(t, tracker.IsCircuitOpen("backend-1"))
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Wait for timeout
+	time.Sleep(60 * time.Millisecond)
+
+	// Next attempt should transition to half-open
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitHalfOpen, cbState)
+
+	// Only one attempt allowed in half-open
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+}

@@ -322,57 +322,78 @@ func (*MCPServerReconciler) validateRequiredFields(config *runner.RunConfig) err
 
 // validateTransportAndPorts validates transport type and associated port configuration
 func (*MCPServerReconciler) validateTransportAndPorts(config *runner.RunConfig) error {
+	if err := validateTransportType(config.Transport); err != nil {
+		return err
+	}
+
+	if err := validateProxyMode(config.Transport, config.ProxyMode); err != nil {
+		return err
+	}
+
+	return validatePorts(config.Transport, config.Port, config.TargetPort)
+}
+
+// validateTransportType validates that the transport type is valid
+func validateTransportType(transport transporttypes.TransportType) error {
 	validTransports := []transporttypes.TransportType{
 		transporttypes.TransportTypeStdio,
 		transporttypes.TransportTypeSSE,
 		transporttypes.TransportTypeStreamableHTTP,
 	}
 
-	validTransport := false
 	for _, valid := range validTransports {
-		if config.Transport == valid {
-			validTransport = true
-			break
+		if transport == valid {
+			return nil
 		}
 	}
-	if !validTransport {
-		return fmt.Errorf("invalid transport type: %s, must be one of: stdio, sse, streamable-http", config.Transport)
-	}
 
-	// Validate proxyMode:
-	// - For stdio transports: proxyMode must "streamable-http"
-	// - For direct transports: proxyMode should match transportType (set automatically by controller)
-	if config.Transport == transporttypes.TransportTypeStdio {
-		// For stdio, validate that proxyMode is valid
-		if config.ProxyMode != "" {
-			if config.ProxyMode != transporttypes.ProxyModeSSE && config.ProxyMode != transporttypes.ProxyModeStreamableHTTP {
-				return fmt.Errorf("invalid proxyMode %s for stdio transport, must be 'sse' or 'streamable-http'", config.ProxyMode)
+	return fmt.Errorf("invalid transport type: %s, must be one of: stdio, sse, streamable-http", transport)
+}
+
+// validateProxyMode validates proxyMode based on transport type
+func validateProxyMode(transport transporttypes.TransportType, proxyMode transporttypes.ProxyMode) error {
+	if transport == transporttypes.TransportTypeStdio {
+		// For stdio, validate that proxyMode is valid if set
+		if proxyMode != "" {
+			if proxyMode != transporttypes.ProxyModeSSE && proxyMode != transporttypes.ProxyModeStreamableHTTP {
+				return fmt.Errorf("invalid proxyMode %s for stdio transport, must be 'sse' or 'streamable-http'", proxyMode)
 			}
 		}
-	} else {
-		// For direct transports, proxyMode should match transportType
-		// This is set automatically by the controller, but validate for consistency
-		expectedProxyMode := transporttypes.ProxyMode(config.Transport.String())
-		if config.ProxyMode != "" && config.ProxyMode != expectedProxyMode {
-			return fmt.Errorf("proxyMode %s does not match transportType %s for direct transport. "+
-				"For direct transports, proxyMode should match transportType", config.ProxyMode, config.Transport)
-		}
+		return nil
 	}
 
-	// Validate ports for HTTP-based transports
-	if config.Transport == transporttypes.TransportTypeSSE || config.Transport == transporttypes.TransportTypeStreamableHTTP {
-		if config.Port <= 0 {
-			return fmt.Errorf("port is required for transport type %s", config.Transport)
-		}
-		if config.TargetPort <= 0 {
-			return fmt.Errorf("target port is required for transport type %s", config.Transport)
-		}
-		if config.Port < 1 || config.Port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535, got: %d", config.Port)
-		}
-		if config.TargetPort < 1 || config.TargetPort > 65535 {
-			return fmt.Errorf("target port must be between 1 and 65535, got: %d", config.TargetPort)
-		}
+	// For direct transports, proxyMode should match transportType
+	// This is set automatically by the controller, but validate for consistency
+	expectedProxyMode := transporttypes.ProxyMode(transport.String())
+	if proxyMode != "" && proxyMode != expectedProxyMode {
+		return fmt.Errorf("proxyMode %s does not match transportType %s for direct transport. "+
+			"For direct transports, proxyMode should match transportType", proxyMode, transport)
+	}
+
+	return nil
+}
+
+// validatePorts validates port configuration for HTTP-based transports
+func validatePorts(transport transporttypes.TransportType, port, targetPort int) error {
+	// Port validation only applies to HTTP-based transports
+	if transport != transporttypes.TransportTypeSSE && transport != transporttypes.TransportTypeStreamableHTTP {
+		return nil
+	}
+
+	if port <= 0 {
+		return fmt.Errorf("port is required for transport type %s", transport)
+	}
+
+	if targetPort <= 0 {
+		return fmt.Errorf("target port is required for transport type %s", transport)
+	}
+
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535, got: %d", port)
+	}
+
+	if targetPort < 1 || targetPort > 65535 {
+		return fmt.Errorf("target port must be between 1 and 65535, got: %d", targetPort)
 	}
 
 	return nil

@@ -1202,12 +1202,12 @@ func TestValidateRunConfig(t *testing.T) {
 		{
 			name: "SSE transport with mismatched proxyMode should fail",
 			config: &runner.RunConfig{
-				Name:      "sse-mismatch",
-				Image:     "test:latest",
-				Transport: transporttypes.TransportTypeSSE,
-				Port:      8080,
+				Name:       "sse-mismatch",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
 				TargetPort: 8080,
-				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Mismatch: should be "sse"
+				ProxyMode:  transporttypes.ProxyModeStreamableHTTP, // Mismatch: should be "sse"
 			},
 			expectErr: true,
 			errMsg:    "does not match transportType",
@@ -1215,12 +1215,12 @@ func TestValidateRunConfig(t *testing.T) {
 		{
 			name: "streamable-http transport with mismatched proxyMode should fail",
 			config: &runner.RunConfig{
-				Name:      "streamable-mismatch",
-				Image:     "test:latest",
-				Transport: transporttypes.TransportTypeStreamableHTTP,
-				Port:      8080,
+				Name:       "streamable-mismatch",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
 				TargetPort: 8080,
-				ProxyMode: transporttypes.ProxyModeSSE, // Mismatch: should be "streamable-http"
+				ProxyMode:  transporttypes.ProxyModeSSE, // Mismatch: should be "streamable-http"
 			},
 			expectErr: true,
 			errMsg:    "does not match transportType",
@@ -1228,24 +1228,24 @@ func TestValidateRunConfig(t *testing.T) {
 		{
 			name: "SSE transport with correct proxyMode should pass",
 			config: &runner.RunConfig{
-				Name:      "sse-correct",
-				Image:     "test:latest",
-				Transport: transporttypes.TransportTypeSSE,
-				Port:      8080,
+				Name:       "sse-correct",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeSSE,
+				Port:       8080,
 				TargetPort: 8080,
-				ProxyMode: transporttypes.ProxyModeSSE, // Correct: matches transportType
+				ProxyMode:  transporttypes.ProxyModeSSE, // Correct: matches transportType
 			},
 			expectErr: false,
 		},
 		{
 			name: "streamable-http transport with correct proxyMode should pass",
 			config: &runner.RunConfig{
-				Name:      "streamable-correct",
-				Image:     "test:latest",
-				Transport: transporttypes.TransportTypeStreamableHTTP,
-				Port:      8080,
+				Name:       "streamable-correct",
+				Image:      "test:latest",
+				Transport:  transporttypes.TransportTypeStreamableHTTP,
+				Port:       8080,
 				TargetPort: 8080,
-				ProxyMode: transporttypes.ProxyModeStreamableHTTP, // Correct: matches transportType
+				ProxyMode:  transporttypes.ProxyModeStreamableHTTP, // Correct: matches transportType
 			},
 			expectErr: false,
 		},

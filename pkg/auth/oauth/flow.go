@@ -457,8 +457,13 @@ func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResu
 		Expiry:       token.Expiry,
 	}
 
-	// Create a base token source using the original token with the provided context
-	base := f.oauth2Config.TokenSource(ctx, token)
+	// Create a base token source using the original token with a background context.
+	// We use context.Background() instead of the passed ctx because the TokenSource
+	// is long-lived and will be used for token refresh operations long after the
+	// initial OAuth flow completes. Using the original ctx would cause "context canceled"
+	// errors when attempting to refresh tokens, as that context gets cancelled when
+	// the OAuth callback server shuts down.
+	base := f.oauth2Config.TokenSource(context.Background(), token)
 
 	// ReuseTokenSource ensures that refresh happens only when needed
 	f.tokenSource = oauth2.ReuseTokenSource(token, base)

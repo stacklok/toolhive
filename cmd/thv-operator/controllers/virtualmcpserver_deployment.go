@@ -485,6 +485,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// No secrets to mount for unauthenticated
 		return nil, nil
 
+	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+		// Embedded auth server secrets are handled separately (via volume mounts, not env vars)
+		// Controller integration will be in a future task
+		return nil, nil
+
 	default:
 		return nil, nil // Not applicable
 	}

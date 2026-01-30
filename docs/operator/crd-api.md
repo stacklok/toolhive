@@ -851,6 +851,27 @@ _Appears in:_
 
 
 
+#### api.v1alpha1.EmbeddedAuthServerConfig
+
+
+
+EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
+This enables running an authorization server that delegates authentication to upstream IDPs.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuer` _string_ | Issuer is the issuer identifier for this authorization server.<br />This will be included in the "iss" claim of issued tokens.<br />Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414). |  | Pattern: `^https?://[^\s?#]+[^/\s?#]$` <br />Required: \{\} <br /> |
+| `signingKeySecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br /> |
+| `hmacSecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  |  |
+| `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  |  |
+| `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />Currently only a single upstream provider is supported (validated at runtime). |  | MinItems: 1 <br />Required: \{\} <br /> |
+
+
 #### api.v1alpha1.EmbeddingResourceOverrides
 
 
@@ -1053,6 +1074,7 @@ _Appears in:_
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
 | `bearerToken` | ExternalAuthTypeBearerToken is the type for bearer token authentication<br />This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets<br /> |
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
+| `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 
 
 #### api.v1alpha1.GitSource
@@ -1274,10 +1296,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated] <br />Required: \{\} <br /> |
+| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 | `bearerToken` _[api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  |  |
+| `embeddedAuthServer` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  |  |
 
 
 #### api.v1alpha1.MCPExternalAuthConfigStatus
@@ -2009,6 +2032,29 @@ _Appears in:_
 | `outbound` _[api.v1alpha1.OutboundNetworkPermissions](#apiv1alpha1outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  |  |
 
 
+#### api.v1alpha1.OAuth2UpstreamConfig
+
+
+
+OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
+OAuth 2.0 providers require explicit endpoint configuration.
+
+
+
+_Appears in:_
+- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
+| `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
+| `userInfo` _[api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />Required for OAuth2 providers to resolve user identity. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
+| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  |  |
+| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  |  |
+| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  |  |
+
+
 #### api.v1alpha1.OIDCConfigRef
 
 
@@ -2029,6 +2075,28 @@ _Appears in:_
 | `kubernetes` _[api.v1alpha1.KubernetesOIDCConfig](#apiv1alpha1kubernetesoidcconfig)_ | Kubernetes configures OIDC for Kubernetes service account token validation<br />Only used when Type is "kubernetes" |  |  |
 | `configMap` _[api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)_ | ConfigMap references a ConfigMap containing OIDC configuration<br />Only used when Type is "configmap" |  |  |
 | `inline` _[api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  |  |
+
+
+#### api.v1alpha1.OIDCUpstreamConfig
+
+
+
+OIDCUpstreamConfig contains configuration for OIDC providers.
+OIDC providers support automatic endpoint discovery via the issuer URL.
+
+
+
+_Appears in:_
+- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL for automatic endpoint discovery.<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
+| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  |  |
+| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  |  |
+| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP.<br />If not specified, defaults to ["openid", "offline_access"]. |  |  |
+| `userInfoOverride` _[api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  |  |
 
 
 #### api.v1alpha1.OpenTelemetryConfig
@@ -2295,10 +2363,13 @@ SecretKeyRef is a reference to a key within a Secret
 
 _Appears in:_
 - [api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)
+- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
 - [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
+- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
+- [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
@@ -2462,6 +2533,24 @@ _Appears in:_
 | `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  |  |
 
 
+#### api.v1alpha1.TokenLifespanConfig
+
+
+
+TokenLifespanConfig holds configuration for token lifetimes.
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `accessTokenLifespan` _string_ | AccessTokenLifespan is the duration that access tokens are valid.<br />Format: Go duration string (e.g., "1h", "30m", "24h").<br />If empty, defaults to 1 hour. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br /> |
+| `refreshTokenLifespan` _string_ | RefreshTokenLifespan is the duration that refresh tokens are valid.<br />Format: Go duration string (e.g., "168h", "7d" as "168h").<br />If empty, defaults to 7 days (168h). |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br /> |
+| `authCodeLifespan` _string_ | AuthCodeLifespan is the duration that authorization codes are valid.<br />Format: Go duration string (e.g., "10m", "5m").<br />If empty, defaults to 10 minutes. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br /> |
+
+
 #### api.v1alpha1.ToolConfigRef
 
 
@@ -2497,6 +2586,87 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the redefined name of the tool |  |  |
 | `description` _string_ | Description is the redefined description of the tool |  |  |
+
+
+#### api.v1alpha1.UpstreamProviderConfig
+
+
+
+UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name uniquely identifies this upstream provider.<br />Used for routing decisions and session binding in multi-upstream scenarios. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `type` _[api.v1alpha1.UpstreamProviderType](#apiv1alpha1upstreamprovidertype)_ | Type specifies the provider type: "oidc" or "oauth2" |  | Enum: [oidc oauth2] <br />Required: \{\} <br /> |
+| `oidcConfig` _[api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)_ | OIDCConfig contains OIDC-specific configuration.<br />Required when Type is "oidc", must be nil when Type is "oauth2". |  |  |
+| `oauth2Config` _[api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)_ | OAuth2Config contains OAuth 2.0-specific configuration.<br />Required when Type is "oauth2", must be nil when Type is "oidc". |  |  |
+
+
+#### api.v1alpha1.UpstreamProviderType
+
+_Underlying type:_ _string_
+
+UpstreamProviderType identifies the type of upstream Identity Provider.
+
+
+
+_Appears in:_
+- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+
+| Field | Description |
+| --- | --- |
+| `oidc` | UpstreamProviderTypeOIDC is for OIDC providers with discovery support<br /> |
+| `oauth2` | UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints<br /> |
+
+
+#### api.v1alpha1.UserInfoConfig
+
+
+
+UserInfoConfig contains configuration for fetching user information from an upstream provider.
+This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
+like GitHub's /user API.
+
+
+
+_Appears in:_
+- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
+- [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpointUrl` _string_ | EndpointURL is the URL of the userinfo endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
+| `httpMethod` _string_ | HTTPMethod is the HTTP method to use for the userinfo request.<br />If not specified, defaults to GET. |  | Enum: [GET POST] <br /> |
+| `additionalHeaders` _object (keys:string, values:string)_ | AdditionalHeaders contains extra headers to include in the userinfo request.<br />Useful for providers that require specific headers (e.g., GitHub's Accept header). |  |  |
+| `fieldMapping` _[api.v1alpha1.UserInfoFieldMapping](#apiv1alpha1userinfofieldmapping)_ | FieldMapping contains custom field mapping configuration for non-standard providers.<br />If nil, standard OIDC field names are used ("sub", "name", "email"). |  |  |
+
+
+#### api.v1alpha1.UserInfoFieldMapping
+
+_Underlying type:_ _[api.v1alpha1.struct{SubjectFields []string "json:\"subjectFields,omitempty\""; NameFields []string "json:\"nameFields,omitempty\""; EmailFields []string "json:\"emailFields,omitempty\""}](#apiv1alpha1struct{subjectfields []string "json:\"subjectfields,omitempty\""; namefields []string "json:\"namefields,omitempty\""; emailfields []string "json:\"emailfields,omitempty\""})_
+
+UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
+This allows adapting non-standard provider responses to the canonical UserInfo structure.
+Each field supports an ordered list of claim names to try. The first non-empty value
+found will be used.
+
+Example for GitHub:
+
+	fieldMapping:
+	  subjectFields: ["id", "login"]
+	  nameFields: ["name", "login"]
+	  emailFields: ["email"]
+
+
+
+_Appears in:_
+- [api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)
+
 
 
 #### api.v1alpha1.ValidationStatus

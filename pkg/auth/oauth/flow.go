@@ -449,7 +449,7 @@ func (*Flow) writeErrorPage(w http.ResponseWriter, err error) {
 }
 
 // processToken processes the received token and extracts claims
-func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResult {
+func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult {
 	result := &TokenResult{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,

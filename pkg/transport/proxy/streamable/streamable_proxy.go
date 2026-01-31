@@ -153,6 +153,16 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 	return err
 }
 
+// IsRunning checks if the proxy is running.
+func (p *HTTPProxy) IsRunning(_ context.Context) (bool, error) {
+	select {
+	case <-p.shutdownCh:
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
 // GetMessageChannel returns the message channel for sending JSON-RPC to the container.
 func (p *HTTPProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return p.messageCh

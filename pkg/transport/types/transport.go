@@ -171,6 +171,11 @@ type Proxy interface {
 	// Stop stops the proxy.
 	Stop(ctx context.Context) error
 
+	// IsRunning checks if the proxy is currently running.
+	// This is used by HTTPTransport to detect when the proxy has stopped
+	// (e.g., due to health check failure) even if the transport itself hasn't been stopped.
+	IsRunning(ctx context.Context) (bool, error)
+
 	// GetMessageChannel returns the channel for messages to/from the destination.
 	GetMessageChannel() chan jsonrpc2.Message
 

@@ -231,6 +231,16 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 	return nil
 }
 
+// IsRunning checks if the proxy is running.
+func (p *HTTPSSEProxy) IsRunning(_ context.Context) (bool, error) {
+	select {
+	case <-p.shutdownCh:
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
 // GetMessageChannel returns the channel for messages to/from the destination.
 func (p *HTTPSSEProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return p.messageCh

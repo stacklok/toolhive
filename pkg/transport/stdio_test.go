@@ -54,6 +54,11 @@ func (m *MockHTTPProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	return args.Error(0)
 }
 
+func (m *MockHTTPProxy) IsRunning(ctx context.Context) (bool, error) {
+	args := m.Called(ctx)
+	return args.Bool(0), args.Error(1)
+}
+
 func TestSanitizeJSONString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

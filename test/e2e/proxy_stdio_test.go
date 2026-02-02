@@ -289,6 +289,7 @@ func startProxyStdioForMCP(config *e2e.TestConfig, workloadName string) (*exec.C
 		"proxy",
 		"stdio",
 		workloadName,
+		"--debug",
 	}
 
 	// Log the command for debugging

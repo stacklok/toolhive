@@ -324,7 +324,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	}
 
 	if len(groupNames) > 0 {
-		logger.Infof("Filtering workloads to groups: %v", groupNames)
+		logger.Debugf("Filtering workloads to groups: %v", groupNames)
 
 		filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 		if err != nil {
@@ -354,7 +354,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 			err := config.UpdateConfig(func(c *config.Config) {
 				for _, registeredClient := range c.Clients.RegisteredClients {
 					if registeredClient == string(clientToRegister.Name) {
-						logger.Infof("Client %s is already registered, skipping...", clientToRegister.Name)
+						logger.Debugf("Client %s is already registered, skipping...", clientToRegister.Name)
 						return
 					}
 				}
@@ -365,7 +365,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 			}
 
-			logger.Infof("Successfully registered client: %s\n", clientToRegister.Name)
+			logger.Debugf("Successfully registered client: %s\n", clientToRegister.Name)
 		}
 
 		err = c.clientManager.RegisterClients(clients, runningWorkloads)
@@ -464,7 +464,7 @@ func (c *ClientRoutes) removeClientGlobally(
 				if registeredClient == string(clientToRemove.Name) {
 					// Remove client from slice
 					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
+					logger.Debugf("Successfully unregistered client: %s\n", clientToRemove.Name)
 					return
 				}
 			}

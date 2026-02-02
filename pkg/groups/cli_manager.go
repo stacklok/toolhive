@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -50,7 +50,7 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 	writer, err := m.groupStore.CreateExclusive(ctx, name)
 	if err != nil {
 		// Check if the error is a conflict (group already exists)
-		if thverrors.Code(err) == http.StatusConflict {
+		if httperr.Code(err) == http.StatusConflict {
 			return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
 		}
 		return fmt.Errorf("failed to create group: %w", err)

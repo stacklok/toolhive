@@ -7,7 +7,7 @@ package errors
 import (
 	"net/http"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -37,7 +37,7 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 		}
 
 		// Extract HTTP status code from the error
-		code := errors.Code(err)
+		code := httperr.Code(err)
 
 		// For 5xx errors, log the full error but return a generic message
 		if code >= http.StatusInternalServerError {

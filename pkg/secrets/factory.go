@@ -18,7 +18,7 @@ import (
 	"github.com/adrg/xdg"
 	"golang.org/x/term"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets/keyring"
@@ -61,13 +61,13 @@ const (
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
-var ErrUnknownManagerType = thverrors.WithCode(
+var ErrUnknownManagerType = httperr.WithCode(
 	errors.New("unknown secret manager type"),
 	http.StatusBadRequest,
 )
 
 // ErrSecretsNotSetup is returned when secrets functionality is used before running setup.
-var ErrSecretsNotSetup = thverrors.WithCode(
+var ErrSecretsNotSetup = httperr.WithCode(
 	errors.New("secrets provider not configured. "+
 		"Please run 'thv secret setup' to configure a secrets provider first"),
 	http.StatusNotFound,
@@ -192,7 +192,7 @@ func validateOnePasswordProvider(ctx context.Context, provider Provider, result 
 }
 
 // ErrKeyringNotAvailable is returned when the OS keyring is not available for the encrypted provider.
-var ErrKeyringNotAvailable = thverrors.WithCode(
+var ErrKeyringNotAvailable = httperr.WithCode(
 	errors.New("OS keyring is not available. "+
 		"The encrypted provider requires an OS keyring to securely store passwords. "+
 		"Please use a different secrets provider (e.g., 1password) "+

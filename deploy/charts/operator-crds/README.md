@@ -51,10 +51,11 @@ However, placing CRDs in `templates/` means they would be deleted when the Helm 
 ## Values
 
 | Key | Type | Default | Description |
-|-----|-------------|------|---------|
+|-----|------|---------|-------------|
 | crds | object | `{"install":{"registry":true,"server":true,"virtualMcp":true},"keep":true}` | CRD installation configuration |
 | crds.install | object | `{"registry":true,"server":true,"virtualMcp":true}` | Feature flags for CRD groups |
 | crds.install.registry | bool | `true` | Install Registry CRDs (mcpregistries) |
 | crds.install.server | bool | `true` | Install Server CRDs (mcpservers, mcpremoteproxies, mcptoolconfigs, mcpgroups) |
 | crds.install.virtualMcp | bool | `true` | Install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions) |
 | crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
+

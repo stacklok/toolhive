@@ -47,6 +47,7 @@ type HTTPTransport struct {
 	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
+	prefixHandlers    map[string]http.Handler
 
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
@@ -99,6 +100,7 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
+	prefixHandlers map[string]http.Handler,
 	endpointPrefix string,
 	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
@@ -123,6 +125,7 @@ func NewHTTPTransport(
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
+		prefixHandlers:    prefixHandlers,
 		endpointPrefix:    endpointPrefix,
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
@@ -298,6 +301,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
+		t.prefixHandlers,
 		enableHealthCheck,
 		isRemote,
 		string(t.transportType),

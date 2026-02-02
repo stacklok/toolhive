@@ -71,7 +71,7 @@ var serveCmd = &cobra.Command{
 
 		// Optionally start MCP server if experimental flag is enabled
 		if enableMCPServer {
-			logger.Info("EXPERIMENTAL: Starting embedded MCP server")
+			fmt.Println("EXPERIMENTAL: Starting embedded MCP server")
 
 			// Create MCP server configuration
 			mcpConfig := &mcpserver.Config{

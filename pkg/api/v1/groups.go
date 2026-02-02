@@ -254,7 +254,7 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
 		}
 
-		logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
+		logger.Debugf("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
 	} else {
 		// Move workloads to default group
 		if err := s.workloadManager.MoveToGroup(ctx, workloadNames, groupName, groups.DefaultGroup); err != nil {
@@ -266,7 +266,7 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to update client configurations: %w", err)
 		}
 
-		logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
+		logger.Debugf("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
 	}
 
 	return nil

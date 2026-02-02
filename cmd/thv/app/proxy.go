@@ -195,7 +195,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Infof("Using host port: %d", port)
+	logger.Debugf("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
 	var tokenSource oauth2.TokenSource
@@ -214,10 +214,10 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 			if oauthConfig != nil {
 				introspectionURL = oauthConfig.IntrospectionEndpoint
-				logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+				logger.Debugf("Using OAuth config with introspection URL: %s", introspectionURL)
 			}
 		} else {
-			logger.Info("No OAuth configuration available, proceeding without outgoing authentication")
+			logger.Debug("No OAuth configuration available, proceeding without outgoing authentication")
 		}
 	}
 
@@ -250,7 +250,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the transparent proxy
-	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+	logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
@@ -260,6 +260,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyTargetURI,
 		nil,
 		authInfoHandler,
+		nil, // prefixHandlers - not configured for proxy command
 		false,
 		false, // isRemote
 		"",
@@ -272,12 +273,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
-	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
+	fmt.Printf("Transparent proxy started for server %s on port %d -> %s\n",
 		serverName, port, proxyTargetURI)
-	logger.Info("Press Ctrl+C to stop")
 
 	<-ctx.Done()
-	logger.Infof("Interrupt received, proxy is shutting down. Please wait for connections to close...")
+	fmt.Println("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
 	if err := proxy.CloseListener(); err != nil {
 		logger.Warnf("Error closing proxy listener: %v", err)
@@ -363,7 +363,7 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 	}
 
 	if authInfo != nil {
-		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
+		logger.Debugf("Detected authentication requirement from server: %s", authInfo.Realm)
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{

@@ -307,10 +307,10 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
    - JSON file or remote URL
    - Organization-specific servers
 
-3. **Registry API**: Self-hosted registry server
-   - Binary: `thv-registry-api`
-   - Storage: File or Kubernetes ConfigMap
-   - API endpoints for management
+3. **Registry API**: MCP Registry API endpoint
+   - Connect to any MCP Registry API-compliant server
+   - Stacklok provides [toolhive-registry-server](https://github.com/stacklok/toolhive-registry-server) for enterprise deployments
+   - Supports PostgreSQL, multiple registry types, enterprise authentication
 
 **Registry entry types:**
 - `servers` - Container-based MCP servers
@@ -322,7 +322,8 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 - Provider abstraction: `pkg/registry/provider.go`, `pkg/registry/factory.go`
 - Local provider: `pkg/registry/provider_local.go`
 - Remote provider: `pkg/registry/provider_remote.go`
-- API server: `cmd/thv-registry-api/`
+- API client: `pkg/registry/api/client.go`
+- API provider: `pkg/registry/provider_api.go`
 
 **Related concepts:** Image Metadata, Remote Server Metadata
 

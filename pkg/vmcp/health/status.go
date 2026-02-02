@@ -4,6 +4,7 @@
 package health
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -76,6 +77,47 @@ func (t *statusTracker) isRemoved(backendID string) bool {
 	return t.removedBackends[backendID]
 }
 
+// sanitizeError returns a sanitized error category string based on error type.
+// This prevents exposing sensitive error details (paths, URLs, credentials) in API responses.
+// Returns empty string if err is nil.
+func sanitizeError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	// Authentication/Authorization errors
+	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		return "authentication_failed"
+	}
+	if vmcp.IsAuthenticationError(err) {
+		return "authentication_failed"
+	}
+
+	// Timeout errors
+	if errors.Is(err, vmcp.ErrTimeout) {
+		return "timeout"
+	}
+	if vmcp.IsTimeoutError(err) {
+		return "timeout"
+	}
+
+	// Cancellation errors
+	if errors.Is(err, vmcp.ErrCancelled) {
+		return "cancelled"
+	}
+
+	// Connection/availability errors
+	if errors.Is(err, vmcp.ErrBackendUnavailable) {
+		return "backend_unavailable"
+	}
+	if vmcp.IsConnectionError(err) {
+		return "connection_failed"
+	}
+
+	// Generic fallback
+	return "health_check_failed"
+}
+
 // copyState creates an immutable copy of a backend health state.
 // Must be called with lock held.
 func (*statusTracker) copyState(state *backendHealthState) *State {
@@ -83,6 +125,7 @@ func (*statusTracker) copyState(state *backendHealthState) *State {
 		Status:              state.status,
 		ConsecutiveFailures: state.consecutiveFailures,
 		LastCheckTime:       state.lastCheckTime,
+		LastErrorCategory:   sanitizeError(state.lastError),
 		LastError:           state.lastError,
 		LastTransitionTime:  state.lastTransitionTime,
 	}
@@ -415,8 +458,16 @@ type State struct {
 	// LastCheckTime is when the last health check was performed.
 	LastCheckTime time.Time
 
-	// LastError is the last error encountered (if any).
-	LastError error
+	// LastErrorCategory is a sanitized error category for API responses.
+	// Values: "authentication_failed", "timeout", "connection_failed", "backend_unavailable", etc.
+	// This field is safe to serialize and expose in API responses.
+	LastErrorCategory string
+
+	// LastError is the raw error encountered (if any).
+	// DEPRECATED: This field may contain sensitive information (paths, URLs, credentials)
+	// and should not be serialized to API responses. Use LastErrorCategory instead.
+	// The json:"-" tag prevents this field from being included in JSON marshaling.
+	LastError error `json:"-"`
 
 	// LastTransitionTime is when the status last changed.
 	LastTransitionTime time.Time

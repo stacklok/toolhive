@@ -56,7 +56,7 @@ func TestCircuitBreaker_OpenToHalfOpen(t *testing.T) {
 	assert.False(t, cb.CanAttempt())
 
 	// Wait for timeout
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 
 	// Next CanAttempt should transition to half-open
 	assert.True(t, cb.CanAttempt())
@@ -78,7 +78,7 @@ func TestCircuitBreaker_HalfOpenToClosed(t *testing.T) {
 	}
 
 	// Wait and transition to half-open
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 	assert.True(t, cb.CanAttempt())
 	assert.Equal(t, CircuitHalfOpen, cb.GetState())
 
@@ -101,7 +101,7 @@ func TestCircuitBreaker_HalfOpenToOpen(t *testing.T) {
 	}
 
 	// Wait and transition to half-open
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 	assert.True(t, cb.CanAttempt())
 	assert.Equal(t, CircuitHalfOpen, cb.GetState())
 
@@ -233,7 +233,7 @@ func TestCircuitBreaker_HalfOpenSingleTest(t *testing.T) {
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
 	// Wait for timeout
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 
 	// First CanAttempt should succeed and transition to half-open
 	assert.True(t, cb.CanAttempt())
@@ -277,7 +277,7 @@ func TestCircuitBreaker_MultipleOpenCloseTransitions(t *testing.T) {
 	cb.RecordFailure()
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 	assert.True(t, cb.CanAttempt())
 	cb.RecordSuccess()
 	assert.Equal(t, CircuitClosed, cb.GetState())
@@ -287,7 +287,7 @@ func TestCircuitBreaker_MultipleOpenCloseTransitions(t *testing.T) {
 	cb.RecordFailure()
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
-	time.Sleep(timeout + 10*time.Millisecond)
+	time.Sleep(timeout + 50*time.Millisecond)
 	assert.True(t, cb.CanAttempt())
 	cb.RecordSuccess()
 	assert.Equal(t, CircuitClosed, cb.GetState())

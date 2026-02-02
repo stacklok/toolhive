@@ -401,8 +401,25 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 	// Check circuit breaker state before attempting health check
 	if m.circuitBreakerConfig != nil && m.circuitBreakerConfig.Enabled {
 		if !m.statusTracker.CanAttemptHealthCheck(backend.ID) {
-			logger.Debugf("Circuit breaker OPEN for backend %s, skipping health check", backend.Name)
+			// CanAttemptHealthCheck returns false in two cases:
+			// 1. Circuit is OPEN - completely blocked
+			// 2. Circuit is HALF-OPEN but a test is already in progress
+			cbState, _ := m.statusTracker.GetCircuitBreakerState(backend.ID)
+			switch cbState {
+			case CircuitOpen:
+				logger.Debugf("Circuit breaker OPEN for backend %s, skipping health check", backend.Name)
+			case CircuitHalfOpen:
+				logger.Debugf("Circuit breaker HALF-OPEN with test in progress for backend %s, skipping health check", backend.Name)
+			case CircuitClosed:
+				// This should not happen - circuit is closed but CanAttemptHealthCheck returned false
+				logger.Debugf("Circuit breaker state inconsistency for backend %s, skipping health check", backend.Name)
+			}
 			return
+		}
+
+		// If we reach here with a half-open circuit, we're attempting the recovery test
+		if cbState, exists := m.statusTracker.GetCircuitBreakerState(backend.ID); exists && cbState == CircuitHalfOpen {
+			logger.Debugf("Circuit breaker testing recovery for backend %s", backend.Name)
 		}
 	}
 

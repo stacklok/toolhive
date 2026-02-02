@@ -4,7 +4,9 @@
 package health
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -621,4 +623,101 @@ func TestStatusTracker_CircuitBreakerHalfOpen(t *testing.T) {
 
 	// Only one attempt allowed in half-open
 	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+}
+
+func TestState_JSONSerialization(t *testing.T) {
+	t.Parallel()
+
+	// Test that LastError is excluded from JSON and LastErrorCategory is included
+	tracker := newStatusTracker(3)
+
+	// Record a failure with a timeout error that contains sensitive information in the wrapped error
+	sensitiveErr := errors.New("timeout connecting to https://internal-server.example.com:8080/api/health?token=secret123")
+	wrappedErr := fmt.Errorf("%w: %v", vmcp.ErrTimeout, sensitiveErr)
+	tracker.RecordFailure("backend-1", "Test Backend", vmcp.BackendUnhealthy, wrappedErr)
+
+	// Get the state
+	state, exists := tracker.GetState("backend-1")
+	require.True(t, exists)
+	require.NotNil(t, state)
+
+	// Verify internal state has the error
+	assert.NotNil(t, state.LastError)
+	assert.Contains(t, state.LastError.Error(), "secret123", "raw error should contain sensitive data")
+
+	// Verify LastErrorCategory is populated with sanitized value
+	assert.Equal(t, "timeout", state.LastErrorCategory)
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	jsonStr := string(jsonData)
+
+	// Verify sensitive data is NOT in JSON
+	assert.NotContains(t, jsonStr, "secret123", "JSON should not contain sensitive token")
+	assert.NotContains(t, jsonStr, "internal-server.example.com", "JSON should not contain internal hostname")
+	assert.NotContains(t, jsonStr, `"LastError":`, "JSON should not include LastError field")
+
+	// Verify sanitized category IS in JSON
+	assert.Contains(t, jsonStr, "LastErrorCategory", "JSON should include LastErrorCategory field")
+	assert.Contains(t, jsonStr, "timeout", "JSON should contain sanitized error category")
+
+	// Unmarshal and verify structure
+	var unmarshaled State
+	err = json.Unmarshal(jsonData, &unmarshaled)
+	require.NoError(t, err)
+
+	// After unmarshaling, LastError should be nil (not serialized)
+	assert.Nil(t, unmarshaled.LastError, "LastError should not be present after JSON roundtrip")
+	assert.Equal(t, "timeout", unmarshaled.LastErrorCategory, "LastErrorCategory should be preserved")
+}
+
+func TestSanitizeError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: "",
+		},
+		{
+			name:     "authentication error",
+			err:      vmcp.ErrAuthenticationFailed,
+			expected: "authentication_failed",
+		},
+		{
+			name:     "timeout error",
+			err:      vmcp.ErrTimeout,
+			expected: "timeout",
+		},
+		{
+			name:     "cancellation error",
+			err:      vmcp.ErrCancelled,
+			expected: "cancelled",
+		},
+		{
+			name:     "backend unavailable",
+			err:      vmcp.ErrBackendUnavailable,
+			expected: "backend_unavailable",
+		},
+		{
+			name:     "generic error",
+			err:      errors.New("some random error with sensitive data"),
+			expected: "health_check_failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := sanitizeError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

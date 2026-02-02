@@ -880,16 +880,14 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 
 	monitor.UpdateBackends(reducedBackends)
 
-	// Give monitor time to stop monitoring backend-1
-	time.Sleep(100 * time.Millisecond)
+	// Wait for backend-1 to be removed from monitoring
+	require.Eventually(t, func() bool {
+		_, err := monitor.GetBackendState("backend-1")
+		return err != nil // Error means state was removed
+	}, 500*time.Millisecond, 50*time.Millisecond, "backend-1 state should be removed")
 
 	// Backend-2 should still be healthy
 	assert.True(t, monitor.IsBackendHealthy("backend-2"))
-
-	// Backend-1's state should be removed (cleaned up when removed from monitoring)
-	removedState, removedErr := monitor.GetBackendState("backend-1")
-	assert.Error(t, removedErr, "backend-1 state should be removed")
-	assert.Nil(t, removedState)
 
 	// Verify summary only shows backend-2
 	summary = monitor.GetHealthSummary()
@@ -940,18 +938,16 @@ func TestMonitor_CircuitBreakerDisabled(t *testing.T) {
 	mockClient.EXPECT().
 		ListCapabilities(gomock.Any(), gomock.Any()).
 		Return(nil, errors.New("connection failed")).
-		Times(10)
+		MinTimes(6) // At least 6 failures to satisfy ConsecutiveFailures > 5
 
 	err = monitor.Start(ctx)
 	require.NoError(t, err)
 
 	// Wait for multiple health checks
-	time.Sleep(1 * time.Second)
-
-	// Health checks should continue even after many failures (no circuit breaker)
-	state, err := monitor.GetBackendState("backend-1")
-	require.NoError(t, err)
-	assert.Greater(t, state.ConsecutiveFailures, 5, "should have recorded multiple failures")
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		return err == nil && state.ConsecutiveFailures > 5
+	}, 2*time.Second, 50*time.Millisecond, "should record multiple failures")
 
 	// Clean up
 	err = monitor.Stop()
@@ -1012,11 +1008,10 @@ func TestMonitor_CircuitBreakerEnabled(t *testing.T) {
 	// Wait for initial check
 	monitor.WaitForInitialHealthChecks()
 
-	// Wait for failures to accumulate
-	time.Sleep(400 * time.Millisecond)
-
-	// Circuit should be open now
-	assert.True(t, monitor.statusTracker.IsCircuitOpen("backend-1"))
+	// Wait for failures to accumulate and circuit to open
+	require.Eventually(t, func() bool {
+		return monitor.statusTracker.IsCircuitOpen("backend-1")
+	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// No more health checks should be attempted while circuit is open
 	// (mockClient won't expect any more Initialize calls)
@@ -1086,20 +1081,16 @@ func TestMonitor_CircuitBreakerRecovery(t *testing.T) {
 
 	monitor.WaitForInitialHealthChecks()
 
-	// Wait for failures to accumulate and open circuit
-	time.Sleep(300 * time.Millisecond)
+	// Wait for failures to accumulate and circuit to open
+	require.Eventually(t, func() bool {
+		return monitor.statusTracker.IsCircuitOpen("backend-1")
+	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
-	// Circuit should be open
-	assert.True(t, monitor.statusTracker.IsCircuitOpen("backend-1"))
-
-	// Wait for circuit breaker timeout plus health check interval
-	time.Sleep(500 * time.Millisecond)
-
-	// Circuit should eventually close after successful recovery
+	// Circuit should eventually close after successful recovery (with circuit breaker timeout)
 	require.Eventually(t, func() bool {
 		cbState, exists := monitor.statusTracker.GetCircuitBreakerState("backend-1")
 		return exists && cbState == CircuitClosed
-	}, 1*time.Second, 50*time.Millisecond, "circuit should close after successful recovery")
+	}, 2*time.Second, 50*time.Millisecond, "circuit should close after successful recovery")
 
 	// Clean up
 	err = monitor.Stop()
@@ -1157,8 +1148,10 @@ func TestMonitor_CircuitBreakerStatusReporting(t *testing.T) {
 
 	monitor.WaitForInitialHealthChecks()
 
-	// Wait for failures
-	time.Sleep(300 * time.Millisecond)
+	// Wait for failures and circuit to open
+	require.Eventually(t, func() bool {
+		return monitor.statusTracker.IsCircuitOpen("backend-1")
+	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// Build status and verify circuit breaker state is included
 	status := monitor.BuildStatus()

@@ -27,7 +27,6 @@ import (
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 type EmbeddedAuthServer struct {
 	server    authserver.Server
-	storage   storage.Storage
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -91,8 +90,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	}
 
 	return &EmbeddedAuthServer{
-		server:  server,
-		storage: stor,
+		server: server,
 	}, nil
 }
 

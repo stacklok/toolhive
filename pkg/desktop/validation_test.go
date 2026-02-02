@@ -529,6 +529,7 @@ func TestReadMarkerFileFromPathWithReadError(t *testing.T) {
 	assert.Nil(t, marker)
 }
 
+//nolint:paralleltest // subtests modify HOME env var
 func TestMarkerFileExists(t *testing.T) {
 	t.Run("returns true when marker exists", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
@@ -565,6 +566,7 @@ func TestMarkerFileExists(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // subtests modify HOME env var
 func TestReadMarkerFile(t *testing.T) {
 	t.Run("reads marker from home directory", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
@@ -624,6 +626,7 @@ func TestGetMarkerFilePath(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // subtests modify HOME env var
 func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 	t.Run("returns error on conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
@@ -663,6 +666,7 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // subtests modify HOME env var
 func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 	t.Run("copy method returns no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()

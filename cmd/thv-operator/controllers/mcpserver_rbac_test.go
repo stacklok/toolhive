@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -379,6 +380,55 @@ func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 		Namespace: mcpServer.Namespace,
 	}, mcpServerSA)
 	assert.Error(t, err, "MCP server ServiceAccount should not be created when custom ServiceAccount is provided")
+}
+
+func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+	tc := setupTest("test-server-pull-secrets", "default")
+
+	// Create PodTemplateSpec with ImagePullSecrets
+	podTemplate := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "my-secret"},
+			},
+		},
+	}
+	podTemplateBytes, err := json.Marshal(podTemplate)
+	require.NoError(t, err)
+
+	tc.mcpServer.Spec.PodTemplateSpec = &runtime.RawExtension{
+		Raw: podTemplateBytes,
+	}
+
+	err = tc.ensureRBACResources()
+	require.NoError(t, err)
+
+	tc.assertServiceAccountExists(t)
+
+	// Verify ImagePullSecrets are present on the Proxy Runner ServiceAccount
+	sa := &corev1.ServiceAccount{}
+	// Re-get the client from fake client to ensure we have the created object
+	err = tc.client.Get(context.TODO(), types.NamespacedName{
+		Name:      tc.proxyRunnerNameForRBAC,
+		Namespace: tc.mcpServer.Namespace,
+	}, sa)
+	require.NoError(t, err)
+
+	expectedSecrets := []corev1.LocalObjectReference{
+		{Name: "my-secret"},
+	}
+	assert.Equal(t, expectedSecrets, sa.ImagePullSecrets)
+
+	// Verify ImagePullSecrets are present on the MCP Server ServiceAccount (since we didn't specify a custom one)
+	mcpServerSAName := mcpServerServiceAccountName(tc.mcpServer.Name)
+	mcpServerSA := &corev1.ServiceAccount{}
+	err = tc.client.Get(context.TODO(), types.NamespacedName{
+		Name:      mcpServerSAName,
+		Namespace: tc.mcpServer.Namespace,
+	}, mcpServerSA)
+	require.NoError(t, err)
+	assert.Equal(t, expectedSecrets, mcpServerSA.ImagePullSecrets)
 }
 
 func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {

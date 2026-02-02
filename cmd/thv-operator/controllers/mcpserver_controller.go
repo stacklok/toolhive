@@ -847,12 +847,26 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
+	// Extract ImagePullSecrets from PodTemplateSpec if present
+	var imagePullSecrets []corev1.LocalObjectReference
+	if mcpServer.Spec.PodTemplateSpec != nil {
+		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to parse PodTemplateSpec for RBAC image pull secrets")
+		} else {
+			if spec := builder.Build(); spec != nil {
+				imagePullSecrets = spec.Spec.ImagePullSecrets
+			}
+		}
+	}
+
 	// Ensure RBAC resources for proxy runner
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: mcpServer.Namespace,
-		Rules:     defaultRBACRules,
-		Owner:     mcpServer,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        mcpServer.Namespace,
+		Rules:            defaultRBACRules,
+		Owner:            mcpServer,
+		ImagePullSecrets: imagePullSecrets,
 	}); err != nil {
 		return err
 	}
@@ -869,6 +883,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 			Name:      mcpServerSAName,
 			Namespace: mcpServer.Namespace,
 		},
+		ImagePullSecrets: imagePullSecrets,
 	}
 	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, mcpServerSA, mcpServer)
 	return err
@@ -892,6 +907,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
+	var imagePullSecrets []corev1.LocalObjectReference
 	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
@@ -911,6 +927,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			Build()
 		// Add pod template patch if we have one
 		if finalPodTemplateSpec != nil {
+			imagePullSecrets = finalPodTemplateSpec.Spec.ImagePullSecrets
 			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
 			if err != nil {
 				ctxLogger := log.FromContext(ctx)
@@ -1151,6 +1168,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
+					ImagePullSecrets:   imagePullSecrets,
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",

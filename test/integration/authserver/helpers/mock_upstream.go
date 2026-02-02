@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -108,13 +109,24 @@ func (*MockUpstreamIDP) defaultAuthorizeHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Build redirect URL with authorization code
+	// Normalize and validate redirect URL to prevent open redirects.
+	// Replace backslashes with forward slashes before parsing the URL,
+	// since some browsers may treat them as path separators.
+	redirectURI = strings.ReplaceAll(redirectURI, "\\", "/")
+
 	redirectURL, err := url.Parse(redirectURI)
 	if err != nil {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
 
+	// Only allow local redirects (no external host).
+	if redirectURL.Hostname() != "" {
+		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+
+	// Build redirect URL with authorization code
 	q := redirectURL.Query()
 	q.Set("code", "mock-auth-code-12345")
 	if state != "" {

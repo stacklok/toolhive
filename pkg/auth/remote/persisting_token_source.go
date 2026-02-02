@@ -18,6 +18,10 @@ import (
 // since the access token can be regenerated from it.
 type TokenPersister func(refreshToken string, expiry time.Time) error
 
+// ClientCredentialsPersister is called when DCR client credentials need to be persisted.
+// This is used to store client_id and client_secret obtained during Dynamic Client Registration.
+type ClientCredentialsPersister func(clientID, clientSecret string) error
+
 // PersistingTokenSource wraps an oauth2.TokenSource and persists tokens
 // whenever they are refreshed. This enables session restoration across
 // workload restarts without requiring a new browser-based OAuth flow.

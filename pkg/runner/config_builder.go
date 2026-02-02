@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -1073,14 +1074,6 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 	}
 }
 
-// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
-func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.EnvFileDir = dirPath
-		return nil
-	}
-}
-
 // WithHeaderForward adds plaintext header forward entries for remote MCP servers.
 // The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
 // Multiple calls are additive; later values for the same header name overwrite earlier ones.
@@ -1121,4 +1114,13 @@ func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
 		b.config.HeaderForward = &HeaderForwardConfig{}
 	}
 	return b.config.HeaderForward
+}
+
+// WithEmbeddedAuthServerConfig sets the embedded auth server configuration.
+// The config is a RunConfig with file paths and env var names for secrets.
+func WithEmbeddedAuthServerConfig(config *authserver.RunConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EmbeddedAuthServerConfig = config
+		return nil
+	}
 }

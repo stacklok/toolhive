@@ -105,6 +105,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		JWKSURI:                issuer + "/.well-known/jwks.json",
 		RegistrationEndpoint:   issuer + "/oauth/register",
 		ResponseTypesSupported: []string{sharedobauth.ResponseTypeCode},
+		ScopesSupported:        h.config.ScopesSupported,
 
 		// OPTIONAL
 		GrantTypesSupported: []string{

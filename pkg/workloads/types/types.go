@@ -121,6 +121,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 func GetEffectiveProxyMode(transportType types.TransportType, proxyMode string) string {
 	// If the underlying transport is stdio, return the proxy mode (could be empty)
 	if transportType == types.TransportTypeStdio {
+		if proxyMode == "" {
+			return types.ProxyModeStreamableHTTP.String()
+		}
 		return proxyMode
 	}
 

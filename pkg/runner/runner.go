@@ -619,6 +619,37 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 			logger.Debugf("Stored OAuth refresh token in secret manager as %s", secretName)
 			return nil
 		})
+
+		// Set up client credentials persister for DCR (Dynamic Client Registration)
+		authHandler.SetClientCredentialsPersister(func(clientID, clientSecret string) error {
+			// Store client ID directly (it's public information)
+			r.Config.RemoteAuthConfig.CachedClientID = clientID
+
+			// Only store client secret if it's non-empty (PKCE flows may not have one)
+			if clientSecret != "" {
+				clientSecretSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
+					r.Config.Name,
+					"OAUTH_CLIENT_SECRET_",
+					secretManager,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to generate client secret secret name: %w", err)
+				}
+
+				if err := authsecrets.StoreSecretInManagerWithProvider(ctx, clientSecretSecretName, clientSecret, secretManager); err != nil {
+					return fmt.Errorf("failed to store client secret: %w", err)
+				}
+				r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
+			}
+
+			// Save the updated config to persist the credentials
+			if err := r.Config.SaveState(ctx); err != nil {
+				return fmt.Errorf("failed to save config with client credentials: %w", err)
+			}
+
+			logger.Debugf("Stored DCR client credentials (client_id: %s)", clientID)
+			return nil
+		})
 	}
 
 	// Perform authentication

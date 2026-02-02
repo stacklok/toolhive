@@ -188,6 +188,14 @@ ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol
   - Covers flag parsing, business logic execution, and output formatting in one test
 - **Operator tests**: Chainsaw tests in `test/e2e/chainsaw/operator/`
 
+### Testing Practices
+
+- When generating tests for code which touches the state files on disk, ensure
+  that they write state into isolated temporary directories to prevent clashes
+  between different tests.
+- Also take care of tests which set env vars. Try and write the tests in a way
+  that the tests are isolated from other tests which may set the same env vars.
+
 ### CLI Testing Philosophy
 
 **CLI commands should be tested primarily with E2E tests, not unit tests.**

@@ -237,6 +237,23 @@ type Config struct {
 	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
 	// This is used to handle path-based ingress routing scenarios.
 	EndpointPrefix string
+
+	// PrefixHandlers is a map of path prefixes to HTTP handlers.
+	// These handlers are mounted on the transport's HTTP server before
+	// the catch-all proxy handler. Go's ServeMux longest-match routing
+	// ensures more specific paths take precedence.
+	//
+	// Note: When integrating the auth server, the Handler() method returns
+	// a single combined handler that internally routes all OAuth/OIDC endpoints.
+	// Mount it at specific paths or use http.StripPrefix as needed.
+	//
+	// Example:
+	//
+	//	{
+	//	  "/oauth/": authServerHandler,
+	//	  "/.well-known/oauth-authorization-server": authServerHandler,
+	//	}
+	PrefixHandlers map[string]http.Handler
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

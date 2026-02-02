@@ -33,10 +33,10 @@ func TestGetEffectiveProxyMode(t *testing.T) {
 			expectedProxyMode: "streamable-http",
 		},
 		{
-			name:              "stdio transport with empty proxy mode should return empty",
+			name:              "stdio transport with empty proxy mode should return streamable-http",
 			transportType:     types.TransportTypeStdio,
 			proxyMode:         "",
-			expectedProxyMode: "",
+			expectedProxyMode: "streamable-http",
 		},
 		{
 			name:              "sse transport should return sse",

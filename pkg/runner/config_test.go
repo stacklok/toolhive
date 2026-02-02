@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -1971,4 +1972,291 @@ func TestWithExistingPort(t *testing.T) {
 			assert.Equal(t, tc.expected, builder.config.existingPort, "existingPort should be set correctly")
 		})
 	}
+}
+
+// TestWithEmbeddedAuthServerConfig tests the WithEmbeddedAuthServerConfig builder option
+func TestWithEmbeddedAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		authConfig := &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "https://auth.example.com",
+			SigningKeyConfig: &authserver.SigningKeyRunConfig{
+				KeyDir:         "/etc/keys",
+				SigningKeyFile: "key-0.pem",
+			},
+			HMACSecretFiles: []string{"/etc/hmac/hmac-0"},
+			TokenLifespans: &authserver.TokenLifespanRunConfig{
+				AccessTokenLifespan:  "1h",
+				RefreshTokenLifespan: "168h",
+				AuthCodeLifespan:     "10m",
+			},
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "okta",
+					Type: authserver.UpstreamProviderTypeOIDC,
+					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+						IssuerURL:          "https://okta.example.com",
+						ClientID:           "client-id",
+						ClientSecretEnvVar: "UPSTREAM_CLIENT_SECRET",
+						Scopes:             []string{"openid", "profile"},
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://api.example.com"},
+		}
+
+		builder := &runConfigBuilder{
+			config: &RunConfig{},
+		}
+
+		option := WithEmbeddedAuthServerConfig(authConfig)
+		err := option(builder)
+
+		assert.NoError(t, err, "WithEmbeddedAuthServerConfig should not return an error")
+		assert.Equal(t, authConfig, builder.config.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be set correctly")
+	})
+
+	t.Run("sets nil embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		builder := &runConfigBuilder{
+			config: &RunConfig{},
+		}
+
+		option := WithEmbeddedAuthServerConfig(nil)
+		err := option(builder)
+
+		assert.NoError(t, err, "WithEmbeddedAuthServerConfig should not return an error for nil config")
+		assert.Nil(t, builder.config.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be nil")
+	})
+}
+
+// TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer tests serialization of EmbeddedAuthServerConfig
+func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("serializes and deserializes with embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "test-server",
+			Image:         "test-image:latest",
+			Transport:     types.TransportTypeSSE,
+			Port:          60000,
+			TargetPort:    60001,
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "https://auth.example.com",
+				SigningKeyConfig: &authserver.SigningKeyRunConfig{
+					KeyDir:           "/etc/toolhive/authserver/keys",
+					SigningKeyFile:   "key-0.pem",
+					FallbackKeyFiles: []string{"key-1.pem", "key-2.pem"},
+				},
+				HMACSecretFiles: []string{
+					"/etc/toolhive/authserver/hmac/hmac-0",
+					"/etc/toolhive/authserver/hmac/hmac-1",
+				},
+				TokenLifespans: &authserver.TokenLifespanRunConfig{
+					AccessTokenLifespan:  "30m",
+					RefreshTokenLifespan: "168h",
+					AuthCodeLifespan:     "5m",
+				},
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name: "github",
+						Type: authserver.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							ClientSecretEnvVar:    "GITHUB_CLIENT_SECRET",
+							RedirectURI:           "https://auth.example.com/oauth/callback",
+							Scopes:                []string{"read:user", "user:email"},
+							UserInfo: &authserver.UserInfoRunConfig{
+								EndpointURL: "https://api.github.com/user",
+								HTTPMethod:  "GET",
+								AdditionalHeaders: map[string]string{
+									"Accept": "application/vnd.github.v3+json",
+								},
+								FieldMapping: &authserver.UserInfoFieldMappingRunConfig{
+									SubjectFields: []string{"id", "login"},
+									NameFields:    []string{"name", "login"},
+									EmailFields:   []string{"email"},
+								},
+							},
+						},
+					},
+				},
+				ScopesSupported:  []string{"openid", "profile", "email"},
+				AllowedAudiences: []string{"https://api.example.com", "https://mcp.example.com"},
+			},
+		}
+
+		// Write the config to a buffer
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		// Read the config from the buffer
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		// Verify top-level fields
+		assert.Equal(t, originalConfig.Name, readConfig.Name, "Name should match")
+		assert.Equal(t, originalConfig.Image, readConfig.Image, "Image should match")
+		assert.Equal(t, originalConfig.Transport, readConfig.Transport, "Transport should match")
+
+		// Verify embedded auth server config
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		authConfig := readConfig.EmbeddedAuthServerConfig
+
+		assert.Equal(t, authserver.CurrentSchemaVersion, authConfig.SchemaVersion, "Schema version should match")
+		assert.Equal(t, "https://auth.example.com", authConfig.Issuer, "Issuer should match")
+
+		// Verify signing key config
+		require.NotNil(t, authConfig.SigningKeyConfig, "SigningKeyConfig should not be nil")
+		assert.Equal(t, "/etc/toolhive/authserver/keys", authConfig.SigningKeyConfig.KeyDir, "KeyDir should match")
+		assert.Equal(t, "key-0.pem", authConfig.SigningKeyConfig.SigningKeyFile, "SigningKeyFile should match")
+		assert.Equal(t, []string{"key-1.pem", "key-2.pem"}, authConfig.SigningKeyConfig.FallbackKeyFiles, "FallbackKeyFiles should match")
+
+		// Verify HMAC secret files
+		assert.Equal(t, []string{
+			"/etc/toolhive/authserver/hmac/hmac-0",
+			"/etc/toolhive/authserver/hmac/hmac-1",
+		}, authConfig.HMACSecretFiles, "HMACSecretFiles should match")
+
+		// Verify token lifespans
+		require.NotNil(t, authConfig.TokenLifespans, "TokenLifespans should not be nil")
+		assert.Equal(t, "30m", authConfig.TokenLifespans.AccessTokenLifespan, "AccessTokenLifespan should match")
+		assert.Equal(t, "168h", authConfig.TokenLifespans.RefreshTokenLifespan, "RefreshTokenLifespan should match")
+		assert.Equal(t, "5m", authConfig.TokenLifespans.AuthCodeLifespan, "AuthCodeLifespan should match")
+
+		// Verify upstreams
+		require.Len(t, authConfig.Upstreams, 1, "Should have one upstream")
+		upstream := authConfig.Upstreams[0]
+		assert.Equal(t, "github", upstream.Name, "Upstream name should match")
+		assert.Equal(t, authserver.UpstreamProviderTypeOAuth2, upstream.Type, "Upstream type should match")
+
+		require.NotNil(t, upstream.OAuth2Config, "OAuth2Config should not be nil")
+		assert.Equal(t, "https://github.com/login/oauth/authorize", upstream.OAuth2Config.AuthorizationEndpoint)
+		assert.Equal(t, "github-client-id", upstream.OAuth2Config.ClientID)
+		assert.Equal(t, "GITHUB_CLIENT_SECRET", upstream.OAuth2Config.ClientSecretEnvVar)
+
+		require.NotNil(t, upstream.OAuth2Config.UserInfo, "UserInfo should not be nil")
+		assert.Equal(t, "https://api.github.com/user", upstream.OAuth2Config.UserInfo.EndpointURL)
+		assert.Equal(t, "GET", upstream.OAuth2Config.UserInfo.HTTPMethod)
+		assert.Equal(t, map[string]string{"Accept": "application/vnd.github.v3+json"}, upstream.OAuth2Config.UserInfo.AdditionalHeaders)
+
+		require.NotNil(t, upstream.OAuth2Config.UserInfo.FieldMapping, "FieldMapping should not be nil")
+		assert.Equal(t, []string{"id", "login"}, upstream.OAuth2Config.UserInfo.FieldMapping.SubjectFields)
+
+		// Verify scopes and audiences
+		assert.Equal(t, []string{"openid", "profile", "email"}, authConfig.ScopesSupported, "ScopesSupported should match")
+		assert.Equal(t, []string{"https://api.example.com", "https://mcp.example.com"}, authConfig.AllowedAudiences, "AllowedAudiences should match")
+	})
+
+	t.Run("serializes and deserializes with OIDC upstream", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "oidc-server",
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "https://auth.example.com",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name: "okta",
+						Type: authserver.UpstreamProviderTypeOIDC,
+						OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+							IssuerURL:        "https://okta.example.com",
+							ClientID:         "okta-client-id",
+							ClientSecretFile: "/etc/secrets/client-secret",
+							RedirectURI:      "https://auth.example.com/oauth/callback",
+							Scopes:           []string{"openid", "profile", "email"},
+							UserInfoOverride: &authserver.UserInfoRunConfig{
+								EndpointURL: "https://okta.example.com/oauth2/v1/userinfo",
+								HTTPMethod:  "GET",
+							},
+						},
+					},
+				},
+				AllowedAudiences: []string{"https://api.example.com"},
+			},
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		require.Len(t, readConfig.EmbeddedAuthServerConfig.Upstreams, 1, "Should have one upstream")
+
+		upstream := readConfig.EmbeddedAuthServerConfig.Upstreams[0]
+		assert.Equal(t, "okta", upstream.Name)
+		assert.Equal(t, authserver.UpstreamProviderTypeOIDC, upstream.Type)
+		require.NotNil(t, upstream.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, "https://okta.example.com", upstream.OIDCConfig.IssuerURL)
+		assert.Equal(t, "/etc/secrets/client-secret", upstream.OIDCConfig.ClientSecretFile)
+		require.NotNil(t, upstream.OIDCConfig.UserInfoOverride, "UserInfoOverride should not be nil")
+	})
+
+	t.Run("serializes and deserializes with nil embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion:            CurrentSchemaVersion,
+			Name:                     "no-auth-server",
+			EmbeddedAuthServerConfig: nil,
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be nil")
+	})
+
+	t.Run("serializes and deserializes minimal embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		// Minimal config with just required fields
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "minimal-auth-server",
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion:    authserver.CurrentSchemaVersion,
+				Issuer:           "https://auth.example.com",
+				AllowedAudiences: []string{"https://api.example.com"},
+			},
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		assert.Equal(t, "https://auth.example.com", readConfig.EmbeddedAuthServerConfig.Issuer)
+		assert.Equal(t, []string{"https://api.example.com"}, readConfig.EmbeddedAuthServerConfig.AllowedAudiences)
+
+		// Optional fields should be nil/empty
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.SigningKeyConfig)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.HMACSecretFiles)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.TokenLifespans)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.Upstreams)
+	})
 }

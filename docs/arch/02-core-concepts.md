@@ -309,7 +309,7 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 
 3. **Registry API**: MCP Registry API endpoint
    - Connect to any MCP Registry API-compliant server
-   - Stacklok provides [toolhive-registry-server](https://github.com/stacklok/toolhive-registry-server) for enterprise deployments
+   - [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) available for enterprise deployments
    - Supports PostgreSQL, multiple registry types, enterprise authentication
 
 **Registry entry types:**

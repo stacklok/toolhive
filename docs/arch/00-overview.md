@@ -110,9 +110,9 @@ A specialized binary used by the Kubernetes operator. Located in `cmd/thv-proxyr
 Deployment (proxy-runner) -> StatefulSet (MCP server)
 ```
 
-### 4. Registry Server (External Project)
+### 4. Registry Server (thv-registry-api)
 
-For enterprise registry deployments, Stacklok maintains [toolhive-registry-server](https://github.com/stacklok/toolhive-registry-server) as a standalone project implementing the MCP Registry API.
+For enterprise registry deployments, [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) implements the MCP Registry API.
 
 **Key capabilities:**
 - Multiple registry types (Git, API, File, Managed, Kubernetes)

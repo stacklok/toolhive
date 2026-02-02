@@ -8,6 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
@@ -208,6 +210,34 @@ type Metadata struct {
 // ParsedTime returns the LastUpdated field as a time.Time
 func (m *Metadata) ParsedTime() (time.Time, error) {
 	return time.Parse(time.RFC3339, m.LastUpdated)
+}
+
+// UnmarshalYAML implements custom YAML unmarshaling for ImageMetadata.
+// This handles flattening of embedded BaseServerMetadata fields since we can't use
+// yaml:",inline" tags (they break swag v2 OpenAPI generation).
+// See: https://github.com/swaggo/swag/issues/2140
+func (i *ImageMetadata) UnmarshalYAML(node *yaml.Node) error {
+	// Decode into embedded struct first (gets base fields from flat YAML)
+	if err := node.Decode(&i.BaseServerMetadata); err != nil {
+		return err
+	}
+	// Decode own fields using type alias to avoid infinite recursion
+	type plain ImageMetadata
+	return node.Decode((*plain)(i))
+}
+
+// UnmarshalYAML implements custom YAML unmarshaling for RemoteServerMetadata.
+// This handles flattening of embedded BaseServerMetadata fields since we can't use
+// yaml:",inline" tags (they break swag v2 OpenAPI generation).
+// See: https://github.com/swaggo/swag/issues/2140
+func (r *RemoteServerMetadata) UnmarshalYAML(node *yaml.Node) error {
+	// Decode into embedded struct first (gets base fields from flat YAML)
+	if err := node.Decode(&r.BaseServerMetadata); err != nil {
+		return err
+	}
+	// Decode own fields using type alias to avoid infinite recursion
+	type plain RemoteServerMetadata
+	return node.Decode((*plain)(r))
 }
 
 // ServerMetadata is an interface that both ImageMetadata and RemoteServerMetadata implement

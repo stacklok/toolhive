@@ -273,6 +273,15 @@ func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetProxyPort() int32 {
+	const defaultProxyPort int32 = 8080
+
+	// If the legacy Port is set and ProxyPort is only the default,
+	// prefer Port to preserve backward compatibility when ProxyPort
+	// was defaulted by the API server.
+	if m.Spec.Port > 0 && m.Spec.ProxyPort == defaultProxyPort {
+		return m.Spec.Port
+	}
+
 	if m.Spec.ProxyPort > 0 {
 		return m.Spec.ProxyPort
 	}
@@ -284,5 +293,5 @@ func (m *MCPRemoteProxy) GetProxyPort() int32 {
 	}
 
 	// default to 8080 if no port is specified
-	return 8080
+	return defaultProxyPort
 }

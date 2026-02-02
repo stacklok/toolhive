@@ -6,6 +6,8 @@ package client
 import (
 	"fmt"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // YAMLConverter defines an interface for converting MCPServer data to different YAML config formats
@@ -29,12 +31,24 @@ func NewGenericYAMLConverter(cfg *mcpClientConfig) *GenericYAMLConverter {
 	// Extract the servers path from MCPServersPathPrefix (remove leading "/")
 	serversPath := strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
 
+	// Extract a default URL label from MCPServersUrlLabelMap
+	// For YAML configs, all transport types typically use the same URL field
+	// so we pick from Streamable HTTP as the default
+	urlLabel := "url"
+	if cfg.MCPServersUrlLabelMap != nil {
+		if label, ok := cfg.MCPServersUrlLabelMap[types.TransportTypeStreamableHTTP]; ok {
+			urlLabel = label
+		} else if label, ok := cfg.MCPServersUrlLabelMap[types.TransportTypeStdio]; ok {
+			urlLabel = label
+		}
+	}
+
 	return &GenericYAMLConverter{
 		storageType:     cfg.YAMLStorageType,
 		serversPath:     serversPath,
 		identifierField: cfg.YAMLIdentifierField,
 		defaults:        cfg.YAMLDefaults,
-		urlLabel:        cfg.MCPServersUrlLabel,
+		urlLabel:        urlLabel,
 	}
 }
 
@@ -45,10 +59,18 @@ func (g *GenericYAMLConverter) ConvertFromMCPServer(serverName string, server MC
 	// Add name field
 	result["name"] = serverName
 
-	// Handle URL field - use whichever MCPServer field has a value
-	url := server.Url
-	if server.ServerUrl != "" {
+	// Handle URL field - extract from whichever MCPServer field has a value
+	// and use the configured URL label for the output key
+	url := ""
+	switch {
+	case server.Uri != "":
+		url = server.Uri
+	case server.ServerUrl != "":
 		url = server.ServerUrl
+	case server.HttpUrl != "":
+		url = server.HttpUrl
+	case server.Url != "":
+		url = server.Url
 	}
 
 	if url != "" {

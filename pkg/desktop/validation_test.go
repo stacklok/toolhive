@@ -353,18 +353,32 @@ func TestPathsEqual(t *testing.T) {
 		},
 	}
 
-	// Add platform-specific tests
+	// Add platform-specific tests for case sensitivity
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" { //nolint:goconst // platform checks are clearer inline
+		// Case-insensitive filesystems (macOS, Windows)
 		tests = append(tests, struct {
 			name   string
 			path1  string
 			path2  string
 			expect bool
 		}{
-			name:   "case insensitive match",
+			name:   "case insensitive match on darwin/windows",
 			path1:  "/Users/Test/bin/thv",
 			path2:  "/users/test/bin/thv",
 			expect: true,
+		})
+	} else {
+		// Case-sensitive filesystems (Linux)
+		tests = append(tests, struct {
+			name   string
+			path1  string
+			path2  string
+			expect bool
+		}{
+			name:   "case sensitive mismatch on linux",
+			path1:  "/home/Test/bin/thv",
+			path2:  "/home/test/bin/thv",
+			expect: false,
 		})
 	}
 
@@ -485,6 +499,227 @@ func TestResolvePath(t *testing.T) {
 		_, err := resolvePath("/nonexistent/path/to/file")
 		assert.Error(t, err)
 	})
+
+	t.Run("handles relative path input", func(t *testing.T) {
+		t.Parallel()
+		// Create a temp file in current directory context
+		dir := t.TempDir()
+		filePath := filepath.Join(dir, "testfile")
+		require.NoError(t, os.WriteFile(filePath, []byte("test"), 0644))
+
+		// resolvePath should still return absolute path
+		resolved, err := resolvePath(filePath)
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(resolved))
+	})
+}
+
+func TestReadMarkerFileFromPathWithReadError(t *testing.T) {
+	t.Parallel()
+
+	// Create a directory instead of a file - reading it will fail with a different error
+	dir := t.TempDir()
+	path := filepath.Join(dir, "marker-dir")
+	require.NoError(t, os.MkdirAll(path, 0755))
+
+	marker, err := ReadMarkerFileFromPath(path)
+	// Should return an error that is NOT ErrMarkerNotFound (it's a read error)
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrMarkerNotFound)
+	assert.Nil(t, marker)
+}
+
+func TestMarkerFileExists(t *testing.T) {
+	t.Run("returns true when marker exists", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory and marker file
+		toolhiveDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		require.NoError(t, os.WriteFile(markerPath, []byte("{}"), 0600))
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		exists, err := MarkerFileExists()
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("returns false when marker does not exist", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		exists, err := MarkerFileExists()
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+}
+
+func TestReadMarkerFile(t *testing.T) {
+	t.Run("reads marker from home directory", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory and marker file
+		toolhiveDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+
+		marker := CliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "symlink",
+			CLIVersion:     "1.0.0",
+			SymlinkTarget:  "/path/to/binary",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		result, err := ReadMarkerFile()
+		require.NoError(t, err)
+		assert.Equal(t, "1.0.0", result.CLIVersion)
+	})
+
+	t.Run("returns error when marker not found", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		_, err := ReadMarkerFile()
+		assert.ErrorIs(t, err, ErrMarkerNotFound)
+	})
+}
+
+func TestGetMarkerFilePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns path in home directory", func(t *testing.T) {
+		t.Parallel()
+		path, err := GetMarkerFilePath()
+		require.NoError(t, err)
+		assert.Contains(t, path, ".toolhive")
+		assert.Contains(t, path, ".cli-source")
+	})
+}
+
+func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
+	t.Run("returns error on conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory
+		toolhiveDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+
+		// Create a fake target binary
+		fakeBinaryPath := filepath.Join(dir, "fake-thv")
+		require.NoError(t, os.WriteFile(fakeBinaryPath, []byte("fake"), 0755))
+
+		// Write a marker file pointing to the fake binary
+		marker := CliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "symlink",
+			CLIVersion:     "1.0.0",
+			SymlinkTarget:  fakeBinaryPath,
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		err = ValidateDesktopAlignment()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrDesktopConflict)
+	})
+}
+
+func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
+	t.Run("copy method returns no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		dir := t.TempDir()
+
+		// Create the .toolhive directory
+		toolhiveDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+
+		// Write a marker file with copy method (no symlink target)
+		marker := CliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "copy",
+			CLIVersion:     "1.0.0",
+			CLIChecksum:    "abc123",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+
+		result, err := CheckDesktopAlignment()
+		require.NoError(t, err)
+		assert.False(t, result.HasConflict, "copy method should not cause conflict (validation skipped)")
+	})
+}
+
+func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {
+	t.Parallel()
+
+	marker := &CliSourceMarker{
+		SchemaVersion:  1,
+		Source:         "desktop",
+		InstallMethod:  "symlink",
+		CLIVersion:     "1.0.0",
+		SymlinkTarget:  "/path/to/thv",
+		InstalledAt:    "2026-01-22T10:30:00Z",
+		DesktopVersion: "", // Empty desktop version
+	}
+
+	msg := buildConflictMessage(
+		"/path/to/thv",
+		"/usr/local/bin/thv",
+		marker,
+	)
+
+	assert.Contains(t, msg, "/path/to/thv")
+	assert.Contains(t, msg, "/usr/local/bin/thv")
+	assert.NotContains(t, msg, "Desktop version:")
 }
 
 // Helper functions for tests

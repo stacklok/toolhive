@@ -22,6 +22,25 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      # Cache Go build cache for faster ko builds
+      - name: Cache Go build cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      # Cache Go tools (helm-docs)
+      - name: Cache Go tools
+        id: cache-go-tools
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
+        with:
+          path: ~/go/bin
+          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-helm-docs
+          restore-keys: |
+            ${{ runner.os }}-go-tools-
+
       - name: Set up ko
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 

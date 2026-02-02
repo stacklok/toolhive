@@ -6,6 +6,8 @@ This document describes the middleware architecture used in ToolHive for process
 
 ToolHive uses a layered middleware architecture to process incoming MCP requests. Each middleware component has a specific responsibility and operates in a well-defined order to ensure proper request handling, security, and observability.
 
+This document primarily covers the middleware system for `thv` and `thv-proxyrunner`. The `vmcp` component has its own request processing pipeline documented in [Virtual MCP Architecture](arch/10-virtual-mcp-architecture.md#request-processing-pipeline).
+
 The middleware chain consists of the following components:
 
 1. **Authentication Middleware**: Validates JWT tokens and extracts client identity
@@ -16,38 +18,46 @@ The middleware chain consists of the following components:
 6. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
 7. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
 8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+9. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
+10. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Architecture Diagram
 
 ```mermaid
 graph TD
-    A[Incoming MCP Request] --> B[Authentication Middleware]
+    A[Incoming MCP Request] --> R[Recovery Middleware]
+    R --> B[Authentication Middleware]
     B --> C[MCP Parsing Middleware]
     C --> D[Authorization Middleware]
     D --> E[Audit Middleware]
     E --> F[MCP Server Handler]
-    
+
+    R --> R1[Catch Panics]
+    R1 --> R2[Log Stack Trace]
+    R2 --> R3[Return 500 on Panic]
+
     B --> B1[JWT Validation]
     B1 --> B2[Extract Claims]
     B2 --> B3[Add to Context]
-    
+
     C --> C1[JSON-RPC Parsing]
     C1 --> C2[Extract Method & Params]
     C2 --> C3[Extract Resource ID & Args]
     C3 --> C4[Store Parsed Data]
-    
+
     D --> D1[Get Parsed MCP Data]
     D1 --> D2[Create Cedar Entities]
     D2 --> D3[Evaluate Policies]
     D3 --> D4{Authorized?}
     D4 -->|Yes| D5[Continue]
     D4 -->|No| D6[403 Forbidden]
-    
+
     E --> E1[Determine Event Type]
     E1 --> E2[Extract Audit Data]
     E2 --> E3[Log Event]
-    
+
     style A fill:#e1f5fe
+    style R fill:#fff3e0
     style F fill:#e8f5e8
     style D6 fill:#ffebee
 ```
@@ -57,28 +67,32 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Recovery as Recovery
     participant Auth as Authentication
     participant Parser as MCP Parser
     participant Authz as Authorization
     participant Audit as Audit
     participant Server as MCP Server
-    
-    Client->>Auth: HTTP Request with JWT
+
+    Client->>Recovery: HTTP Request
+    Note over Recovery: Wraps entire chain to catch panics
+
+    Recovery->>Auth: HTTP Request with JWT
     Auth->>Auth: Validate JWT Token
     Auth->>Auth: Extract Claims
     Note over Auth: Add claims to context
-    
+
     Auth->>Parser: Request + JWT Claims
     Parser->>Parser: Parse JSON-RPC
     Parser->>Parser: Extract MCP Method
     Parser->>Parser: Extract Resource ID & Arguments
     Note over Parser: Add parsed data to context
-    
+
     Parser->>Authz: Request + Parsed MCP Data
     Authz->>Authz: Get Parsed Data from Context
     Authz->>Authz: Create Cedar Entities
     Authz->>Authz: Evaluate Policies
-    
+
     alt Authorized
         Authz->>Audit: Authorized Request
         Audit->>Audit: Extract Event Data
@@ -87,6 +101,9 @@ sequenceDiagram
         Server->>Client: Response
     else Unauthorized
         Authz->>Client: 403 Forbidden
+    else Panic Occurs
+        Recovery->>Recovery: Log stack trace
+        Recovery->>Client: 500 Internal Server Error
     end
 ```
 
@@ -261,7 +278,7 @@ thv config usage-metrics enable
 - Scopes
 - Header injection strategy (replace or custom)
 
-**Note**: This middleware is currently implemented but not registered in the supported middleware factories (`pkg/runner/middleware.go:15`). It can be used directly via the proxy command but is not available through the standard middleware configuration system.
+**Note**: This middleware is registered in `pkg/runner/middleware.go` and can be configured through the standard middleware configuration system or used directly via the proxy command.
 
 ### 8. Audit Middleware
 
@@ -429,6 +446,71 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
   "includeResponseData": true,
   "maxDataSize": 2048
 }
+```
+
+### 9. Recovery Middleware
+
+**Purpose**: Catches panics in HTTP handlers and returns a clean HTTP 500 error response.
+
+**Location**: `pkg/recovery/recovery.go`
+
+**Availability**: All components (`thv`, `thv-proxyrunner`, `vmcp`)
+
+**Responsibilities**:
+- Recover from panics in downstream handlers and middleware
+- Log the panic message and full stack trace for debugging
+- Return HTTP 500 Internal Server Error to the client
+- Prevent server crashes from unhandled panics
+
+**Behavior**:
+- Always added as the outermost middleware wrapper (added last in chain, executes first)
+- Catches any panic from the entire middleware chain and MCP handlers
+- Logs error with stack trace using `logger.Errorf`
+- Returns generic "Internal Server Error" message (no sensitive details exposed)
+
+**Configuration**: None required. This middleware is always present and has no configurable parameters.
+
+**Note**: Recovery middleware has no cleanup requirements (`Close()` is a no-op).
+
+### 10. Header Forward Middleware
+
+**Purpose**: Injects custom headers into requests before they are forwarded to remote MCP servers.
+
+**Location**: `pkg/transport/middleware/header_forward.go`
+
+**Availability**: `thv` and `thv-proxyrunner` only (not used by `vmcp`)
+
+**Responsibilities**:
+- Inject configured headers into outgoing requests to remote MCP servers
+- Validate headers against a security blocklist
+- Pre-canonicalize header names at creation time for efficiency
+
+**Configuration**:
+- `AddHeaders`: Map of header names to values to inject into requests
+
+**Restricted Headers**:
+
+The following headers cannot be configured for forwarding due to security concerns:
+
+| Category | Headers |
+|----------|---------|
+| Routing manipulation | `Host` |
+| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings` |
+| Proxy headers | `Proxy-Authorization`, `Proxy-Authenticate`, `Proxy-Connection` |
+| Request smuggling vectors | `Transfer-Encoding`, `Content-Length` |
+| Identity spoofing | `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-Ip` |
+
+**Behavior**:
+- Returns a no-op middleware if no headers are configured
+- Logs configured header names at startup (never logs values for security)
+- Warns if `Authorization` header is configured (ensure value is appropriate for target)
+- Returns error if any restricted header is configured
+
+**CLI Usage**:
+
+```bash
+# Add custom headers when proxying to a remote MCP server
+thv proxy --remote-url https://mcp.example.com --header "X-Custom-Header: value" --header "X-API-Key: secret"
 ```
 
 ## Data Flow Through Context
@@ -626,11 +708,11 @@ Middleware can interact with the runner through the `MiddlewareRunner` interface
 ```go
 type MiddlewareRunner interface {
     // AddMiddleware adds a middleware instance to the runner's middleware chain
-    AddMiddleware(middleware Middleware)
-    
+    AddMiddleware(name string, middleware Middleware)
+
     // SetAuthInfoHandler sets the authentication info handler (used by auth middleware)
     SetAuthInfoHandler(handler http.Handler)
-    
+
     // SetPrometheusHandler sets the Prometheus metrics handler (used by telemetry middleware)
     SetPrometheusHandler(handler http.Handler)
     
@@ -718,8 +800,8 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
     }
 
     // Add to runner
-    runner.AddMiddleware(middleware)
-    
+    runner.AddMiddleware(MiddlewareType, middleware)
+
     // Set up additional handlers if needed
     // runner.SetPrometheusHandler(someHandler)
     // runner.SetAuthInfoHandler(someHandler)
@@ -730,20 +812,23 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 **Step 3: Register with the System**
 
-Add your middleware to `pkg/runner/middleware.go:15` in the `GetSupportedMiddlewareFactories()` function:
+Add your middleware to `pkg/runner/middleware.go` in the `GetSupportedMiddlewareFactories()` function:
 
 ```go
 func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
     return map[string]types.MiddlewareFactory{
-        auth.MiddlewareType:              auth.CreateMiddleware,
-        mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
-        mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
-        mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
-        telemetry.MiddlewareType:         telemetry.CreateMiddleware,
-        authz.MiddlewareType:             authz.CreateMiddleware,
-        audit.MiddlewareType:             audit.CreateMiddleware,
-        // tokenexchange.MiddlewareType:  tokenexchange.CreateMiddleware, // Not yet registered
-        yourpackage.MiddlewareType:       yourpackage.CreateMiddleware,
+        auth.MiddlewareType:                   auth.CreateMiddleware,
+        tokenexchange.MiddlewareType:          tokenexchange.CreateMiddleware,
+        mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
+        mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
+        mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+        usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
+        telemetry.MiddlewareType:              telemetry.CreateMiddleware,
+        authz.MiddlewareType:                  authz.CreateMiddleware,
+        audit.MiddlewareType:                  audit.CreateMiddleware,
+        recovery.MiddlewareType:               recovery.CreateMiddleware,
+        headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+        yourpackage.MiddlewareType:            yourpackage.CreateMiddleware,
     }
 }
 ```
@@ -795,7 +880,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
     }
 
     // Register with runner
-    runner.AddMiddleware(middleware)
+    runner.AddMiddleware(auth.MiddlewareType, middleware)
     runner.SetAuthInfoHandler(middleware.AuthInfoHandler())
 
     return nil
@@ -804,23 +889,27 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 ### Middleware Execution Order
 
-The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go:27`:
+The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go`.
 
 1. **Authentication Middleware** (always present) - Validates JWT tokens and extracts claims
 2. **Token Exchange Middleware** (if enabled) - Exchanges JWT for external service tokens
 3. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
 4. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
 5. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-6. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
-7. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-8. **Audit Middleware** (if enabled) - Request logging
+6. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+7. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
+8. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+9. **Audit Middleware** (if enabled) - Request logging
+10. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
+11. **Recovery Middleware** (always present) - Catches panics (outermost wrapper)
 
 **Important Ordering Rules**:
 - Authentication must come first to establish client identity
 - Token Exchange must come after Authentication (requires JWT claims)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
-- Audit should be last to capture the complete request lifecycle
+- Header Forward executes close to the backend handler (innermost position)
+- Recovery is always last in config (so it executes first as outermost wrapper)
 
 ### Custom Authorization Policies
 

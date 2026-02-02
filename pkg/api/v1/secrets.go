@@ -132,7 +132,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		// TODO Handle provider reconfiguration in a better way
 		if currentProviderType == providerType {
 			isReconfiguration = true
-			logger.Infof("Reconfiguring existing %s secrets provider", providerType)
+			logger.Debugf("Reconfiguring existing %s secrets provider", providerType)
 		} else {
 			isReconfiguration = true // Changing provider type is also considered reconfiguration
 			logger.Warnf("Changing secrets provider from %s to %s", currentProviderType, providerType)

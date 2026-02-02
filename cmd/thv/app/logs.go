@@ -126,8 +126,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	logs, err := manager.GetLogs(ctx, workloadName, follow, 0)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
-			logger.Infof("Workload %s not found", workloadName)
-			return nil
+			return fmt.Errorf("container logs for workload %s not found, use --proxy to get proxy logs", workloadName)
 		}
 		return fmt.Errorf("failed to get logs for workload %s: %w", workloadName, err)
 	}
@@ -155,7 +154,7 @@ func logsPruneCmdFunc(cmd *cobra.Command) error {
 	}
 
 	if len(logFiles) == 0 {
-		logger.Info("No log files found")
+		fmt.Println("No log files found")
 		return nil
 	}
 
@@ -172,7 +171,7 @@ func getLogsDirectory() (string, error) {
 	}
 
 	if _, err := os.Stat(logsDir); os.IsNotExist(err) {
-		logger.Info("No logs directory found, nothing to prune")
+		fmt.Println("No logs directory found, nothing to prune")
 		return "", nil
 	}
 
@@ -227,7 +226,7 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 				logger.Warnf("Failed to remove log file %s: %v", logFile, err)
 			} else {
 				prunedFiles = append(prunedFiles, logFile)
-				logger.Infof("Removed log file: %s", logFile)
+				logger.Debugf("Removed log file: %s", logFile)
 			}
 		}
 	}
@@ -237,9 +236,9 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 
 func reportPruneResults(prunedFiles, errs []string) {
 	if len(prunedFiles) == 0 {
-		logger.Info("No orphaned log files found to prune")
+		fmt.Println("No orphaned log files found to prune")
 	} else {
-		logger.Infof("Successfully pruned %d log file(s)", len(prunedFiles))
+		logger.Debugf("Successfully pruned %d log file(s)", len(prunedFiles))
 		for _, file := range prunedFiles {
 			fmt.Printf("Removed: %s\n", file)
 		}

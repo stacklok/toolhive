@@ -283,7 +283,7 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 
 			It("should view logs for remote server [Serial]", func() {
 				By("Getting logs for the remote server")
-				stdout, _ := e2e.NewTHVCommand(config, "logs", serverName).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "logs", serverName, "--proxy").ExpectSuccess()
 
 				// Logs should exist (even if empty) and not error out
 				// Remote servers have proxy logs

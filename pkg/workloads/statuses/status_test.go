@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	envmocks "github.com/stacklok/toolhive/pkg/env/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
-	"github.com/stacklok/toolhive/pkg/env"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )

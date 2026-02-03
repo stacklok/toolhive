@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )

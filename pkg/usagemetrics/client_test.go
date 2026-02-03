@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	envmocks "github.com/stacklok/toolhive/pkg/env/mocks"
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 )
 
 // newTestClient creates a client for testing with a pre-set anonymous ID

@@ -26,6 +26,7 @@ import (
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
 const testValidYAML = `extensions: {}`
+const testValidTOML = ``
 
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
@@ -181,6 +182,41 @@ func createMockClientConfigs() []mcpClientConfig {
 			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
+		},
+		{
+			ClientType:                    MistralVibe,
+			Description:                   "Mistral Vibe IDE (Mock)",
+			RelPath:                       []string{"mock_mistral_vibe"},
+			SettingsFile:                  "config.toml",
+			MCPServersPathPrefix:          "/mcp_servers",
+			Extension:                     TOML,
+			IsTransportTypeFieldSupported: true,
+			SupportedTransportTypesMap: map[types.TransportType]string{
+				types.TransportTypeStdio:          "stdio",
+				types.TransportTypeSSE:            "http",
+				types.TransportTypeStreamableHTTP: "http",
+			},
+			MCPServersUrlLabelMap: map[types.TransportType]string{
+				types.TransportTypeStdio:          "url",
+				types.TransportTypeSSE:            "url",
+				types.TransportTypeStreamableHTTP: "url",
+			},
+			TOMLStorageType: TOMLStorageTypeArray,
+		},
+		{
+			ClientType:                    Codex,
+			Description:                   "OpenAI Codex CLI (Mock)",
+			RelPath:                       []string{"mock_codex"},
+			SettingsFile:                  "config.toml",
+			MCPServersPathPrefix:          "/mcp_servers",
+			Extension:                     TOML,
+			IsTransportTypeFieldSupported: false,
+			MCPServersUrlLabelMap: map[types.TransportType]string{
+				types.TransportTypeStdio:          "url",
+				types.TransportTypeSSE:            "url",
+				types.TransportTypeStreamableHTTP: "url",
+			},
+			TOMLStorageType: TOMLStorageTypeMap,
 		},
 	}
 }
@@ -370,6 +406,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Antigravity),
 					string(Zed),
 					string(GeminiCli),
+					string(MistralVibe),
+					string(Codex),
 				},
 			},
 		}
@@ -479,6 +517,14 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
 				assert.NotNil(t, content, "Continue config should be readable")
+			case MistralVibe:
+				// TOML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "MistralVibe config should be readable")
+			case Codex:
+				// TOML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "Codex config should be readable")
 			}
 		}
 	})
@@ -513,7 +559,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, MistralVibe, Codex:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -534,9 +580,12 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 
 			// Choose the appropriate content based on the file extension
 			var content []byte
-			if cfg.Extension == YAML {
+			switch cfg.Extension {
+			case YAML:
 				content = []byte(testValidYAML)
-			} else {
+			case TOML:
+				content = []byte(testValidTOML)
+			case JSON:
 				content = []byte(testValidJSON)
 			}
 
@@ -649,6 +698,64 @@ func TestCreateClientConfig(t *testing.T) {
 		content, err := os.ReadFile(cf.Path)
 		require.NoError(t, err, "Should be able to read created file")
 		assert.Equal(t, "", string(content), "YAML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateTOMLClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		tomlTestConfig := &config.Config{
+			Secrets: config.Secrets{
+				ProviderType: "encrypted",
+			},
+			Clients: config.Clients{
+				RegisteredClients: []string{
+					string(MistralVibe),
+				},
+			},
+		}
+
+		configProvider, cleanup := CreateTestConfigProvider(t, tomlTestConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client (MistralVibe)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           MistralVibe,
+				Description:          "Mistral Vibe IDE (Mock)",
+				RelPath:              []string{"mock_mistral_vibe"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_mistral_vibe")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(MistralVibe)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
 
 		// Verify file permissions
 		fileInfo, err := os.Stat(cf.Path)

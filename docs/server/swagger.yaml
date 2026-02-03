@@ -410,6 +410,8 @@ components:
       - antigravity
       - zed
       - gemini-cli
+      - mistral-vibe
+      - codex
       type: string
       x-enum-varnames:
       - RooCode
@@ -434,6 +436,8 @@ components:
       - Antigravity
       - Zed
       - GeminiCli
+      - MistralVibe
+      - Codex
     client.MCPClientStatus:
       properties:
         client_type:

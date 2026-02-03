@@ -396,7 +396,9 @@
                     "kiro",
                     "antigravity",
                     "zed",
-                    "gemini-cli"
+                    "gemini-cli",
+                    "mistral-vibe",
+                    "codex"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -421,7 +423,9 @@
                     "Kiro",
                     "Antigravity",
                     "Zed",
-                    "GeminiCli"
+                    "GeminiCli",
+                    "MistralVibe",
+                    "Codex"
                 ]
             },
             "client.MCPClientStatus": {

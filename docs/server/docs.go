@@ -403,7 +403,9 @@ const docTemplate = `{
                     "kiro",
                     "antigravity",
                     "zed",
-                    "gemini-cli"
+                    "gemini-cli",
+                    "mistral-vibe",
+                    "codex"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -428,7 +430,9 @@ const docTemplate = `{
                     "Kiro",
                     "Antigravity",
                     "Zed",
-                    "GeminiCli"
+                    "GeminiCli",
+                    "MistralVibe",
+                    "Codex"
                 ]
             },
             "client.MCPClientStatus": {

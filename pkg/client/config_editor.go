@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
@@ -290,6 +291,323 @@ func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 
 	logger.Debugf("Successfully removed server %s from YAML config file", serverName)
 	return nil
+}
+
+// --- Shared TOML helper functions ---
+
+// tomlWithFileLock executes the given function while holding a file lock for the specified path.
+func tomlWithFileLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
+
+	return fn()
+}
+
+// readTOMLConfig reads and parses a TOML config file from the specified path.
+func readTOMLConfig(path string) (map[string]any, error) {
+	// #nosec G304 -- path is controlled by internal code (TOMLConfigUpdater/TOMLMapConfigUpdater structs)
+	content, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	if len(content) == 0 {
+		return make(map[string]any), nil
+	}
+
+	var config map[string]any
+	if err := toml.Unmarshal(content, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse existing TOML config: %w", err)
+	}
+	return config, nil
+}
+
+// writeTOMLConfig marshals and writes the config to the specified TOML file path.
+func writeTOMLConfig(path string, config map[string]any) error {
+	updatedContent, err := toml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal TOML: %w", err)
+	}
+	if err := os.WriteFile(path, updatedContent, 0600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	return nil
+}
+
+// extractURLFromMCPServer extracts the URL value from an MCPServer struct,
+// checking fields in priority order based on client specificity:
+// Uri (Goose) → ServerUrl (Windsurf) → HttpUrl (Gemini) → Url (default/most common).
+func extractURLFromMCPServer(data MCPServer) string {
+	switch {
+	case data.Uri != "":
+		return data.Uri
+	case data.ServerUrl != "":
+		return data.ServerUrl
+	case data.HttpUrl != "":
+		return data.HttpUrl
+	case data.Url != "":
+		return data.Url
+	default:
+		return ""
+	}
+}
+
+// convertToAnySlice converts various slice types to []any.
+func convertToAnySlice(v any) []any {
+	switch s := v.(type) {
+	case []any:
+		return s
+	case []map[string]any:
+		result := make([]any, len(s))
+		for i, item := range s {
+			result[i] = item
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// --- TOMLConfigUpdater (array-of-tables format) ---
+
+// TOMLConfigUpdater is a ConfigUpdater that is responsible for updating
+// TOML config files with array-of-tables format (used by Mistral Vibe).
+type TOMLConfigUpdater struct {
+	Path            string
+	ServersKey      string // The TOML array key (e.g., "mcp_servers")
+	IdentifierField string // The field name used to identify servers (e.g., "name")
+	URLField        string // The field name for URL (e.g., "url")
+}
+
+// Upsert inserts or updates an MCP server in the TOML config file
+func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return tomlWithFileLock(tcu.Path, func() error {
+		config, err := readTOMLConfig(tcu.Path)
+		if err != nil {
+			return err
+		}
+
+		servers := tcu.getServersArray(config)
+		newEntry := tcu.buildServerEntry(serverName, data)
+		servers = tcu.upsertServerEntry(servers, serverName, newEntry)
+		config[tcu.ServersKey] = servers
+
+		if err := writeTOMLConfig(tcu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an MCP server from the TOML config file
+func (tcu *TOMLConfigUpdater) Remove(serverName string) error {
+	return tomlWithFileLock(tcu.Path, func() error {
+		config, err := readTOMLConfig(tcu.Path)
+		if err != nil {
+			return err
+		}
+
+		// If config is empty (file didn't exist or was empty), nothing to remove
+		if len(config) == 0 {
+			return nil
+		}
+
+		existingServers, ok := config[tcu.ServersKey]
+		if !ok {
+			return nil // No servers section, nothing to remove
+		}
+
+		servers := convertToAnySlice(existingServers)
+		if servers == nil {
+			return nil // Unknown format, nothing to remove
+		}
+
+		config[tcu.ServersKey] = tcu.filterOutServer(servers, serverName)
+
+		if err := writeTOMLConfig(tcu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		return nil
+	})
+}
+
+// getServersArray extracts or initializes the servers array from config
+func (tcu *TOMLConfigUpdater) getServersArray(config map[string]any) []any {
+	existingServers, ok := config[tcu.ServersKey]
+	if !ok {
+		return []any{}
+	}
+	servers := convertToAnySlice(existingServers)
+	if servers == nil {
+		return []any{}
+	}
+	return servers
+}
+
+// upsertServerEntry updates an existing server or appends a new one
+func (tcu *TOMLConfigUpdater) upsertServerEntry(servers []any, serverName string, newEntry map[string]any) []any {
+	for i, s := range servers {
+		if serverEntry, ok := s.(map[string]any); ok {
+			if name, exists := serverEntry[tcu.IdentifierField]; exists && name == serverName {
+				servers[i] = newEntry
+				return servers
+			}
+		}
+	}
+	return append(servers, newEntry)
+}
+
+// filterOutServer removes the server with the given name from the slice
+func (tcu *TOMLConfigUpdater) filterOutServer(servers []any, serverName string) []any {
+	filtered := make([]any, 0, len(servers))
+	for _, s := range servers {
+		serverEntry, ok := s.(map[string]any)
+		if !ok {
+			filtered = append(filtered, s)
+			continue
+		}
+		name, exists := serverEntry[tcu.IdentifierField]
+		if !exists || name != serverName {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// buildServerEntry creates a server entry map from MCPServer data
+func (tcu *TOMLConfigUpdater) buildServerEntry(serverName string, data MCPServer) map[string]any {
+	entry := map[string]any{
+		tcu.IdentifierField: serverName,
+	}
+
+	if url := extractURLFromMCPServer(data); url != "" {
+		entry[tcu.URLField] = url
+	}
+
+	// Add transport type if specified
+	if data.Type != "" {
+		entry["transport"] = data.Type
+	}
+
+	return entry
+}
+
+// --- TOMLMapConfigUpdater (nested tables format) ---
+
+// TOMLMapConfigUpdater is a ConfigUpdater that is responsible for updating
+// TOML config files with nested tables format [section.servername] (used by Codex).
+type TOMLMapConfigUpdater struct {
+	Path       string
+	ServersKey string // The TOML section key (e.g., "mcp_servers")
+	URLField   string // The field name for URL (e.g., "url")
+}
+
+// Upsert inserts or updates an MCP server in the TOML config file using map format
+func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return tomlWithFileLock(tmu.Path, func() error {
+		config, err := readTOMLConfig(tmu.Path)
+		if err != nil {
+			return err
+		}
+
+		// Get or create the servers map
+		serversMap := tmu.getServersMap(config)
+
+		// Build the server entry (without the name field since it's the key)
+		serverEntry := tmu.buildServerEntry(data)
+
+		// Set the server entry
+		serversMap[serverName] = serverEntry
+		config[tmu.ServersKey] = serversMap
+
+		if err := writeTOMLConfig(tmu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an MCP server from the TOML config file
+func (tmu *TOMLMapConfigUpdater) Remove(serverName string) error {
+	return tomlWithFileLock(tmu.Path, func() error {
+		config, err := readTOMLConfig(tmu.Path)
+		if err != nil {
+			return err
+		}
+
+		// If config is empty (file didn't exist or was empty), nothing to remove
+		if len(config) == 0 {
+			return nil
+		}
+
+		serversSection, ok := config[tmu.ServersKey]
+		if !ok {
+			return nil // No servers section, nothing to remove
+		}
+
+		serversMap, ok := serversSection.(map[string]any)
+		if !ok {
+			return nil // Unknown format, nothing to remove
+		}
+
+		// Remove the server if it exists
+		delete(serversMap, serverName)
+		config[tmu.ServersKey] = serversMap
+
+		if err := writeTOMLConfig(tmu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		return nil
+	})
+}
+
+// getServersMap extracts or initializes the servers map from config
+func (tmu *TOMLMapConfigUpdater) getServersMap(config map[string]any) map[string]any {
+	existingServers, ok := config[tmu.ServersKey]
+	if !ok {
+		return make(map[string]any)
+	}
+	serversMap, ok := existingServers.(map[string]any)
+	if !ok {
+		return make(map[string]any)
+	}
+	return serversMap
+}
+
+// buildServerEntry creates a server entry map from MCPServer data
+func (tmu *TOMLMapConfigUpdater) buildServerEntry(data MCPServer) map[string]any {
+	entry := make(map[string]any)
+
+	if url := extractURLFromMCPServer(data); url != "" {
+		entry[tmu.URLField] = url
+	}
+
+	// Add transport type if specified
+	if data.Type != "" {
+		entry["transport"] = data.Type
+	}
+
+	return entry
 }
 
 // ensurePathExists ensures that the path exists in the JSON content

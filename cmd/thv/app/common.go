@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -189,7 +189,7 @@ func validateGroupFlag() func(cmd *cobra.Command, args []string) error {
 		}
 
 		// Validate if provided
-		if err := validation.ValidateGroupName(groupName); err != nil {
+		if err := groupval.ValidateName(groupName); err != nil {
 			return fmt.Errorf("invalid group name in --group: %w", err)
 		}
 

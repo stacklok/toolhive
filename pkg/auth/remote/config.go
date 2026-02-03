@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry/registry"
-	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // Config holds authentication configuration for remote MCP servers.
@@ -180,7 +180,7 @@ func DefaultResourceIndicator(remoteServerURL string) string {
 	}
 
 	// Validate the normalized result
-	if err := validation.ValidateResourceURI(normalized); err != nil {
+	if err := httpval.ValidateResourceURI(normalized); err != nil {
 		// Validation failed - log warning and leave resource empty
 		logger.Warnf("Normalized resource indicator is invalid %s: %v", normalized, err)
 		return ""

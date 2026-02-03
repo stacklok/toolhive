@@ -129,9 +129,29 @@ func getTargetPath(marker *CliSourceMarker) string {
 	if marker.InstallMethod == "symlink" && marker.SymlinkTarget != "" {
 		return marker.SymlinkTarget
 	}
-	// For Windows/copy method, we'd need to get the desktop CLI path
-	// from a known location. For now, return empty to skip validation.
+
+	// For Windows/copy method, construct the path to the desktop-managed CLI
+	// from the known installation location: %LOCALAPPDATA%\ToolHive\bin\thv.exe
+	// Note: copy method is only used on Windows; on other platforms, return empty.
+	if marker.InstallMethod == "copy" && runtime.GOOS == "windows" {
+		return filepath.Join(getWindowsLocalAppData(), "ToolHive", "bin", "thv.exe")
+	}
+
 	return ""
+}
+
+// getWindowsLocalAppData returns the LocalAppData path on Windows.
+// Falls back to %USERPROFILE%\AppData\Local if LOCALAPPDATA is not set.
+func getWindowsLocalAppData() string {
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		return localAppData
+	}
+	// Fallback: construct from home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, "AppData", "Local")
 }
 
 // resolvePath resolves symlinks and normalizes the path for comparison.
@@ -184,19 +204,30 @@ func buildConflictMessage(desktopPath, currentPath string, marker *CliSourceMark
 	sb.WriteString("To avoid conflicts, please use the desktop-managed CLI or uninstall\n")
 	sb.WriteString("the ToolHive Desktop application.\n\n")
 
-	// Provide actionable guidance
-	homeDir, _ := os.UserHomeDir()
-	binPath := filepath.Join(homeDir, ".toolhive", "bin")
+	// Provide actionable guidance with platform-specific paths
+	binPath, exeName := getDesktopBinPath()
 
 	sb.WriteString("To use the desktop-managed CLI, ensure your PATH includes:\n")
 	sb.WriteString(fmt.Sprintf("  %s\n\n", binPath))
 
 	sb.WriteString("Or run the desktop CLI directly:\n")
-	sb.WriteString(fmt.Sprintf("  %s [command]\n", filepath.Join(binPath, "thv")))
+	sb.WriteString(fmt.Sprintf("  %s [command]\n", filepath.Join(binPath, exeName)))
 
 	if marker.DesktopVersion != "" {
 		sb.WriteString(fmt.Sprintf("\nDesktop version: %s\n", marker.DesktopVersion))
 	}
 
 	return sb.String()
+}
+
+// getDesktopBinPath returns the platform-specific path to the desktop-managed
+// CLI bin directory and the executable name.
+func getDesktopBinPath() (binPath string, exeName string) {
+	if runtime.GOOS == "windows" {
+		// Windows: %LOCALAPPDATA%\ToolHive\bin\thv.exe
+		return filepath.Join(getWindowsLocalAppData(), "ToolHive", "bin"), "thv.exe"
+	}
+	// macOS/Linux: ~/.toolhive/bin/thv
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, toolhiveDir, "bin"), "thv"
 }

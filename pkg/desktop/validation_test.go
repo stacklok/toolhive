@@ -161,11 +161,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		dir := t.TempDir()
 
 		// Point the home directory to our temp dir
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := CheckDesktopAlignment()
 		require.NoError(t, err)
@@ -176,8 +172,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Write a marker file pointing to a non-existent binary
 		marker := CliSourceMarker{
@@ -189,17 +185,13 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
 		// Point home to our temp dir
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := CheckDesktopAlignment()
 		require.NoError(t, err)
@@ -210,8 +202,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Get the current executable path
 		currentExe, err := os.Executable()
@@ -232,17 +224,13 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
 		// Point home to our temp dir
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := CheckDesktopAlignment()
 		require.NoError(t, err)
@@ -253,8 +241,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Create a fake target binary
 		fakeBinaryPath := filepath.Join(dir, "fake-thv")
@@ -270,17 +258,13 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
 		// Point home to our temp dir
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := CheckDesktopAlignment()
 		require.NoError(t, err)
@@ -319,11 +303,7 @@ func TestValidateDesktopAlignment(t *testing.T) {
 
 		// With no marker file, should succeed
 		dir := t.TempDir()
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		err := ValidateDesktopAlignment()
 		assert.NoError(t, err)
@@ -412,51 +392,56 @@ func TestBuildConflictMessage(t *testing.T) {
 
 	assert.Contains(t, msg, "/Applications/ToolHive.app/Contents/Resources/bin/thv")
 	assert.Contains(t, msg, "/usr/local/bin/thv")
-	assert.Contains(t, msg, ".toolhive/bin")
+	// Platform-specific path check
+	if runtime.GOOS == "windows" {
+		assert.Contains(t, msg, "ToolHive")
+		assert.Contains(t, msg, "bin")
+	} else {
+		assert.Contains(t, msg, ".toolhive/bin")
+	}
 	assert.Contains(t, msg, "Desktop version: 2.0.0")
 }
 
 func TestGetTargetPath(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name   string
-		marker *CliSourceMarker
-		expect string
-	}{
-		{
-			name: "symlink method with target",
-			marker: &CliSourceMarker{
-				InstallMethod: "symlink",
-				SymlinkTarget: "/path/to/binary",
-			},
-			expect: "/path/to/binary",
-		},
-		{
-			name: "symlink method without target",
-			marker: &CliSourceMarker{
-				InstallMethod: "symlink",
-				SymlinkTarget: "",
-			},
-			expect: "",
-		},
-		{
-			name: "copy method",
-			marker: &CliSourceMarker{
-				InstallMethod: "copy",
-				CLIChecksum:   "abc123",
-			},
-			expect: "",
-		},
-	}
+	t.Run("symlink method with target", func(t *testing.T) {
+		t.Parallel()
+		marker := &CliSourceMarker{
+			InstallMethod: "symlink",
+			SymlinkTarget: "/path/to/binary",
+		}
+		result := getTargetPath(marker)
+		assert.Equal(t, "/path/to/binary", result)
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := getTargetPath(tt.marker)
-			assert.Equal(t, tt.expect, result)
-		})
-	}
+	t.Run("symlink method without target", func(t *testing.T) {
+		t.Parallel()
+		marker := &CliSourceMarker{
+			InstallMethod: "symlink",
+			SymlinkTarget: "",
+		}
+		result := getTargetPath(marker)
+		assert.Equal(t, "", result)
+	})
+
+	t.Run("copy method", func(t *testing.T) {
+		t.Parallel()
+		marker := &CliSourceMarker{
+			InstallMethod: "copy",
+			CLIChecksum:   "abc123",
+		}
+		result := getTargetPath(marker)
+		// On Windows, copy method returns the expected CLI path
+		// On other platforms, it returns empty (copy method is Windows-only)
+		if runtime.GOOS == "windows" {
+			assert.Contains(t, result, "ToolHive")
+			assert.Contains(t, result, "bin")
+			assert.Contains(t, result, "thv.exe")
+		} else {
+			assert.Equal(t, "", result)
+		}
+	})
 }
 
 func TestResolvePath(t *testing.T) {
@@ -535,16 +520,12 @@ func TestMarkerFileExists(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory and marker file
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+		markerPath := filepath.Join(thDir, ".cli-source")
 		require.NoError(t, os.WriteFile(markerPath, []byte("{}"), 0600))
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		exists, err := MarkerFileExists()
 		require.NoError(t, err)
@@ -554,11 +535,7 @@ func TestMarkerFileExists(t *testing.T) {
 	t.Run("returns false when marker does not exist", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		exists, err := MarkerFileExists()
 		require.NoError(t, err)
@@ -572,8 +549,8 @@ func TestReadMarkerFile(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory and marker file
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		marker := CliSourceMarker{
 			SchemaVersion:  1,
@@ -584,16 +561,12 @@ func TestReadMarkerFile(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := ReadMarkerFile()
 		require.NoError(t, err)
@@ -603,11 +576,7 @@ func TestReadMarkerFile(t *testing.T) {
 	t.Run("returns error when marker not found", func(t *testing.T) { //nolint:paralleltest // modifies HOME
 		dir := t.TempDir()
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		_, err := ReadMarkerFile()
 		assert.ErrorIs(t, err, ErrMarkerNotFound)
@@ -632,8 +601,8 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Create a fake target binary
 		fakeBinaryPath := filepath.Join(dir, "fake-thv")
@@ -649,16 +618,12 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		err = ValidateDesktopAlignment()
 		assert.Error(t, err)
@@ -668,12 +633,16 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 
 //nolint:paralleltest // subtests modify HOME env var
 func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
-	t.Run("copy method returns no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+	t.Run("copy method on non-Windows returns no conflict", func(t *testing.T) { //nolint:paralleltest // modifies HOME
+		if runtime.GOOS == "windows" {
+			t.Skip("this test is for non-Windows platforms")
+		}
+
 		dir := t.TempDir()
 
 		// Create the .toolhive directory
-		toolhiveDir := filepath.Join(dir, ".toolhive")
-		require.NoError(t, os.MkdirAll(toolhiveDir, 0755))
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Write a marker file with copy method (no symlink target)
 		marker := CliSourceMarker{
@@ -685,20 +654,99 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 			InstalledAt:    "2026-01-22T10:30:00Z",
 			DesktopVersion: "2.0.0",
 		}
-		markerPath := filepath.Join(toolhiveDir, ".cli-source")
+		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(markerPath, data, 0600))
 
-		originalHome := os.Getenv("HOME")
-		t.Cleanup(func() {
-			os.Setenv("HOME", originalHome)
-		})
-		os.Setenv("HOME", dir)
+		setHomeDir(t, dir)
 
 		result, err := CheckDesktopAlignment()
 		require.NoError(t, err)
-		assert.False(t, result.HasConflict, "copy method should not cause conflict (validation skipped)")
+		assert.False(t, result.HasConflict, "copy method on non-Windows should not cause conflict (validation skipped)")
+	})
+
+	t.Run("copy method on Windows validates against LOCALAPPDATA path", func(t *testing.T) { //nolint:paralleltest // modifies env vars
+		if runtime.GOOS != "windows" {
+			t.Skip("this test is for Windows only")
+		}
+
+		dir := t.TempDir()
+
+		// Create the .toolhive directory for the marker file
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		// Create the LOCALAPPDATA directory structure and fake binary
+		localAppData := filepath.Join(dir, "AppData", "Local")
+		toolhiveBinDir := filepath.Join(localAppData, "ToolHive", "bin")
+		require.NoError(t, os.MkdirAll(toolhiveBinDir, 0755))
+
+		// Create a fake CLI binary in the expected location
+		fakeCLIPath := filepath.Join(toolhiveBinDir, "thv.exe")
+		require.NoError(t, os.WriteFile(fakeCLIPath, []byte("fake cli"), 0755))
+
+		// Write a marker file with copy method
+		marker := CliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "copy",
+			CLIVersion:     "1.0.0",
+			CLIChecksum:    "abc123",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(thDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		setHomeDir(t, dir)
+		t.Setenv("LOCALAPPDATA", localAppData)
+
+		result, err := CheckDesktopAlignment()
+		require.NoError(t, err)
+		// Should detect a conflict because current exe is not the fake CLI
+		assert.True(t, result.HasConflict, "copy method on Windows should detect conflict when running different CLI")
+	})
+
+	t.Run("copy method on Windows no conflict when target does not exist", func(t *testing.T) { //nolint:paralleltest // modifies env vars
+		if runtime.GOOS != "windows" {
+			t.Skip("this test is for Windows only")
+		}
+
+		dir := t.TempDir()
+
+		// Create the .toolhive directory for the marker file
+		thDir := filepath.Join(dir, ".toolhive")
+		require.NoError(t, os.MkdirAll(thDir, 0755))
+
+		// Set LOCALAPPDATA to a directory that does NOT have thv.exe
+		localAppData := filepath.Join(dir, "AppData", "Local")
+		require.NoError(t, os.MkdirAll(localAppData, 0755))
+
+		// Write a marker file with copy method
+		marker := CliSourceMarker{
+			SchemaVersion:  1,
+			Source:         "desktop",
+			InstallMethod:  "copy",
+			CLIVersion:     "1.0.0",
+			CLIChecksum:    "abc123",
+			InstalledAt:    "2026-01-22T10:30:00Z",
+			DesktopVersion: "2.0.0",
+		}
+		markerPath := filepath.Join(thDir, ".cli-source")
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(markerPath, data, 0600))
+
+		setHomeDir(t, dir)
+		t.Setenv("LOCALAPPDATA", localAppData)
+
+		result, err := CheckDesktopAlignment()
+		require.NoError(t, err)
+		// Should not conflict because the target binary doesn't exist
+		assert.False(t, result.HasConflict, "copy method on Windows should not conflict when target doesn't exist")
 	})
 }
 
@@ -744,4 +792,24 @@ func writeMarkerFileRaw(t *testing.T, dir string, marker map[string]any) string 
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0600))
 	return path
+}
+
+// setHomeDir sets the home directory environment variables for testing.
+// On Windows, it sets USERPROFILE; on Unix, it sets HOME.
+// It also cleans up after the test.
+func setHomeDir(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		originalUserProfile := os.Getenv("USERPROFILE")
+		t.Cleanup(func() {
+			os.Setenv("USERPROFILE", originalUserProfile)
+		})
+		os.Setenv("USERPROFILE", dir)
+	} else {
+		originalHome := os.Getenv("HOME")
+		t.Cleanup(func() {
+			os.Setenv("HOME", originalHome)
+		})
+		os.Setenv("HOME", dir)
+	}
 }

@@ -9,11 +9,11 @@ import (
 	"errors"
 	"net/http"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 // ErrRunConfigNotFound is returned when a run config cannot be found for a workload.
-var ErrRunConfigNotFound = thverrors.WithCode(
+var ErrRunConfigNotFound = httperr.WithCode(
 	errors.New("run config not found"),
 	http.StatusNotFound,
 )

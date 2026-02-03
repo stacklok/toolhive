@@ -7,28 +7,28 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 // Error types for container operations
 var (
 	// ErrContainerNotFound is returned when a container is not found
-	ErrContainerNotFound = errors.WithCode(fmt.Errorf("container not found"), http.StatusNotFound)
+	ErrContainerNotFound = httperr.WithCode(fmt.Errorf("container not found"), http.StatusNotFound)
 
 	// ErrMultipleContainersFound is returned when multiple containers are found
-	ErrMultipleContainersFound = errors.WithCode(fmt.Errorf("multiple containers found with same name"), http.StatusBadRequest)
+	ErrMultipleContainersFound = httperr.WithCode(fmt.Errorf("multiple containers found with same name"), http.StatusBadRequest)
 
 	// ErrContainerNotRunning is returned when a container is not running
-	ErrContainerNotRunning = errors.WithCode(fmt.Errorf("container not running"), http.StatusBadRequest)
+	ErrContainerNotRunning = httperr.WithCode(fmt.Errorf("container not running"), http.StatusBadRequest)
 
 	// ErrAttachFailed is returned when attaching to a container fails
-	ErrAttachFailed = errors.WithCode(fmt.Errorf("failed to attach to container"), http.StatusBadRequest)
+	ErrAttachFailed = httperr.WithCode(fmt.Errorf("failed to attach to container"), http.StatusBadRequest)
 
 	// ErrContainerExited is returned when a container has exited unexpectedly
-	ErrContainerExited = errors.WithCode(fmt.Errorf("container exited unexpectedly"), http.StatusBadRequest)
+	ErrContainerExited = httperr.WithCode(fmt.Errorf("container exited unexpectedly"), http.StatusBadRequest)
 
 	// ErrContainerRemoved is returned when a container has been removed
-	ErrContainerRemoved = errors.WithCode(fmt.Errorf("container removed"), http.StatusBadRequest)
+	ErrContainerRemoved = httperr.WithCode(fmt.Errorf("container removed"), http.StatusBadRequest)
 )
 
 // ContainerError represents an error related to container operations

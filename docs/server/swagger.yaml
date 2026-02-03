@@ -409,6 +409,7 @@ components:
       - kiro
       - antigravity
       - zed
+      - gemini-cli
       type: string
       x-enum-varnames:
       - RooCode
@@ -432,6 +433,7 @@ components:
       - Kiro
       - Antigravity
       - Zed
+      - GeminiCli
     client.MCPClientStatus:
       properties:
         client_type:

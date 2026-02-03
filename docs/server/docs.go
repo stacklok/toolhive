@@ -402,7 +402,8 @@ const docTemplate = `{
                     "opencode",
                     "kiro",
                     "antigravity",
-                    "zed"
+                    "zed",
+                    "gemini-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -426,7 +427,8 @@ const docTemplate = `{
                     "OpenCode",
                     "Kiro",
                     "Antigravity",
-                    "Zed"
+                    "Zed",
+                    "GeminiCli"
                 ]
             },
             "client.MCPClientStatus": {

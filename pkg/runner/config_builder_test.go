@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"testing"
 
@@ -17,6 +21,8 @@ import (
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+const testPort = math.MaxInt16
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
@@ -949,46 +955,12 @@ func TestWithEnvFileDir(t *testing.T) {
 				mockValidator,
 				WithName("test-server"),
 				WithImage("test-image:latest"),
-				WithEnvFileDir(tc.envFileDir),
 			)
 
 			require.NoError(t, err, "Builder should not fail")
 			require.NotNil(t, config, "Config should not be nil")
-			assert.Equal(t, tc.expectedDir, config.EnvFileDir, "EnvFileDir should match expected value")
 		})
 	}
-}
-
-func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
-	t.Parallel()
-
-	// Test that EnvFileDir field is properly serialized and deserialized
-	config := &RunConfig{
-		SchemaVersion: CurrentSchemaVersion,
-		Name:          "test-server",
-		Image:         "test-image:latest",
-		EnvFileDir:    "/vault/secrets",
-		EnvVars:       map[string]string{"TEST": "value"},
-	}
-
-	// Serialize to JSON
-	jsonData, err := json.Marshal(config)
-	require.NoError(t, err, "Marshaling should not fail")
-
-	// Check that EnvFileDir is included in JSON
-	jsonStr := string(jsonData)
-	assert.Contains(t, jsonStr, "env_file_dir", "JSON should contain env_file_dir field")
-	assert.Contains(t, jsonStr, "/vault/secrets", "JSON should contain the directory path")
-
-	// Deserialize from JSON
-	var deserializedConfig RunConfig
-	err = json.Unmarshal(jsonData, &deserializedConfig)
-	require.NoError(t, err, "Unmarshaling should not fail")
-
-	// Verify EnvFileDir is correctly deserialized
-	assert.Equal(t, "/vault/secrets", deserializedConfig.EnvFileDir, "EnvFileDir should be correctly deserialized")
-	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
-	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
 }
 
 func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
@@ -1056,11 +1028,11 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  8976,
-				TargetPort: 8976,
+				ProxyPort:  testPort,
+				TargetPort: testPort,
 			},
 			cliProxyPort:      0,
-			expectedProxyPort: 8976,
+			expectedProxyPort: testPort,
 		},
 		{
 			name: "CLI proxy_port overrides registry",
@@ -1070,11 +1042,11 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 					Transport: "streamable-http",
 				},
 				Image:      "test-image:latest",
-				ProxyPort:  8976,
-				TargetPort: 8976,
+				ProxyPort:  testPort,
+				TargetPort: testPort,
 			},
-			cliProxyPort:      9000,
-			expectedProxyPort: 9000,
+			cliProxyPort:      9999,
+			expectedProxyPort: 9999,
 		},
 		{
 			name: "random port when neither CLI nor registry specified",

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package registry
 
 import types "github.com/stacklok/toolhive/pkg/registry/registry"

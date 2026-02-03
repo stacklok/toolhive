@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package state
 
 import (
@@ -11,7 +14,7 @@ import (
 
 	"github.com/adrg/xdg"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 const (
@@ -66,7 +69,7 @@ func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, e
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errors.WithCode(fmt.Errorf("state '%s' not found", name), http.StatusNotFound)
+			return nil, httperr.WithCode(fmt.Errorf("state '%s' not found", name), http.StatusNotFound)
 		}
 		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}
@@ -81,6 +84,26 @@ func (s *LocalStore) GetWriter(_ context.Context, name string) (io.WriteCloser, 
 	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
+		return nil, fmt.Errorf("failed to create file: %w", err)
+	}
+
+	return file, nil
+}
+
+// CreateExclusive creates a new state entry exclusively, failing if it already exists.
+// This provides atomic check-and-create semantics using O_EXCL to prevent race conditions.
+func (s *LocalStore) CreateExclusive(_ context.Context, name string) (io.WriteCloser, error) {
+	filePath := s.getFilePath(name)
+	// O_EXCL with O_CREATE provides atomic check-and-create behavior
+	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, httperr.WithCode(
+				fmt.Errorf("state '%s' already exists", name),
+				http.StatusConflict,
+			)
+		}
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 

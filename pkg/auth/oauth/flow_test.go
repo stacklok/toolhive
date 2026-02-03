@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package oauth
 
 import (
@@ -928,4 +931,66 @@ func TestExtractJWTClaims_ErrorCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTokenRefreshAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock token server that tracks refresh attempts
+	refreshCalled := false
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		if r.Form.Get("grant_type") == "refresh_token" {
+			refreshCalled = true
+		}
+
+		response := map[string]interface{}{
+			"access_token":  "new-access-token",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "new-refresh-token",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		err = json.NewEncoder(w).Encode(response)
+		require.NoError(t, err)
+	}))
+	defer tokenServer.Close()
+
+	config := &Config{
+		ClientID: "test-client",
+		AuthURL:  "https://example.com/auth",
+		TokenURL: tokenServer.URL,
+	}
+
+	flow, err := NewFlow(config)
+	require.NoError(t, err)
+
+	// Create a context that we will cancel (simulating OAuth flow completion)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Process token with the cancellable context.
+	// Use an already-expired token to force refresh on next Token() call.
+	token := &oauth2.Token{
+		AccessToken:  "original-access-token",
+		RefreshToken: "test-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Hour), // Already expired
+	}
+
+	_ = flow.processToken(ctx, token)
+
+	// Cancel the context (simulates OAuth callback server shutdown)
+	cancel()
+
+	// Now attempt to get a token - this should trigger refresh.
+	// Before the fix: fails with "context canceled" because processToken
+	// stored a TokenSource using the now-cancelled ctx.
+	// After the fix: succeeds because processToken uses context.Background().
+	newToken, err := flow.tokenSource.Token()
+
+	require.NoError(t, err, "token refresh should succeed even after context cancellation")
+	assert.True(t, refreshCalled, "refresh endpoint should have been called")
+	assert.Equal(t, "new-access-token", newToken.AccessToken)
 }

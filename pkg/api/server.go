@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package api contains the REST API for ToolHive.
 package api
 
@@ -496,7 +499,7 @@ func (s *Server) shutdown() error {
 	}
 
 	s.cleanup()
-	logger.Infof("%s server stopped", s.addrType)
+	logger.Debugf("%s server stopped", s.addrType)
 	return nil
 }
 

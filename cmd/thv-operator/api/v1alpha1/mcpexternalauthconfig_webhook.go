@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1alpha1
 
 import (
@@ -54,33 +57,104 @@ func (*MCPExternalAuthConfig) ValidateDelete(_ context.Context, _ runtime.Object
 
 // validate performs validation on the MCPExternalAuthConfig spec
 func (r *MCPExternalAuthConfig) validate() error {
+	// Ensure the correct configuration is set for the selected type
+	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
+		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
+	}
+	if (r.Spec.HeaderInjection == nil) == (r.Spec.Type == ExternalAuthTypeHeaderInjection) {
+		return fmt.Errorf("headerInjection configuration must be set if and only if type is 'headerInjection'")
+	}
+	if (r.Spec.BearerToken == nil) == (r.Spec.Type == ExternalAuthTypeBearerToken) {
+		return fmt.Errorf("bearerToken configuration must be set if and only if type is 'bearerToken'")
+	}
+	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
+		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
+	}
+	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
+		if r.Spec.TokenExchange != nil ||
+			r.Spec.HeaderInjection != nil ||
+			r.Spec.BearerToken != nil ||
+			r.Spec.EmbeddedAuthServer != nil {
+			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+		}
+	}
+
+	// Delegate to type-specific validation
 	switch r.Spec.Type {
 	case ExternalAuthTypeTokenExchange:
-		if r.Spec.TokenExchange == nil {
-			return fmt.Errorf("tokenExchange configuration is required when type is 'tokenExchange'")
-		}
-		if r.Spec.HeaderInjection != nil {
-			return fmt.Errorf("headerInjection must not be set when type is 'tokenExchange'")
-		}
-
+		return r.validateTokenExchange()
 	case ExternalAuthTypeHeaderInjection:
-		if r.Spec.HeaderInjection == nil {
-			return fmt.Errorf("headerInjection configuration is required when type is 'headerInjection'")
-		}
-		if r.Spec.TokenExchange != nil {
-			return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
-		}
-
+		return r.validateHeaderInjection()
+	case ExternalAuthTypeBearerToken:
+		return r.validateBearerToken()
 	case ExternalAuthTypeUnauthenticated:
-		if r.Spec.TokenExchange != nil {
-			return fmt.Errorf("tokenExchange must not be set when type is 'unauthenticated'")
-		}
-		if r.Spec.HeaderInjection != nil {
-			return fmt.Errorf("headerInjection must not be set when type is 'unauthenticated'")
-		}
-
+		return r.validateUnauthenticated()
+	case ExternalAuthTypeEmbeddedAuthServer:
+		return r.validateEmbeddedAuthServer()
 	default:
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
+	}
+}
+
+// validateTokenExchange validates tokenExchange type configuration
+func (*MCPExternalAuthConfig) validateTokenExchange() error {
+	return nil
+}
+
+// validateHeaderInjection validates headerInjection type configuration
+func (*MCPExternalAuthConfig) validateHeaderInjection() error {
+	return nil
+}
+
+// validateBearerToken validates bearerToken type configuration
+func (*MCPExternalAuthConfig) validateBearerToken() error {
+	return nil
+}
+
+// validateUnauthenticated validates unauthenticated type configuration
+func (*MCPExternalAuthConfig) validateUnauthenticated() error {
+	return nil
+}
+
+// validateEmbeddedAuthServer validates embeddedAuthServer type configuration
+func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
+	// Validate upstream providers
+	cfg := r.Spec.EmbeddedAuthServer
+	if cfg == nil {
+		return nil
+	}
+
+	// Note: MinItems=1 is enforced by kubebuilder markers,
+	// but we add runtime validation for clarity and future-proofing
+	if len(cfg.UpstreamProviders) == 0 {
+		return fmt.Errorf("at least one upstream provider is required")
+	}
+	// Note: we add runtime validation for 'max items = 1' here since multi-provider support is not yet implemented.
+	if len(cfg.UpstreamProviders) > 1 {
+		return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
+	}
+
+	for i, provider := range cfg.UpstreamProviders {
+		if err := r.validateUpstreamProvider(i, &provider); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateUpstreamProvider validates a single upstream provider configuration
+func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
+	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
+
+	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
+		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	}
+	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
+		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
+	}
+	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
+		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
 	return nil

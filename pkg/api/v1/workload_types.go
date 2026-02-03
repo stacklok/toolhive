@@ -1,7 +1,11 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -9,6 +13,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // workloadListResponse represents the response for listing workloads
@@ -72,6 +78,10 @@ type updateRequest struct {
 	URL         string             `json:"url,omitempty"`
 	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
 	Headers     []*registry.Header `json:"headers,omitempty"`
+
+	// HeaderForward configures headers to inject into requests to remote MCP servers.
+	// Use this to add custom headers like X-Tenant-ID or correlation IDs.
+	HeaderForward *headerForwardConfig `json:"header_forward,omitempty"`
 }
 
 // toolOverride represents a tool override
@@ -82,6 +92,20 @@ type toolOverride struct {
 	Name string `json:"name,omitempty"`
 	// Description of the tool
 	Description string `json:"description,omitempty"`
+}
+
+// headerForwardConfig represents header forward configuration for API requests/responses
+//
+//	@Description	Configuration for injecting headers into requests to remote MCP servers
+type headerForwardConfig struct {
+	// AddPlaintextHeaders contains literal header values to inject.
+	// WARNING: These values are stored and transmitted in plaintext.
+	// Use AddHeadersFromSecret for sensitive data like API keys.
+	AddPlaintextHeaders map[string]string `json:"add_plaintext_headers,omitempty"`
+
+	// AddHeadersFromSecret maps header names to secret names in ToolHive's secrets manager.
+	// Key: HTTP header name, Value: secret name in the secrets manager
+	AddHeadersFromSecret map[string]string `json:"add_headers_from_secret,omitempty"`
 }
 
 // remoteOAuthConfig represents OAuth configuration for remote servers
@@ -259,6 +283,15 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 		}
 	}
 
+	// Convert HeaderForward from RunConfig
+	var headerForward *headerForwardConfig
+	if runConfig.HeaderForward != nil {
+		headerForward = &headerForwardConfig{
+			AddPlaintextHeaders:  runConfig.HeaderForward.AddPlaintextHeaders,
+			AddHeadersFromSecret: runConfig.HeaderForward.AddHeadersFromSecret,
+		}
+	}
+
 	return &createRequest{
 		updateRequest: updateRequest{
 			Image:             runConfig.Image,
@@ -282,7 +315,58 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			URL:               runConfig.RemoteURL,
 			OAuthConfig:       oAuthConfig,
 			Headers:           headers,
+			HeaderForward:     headerForward,
 		},
 		Name: runConfig.Name,
 	}
+}
+
+// validateHeaderForwardConfig validates the header forward configuration.
+// Returns an error if any header name is restricted/invalid or any value contains control characters.
+func validateHeaderForwardConfig(config *headerForwardConfig) error {
+	if config == nil {
+		return nil
+	}
+
+	// Validate plaintext headers (both name and value)
+	for name, value := range config.AddPlaintextHeaders {
+		if err := validateHeaderName(name); err != nil {
+			return err
+		}
+		// Validate value for CRLF injection and control characters per RFC 7230
+		if value != "" {
+			if err := validation.ValidateHTTPHeaderValue(value); err != nil {
+				return fmt.Errorf("invalid header value for %q: %w", name, err)
+			}
+		}
+	}
+
+	// Validate secret-backed header names (values are validated at resolution time)
+	for name := range config.AddHeadersFromSecret {
+		if err := validateHeaderName(name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateHeaderName checks if a header name is valid per RFC 7230 and not restricted.
+func validateHeaderName(name string) error {
+	if name == "" {
+		return fmt.Errorf("header name cannot be empty")
+	}
+
+	// Validate header name format per RFC 7230
+	if err := validation.ValidateHTTPHeaderName(name); err != nil {
+		return fmt.Errorf("invalid header name %q: %w", name, err)
+	}
+
+	// Check for restricted headers using canonical form
+	canonical := http.CanonicalHeaderKey(name)
+	if middleware.RestrictedHeaders[canonical] {
+		return fmt.Errorf("header %q is restricted and cannot be configured for forwarding", name)
+	}
+
+	return nil
 }

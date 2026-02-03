@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package authz provides authorization utilities for MCP servers.
 // It supports a pluggable authorizer architecture where different authorization
 // backends (e.g., Cedar, OPA) can be registered and used based on configuration.
@@ -19,20 +22,61 @@ import (
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
+// Methods with empty Feature and Operation are always allowed (protocol-level).
+// Methods not in this map are denied by default for security.
 var MCPMethodToFeatureOperation = map[string]struct {
 	Feature   authorizers.MCPFeature
 	Operation authorizers.MCPOperation
 }{
-	"tools/call":      {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall},
-	"tools/list":      {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationList},
-	"prompts/get":     {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationGet},
-	"prompts/list":    {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationList},
-	"resources/read":  {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
-	"resources/list":  {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
-	"features/list":   {Feature: "", Operation: authorizers.MCPOperationList},
-	"ping":            {Feature: "", Operation: ""}, // Always allowed
-	"progress/update": {Feature: "", Operation: ""}, // Always allowed
-	"initialize":      {Feature: "", Operation: ""}, // Always allowed
+	// Core protocol methods - always allowed
+	"initialize":      {Feature: "", Operation: ""}, // Protocol initialization
+	"ping":            {Feature: "", Operation: ""}, // Health check
+	"progress/update": {Feature: "", Operation: ""}, // Progress reporting
+
+	// Tool operations - require authorization
+	"tools/call": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall},
+	"tools/list": {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationList},
+
+	// Prompt operations - require authorization
+	"prompts/get":  {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationGet},
+	"prompts/list": {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationList},
+
+	// Resource operations - require authorization
+	"resources/read":           {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+	"resources/list":           {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
+	"resources/templates/list": {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
+	"resources/subscribe":      {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+	"resources/unsubscribe":    {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+
+	// Discovery and capability methods - always allowed
+	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
+	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
+
+	// Logging and client preferences - always allowed
+	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging
+
+	// Argument completion - always allowed (UX feature)
+	"completion/complete": {Feature: "", Operation: ""}, // Argument completion for prompts/resources
+
+	// Notifications (server-to-client, informational) - always allowed
+	"notifications/message":                {Feature: "", Operation: ""}, // General notifications
+	"notifications/initialized":            {Feature: "", Operation: ""}, // Initialization complete
+	"notifications/progress":               {Feature: "", Operation: ""}, // Progress updates
+	"notifications/cancelled":              {Feature: "", Operation: ""}, // Request cancellation
+	"notifications/roots/list_changed":     {Feature: "", Operation: ""}, // Roots changed
+	"notifications/tools/list_changed":     {Feature: "", Operation: ""}, // Tools changed
+	"notifications/prompts/list_changed":   {Feature: "", Operation: ""}, // Prompts changed
+	"notifications/resources/list_changed": {Feature: "", Operation: ""}, // Resources changed
+	"notifications/resources/updated":      {Feature: "", Operation: ""}, // Resource updated
+	"notifications/tasks/status":           {Feature: "", Operation: ""}, // Task status update
+
+	// NOTE: The following MCP methods are NOT included and will be DENIED by default:
+	// - elicitation/create: User input prompting (requires new authorization feature)
+	// - sampling/createMessage: LLM text generation (security-sensitive, requires new authorization feature)
+	// - tasks/list, tasks/get, tasks/cancel, tasks/result: Task management (requires new authorization feature)
+	//
+	// To enable these methods, add appropriate authorization features/operations or add them
+	// to the always-allowed list above after security review.
 }
 
 // shouldSkipInitialAuthorization checks if the request should skip authorization
@@ -150,7 +194,15 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 		// Get the feature and operation from the method
 		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
-			// Unknown method, let the next handler deal with it
+			// Unknown method - deny by default for security
+			// Methods must be explicitly added to MCPMethodToFeatureOperation to be allowed
+			handleUnauthorized(w, parsedRequest.ID,
+				fmt.Errorf("unknown MCP method: %s (not configured for authorization)", parsedRequest.Method))
+			return
+		}
+
+		// Methods with empty feature and operation are always allowed (protocol-level)
+		if featureOp.Feature == "" && featureOp.Operation == "" {
 			next.ServeHTTP(w, r)
 			return
 		}

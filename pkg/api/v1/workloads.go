@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -8,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -102,7 +105,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) e
 	// Apply group filtering if specified
 	if groupFilter != "" {
 		if err := validation.ValidateGroupName(groupFilter); err != nil {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("invalid group name: %w", err),
 				http.StatusBadRequest,
 			)
@@ -143,7 +146,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) err
 	// Load the workload configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("workload configuration not found: %w", err),
 			http.StatusNotFound,
 		)
@@ -169,11 +172,18 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) err
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/stop [post]
 func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
 
 	// Use the bulk method with a single workload
 	// Use background context since this is async operation
-	_, err := s.workloadManager.StopWorkloads(context.Background(), []string{name})
+	_, err = s.workloadManager.StopWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -192,11 +202,19 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) er
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/restart [post]
 func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
 
 	// Use the bulk method with a single workload
 	// Note: In the API, we always assume that the restart is a background operation
-	_, err := s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
+	// Use background context since this is async operation
+	_, err = s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -215,11 +233,18 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
 
 	// Use the bulk method with a single workload
 	// Use background context since this is an async operation
-	_, err := s.workloadManager.DeleteWorkloads(context.Background(), []string{name})
+	_, err = s.workloadManager.DeleteWorkloads(context.Background(), []string{name})
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
@@ -243,10 +268,24 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
+	}
+
+	// Validate that image or URL is provided
+	if req.Image == "" && req.URL == "" {
+		return httperr.WithCode(
+			fmt.Errorf("either 'image' or 'url' field is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Validate workload name (strict validation, no sanitization)
+	// The JSON decoder sets req.Name to "" by default, so we need to validate it
+	if err := wt.ValidateWorkloadName(req.Name); err != nil {
+		return err // ErrInvalidWorkloadName already has 400 status code
 	}
 
 	// check if the workload already exists
@@ -256,7 +295,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 			return fmt.Errorf("failed to check if workload exists: %w", err)
 		}
 		if exists {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("workload with name %s already exists", req.Name),
 				http.StatusConflict,
 			)
@@ -302,7 +341,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	// Parse request body
 	var updateReq updateRequest
 	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid JSON: %w", err),
 			http.StatusBadRequest,
 		)
@@ -356,23 +395,24 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
+	// Use background context since this is async operation (handles partial failures gracefully)
 	_, err = s.workloadManager.StopWorkloads(context.Background(), workloadNames)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
@@ -396,24 +436,25 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	// Note: In the API, we always assume that the restart is a background operation.
+	// Use background context since this is async operation (handles partial failures gracefully)
 	_, err = s.workloadManager.RestartWorkloads(context.Background(), workloadNames, false)
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
@@ -437,19 +478,19 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
@@ -516,7 +557,7 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 
 	logs, err := s.workloadManager.GetProxyLogs(ctx, name, maxAPILogLines)
 	if err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("proxy logs not found for workload: %w", err),
 			http.StatusNotFound,
 		)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package app provides the entry point for the vmcp command-line application.
 package app
 
@@ -9,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -27,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -183,6 +188,17 @@ func getVersion() string {
 	return "dev"
 }
 
+// getStatusReportingInterval extracts the status reporting interval from config.
+// Returns 0 if not configured, which will use the default interval.
+func getStatusReportingInterval(cfg *config.Config) time.Duration {
+	if cfg.Operational != nil &&
+		cfg.Operational.FailureHandling != nil &&
+		cfg.Operational.FailureHandling.StatusReportingInterval > 0 {
+		return time.Duration(cfg.Operational.FailureHandling.StatusReportingInterval)
+	}
+	return 0
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("Loading configuration from: %s", configPath)
@@ -306,8 +322,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create conflict resolver: %w", err)
 	}
 
-	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
+	// If telemetry is configured, create the provider early so aggregator can use it
+	var telemetryProvider *telemetry.Provider
+	if cfg.Telemetry != nil {
+		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry provider: %w", err)
+		}
+		defer func() {
+			err := telemetryProvider.Shutdown(ctx)
+			if err != nil {
+				logger.Errorf("failed to shutdown telemetry provider: %v", err)
+			}
+		}()
+	}
+
+	// Create aggregator with tracer provider (nil if telemetry not configured)
+	var tracerProvider trace.TracerProvider
+	if telemetryProvider != nil {
+		tracerProvider = telemetryProvider.TracerProvider()
+	}
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
@@ -377,21 +412,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
-	// If telemetry is configured, create the provider.
-	var telemetryProvider *telemetry.Provider
-	if cfg.Telemetry != nil {
-		var err error
-		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-		defer func() {
-			err := telemetryProvider.Shutdown(ctx)
-			if err != nil {
-				logger.Errorf("failed to shutdown telemetry provider: %v", err)
-			}
-		}()
-	}
+	// Note: telemetryProvider was already created earlier (before aggregator creation)
+	// to enable tracing in the aggregator
 
 	// Configure health monitoring if enabled
 	var healthMonitorConfig *health.MonitorConfig
@@ -414,18 +436,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Create status reporter using factory (auto-detects K8s vs CLI mode)
+	statusReporter, err := vmcpstatus.NewReporter()
+	if err != nil {
+		return fmt.Errorf("failed to create status reporter: %w", err)
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:                cfg.Name,
-		Version:             getVersion(),
-		GroupRef:            cfg.Group,
-		Host:                host,
-		Port:                port,
-		AuthMiddleware:      authMiddleware,
-		AuthInfoHandler:     authInfoHandler,
-		TelemetryProvider:   telemetryProvider,
-		AuditConfig:         cfg.Audit,
-		HealthMonitorConfig: healthMonitorConfig,
-		Watcher:             backendWatcher,
+		Name:                    cfg.Name,
+		Version:                 getVersion(),
+		GroupRef:                cfg.Group,
+		Host:                    host,
+		Port:                    port,
+		AuthMiddleware:          authMiddleware,
+		AuthInfoHandler:         authInfoHandler,
+		TelemetryProvider:       telemetryProvider,
+		AuditConfig:             cfg.Audit,
+		HealthMonitorConfig:     healthMonitorConfig,
+		StatusReportingInterval: getStatusReportingInterval(cfg),
+		Watcher:                 backendWatcher,
+		StatusReporter:          statusReporter,
 	}
 
 	if cfg.Optimizer != nil {

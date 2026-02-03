@@ -33,5 +33,29 @@
       "description": "API version to use",
       "required": false
     }
-  ]
+  ],
+  "env_vars": [
+    {
+      "name": "API_ENDPOINT",
+      "description": "Base URL for API calls",
+      "required": false,
+      "default": "https://api.example.com"
+    },
+    {
+      "name": "CLIENT_SECRET",
+      "description": "Client secret for OAuth",
+      "required": true,
+      "secret": true
+    }
+  ],
+  "oauth_config": {
+    "issuer": "https://auth.example.com",
+    "client_id": "example-client",
+    "scopes": ["openid", "profile"]
+  },
+  "custom_metadata": {
+    "provider": "Example Corp",
+    "api_version": "v2",
+    "rate_limit": 1000
+  }
 }

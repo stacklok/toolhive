@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -5,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -91,6 +96,12 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	follow := viper.GetBool("follow")
 	proxy := viper.GetBool("proxy")
 
+	if follow {
+		var cancel context.CancelFunc
+		ctx, cancel = signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+	}
+
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
@@ -98,7 +109,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	if proxy {
 		if follow {
-			return getProxyLogs(workloadName)
+			return getProxyLogs(ctx, workloadName)
 		}
 		// Use the shared manager method for non-follow proxy logs
 		// CLI gets all logs (0 = unlimited)
@@ -115,8 +126,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	logs, err := manager.GetLogs(ctx, workloadName, follow, 0)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
-			logger.Infof("Workload %s not found", workloadName)
-			return nil
+			return fmt.Errorf("container logs for workload %s not found, use --proxy to get proxy logs", workloadName)
 		}
 		return fmt.Errorf("failed to get logs for workload %s: %w", workloadName, err)
 	}
@@ -144,7 +154,7 @@ func logsPruneCmdFunc(cmd *cobra.Command) error {
 	}
 
 	if len(logFiles) == 0 {
-		logger.Info("No log files found")
+		fmt.Println("No log files found")
 		return nil
 	}
 
@@ -161,7 +171,7 @@ func getLogsDirectory() (string, error) {
 	}
 
 	if _, err := os.Stat(logsDir); os.IsNotExist(err) {
-		logger.Info("No logs directory found, nothing to prune")
+		fmt.Println("No logs directory found, nothing to prune")
 		return "", nil
 	}
 
@@ -216,7 +226,7 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 				logger.Warnf("Failed to remove log file %s: %v", logFile, err)
 			} else {
 				prunedFiles = append(prunedFiles, logFile)
-				logger.Infof("Removed log file: %s", logFile)
+				logger.Debugf("Removed log file: %s", logFile)
 			}
 		}
 	}
@@ -226,9 +236,9 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 
 func reportPruneResults(prunedFiles, errs []string) {
 	if len(prunedFiles) == 0 {
-		logger.Info("No orphaned log files found to prune")
+		fmt.Println("No orphaned log files found to prune")
 	} else {
-		logger.Infof("Successfully pruned %d log file(s)", len(prunedFiles))
+		logger.Debugf("Successfully pruned %d log file(s)", len(prunedFiles))
 		for _, file := range prunedFiles {
 			fmt.Printf("Removed: %s\n", file)
 		}
@@ -243,7 +253,7 @@ func reportPruneResults(prunedFiles, errs []string) {
 }
 
 // getProxyLogs reads and displays the proxy logs for a given workload in follow mode
-func getProxyLogs(workloadName string) error {
+func getProxyLogs(ctx context.Context, workloadName string) error {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -259,11 +269,11 @@ func getProxyLogs(workloadName string) error {
 		return nil
 	}
 
-	return followProxyLogFile(cleanLogFilePath)
+	return followProxyLogFile(ctx, cleanLogFilePath)
 }
 
 // followProxyLogFile implements tail -f functionality for proxy logs
-func followProxyLogFile(logFilePath string) error {
+func followProxyLogFile(ctx context.Context, logFilePath string) error {
 	// Clean the file path to prevent path traversal
 	cleanLogFilePath := filepath.Clean(logFilePath)
 
@@ -292,6 +302,11 @@ func followProxyLogFile(logFilePath string) error {
 	}
 
 	// Follow the file for new content
+	contentCheckInterval := 100 * time.Millisecond
+
+	ticker := time.NewTicker(contentCheckInterval)
+	defer ticker.Stop()
+
 	for {
 		// Read any new content
 		buffer := make([]byte, 1024)
@@ -304,7 +319,12 @@ func followProxyLogFile(logFilePath string) error {
 			fmt.Print(string(buffer[:n]))
 		}
 
-		// Sleep briefly before checking for more content
-		time.Sleep(100 * time.Millisecond)
+		// Wait for next iteration or cancellation
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			// Continue to next iteration
+		}
 	}
 }

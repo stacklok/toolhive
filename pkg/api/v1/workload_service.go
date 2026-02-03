@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -134,6 +137,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Validate header forward configuration
+	if err := validateHeaderForwardConfig(req.HeaderForward); err != nil {
+		return nil, fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err)
+	}
+
 	// Default group if not specified
 	groupName := req.Group
 	if groupName == "" {
@@ -260,6 +268,16 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
+	}
+
+	// Add header forward configuration if specified
+	if req.HeaderForward != nil {
+		if len(req.HeaderForward.AddPlaintextHeaders) > 0 {
+			options = append(options, runner.WithHeaderForward(req.HeaderForward.AddPlaintextHeaders))
+		}
+		if len(req.HeaderForward.AddHeadersFromSecret) > 0 {
+			options = append(options, runner.WithHeaderForwardSecrets(req.HeaderForward.AddHeadersFromSecret))
+		}
 	}
 
 	// Add existing port if provided (for update operations)

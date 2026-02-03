@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package types contains types and validation functions for workloads in ToolHive.
 // This is separated to avoid circular dependencies with the core package.
 package types
@@ -10,11 +13,11 @@ import (
 	"regexp"
 	"strings"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
-var ErrInvalidWorkloadName = thverrors.WithCode(
+var ErrInvalidWorkloadName = httperr.WithCode(
 	errors.New("invalid workload name"),
 	http.StatusBadRequest,
 )

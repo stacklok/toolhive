@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package oidc
 
 import (
@@ -403,6 +406,45 @@ func TestResolve_ConfigMapType(t *testing.T) {
 			},
 			expected: nil,
 		},
+		{
+			name: "configmap with caBundleRef",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "oidc-config",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
+								},
+							},
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":   "https://auth.example.com",
+					"audience": "test-audience",
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:          "https://auth.example.com",
+				Audience:        "test-audience",
+				ResourceURL:     "http://test-server.test-ns.svc.cluster.local:8080",
+				ThvCABundlePath: "/config/certs/ca-bundle/ca.crt",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -750,6 +792,87 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, config)
+		})
+	}
+}
+
+func TestResolve_InlineWithCABundleRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mcpServer *mcpv1alpha1.MCPServer
+		expected  *OIDCConfig
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name: "valid caBundleRef",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://example.com",
+							Audience: "test-audience",
+							CABundleRef: &mcpv1alpha1.CABundleSource{
+								ConfigMapRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:          "https://example.com",
+				Audience:        "test-audience",
+				ResourceURL:     "http://test-server.test-ns.svc.cluster.local:8080",
+				ThvCABundlePath: "/config/certs/ca-bundle/ca.crt",
+			},
+		},
+		{
+			name: "caBundleRef without configMapRef fails",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:      "https://example.com",
+							Audience:    "test-audience",
+							CABundleRef: &mcpv1alpha1.CABundleSource{},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "configMapRef must be specified in caBundleRef",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolver := NewResolver(nil)
+			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, config)
+			}
 		})
 	}
 }

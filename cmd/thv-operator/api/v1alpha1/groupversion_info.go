@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
 // +kubebuilder:object:generate=true
 // +groupName=toolhive.stacklok.dev

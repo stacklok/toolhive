@@ -65,7 +65,7 @@ metadata:
     environment: production
 spec:
   groupRef: production-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
   - name: TRANSPORT
@@ -114,7 +114,7 @@ metadata:
     environment: production
 spec:
   groupRef: production-services
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
   - name: TRANSPORT

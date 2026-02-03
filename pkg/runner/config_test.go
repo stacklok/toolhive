@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
@@ -14,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -674,7 +678,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
-				"toolhive-transport": "sse", // Should be "sse" not "stdio"
+				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
 		},
@@ -691,7 +695,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
-				"toolhive-transport": "streamable-http", // Should be "streamable-http" not "stdio"
+				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
 		},
@@ -951,6 +955,10 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 			"env1": "value1",
 			"env2": "value2",
 		},
+		HeaderForward: &HeaderForwardConfig{
+			AddPlaintextHeaders:  map[string]string{"X-Static": "static-val"},
+			AddHeadersFromSecret: map[string]string{"X-Secret": "my-secret-name"},
+		},
 	}
 
 	// Write the config to a buffer
@@ -974,6 +982,9 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	assert.Equal(t, originalConfig.Debug, readConfig.Debug, "Debug should match")
 	assert.Equal(t, originalConfig.ContainerLabels, readConfig.ContainerLabels, "ContainerLabels should match")
 	assert.Equal(t, originalConfig.EnvVars, readConfig.EnvVars, "EnvVars should match")
+	require.NotNil(t, readConfig.HeaderForward, "HeaderForward should not be nil")
+	assert.Equal(t, originalConfig.HeaderForward.AddPlaintextHeaders, readConfig.HeaderForward.AddPlaintextHeaders, "AddPlaintextHeaders should match")
+	assert.Equal(t, originalConfig.HeaderForward.AddHeadersFromSecret, readConfig.HeaderForward.AddHeadersFromSecret, "AddHeadersFromSecret should match")
 }
 
 func TestCommaSeparatedEnvVars(t *testing.T) {
@@ -1562,7 +1573,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 
 		// Extract environment variables (simulating proxy runner extraction)
 		var extractedEnvVars []string
-		if config != nil && config.TelemetryConfig != nil {
+		if config.TelemetryConfig != nil {
 			extractedEnvVars = config.TelemetryConfig.EnvironmentVariables
 		}
 
@@ -1579,7 +1590,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 		// Test with nil config (should not panic)
 		var nilConfig *RunConfig
 		var extractedEnvVars []string
-		if nilConfig != nil && nilConfig.TelemetryConfig != nil {
+		if nilConfig != nil {
 			extractedEnvVars = nilConfig.TelemetryConfig.EnvironmentVariables
 		}
 		assert.Nil(t, extractedEnvVars, "Should handle nil config gracefully")
@@ -1589,7 +1600,7 @@ func TestRunConfig_TelemetryEnvironmentVariablesPreservation(t *testing.T) {
 			Transport: types.TransportTypeStdio,
 		}
 		var extractedFromNilTelemetry []string
-		if configWithNilTelemetry != nil && configWithNilTelemetry.TelemetryConfig != nil {
+		if configWithNilTelemetry.TelemetryConfig != nil {
 			extractedFromNilTelemetry = configWithNilTelemetry.TelemetryConfig.EnvironmentVariables
 		}
 		assert.Nil(t, extractedFromNilTelemetry, "Should handle nil telemetry config gracefully")
@@ -1764,6 +1775,162 @@ func TestRunConfig_WithPorts_PortReuse(t *testing.T) {
 	})
 }
 
+func TestHeaderForwardConfig_HasHeaders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		config *HeaderForwardConfig
+		want   bool
+	}{
+		{
+			name:   "nil receiver",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "empty struct",
+			config: &HeaderForwardConfig{},
+			want:   false,
+		},
+		{
+			name:   "empty maps",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{}, AddHeadersFromSecret: map[string]string{}},
+			want:   false,
+		},
+		{
+			name:   "plaintext only",
+			config: &HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Key": "val"}},
+			want:   true,
+		},
+		{
+			name:   "secret only",
+			config: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{"X-Key": "secret-name"}},
+			want:   true,
+		},
+		{
+			name: "both set",
+			config: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-A": "a"},
+				AddHeadersFromSecret: map[string]string{"X-B": "secret-b"},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.config.HasHeaders())
+		})
+	}
+}
+
+func TestRunConfig_resolveHeaderForwardSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		headerForward *HeaderForwardConfig
+		mockSecrets   map[string]string
+		mockErrors    map[string]error
+		wantErr       bool
+		wantResolved  map[string]string
+		wantPlaintext map[string]string // verifies AddPlaintextHeaders is NOT mutated
+	}{
+		{
+			name:          "nil HeaderForward",
+			headerForward: nil,
+			wantErr:       false,
+		},
+		{
+			name:          "empty AddHeadersFromSecret",
+			headerForward: &HeaderForwardConfig{AddHeadersFromSecret: map[string]string{}},
+			wantErr:       false,
+		},
+		{
+			name: "single secret resolved",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"Authorization": "my-api-key"},
+			},
+			mockSecrets:  map[string]string{"my-api-key": "Bearer token123"},
+			wantErr:      false,
+			wantResolved: map[string]string{"Authorization": "Bearer token123"},
+		},
+		{
+			name: "multiple secrets",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-Api-Key": "api-secret",
+					"X-Token":   "token-secret",
+				},
+			},
+			mockSecrets: map[string]string{
+				"api-secret":   "key-value",
+				"token-secret": "token-value",
+			},
+			wantErr:      false,
+			wantResolved: map[string]string{"X-Api-Key": "key-value", "X-Token": "token-value"},
+		},
+		{
+			name: "secret resolution error",
+			headerForward: &HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Key": "missing-secret"},
+			},
+			mockErrors: map[string]error{"missing-secret": fmt.Errorf("secret not found")},
+			wantErr:    true,
+		},
+		{
+			name: "merges into existing plaintext headers without mutating them",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Existing": "existing-value"},
+				AddHeadersFromSecret: map[string]string{"X-New": "new-secret"},
+			},
+			mockSecrets:   map[string]string{"new-secret": "resolved-value"},
+			wantErr:       false,
+			wantResolved:  map[string]string{"X-Existing": "existing-value", "X-New": "resolved-value"},
+			wantPlaintext: map[string]string{"X-Existing": "existing-value"},
+		},
+		{
+			name: "secret overrides plaintext for same header name",
+			headerForward: &HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Auth": "plaintext"},
+				AddHeadersFromSecret: map[string]string{"X-Auth": "auth-secret"},
+			},
+			mockSecrets:  map[string]string{"auth-secret": "secret-value"},
+			wantResolved: map[string]string{"X-Auth": "secret-value"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+
+			secretManager := secretsmocks.NewMockProvider(ctrl)
+			for name, val := range tc.mockSecrets {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return(val, nil)
+			}
+			for name, retErr := range tc.mockErrors {
+				secretManager.EXPECT().GetSecret(gomock.Any(), name).Return("", retErr)
+			}
+
+			cfg := &RunConfig{HeaderForward: tc.headerForward}
+			err := cfg.resolveHeaderForwardSecrets(context.Background(), secretManager)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantResolved != nil {
+				require.NotNil(t, cfg.HeaderForward)
+				assert.Equal(t, tc.wantResolved, cfg.HeaderForward.ResolvedHeaders())
+			}
+			if tc.wantPlaintext != nil {
+				assert.Equal(t, tc.wantPlaintext, cfg.HeaderForward.AddPlaintextHeaders,
+					"AddPlaintextHeaders should not be mutated by secret resolution")
+			}
+		})
+	}
+}
+
 // TestWithExistingPort tests the WithExistingPort builder option
 func TestWithExistingPort(t *testing.T) {
 	t.Parallel()
@@ -1805,4 +1972,291 @@ func TestWithExistingPort(t *testing.T) {
 			assert.Equal(t, tc.expected, builder.config.existingPort, "existingPort should be set correctly")
 		})
 	}
+}
+
+// TestWithEmbeddedAuthServerConfig tests the WithEmbeddedAuthServerConfig builder option
+func TestWithEmbeddedAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		authConfig := &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "https://auth.example.com",
+			SigningKeyConfig: &authserver.SigningKeyRunConfig{
+				KeyDir:         "/etc/keys",
+				SigningKeyFile: "key-0.pem",
+			},
+			HMACSecretFiles: []string{"/etc/hmac/hmac-0"},
+			TokenLifespans: &authserver.TokenLifespanRunConfig{
+				AccessTokenLifespan:  "1h",
+				RefreshTokenLifespan: "168h",
+				AuthCodeLifespan:     "10m",
+			},
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "okta",
+					Type: authserver.UpstreamProviderTypeOIDC,
+					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+						IssuerURL:          "https://okta.example.com",
+						ClientID:           "client-id",
+						ClientSecretEnvVar: "UPSTREAM_CLIENT_SECRET",
+						Scopes:             []string{"openid", "profile"},
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://api.example.com"},
+		}
+
+		builder := &runConfigBuilder{
+			config: &RunConfig{},
+		}
+
+		option := WithEmbeddedAuthServerConfig(authConfig)
+		err := option(builder)
+
+		assert.NoError(t, err, "WithEmbeddedAuthServerConfig should not return an error")
+		assert.Equal(t, authConfig, builder.config.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be set correctly")
+	})
+
+	t.Run("sets nil embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		builder := &runConfigBuilder{
+			config: &RunConfig{},
+		}
+
+		option := WithEmbeddedAuthServerConfig(nil)
+		err := option(builder)
+
+		assert.NoError(t, err, "WithEmbeddedAuthServerConfig should not return an error for nil config")
+		assert.Nil(t, builder.config.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be nil")
+	})
+}
+
+// TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer tests serialization of EmbeddedAuthServerConfig
+func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("serializes and deserializes with embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "test-server",
+			Image:         "test-image:latest",
+			Transport:     types.TransportTypeSSE,
+			Port:          60000,
+			TargetPort:    60001,
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "https://auth.example.com",
+				SigningKeyConfig: &authserver.SigningKeyRunConfig{
+					KeyDir:           "/etc/toolhive/authserver/keys",
+					SigningKeyFile:   "key-0.pem",
+					FallbackKeyFiles: []string{"key-1.pem", "key-2.pem"},
+				},
+				HMACSecretFiles: []string{
+					"/etc/toolhive/authserver/hmac/hmac-0",
+					"/etc/toolhive/authserver/hmac/hmac-1",
+				},
+				TokenLifespans: &authserver.TokenLifespanRunConfig{
+					AccessTokenLifespan:  "30m",
+					RefreshTokenLifespan: "168h",
+					AuthCodeLifespan:     "5m",
+				},
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name: "github",
+						Type: authserver.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							ClientSecretEnvVar:    "GITHUB_CLIENT_SECRET",
+							RedirectURI:           "https://auth.example.com/oauth/callback",
+							Scopes:                []string{"read:user", "user:email"},
+							UserInfo: &authserver.UserInfoRunConfig{
+								EndpointURL: "https://api.github.com/user",
+								HTTPMethod:  "GET",
+								AdditionalHeaders: map[string]string{
+									"Accept": "application/vnd.github.v3+json",
+								},
+								FieldMapping: &authserver.UserInfoFieldMappingRunConfig{
+									SubjectFields: []string{"id", "login"},
+									NameFields:    []string{"name", "login"},
+									EmailFields:   []string{"email"},
+								},
+							},
+						},
+					},
+				},
+				ScopesSupported:  []string{"openid", "profile", "email"},
+				AllowedAudiences: []string{"https://api.example.com", "https://mcp.example.com"},
+			},
+		}
+
+		// Write the config to a buffer
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		// Read the config from the buffer
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		// Verify top-level fields
+		assert.Equal(t, originalConfig.Name, readConfig.Name, "Name should match")
+		assert.Equal(t, originalConfig.Image, readConfig.Image, "Image should match")
+		assert.Equal(t, originalConfig.Transport, readConfig.Transport, "Transport should match")
+
+		// Verify embedded auth server config
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		authConfig := readConfig.EmbeddedAuthServerConfig
+
+		assert.Equal(t, authserver.CurrentSchemaVersion, authConfig.SchemaVersion, "Schema version should match")
+		assert.Equal(t, "https://auth.example.com", authConfig.Issuer, "Issuer should match")
+
+		// Verify signing key config
+		require.NotNil(t, authConfig.SigningKeyConfig, "SigningKeyConfig should not be nil")
+		assert.Equal(t, "/etc/toolhive/authserver/keys", authConfig.SigningKeyConfig.KeyDir, "KeyDir should match")
+		assert.Equal(t, "key-0.pem", authConfig.SigningKeyConfig.SigningKeyFile, "SigningKeyFile should match")
+		assert.Equal(t, []string{"key-1.pem", "key-2.pem"}, authConfig.SigningKeyConfig.FallbackKeyFiles, "FallbackKeyFiles should match")
+
+		// Verify HMAC secret files
+		assert.Equal(t, []string{
+			"/etc/toolhive/authserver/hmac/hmac-0",
+			"/etc/toolhive/authserver/hmac/hmac-1",
+		}, authConfig.HMACSecretFiles, "HMACSecretFiles should match")
+
+		// Verify token lifespans
+		require.NotNil(t, authConfig.TokenLifespans, "TokenLifespans should not be nil")
+		assert.Equal(t, "30m", authConfig.TokenLifespans.AccessTokenLifespan, "AccessTokenLifespan should match")
+		assert.Equal(t, "168h", authConfig.TokenLifespans.RefreshTokenLifespan, "RefreshTokenLifespan should match")
+		assert.Equal(t, "5m", authConfig.TokenLifespans.AuthCodeLifespan, "AuthCodeLifespan should match")
+
+		// Verify upstreams
+		require.Len(t, authConfig.Upstreams, 1, "Should have one upstream")
+		upstream := authConfig.Upstreams[0]
+		assert.Equal(t, "github", upstream.Name, "Upstream name should match")
+		assert.Equal(t, authserver.UpstreamProviderTypeOAuth2, upstream.Type, "Upstream type should match")
+
+		require.NotNil(t, upstream.OAuth2Config, "OAuth2Config should not be nil")
+		assert.Equal(t, "https://github.com/login/oauth/authorize", upstream.OAuth2Config.AuthorizationEndpoint)
+		assert.Equal(t, "github-client-id", upstream.OAuth2Config.ClientID)
+		assert.Equal(t, "GITHUB_CLIENT_SECRET", upstream.OAuth2Config.ClientSecretEnvVar)
+
+		require.NotNil(t, upstream.OAuth2Config.UserInfo, "UserInfo should not be nil")
+		assert.Equal(t, "https://api.github.com/user", upstream.OAuth2Config.UserInfo.EndpointURL)
+		assert.Equal(t, "GET", upstream.OAuth2Config.UserInfo.HTTPMethod)
+		assert.Equal(t, map[string]string{"Accept": "application/vnd.github.v3+json"}, upstream.OAuth2Config.UserInfo.AdditionalHeaders)
+
+		require.NotNil(t, upstream.OAuth2Config.UserInfo.FieldMapping, "FieldMapping should not be nil")
+		assert.Equal(t, []string{"id", "login"}, upstream.OAuth2Config.UserInfo.FieldMapping.SubjectFields)
+
+		// Verify scopes and audiences
+		assert.Equal(t, []string{"openid", "profile", "email"}, authConfig.ScopesSupported, "ScopesSupported should match")
+		assert.Equal(t, []string{"https://api.example.com", "https://mcp.example.com"}, authConfig.AllowedAudiences, "AllowedAudiences should match")
+	})
+
+	t.Run("serializes and deserializes with OIDC upstream", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "oidc-server",
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "https://auth.example.com",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name: "okta",
+						Type: authserver.UpstreamProviderTypeOIDC,
+						OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+							IssuerURL:        "https://okta.example.com",
+							ClientID:         "okta-client-id",
+							ClientSecretFile: "/etc/secrets/client-secret",
+							RedirectURI:      "https://auth.example.com/oauth/callback",
+							Scopes:           []string{"openid", "profile", "email"},
+							UserInfoOverride: &authserver.UserInfoRunConfig{
+								EndpointURL: "https://okta.example.com/oauth2/v1/userinfo",
+								HTTPMethod:  "GET",
+							},
+						},
+					},
+				},
+				AllowedAudiences: []string{"https://api.example.com"},
+			},
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		require.Len(t, readConfig.EmbeddedAuthServerConfig.Upstreams, 1, "Should have one upstream")
+
+		upstream := readConfig.EmbeddedAuthServerConfig.Upstreams[0]
+		assert.Equal(t, "okta", upstream.Name)
+		assert.Equal(t, authserver.UpstreamProviderTypeOIDC, upstream.Type)
+		require.NotNil(t, upstream.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, "https://okta.example.com", upstream.OIDCConfig.IssuerURL)
+		assert.Equal(t, "/etc/secrets/client-secret", upstream.OIDCConfig.ClientSecretFile)
+		require.NotNil(t, upstream.OIDCConfig.UserInfoOverride, "UserInfoOverride should not be nil")
+	})
+
+	t.Run("serializes and deserializes with nil embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		originalConfig := &RunConfig{
+			SchemaVersion:            CurrentSchemaVersion,
+			Name:                     "no-auth-server",
+			EmbeddedAuthServerConfig: nil,
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should be nil")
+	})
+
+	t.Run("serializes and deserializes minimal embedded auth server config", func(t *testing.T) {
+		t.Parallel()
+
+		// Minimal config with just required fields
+		originalConfig := &RunConfig{
+			SchemaVersion: CurrentSchemaVersion,
+			Name:          "minimal-auth-server",
+			EmbeddedAuthServerConfig: &authserver.RunConfig{
+				SchemaVersion:    authserver.CurrentSchemaVersion,
+				Issuer:           "https://auth.example.com",
+				AllowedAudiences: []string{"https://api.example.com"},
+			},
+		}
+
+		var buf bytes.Buffer
+		err := originalConfig.WriteJSON(&buf)
+		require.NoError(t, err, "WriteJSON should not return an error")
+
+		readConfig, err := ReadJSON(&buf)
+		require.NoError(t, err, "ReadJSON should not return an error")
+
+		require.NotNil(t, readConfig.EmbeddedAuthServerConfig, "EmbeddedAuthServerConfig should not be nil")
+		assert.Equal(t, "https://auth.example.com", readConfig.EmbeddedAuthServerConfig.Issuer)
+		assert.Equal(t, []string{"https://api.example.com"}, readConfig.EmbeddedAuthServerConfig.AllowedAudiences)
+
+		// Optional fields should be nil/empty
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.SigningKeyConfig)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.HMACSecretFiles)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.TokenLifespans)
+		assert.Nil(t, readConfig.EmbeddedAuthServerConfig.Upstreams)
+	})
 }

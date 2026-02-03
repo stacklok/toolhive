@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -15,11 +18,12 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
-	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // defaultProxyHost is the default host for proxy binding
@@ -78,6 +82,9 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
+	ctx := context.Background()
+	ctxLogger := log.FromContext(ctx)
+
 	proxyHost := defaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
 		proxyHost = envHost
@@ -95,7 +102,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	if m.Spec.ToolConfigRef != nil {
 		// ToolConfigRef takes precedence over inline ToolsFilter
-		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}
@@ -122,9 +129,17 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// This avoids redundancy and follows the same pattern as regular flags.
 	var k8sPodPatch string
 
-	proxyMode := m.Spec.ProxyMode
-	if proxyMode == "" {
-		proxyMode = "streamable-http" // Default to streamable-http (SSE is deprecated)
+	// ProxyMode handling:
+	// - For stdio transports: proxyMode determines how the stdio server is proxied (sse or streamable-http)
+	// - For direct transports (sse, streamable-http): proxyMode is set to match the transport type for consistency
+	transportType := transporttypes.TransportType(m.Spec.Transport)
+	effectiveProxyMode := types.GetEffectiveProxyMode(transportType, m.Spec.ProxyMode)
+
+	if m.Spec.ProxyMode != effectiveProxyMode {
+		ctxLogger.Info("proxyMode is set to effective proxy mode for the transport",
+			"transport", m.Spec.Transport,
+			"configuredProxyMode", m.Spec.ProxyMode,
+			"effectiveProxyMode", effectiveProxyMode)
 	}
 
 	options := []runner.RunConfigBuilderOption{
@@ -132,7 +147,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
 		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
-		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
+		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
 		runner.WithEndpointPrefix(m.Spec.EndpointPrefix),
@@ -184,40 +199,30 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
-	// Add external auth configuration if specified
-	if err := ctrlutil.AddExternalAuthConfigOptions(ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, &options); err != nil {
+	// Resolve OIDC config for embedded auth server configuration
+	// ResourceURL provides AllowedAudiences, Scopes provides ScopesSupported
+	// Note: Validation (OIDC config required) happens in AddExternalAuthConfigOptions
+	var resolvedOIDCConfig *oidc.OIDCConfig
+	if m.Spec.OIDCConfig != nil {
+		resolver := oidc.NewResolver(r.Client)
+		var err error
+		resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+		}
+	}
+
+	// Add external auth configuration if specified (updated call)
+	// Will fail if embedded auth server is used without OIDC config or resourceUrl
+	if err := ctrlutil.AddExternalAuthConfigOptions(
+		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		resolvedOIDCConfig, &options,
+	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
-
-	// Check for Vault Agent Injection and add env-file-dir if needed
-	vaultDetected := false
-
-	// Check for Vault injection in pod template annotations
-	if m.Spec.PodTemplateSpec != nil && m.Spec.PodTemplateSpec.Raw != nil {
-		// Try to unmarshal the raw extension to check annotations
-		var podTemplateSpec corev1.PodTemplateSpec
-		if err := json.Unmarshal(m.Spec.PodTemplateSpec.Raw, &podTemplateSpec); err == nil {
-			if podTemplateSpec.Annotations != nil {
-				vaultDetected = hasVaultAgentInjection(podTemplateSpec.Annotations)
-			}
-		}
-	}
-
-	// Also check resource overrides annotations using the accessor for safe access
-	if !vaultDetected {
-		accessor := accessors.NewMCPServerFieldAccessor()
-		_, annotations := accessor.GetProxyDeploymentTemplateLabelsAndAnnotations(m)
-		if len(annotations) > 0 {
-			vaultDetected = hasVaultAgentInjection(annotations)
-		}
-	}
-
-	if vaultDetected {
-		options = append(options, runner.WithEnvFileDir("/vault/secrets"))
-	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
@@ -307,37 +312,78 @@ func (*MCPServerReconciler) validateRequiredFields(config *runner.RunConfig) err
 
 // validateTransportAndPorts validates transport type and associated port configuration
 func (*MCPServerReconciler) validateTransportAndPorts(config *runner.RunConfig) error {
+	if err := validateTransportType(config.Transport); err != nil {
+		return err
+	}
+
+	if err := validateProxyMode(config.Transport, config.ProxyMode); err != nil {
+		return err
+	}
+
+	return validatePorts(config.Transport, config.Port, config.TargetPort)
+}
+
+// validateTransportType validates that the transport type is valid
+func validateTransportType(transport transporttypes.TransportType) error {
 	validTransports := []transporttypes.TransportType{
 		transporttypes.TransportTypeStdio,
 		transporttypes.TransportTypeSSE,
 		transporttypes.TransportTypeStreamableHTTP,
 	}
 
-	validTransport := false
 	for _, valid := range validTransports {
-		if config.Transport == valid {
-			validTransport = true
-			break
+		if transport == valid {
+			return nil
 		}
-	}
-	if !validTransport {
-		return fmt.Errorf("invalid transport type: %s, must be one of: stdio, sse, streamable-http", config.Transport)
 	}
 
-	// Validate ports for HTTP-based transports
-	if config.Transport == transporttypes.TransportTypeSSE || config.Transport == transporttypes.TransportTypeStreamableHTTP {
-		if config.Port <= 0 {
-			return fmt.Errorf("port is required for transport type %s", config.Transport)
+	return fmt.Errorf("invalid transport type: %s, must be one of: stdio, sse, streamable-http", transport)
+}
+
+// validateProxyMode validates proxyMode based on transport type
+func validateProxyMode(transport transporttypes.TransportType, proxyMode transporttypes.ProxyMode) error {
+	if transport == transporttypes.TransportTypeStdio {
+		// For stdio, validate that proxyMode is valid if set
+		if proxyMode != "" {
+			if proxyMode != transporttypes.ProxyModeSSE && proxyMode != transporttypes.ProxyModeStreamableHTTP {
+				return fmt.Errorf("invalid proxyMode %s for stdio transport, must be 'sse' or 'streamable-http'", proxyMode)
+			}
 		}
-		if config.TargetPort <= 0 {
-			return fmt.Errorf("target port is required for transport type %s", config.Transport)
-		}
-		if config.Port < 1 || config.Port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535, got: %d", config.Port)
-		}
-		if config.TargetPort < 1 || config.TargetPort > 65535 {
-			return fmt.Errorf("target port must be between 1 and 65535, got: %d", config.TargetPort)
-		}
+		return nil
+	}
+
+	// For direct transports, proxyMode should match transportType
+	// This is set automatically by the controller, but validate for consistency
+	expectedProxyMode := transporttypes.ProxyMode(transport.String())
+	if proxyMode != "" && proxyMode != expectedProxyMode {
+		return fmt.Errorf("proxyMode %s does not match transportType %s for direct transport. "+
+			"For direct transports, proxyMode should match transportType", proxyMode, transport)
+	}
+
+	return nil
+}
+
+// validatePorts validates port configuration for HTTP-based transports
+func validatePorts(transport transporttypes.TransportType, port, targetPort int) error {
+	// Port validation only applies to HTTP-based transports
+	if transport != transporttypes.TransportTypeSSE && transport != transporttypes.TransportTypeStreamableHTTP {
+		return nil
+	}
+
+	if port <= 0 {
+		return fmt.Errorf("port is required for transport type %s", transport)
+	}
+
+	if targetPort <= 0 {
+		return fmt.Errorf("target port is required for transport type %s", transport)
+	}
+
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535, got: %d", port)
+	}
+
+	if targetPort < 1 || targetPort > 65535 {
+		return fmt.Errorf("target port must be between 1 and 65535, got: %d", targetPort)
 	}
 
 	return nil
@@ -459,15 +505,4 @@ func convertVolumesFromMCPServer(vols []mcpv1alpha1.Volume) []string {
 		volumes = append(volumes, volStr)
 	}
 	return volumes
-}
-
-// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
-func hasVaultAgentInjection(annotations map[string]string) bool {
-	if annotations == nil {
-		return false
-	}
-
-	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
-	value, exists := annotations["vault.hashicorp.com/agent-inject"]
-	return exists && value == "true"
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -156,7 +159,6 @@ func setBuildEnvCmdFunc(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to set build environment variable from secret: %w", err)
 		}
 
-		fmt.Printf("Successfully configured build environment variable %s to read from secret: %s\n", key, secretName)
 		return nil
 	}
 
@@ -170,7 +172,6 @@ func setBuildEnvCmdFunc(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to set build environment variable from shell: %w", err)
 		}
 
-		fmt.Printf("Successfully configured build environment variable %s to read from shell environment\n", key)
 		return nil
 	}
 
@@ -184,7 +185,6 @@ func setBuildEnvCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to set build environment variable: %w", err)
 	}
 
-	fmt.Printf("Successfully set build environment variable: %s\n", key)
 	return nil
 }
 
@@ -264,7 +264,6 @@ func unsetBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 				return err
 			}
 		}
-		fmt.Printf("Successfully removed %d build environment variable(s).\n", len(entries))
 		return nil
 	}
 
@@ -299,6 +298,5 @@ func unsetBuildEnvBySource(provider config.Provider, key, source string) error {
 	if err != nil {
 		return fmt.Errorf("failed to remove %s: %w", key, err)
 	}
-	fmt.Printf("Successfully removed build environment variable: %s\n", key)
 	return nil
 }

@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package runner
 
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -11,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -353,6 +358,8 @@ func WithOIDCConfig(
 				IntrospectionURL:  oidcIntrospectionURL,
 				ClientID:          oidcClientID,
 				ClientSecret:      oidcClientSecret,
+				CACertPath:        thvCABundle,
+				AuthTokenFile:     jwksAuthTokenFile,
 				AllowPrivateIP:    jwksAllowPrivateIP,
 				InsecureAllowHTTP: insecureAllowHTTP,
 				Scopes:            scopes,
@@ -476,6 +483,10 @@ func WithMiddlewareFromFlags(
 
 		// Add core middlewares (always present)
 		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
+
+		// NOTE: Header forward middleware is NOT added here because secret-backed
+		// headers are not yet resolved at builder time. It is added in Runner.Run()
+		// after WithSecrets() resolves all secret references.
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -830,7 +841,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
 		}
 		c.PermissionProfile.Network.Mode = b.networkMode
-		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
+		logger.Debugf("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts
@@ -1004,7 +1015,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Infof("Adding volume mount: %s -> %s (%s)",
+		logger.Debugf("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
@@ -1063,10 +1074,53 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 	}
 }
 
-// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
-func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
+// WithHeaderForward adds plaintext header forward entries for remote MCP servers.
+// The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForward(headers map[string]string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
-		b.config.EnvFileDir = dirPath
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddPlaintextHeaders == nil {
+			hf.AddPlaintextHeaders = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddPlaintextHeaders, headers)
+		return nil
+	}
+}
+
+// WithHeaderForwardSecrets adds secret-backed header forward entries for remote MCP servers.
+// The headers parameter maps header names to secret names in the secrets manager.
+// Secret values are resolved at runtime via WithSecrets() and never persisted to disk.
+// Multiple calls are additive; later values for the same header name overwrite earlier ones.
+func WithHeaderForwardSecrets(headers map[string]string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if len(headers) == 0 {
+			return nil
+		}
+		hf := b.ensureHeaderForward()
+		if hf.AddHeadersFromSecret == nil {
+			hf.AddHeadersFromSecret = make(map[string]string, len(headers))
+		}
+		maps.Copy(hf.AddHeadersFromSecret, headers)
+		return nil
+	}
+}
+
+func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
+	if b.config.HeaderForward == nil {
+		b.config.HeaderForward = &HeaderForwardConfig{}
+	}
+	return b.config.HeaderForward
+}
+
+// WithEmbeddedAuthServerConfig sets the embedded auth server configuration.
+// The config is a RunConfig with file paths and env var names for secrets.
+func WithEmbeddedAuthServerConfig(config *authserver.RunConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EmbeddedAuthServerConfig = config
 		return nil
 	}
 }

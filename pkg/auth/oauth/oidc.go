@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package oauth provides OAuth 2.0 and OIDC authentication functionality.
 package oauth
 

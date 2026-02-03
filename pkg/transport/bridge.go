@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
@@ -58,7 +61,7 @@ func (b *StdioBridge) Shutdown() {
 }
 
 func (b *StdioBridge) run(ctx context.Context) {
-	logger.Infof("Starting StdioBridge for %s in mode %s", b.rawTarget, b.mode)
+	logger.Debugf("Starting StdioBridge for %s in mode %s", b.rawTarget, b.mode)
 	defer b.wg.Done()
 
 	up, err := b.connectUpstream(ctx)
@@ -67,13 +70,13 @@ func (b *StdioBridge) run(ctx context.Context) {
 		return
 	}
 	b.up = up
-	logger.Infof("Connected to upstream %s", b.rawTarget)
+	logger.Debugf("Connected to upstream %s", b.rawTarget)
 
 	if err := b.initializeUpstream(ctx); err != nil {
 		logger.Errorf("upstream initialize failed: %v", err)
 		return
 	}
-	logger.Infof("Upstream initialized successfully")
+	logger.Debugf("Upstream initialized successfully")
 
 	// Tiny local stdio server
 	b.srv = server.NewMCPServer(
@@ -83,7 +86,7 @@ func (b *StdioBridge) run(ctx context.Context) {
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 	)
-	logger.Infof("Starting local stdio server")
+	logger.Debugf("Starting local stdio server")
 
 	b.up.OnConnectionLost(func(err error) { logger.Warnf("upstream lost: %v", err) })
 
@@ -113,7 +116,7 @@ func (b *StdioBridge) run(ctx context.Context) {
 }
 
 func (b *StdioBridge) connectUpstream(_ context.Context) (*client.Client, error) {
-	logger.Infof("Connecting to upstream %s using mode %s", b.rawTarget, b.mode)
+	logger.Debugf("Connecting to upstream %s using mode %s", b.rawTarget, b.mode)
 
 	switch b.mode {
 	case types.TransportTypeStreamableHTTP:
@@ -172,7 +175,7 @@ func (b *StdioBridge) connectUpstream(_ context.Context) (*client.Client, error)
 }
 
 func (b *StdioBridge) initializeUpstream(ctx context.Context) error {
-	logger.Infof("Initializing upstream %s", b.rawTarget)
+	logger.Debugf("Initializing upstream %s", b.rawTarget)
 	_, err := b.up.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -187,9 +190,9 @@ func (b *StdioBridge) initializeUpstream(ctx context.Context) error {
 }
 
 func (b *StdioBridge) forwardAll(ctx context.Context) {
-	logger.Infof("Forwarding all upstream data to local stdio server")
+	logger.Debugf("Forwarding all upstream data to local stdio server")
 	// Tools -> straight passthrough
-	logger.Infof("Forwarding tools from upstream to local stdio server")
+	logger.Debugf("Forwarding tools from upstream to local stdio server")
 	if lt, err := b.up.ListTools(ctx, mcp.ListToolsRequest{}); err == nil {
 		for _, tool := range lt.Tools {
 			toolCopy := tool
@@ -200,7 +203,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Resources -> return []mcp.ResourceContents
-	logger.Infof("Forwarding resources from upstream to local stdio server")
+	logger.Debugf("Forwarding resources from upstream to local stdio server")
 	if lr, err := b.up.ListResources(ctx, mcp.ListResourcesRequest{}); err == nil {
 		for _, res := range lr.Resources {
 			resCopy := res
@@ -215,7 +218,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Resource templates -> same return type as resources
-	logger.Infof("Forwarding resource templates from upstream to local stdio server")
+	logger.Debugf("Forwarding resource templates from upstream to local stdio server")
 	if lt, err := b.up.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{}); err == nil {
 		for _, tpl := range lt.ResourceTemplates {
 			tplCopy := tpl
@@ -230,7 +233,7 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 	}
 
 	// Prompts -> straight passthrough
-	logger.Infof("Forwarding prompts from upstream to local stdio server")
+	logger.Debugf("Forwarding prompts from upstream to local stdio server")
 	if lp, err := b.up.ListPrompts(ctx, mcp.ListPromptsRequest{}); err == nil {
 		for _, p := range lp.Prompts {
 			pCopy := p

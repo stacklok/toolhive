@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -10,9 +13,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/config"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -84,7 +87,7 @@ func secretsRouterWithRoutes(routes *SecretsRoutes) http.Handler {
 func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) error {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
@@ -97,17 +100,21 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		providerType = secrets.EncryptedType
 	case string(secrets.OnePasswordType):
 		providerType = secrets.OnePasswordType
-	case string(secrets.NoneType):
-		providerType = secrets.NoneType
+	case string(secrets.EnvironmentType):
+		providerType = secrets.EnvironmentType
 	case "":
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("provider type cannot be empty"),
 			http.StatusBadRequest,
 		)
 	default:
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
-				req.ProviderType, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
+				req.ProviderType,
+				string(secrets.EncryptedType),
+				string(secrets.OnePasswordType),
+				string(secrets.EnvironmentType),
+			),
 			http.StatusBadRequest,
 		)
 	}
@@ -125,7 +132,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		// TODO Handle provider reconfiguration in a better way
 		if currentProviderType == providerType {
 			isReconfiguration = true
-			logger.Infof("Reconfiguring existing %s secrets provider", providerType)
+			logger.Debugf("Reconfiguring existing %s secrets provider", providerType)
 		} else {
 			isReconfiguration = true // Changing provider type is also considered reconfiguration
 			logger.Warnf("Changing secrets provider from %s to %s", currentProviderType, providerType)
@@ -139,7 +146,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if req.Password != "" {
 			// Use provided password
 			passwordToUse = req.Password
-			logger.Infof("Using provided password for encrypted provider setup")
+			logger.Debugf("Using provided password for encrypted provider setup")
 		} else {
 			// Generate a secure random password
 			generatedPassword, err := secrets.GenerateSecurePassword()
@@ -147,7 +154,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 				return fmt.Errorf("failed to generate secure password: %w", err)
 			}
 			passwordToUse = generatedPassword
-			logger.Infof("Generated secure random password for encrypted provider setup")
+			logger.Debugf("Generated secure random password for encrypted provider setup")
 		}
 	}
 
@@ -170,7 +177,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			return fmt.Errorf("failed to initialize encrypted provider: %w", err)
 		}
-		logger.Info("Encrypted provider initialized and password saved to keyring")
+		logger.Debugf("Encrypted provider initialized and password saved to keyring")
 	}
 
 	// Update the secrets provider type and mark setup as completed
@@ -272,7 +279,7 @@ func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) erro
 
 	// Check if provider supports listing
 	if !provider.Capabilities().CanList {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secrets provider does not support listing keys"),
 			http.StatusMethodNotAllowed,
 		)
@@ -317,14 +324,14 @@ func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) erro
 func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) error {
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if req.Key == "" || req.Value == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("both 'key' and 'value' are required"),
 			http.StatusBadRequest,
 		)
@@ -337,7 +344,7 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) err
 
 	// Check if provider supports writing
 	if !provider.Capabilities().CanWrite {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secrets provider does not support creating secrets"),
 			http.StatusMethodNotAllowed,
 		)
@@ -347,7 +354,7 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) err
 	if provider.Capabilities().CanRead {
 		_, err := provider.GetSecret(r.Context(), req.Key)
 		if err == nil {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("secret already exists"),
 				http.StatusConflict,
 			)
@@ -389,7 +396,7 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) err
 func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) error {
 	key := chi.URLParam(r, "key")
 	if key == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secret key is required"),
 			http.StatusBadRequest,
 		)
@@ -397,14 +404,14 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) err
 
 	var req updateSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if req.Value == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("value is required"),
 			http.StatusBadRequest,
 		)
@@ -417,7 +424,7 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) err
 
 	// Check if provider supports writing
 	if !provider.Capabilities().CanWrite {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secrets provider does not support updating secrets"),
 			http.StatusMethodNotAllowed,
 		)
@@ -427,7 +434,7 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) err
 	if provider.Capabilities().CanRead {
 		_, err := provider.GetSecret(r.Context(), key)
 		if err != nil {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("secret not found"),
 				http.StatusNotFound,
 			)
@@ -464,7 +471,7 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) err
 func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) error {
 	key := chi.URLParam(r, "key")
 	if key == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secret key is required"),
 			http.StatusBadRequest,
 		)
@@ -477,7 +484,7 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) err
 
 	// Check if provider supports deletion
 	if !provider.Capabilities().CanDelete {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("secrets provider does not support deleting secrets"),
 			http.StatusMethodNotAllowed,
 		)
@@ -487,7 +494,7 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) err
 	if err := provider.DeleteSecret(r.Context(), key); err != nil {
 		// Check if it's a "not found" error
 		if strings.Contains(err.Error(), "cannot delete non-existent secret") {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("secret not found"),
 				http.StatusNotFound,
 			)
@@ -522,7 +529,7 @@ func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 //
 //	@Description	Request to setup a secrets provider
 type setupSecretsRequest struct {
-	// Type of the secrets provider (encrypted, 1password, none)
+	// Type of the secrets provider (encrypted, 1password, environment)
 	ProviderType string `json:"provider_type"`
 	// Password for encrypted provider (optional, can be set via environment variable)
 	// TODO Review environment variable for this

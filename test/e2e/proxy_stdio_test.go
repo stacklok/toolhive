@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -286,6 +289,7 @@ func startProxyStdioForMCP(config *e2e.TestConfig, workloadName string) (*exec.C
 		"proxy",
 		"stdio",
 		workloadName,
+		"--debug",
 	}
 
 	// Log the command for debugging

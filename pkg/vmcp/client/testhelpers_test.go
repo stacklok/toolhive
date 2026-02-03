@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package client
 
 import (
@@ -25,7 +28,9 @@ func convertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
 	return inputSchema
 }
 
-// convertContentToMap simulates the conversion logic from client.go:228-250
+// convertContentToMap simulates the conversion logic from conversion.ContentArrayToMap
+// This test helper converts MCP SDK content types to a map for testing.
+// Audio content is intentionally ignored (not supported for template substitution).
 func convertContentToMap(contents []mcp.Content) map[string]any {
 	resultMap := make(map[string]any)
 	textIndex := 0
@@ -43,6 +48,8 @@ func convertContentToMap(contents []mcp.Content) map[string]any {
 			resultMap[key] = imageContent.Data
 			imageIndex++
 		}
+		// Audio content is ignored (matches conversion.ContentArrayToMap behavior)
+		// Resource content is handled separately, not in this map
 	}
 	return resultMap
 }

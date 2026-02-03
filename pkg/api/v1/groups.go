@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -8,11 +11,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -90,7 +93,7 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) error
 
 	var req createGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
@@ -98,7 +101,7 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) error
 
 	// Validate group name
 	if err := validation.ValidateGroupName(req.Name); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,
 		)
@@ -135,7 +138,7 @@ func (s *GroupsRoutes) getGroup(w http.ResponseWriter, r *http.Request) error {
 
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,
 		)
@@ -171,7 +174,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) error
 
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,
 		)
@@ -179,7 +182,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) error
 
 	// Check if this is the default group
 	if name == groups.DefaultGroup {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("cannot delete the default group"),
 			http.StatusBadRequest,
 		)
@@ -251,7 +254,7 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
 		}
 
-		logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
+		logger.Debugf("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
 	} else {
 		// Move workloads to default group
 		if err := s.workloadManager.MoveToGroup(ctx, workloadNames, groupName, groups.DefaultGroup); err != nil {
@@ -263,7 +266,7 @@ func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
 			return fmt.Errorf("failed to update client configurations: %w", err)
 		}
 
-		logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
+		logger.Debugf("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
 	}
 
 	return nil

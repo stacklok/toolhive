@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package discovery provides authentication discovery utilities for detecting
 // authentication requirements from remote servers.
 //
@@ -126,7 +129,7 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	}
 
 	if wellKnownAuthInfo != nil {
-		logger.Infof("Discovered authentication via well-known URI")
+		logger.Debugf("Discovered authentication via well-known URI")
 		return wellKnownAuthInfo, nil
 	}
 
@@ -266,7 +269,7 @@ func tryWellKnownDiscovery(ctx context.Context, client *http.Client, targetURI s
 
 		// URI exists - return AuthInfo with ResourceMetadata set
 		// Downstream handler will use FetchResourceMetadata to get the actual metadata
-		logger.Infof("Found well-known URI: %s", wellKnownURI)
+		logger.Debugf("Found well-known URI: %s", wellKnownURI)
 		return &AuthInfo{
 			Type:             "OAuth",
 			ResourceMetadata: wellKnownURI,
@@ -502,6 +505,15 @@ type OAuthFlowConfig struct {
 type OAuthFlowResult struct {
 	TokenSource oauth2.TokenSource
 	Config      *oauth.Config
+
+	// Token details for persistence across restarts
+	AccessToken  string
+	RefreshToken string
+	Expiry       time.Time
+
+	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
+	ClientID     string
+	ClientSecret string
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -510,7 +522,7 @@ func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
 
 // PerformOAuthFlow performs an OAuth authentication flow with the given configuration
 func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
-	logger.Infof("Starting OAuth authentication flow for issuer: %s", issuer)
+	logger.Debugf("Starting OAuth authentication flow for issuer: %s", issuer)
 
 	if config == nil {
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
@@ -610,7 +622,7 @@ func getDiscoveryDocument(
 func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.Config, error) {
 	// Check if we have OAuth endpoints configured
 	if config.AuthorizeURL != "" && config.TokenURL != "" {
-		logger.Infof("Using OAuth endpoints - authorize_url: %s, token_url: %s",
+		logger.Debugf("Using OAuth endpoints - authorize_url: %s, token_url: %s",
 			config.AuthorizeURL, config.TokenURL)
 
 		return oauth.CreateOAuthConfigManual(
@@ -627,7 +639,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 	}
 
 	// Fall back to OIDC discovery
-	logger.Info("Using OIDC discovery")
+	logger.Debug("Using OIDC discovery")
 	return oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		issuer,
@@ -664,22 +676,27 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
 	}
 
-	logger.Info("OAuth authentication successful")
+	logger.Debug("OAuth authentication successful")
 
 	// Log token info (without exposing the actual token)
 	if tokenResult.Claims != nil {
 		if sub, ok := tokenResult.Claims["sub"].(string); ok {
-			logger.Infof("Authenticated as subject: %s", sub)
+			logger.Debugf("Authenticated as subject: %s", sub)
 		}
 		if email, ok := tokenResult.Claims["email"].(string); ok {
-			logger.Infof("Authenticated email: %s", email)
+			logger.Debugf("Authenticated email: %s", email)
 		}
 	}
 
 	source := flow.TokenSource()
 	return &OAuthFlowResult{
-		TokenSource: source,
-		Config:      oauthConfig,
+		TokenSource:  source,
+		Config:       oauthConfig,
+		AccessToken:  tokenResult.AccessToken,
+		RefreshToken: tokenResult.RefreshToken,
+		Expiry:       tokenResult.Expiry,
+		ClientID:     oauthConfig.ClientID,
+		ClientSecret: oauthConfig.ClientSecret,
 	}, nil
 }
 
@@ -788,7 +805,7 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 	if err == nil && doc != nil && doc.Issuer != "" {
 		// Found valid authorization server metadata, return the actual issuer and endpoints
 		if doc.Issuer != potentialIssuer {
-			logger.Infof("Discovered actual issuer: %s (from metadata URL: %s)", doc.Issuer, potentialIssuer)
+			logger.Debugf("Discovered actual issuer: %s (from metadata URL: %s)", doc.Issuer, potentialIssuer)
 		} else {
 			logger.Debugf("Validated authorization server: %s", potentialIssuer)
 		}

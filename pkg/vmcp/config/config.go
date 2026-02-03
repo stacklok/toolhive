@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package config provides the configuration model for Virtual MCP Server.
 //
 // This package defines a platform-agnostic configuration model that works
@@ -443,6 +446,13 @@ type FailureHandlingConfig struct {
 	// +kubebuilder:default=3
 	// +optional
 	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty" yaml:"unhealthyThreshold,omitempty"`
+
+	// StatusReportingInterval is the interval for reporting status updates to Kubernetes.
+	// This controls how often the vMCP runtime reports backend health and phase changes.
+	// Lower values provide faster status updates but increase API server load.
+	// +kubebuilder:default="30s"
+	// +optional
+	StatusReportingInterval Duration `json:"statusReportingInterval,omitempty" yaml:"statusReportingInterval,omitempty"`
 
 	// PartialFailureMode defines behavior when some backends are unavailable.
 	// - fail: Fail entire request if any backend is unavailable

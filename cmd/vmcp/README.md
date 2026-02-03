@@ -11,6 +11,7 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 - ✅ **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, manual)
 - ✅ **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
 - ✅ **Request Routing**: Intelligent routing of tool/resource/prompt requests to correct backends
+- ✅ **Metadata Preservation**: Forwards `_meta` fields from client requests to backends and preserves `_meta` from backend responses (including `progressToken` for progress notifications)
 - ✅ **Session Management**: MCP protocol session tracking with TTL-based cleanup
 - ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
 - ✅ **Configuration Validation**: `vmcp validate` command for config verification
@@ -271,6 +272,18 @@ go test -cover ./pkg/vmcp/...
 | Configuration | RunConfig format | vMCP config format |
 | Use Case | Development, testing | Production, multi-server deployments |
 | Middleware | Per-server | Global + per-backend overrides |
+
+## Known Limitations
+
+### Audio Content Not Supported
+
+Audio content type from MCP responses is not currently supported and will be silently ignored in template variable substitution.
+
+**Impact**: Minimal - audio content in MCP tools is rare. Audio data in tool responses will not be available for composite tool workflows.
+
+**Code Reference**: `pkg/vmcp/conversion/content.go` (ContentArrayToMap function)
+
+**Future Enhancement**: Add support for audio content with dedicated `audio_N` key prefix.
 
 ## Contributing
 

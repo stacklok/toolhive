@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -44,7 +47,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	if stdioWorkload.URL == "" || stdioWorkload.TransportType == "" {
 		return fmt.Errorf("workload %q does not have connection details (is it running?)", workloadName)
 	}
-	logger.Infof("Starting stdio proxy for workload=%q", workloadName)
+	logger.Debugf("Starting stdio proxy for workload=%q", workloadName)
 
 	bridge, err := transport.NewStdioBridge(workloadName, stdioWorkload.URL, stdioWorkload.TransportType)
 	if err != nil {
@@ -54,7 +57,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Consume until interrupt
 	<-ctx.Done()
-	logger.Info("Shutting down bridge")
+	logger.Debug("Shutting down bridge")
 	bridge.Shutdown()
 	return nil
 }

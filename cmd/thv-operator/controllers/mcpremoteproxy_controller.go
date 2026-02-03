@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the MCPRemoteProxy custom resource.
 // It handles the creation, update, and deletion of remote MCP proxies in Kubernetes.
 package controllers
@@ -11,7 +14,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +27,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
@@ -464,60 +467,27 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
-// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
-// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
-// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
+// ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.
+// Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
+// automatically during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	// If a service account is specified, we don't need to create one
+	if proxy.Spec.ServiceAccount != nil {
+		return nil
+	}
+
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-			Rules: remoteProxyRBACRules,
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure RoleBinding
-	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     proxyRunnerNameForRBAC,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      proxyRunnerNameForRBAC,
-					Namespace: proxy.Namespace,
-				},
-			},
-		}
+	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: proxy.Namespace,
+		Rules:     remoteProxyRBACRules,
+		Owner:     proxy,
 	})
+	return err
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
@@ -609,6 +579,15 @@ func labelsForMCPRemoteProxy(name string) map[string]string {
 // Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
 func proxyRunnerServiceAccountNameForRemoteProxy(proxyName string) string {
 	return fmt.Sprintf("%s-remote-proxy-runner", proxyName)
+}
+
+// serviceAccountNameForRemoteProxy returns the service account name for a MCPRemoteProxy
+// If a service account is specified in the spec, it returns that. Otherwise, returns the default.
+func serviceAccountNameForRemoteProxy(proxy *mcpv1alpha1.MCPRemoteProxy) string {
+	if proxy.Spec.ServiceAccount != nil {
+		return *proxy.Spec.ServiceAccount
+	}
+	return proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 }
 
 // createProxyServiceName generates the service name for a remote proxy

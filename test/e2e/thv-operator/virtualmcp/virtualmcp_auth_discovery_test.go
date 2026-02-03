@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package virtualmcp
 
 import (
@@ -1159,12 +1162,28 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 
 		It("should list and call tools from all backends with discovered auth", func() {
+			By("Verifying vMCP pods are still running and ready before health check")
+			vmcpLabels := map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, 30*time.Second, 2*time.Second)
+
+			// Create HTTP client with timeout for health checks
+			healthCheckClient := &http.Client{
+				Timeout: 10 * time.Second,
+			}
+
 			By("Verifying HTTP connectivity to VirtualMCPServer health endpoint")
 			Eventually(func() error {
+				// Re-check pod readiness before each health check attempt
+				if err := checkPodsReady(ctx, k8sClient, testNamespace, vmcpLabels); err != nil {
+					return fmt.Errorf("pods not ready: %w", err)
+				}
 				url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
-				resp, err := http.Get(url)
+				resp, err := healthCheckClient.Get(url)
 				if err != nil {
-					return err
+					return fmt.Errorf("health check failed: %w", err)
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {

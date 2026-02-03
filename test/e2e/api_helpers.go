@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package e2e provides end-to-end testing utilities for ToolHive HTTP API.
 package e2e
 
@@ -5,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -58,9 +62,20 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("failed to find free port: %w", err)
 	}
 
-	// Create temporary config directory (similar to CLI tests)
-	tempXdgConfigHome := GinkgoT().TempDir()
-	tempHome := GinkgoT().TempDir()
+	// Use shared config directory for all API tests to ensure workload state consistency
+	// This prevents "run config not found" errors when containers persist across test subprocesses
+	sharedConfigDir := os.Getenv("TOOLHIVE_E2E_SHARED_CONFIG")
+	var tempXdgConfigHome, tempHome string
+
+	if sharedConfigDir != "" {
+		// Use shared config directory for API tests
+		tempXdgConfigHome = sharedConfigDir
+		tempHome = sharedConfigDir
+	} else {
+		// Fallback to per-test temp directories for non-API tests
+		tempXdgConfigHome = GinkgoT().TempDir()
+		tempHome = GinkgoT().TempDir()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -191,6 +206,16 @@ func (s *Server) GetWithHeaders(path string, headers map[string]string) (*http.R
 // BaseURL returns the base URL of the API server.
 func (s *Server) BaseURL() string {
 	return s.baseURL
+}
+
+// GetStderr returns the accumulated stderr output from the server process.
+func (s *Server) GetStderr() string {
+	return s.stderr.String()
+}
+
+// GetStdout returns the accumulated stdout output from the server process.
+func (s *Server) GetStdout() string {
+	return s.stdout.String()
 }
 
 // StartServer is a helper function that creates and starts an API server

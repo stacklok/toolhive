@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package helpers
 
 import (
@@ -158,7 +161,7 @@ func NewVMCPServer(
 	}
 
 	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
 
 	// Create discovery manager
 	discoveryMgr, err := discovery.NewManager(agg)

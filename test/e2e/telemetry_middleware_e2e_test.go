@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package e2e_test
 
 import (
@@ -314,7 +317,7 @@ func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string
 	GinkgoWriter.Printf("Base URL for telemetry proxy: %s\n", baseURL)
 
 	// Start the proxy command
-	cmd := exec.Command(config.THVBinary, "proxy", "stdio", workloadName) //nolint:gosec
+	cmd := exec.Command(config.THVBinary, "proxy", "stdio", workloadName, "--debug") //nolint:gosec
 	cmd.Env = os.Environ()
 
 	// Create pipes for stdin and stdout/stderr

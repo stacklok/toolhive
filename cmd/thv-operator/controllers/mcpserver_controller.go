@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package controllers contains the reconciliation logic for the MCPServer custom resource.
 // It handles the creation, update, and deletion of MCP servers in Kubernetes.
 package controllers
@@ -33,6 +36,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -181,6 +185,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if the GroupRef is valid if specified
 	r.validateGroupRef(ctx, mcpServer)
+
+	// Validate CABundleRef if specified
+	r.validateCABundleRef(ctx, mcpServer)
 
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
@@ -483,6 +490,90 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 
 }
 
+// getCABundleRef extracts the CABundleRef from the OIDC configuration based on type
+func getCABundleRef(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.CABundleSource {
+	if oidcConfig == nil {
+		return nil
+	}
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			return oidcConfig.Inline.CABundleRef
+		}
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+		if oidcConfig.ConfigMap != nil {
+			return oidcConfig.ConfigMap.CABundleRef
+		}
+	}
+	return nil
+}
+
+// setCABundleRefCondition sets the CA bundle validation status condition
+func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionCABundleRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateCABundleRef validates the CABundleRef ConfigMap reference if specified
+func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	caBundleRef := getCABundleRef(mcpServer.Spec.OIDCConfig)
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the CABundleRef configuration
+	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
+		ctxLogger.Error(err, "Invalid CABundleRef configuration")
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid, err.Error())
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Check if the referenced ConfigMap exists
+	cmName := caBundleRef.ConfigMapRef.Name
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: cmName}, configMap); err != nil {
+		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, mcpServer.Namespace))
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Verify the key exists in the ConfigMap
+	key := caBundleRef.ConfigMapRef.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	if _, exists := configMap.Data[key]; !exists {
+		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName))
+		r.updateCABundleStatus(ctx, mcpServer)
+		return
+	}
+
+	// Validation passed
+	setCABundleRefCondition(mcpServer, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key))
+	r.updateCABundleStatus(ctx, mcpServer)
+}
+
+// updateCABundleStatus updates the MCPServer status after CA bundle validation
+func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	ctxLogger := log.FromContext(ctx)
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPServer status after CABundleRef validation")
+	}
+}
+
 // setImageValidationCondition is a helper function to set the image validation status condition
 // This reduces code duplication in the image validation logic
 func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
@@ -708,83 +799,6 @@ func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpSe
 	return nil
 }
 
-// ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date
-func (r *MCPServerReconciler) ensureRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	current := createResource()
-	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
-	} else if err != nil {
-		return fmt.Errorf("failed to get %s: %w", resourceType, err)
-	}
-
-	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
-}
-
-// createRBACResource creates a new RBAC resource
-func (r *MCPServerReconciler) createRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	ctxLogger.Info(
-		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
-		fmt.Sprintf("%s.Name", resourceType),
-		desired.GetName(),
-	)
-	if err := r.Create(ctx, desired); err != nil {
-		return fmt.Errorf("failed to create %s: %w", resourceType, err)
-	}
-	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	return nil
-}
-
-// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
-func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-	current client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	if !reflect.DeepEqual(current, desired) {
-		ctxLogger.Info(
-			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
-			fmt.Sprintf("%s.Name", resourceType),
-			desired.GetName(),
-		)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update %s: %w", resourceType, err)
-		}
-		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	}
-	return nil
-}
-
-// ensureRBACResources ensures that the RBAC resources are in place for the MCP server
-
 // handleToolConfig handles MCPToolConfig reference for an MCPServer
 func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
@@ -830,52 +844,15 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 	return nil
 }
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
-	// Ensure Role
-	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			Rules: defaultRBACRules,
-		}
-	}); err != nil {
-		return err
-	}
-
-	// Ensure ServiceAccount
-	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	if err := r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     proxyRunnerNameForRBAC,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      proxyRunnerNameForRBAC,
-					Namespace: mcpServer.Namespace,
-				},
-			},
-		}
+	// Ensure RBAC resources for proxy runner
+	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
+		Name:      proxyRunnerNameForRBAC,
+		Namespace: mcpServer.Namespace,
+		Rules:     defaultRBACRules,
+		Owner:     mcpServer,
 	}); err != nil {
 		return err
 	}
@@ -885,16 +862,16 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 		return nil
 	}
 
-	// otherwise, create a service account for the MCP server
-	mcpServerServiceAccountName := mcpServerServiceAccountName(mcpServer.Name)
-	return r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServerServiceAccountName,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	})
+	// Otherwise, create a service account for the MCP server
+	mcpServerSAName := mcpServerServiceAccountName(mcpServer.Name)
+	mcpServerSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcpServerSAName,
+			Namespace: mcpServer.Namespace,
+		},
+	}
+	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, mcpServerSA, mcpServer)
+	return err
 }
 
 // deploymentForMCPServer returns a MCPServer Deployment object
@@ -1060,6 +1037,28 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
+	}
+
+	// Add OIDC CA bundle volume if configured
+	if m.Spec.OIDCConfig != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(m.Spec.OIDCConfig)
+		volumes = append(volumes, caVolumes...)
+		volumeMounts = append(volumeMounts, caMounts...)
+	}
+
+	// Add embedded auth server volumes and env vars if configured
+	if m.Spec.ExternalAuthConfigRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			return nil
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
 	}
 
 	// Prepare container resources

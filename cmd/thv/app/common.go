@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -46,11 +49,10 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 
 // SetSecretsProvider sets the secrets provider type in the configuration.
 // It validates the input, tests the provider functionality, and updates the configuration.
-// Choices are `encrypted`, `1password`, and `none`.
+// Choices are `encrypted`, `1password`, and `environment`.
 func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) error {
 	// Validate input
 	if provider == "" {
-		fmt.Println("validation error: provider cannot be empty")
 		return fmt.Errorf("validation error: provider cannot be empty")
 	}
 
@@ -58,13 +60,15 @@ func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) erro
 	switch provider {
 	case secrets.EncryptedType:
 	case secrets.OnePasswordType:
-	case secrets.NoneType:
 	case secrets.EnvironmentType:
 		// Valid provider type
 	default:
-		return fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s, %s)",
-			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType),
-			string(secrets.NoneType), string(secrets.EnvironmentType))
+		return fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
+			provider,
+			string(secrets.EncryptedType),
+			string(secrets.OnePasswordType),
+			string(secrets.EnvironmentType),
+		)
 	}
 
 	// Validate that the provider can be created and works correctly
@@ -82,7 +86,6 @@ func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) erro
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	fmt.Printf("Secrets provider type updated to: %s\n", provider)
 	return nil
 }
 

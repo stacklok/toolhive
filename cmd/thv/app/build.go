@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package app
 
 import (
@@ -105,8 +108,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 			if err := os.WriteFile(buildFlags.Output, []byte(dockerfileContent), 0600); err != nil {
 				return fmt.Errorf("failed to write Dockerfile to %s: %w", buildFlags.Output, err)
 			}
-			logger.Infof("Dockerfile written to: %s", buildFlags.Output)
-			fmt.Printf("Dockerfile written to: %s\n", buildFlags.Output)
+			logger.Debugf("Dockerfile written to: %s", buildFlags.Output)
 		} else {
 			// Output to stdout
 			fmt.Print(dockerfileContent)
@@ -114,7 +116,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
+	logger.Debugf("Building container for protocol scheme: %s", protocolScheme)
 
 	// Build the image using the new protocol handler with custom name
 	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, false)
@@ -122,9 +124,8 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to build container for %s: %w", protocolScheme, err)
 	}
 
+	// Keep this log at INFO level so users see the generated image name and tag
 	logger.Infof("Successfully built container image: %s", imageName)
-	fmt.Printf("Container built successfully: %s\n", imageName)
-	fmt.Printf("You can now run it with: thv run %s\n", imageName)
 
 	return nil
 }

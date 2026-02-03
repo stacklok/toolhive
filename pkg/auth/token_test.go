@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package auth
 
 import (
@@ -515,8 +518,21 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 	})
 }
 
+//nolint:tparallel // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
-	t.Parallel()
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
+
+	// Ensure OIDC discovery is not skipped for this test
+	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	t.Cleanup(func() {
+		if hadValue {
+			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
+		} else {
+			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+		}
+	})
+	os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
 
 	// Generate a new RSA key pair for signing tokens
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -718,11 +734,12 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) {
-	t.Parallel()
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
 
 	// Set and restore environment variable
-	// Note: Cannot use t.Setenv() because it's incompatible with t.Parallel()
 	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
 	t.Cleanup(func() {
 		if hadValue {
@@ -752,11 +769,12 @@ func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T) {
-	t.Parallel()
+	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
+	// environment variable, which is process-wide and would cause race conditions with other tests
 
 	// Set and restore environment variable
-	// Note: Cannot use t.Setenv() because it's incompatible with t.Parallel()
 	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
 	t.Cleanup(func() {
 		if hadValue {

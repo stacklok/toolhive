@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package httpsse provides an HTTP proxy implementation for Server-Sent Events (SSE)
 // used in communication between the client and MCP server.
 package httpsse
@@ -20,6 +23,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -158,8 +162,10 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	}
 
 	// Create a listener to get the actual port when using port 0
+	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
 	addr := fmt.Sprintf("%s:%d", p.host, p.port)
-	listener, err := net.Listen("tcp", addr)
+	lc := socket.ListenConfig()
+	listener, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}

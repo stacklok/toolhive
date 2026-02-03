@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package kubernetes provides a client for the Kubernetes runtime
 // including creating, starting, stopping, and retrieving container information.
 package kubernetes
@@ -69,7 +72,12 @@ type Client struct {
 	config           *rest.Config
 	platformDetector PlatformDetector
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
-	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
+	waitForStatefulSetReadyFunc func(
+		ctx context.Context,
+		clientset kubernetes.Interface,
+		namespace, name string,
+		desiredGeneration int64,
+	) error
 	// namespaceFunc is used for testing to override namespace detection
 	namespaceFunc func() string
 	// exitFunc is used for testing to override os.Exit behavior
@@ -407,11 +415,13 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	// Wait for the statefulset to be ready
+	// Pass the generation from the Apply call to ensure we wait for the controller
+	// to process this specific spec version
 	waitFunc := waitForStatefulSetReady
 	if c.waitForStatefulSetReadyFunc != nil {
 		waitFunc = c.waitForStatefulSetReadyFunc
 	}
-	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
+	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name, createdStatefulSet.Generation)
 	if err != nil {
 		return 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
@@ -612,8 +622,33 @@ func (c *Client) IsRunning(ctx context.Context) error {
 	return nil
 }
 
-// waitForStatefulSetReady waits for a statefulset to be ready using the watch API
-func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
+// isStatefulSetReady checks if a StatefulSet is ready after an update.
+// It requires the desiredGeneration from the Apply call to ensure
+// the controller has processed our spec before considering it ready.
+//
+// The check requires all three conditions to be true:
+// 1. ObservedGeneration >= desiredGeneration (controller has processed our spec)
+// 2. UpdatedReplicas == Replicas (all pods are on the new spec)
+// 3. ReadyReplicas == Replicas (all pods are ready)
+func isStatefulSetReady(desiredGeneration int64, currentSts *appsv1.StatefulSet) bool {
+	if currentSts == nil || currentSts.Spec.Replicas == nil {
+		return false
+	}
+
+	return currentSts.Status.ObservedGeneration >= desiredGeneration &&
+		currentSts.Status.UpdatedReplicas == *currentSts.Spec.Replicas &&
+		currentSts.Status.ReadyReplicas == *currentSts.Spec.Replicas
+}
+
+// waitForStatefulSetReady waits for a statefulset to be ready using the watch API.
+// The desiredGeneration parameter is the generation from the Apply call (createdStatefulSet.Generation)
+// which is used to ensure the controller has processed our specific spec version.
+func waitForStatefulSetReady(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	namespace, name string,
+	desiredGeneration int64,
+) error {
 	// Create a field selector to watch only this specific statefulset
 	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
 
@@ -634,13 +669,13 @@ func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface
 			return false, fmt.Errorf("unexpected object type: %T", event.Object)
 		}
 
-		// Check if the statefulset is ready
-		if statefulSet.Status.ReadyReplicas == *statefulSet.Spec.Replicas {
+		if isStatefulSetReady(desiredGeneration, statefulSet) {
 			return true, nil
 		}
 
-		logger.Infof("Waiting for statefulset %s to be ready (%d/%d replicas ready)...",
-			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas)
+		logger.Infof("Waiting for statefulset %s to be ready (%d/%d replicas ready, observed gen %d, desired gen %d)...",
+			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas,
+			statefulSet.Status.ObservedGeneration, desiredGeneration)
 		return false, nil
 	}
 

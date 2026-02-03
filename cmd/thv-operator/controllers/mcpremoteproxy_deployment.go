@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package controllers
 
 import (
@@ -28,6 +31,21 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
+
+	// Add embedded auth server volumes and env vars if configured (single call for efficiency)
+	if proxy.Spec.ExternalAuthConfigRef != nil {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			return nil
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+		env = append(env, authServerEnvVars...)
+	}
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
@@ -51,7 +69,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name),
+					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            "toolhive",
@@ -86,7 +104,9 @@ func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
 	return []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
 }
 
-// buildVolumesForProxy builds volumes and volume mounts for the proxy
+// buildVolumesForProxy builds volumes and volume mounts for the proxy.
+// Note: Embedded auth server volumes are added separately in deploymentForMCPRemoteProxy
+// to avoid duplicate API calls.
 func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 ) ([]corev1.VolumeMount, []corev1.Volume) {
@@ -135,6 +155,8 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	// Add token exchange environment variables
+	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
+	// to avoid duplicate API calls.
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
 			ctx,
@@ -164,6 +186,20 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add header forward secret environment variables
+	if proxy.Spec.HeaderForward != nil && len(proxy.Spec.HeaderForward.AddHeadersFromSecret) > 0 {
+		// Set secrets provider to environment so runner uses environment variables for secrets.
+		// This is needed because header forward secrets use the ToolHive secrets provider
+		// (unlike token exchange and OIDC secrets which read directly from os.Getenv).
+		// The EnvironmentProvider reads env vars with the TOOLHIVE_SECRET_ prefix.
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_SECRETS_PROVIDER",
+			Value: "environment",
+		})
+		headerEnvVars := buildHeaderForwardSecretEnvVars(proxy)
+		env = append(env, headerEnvVars...)
+	}
+
 	// Add user-specified environment variables
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -175,6 +211,36 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.
+// Each secret is mounted as an env var using Kubernetes SecretKeyRef, with a name following
+// the TOOLHIVE_SECRET_<identifier> pattern expected by the secrets.EnvironmentProvider.
+func buildHeaderForwardSecretEnvVars(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+
+	for _, headerSecret := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
+		if headerSecret.ValueSecretRef == nil {
+			continue
+		}
+
+		// Generate env var name following the TOOLHIVE_SECRET_ pattern
+		envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+
+		envVars = append(envVars, corev1.EnvVar{
+			Name: envVarName,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: headerSecret.ValueSecretRef.Name,
+					},
+					Key: headerSecret.ValueSecretRef.Key,
+				},
+			},
+		})
+	}
+
+	return envVars
 }
 
 // buildDeploymentMetadata builds deployment-level labels and annotations

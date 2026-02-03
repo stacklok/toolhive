@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package runtime provides interfaces and types for container runtimes,
 // including creating, starting, stopping, and monitoring containers.
 package runtime
@@ -10,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/env"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
@@ -316,7 +319,7 @@ func IsKubernetesRuntimeWithEnv(envReader env.Reader) bool {
 // Common errors
 var (
 	// ErrWorkloadNotFound indicates that the specified workload was not found.
-	ErrWorkloadNotFound = thverrors.WithCode(
+	ErrWorkloadNotFound = httperr.WithCode(
 		errors.New("workload not found"),
 		http.StatusNotFound,
 	)

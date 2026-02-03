@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1alpha1
 
 import (
@@ -12,10 +15,18 @@ const (
 	// ExternalAuthTypeHeaderInjection is the type for custom header injection
 	ExternalAuthTypeHeaderInjection ExternalAuthType = "headerInjection"
 
+	// ExternalAuthTypeBearerToken is the type for bearer token authentication
+	// This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets
+	ExternalAuthTypeBearerToken ExternalAuthType = "bearerToken"
+
 	// ExternalAuthTypeUnauthenticated is the type for no authentication
 	// This should only be used for backends on trusted networks (e.g., localhost, VPC)
 	// or when authentication is handled by network-level security
 	ExternalAuthTypeUnauthenticated ExternalAuthType = "unauthenticated"
+
+	// ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server
+	// This enables running an embedded auth server that delegates to upstream IDPs
+	ExternalAuthTypeEmbeddedAuthServer ExternalAuthType = "embeddedAuthServer"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -26,7 +37,7 @@ type ExternalAuthType string
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -39,6 +50,16 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "headerInjection"
 	// +optional
 	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty"`
+
+	// BearerToken configures bearer token authentication
+	// Only used when Type is "bearerToken"
+	// +optional
+	BearerToken *BearerTokenConfig `json:"bearerToken,omitempty"`
+
+	// EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
+	// Only used when Type is "embeddedAuthServer"
+	// +optional
+	EmbeddedAuthServer *EmbeddedAuthServerConfig `json:"embeddedAuthServer,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -97,6 +118,252 @@ type HeaderInjectionConfig struct {
 	// ValueSecretRef references a Kubernetes Secret containing the header value
 	// +kubebuilder:validation:Required
 	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
+}
+
+// BearerTokenConfig holds configuration for bearer token authentication.
+// This allows authenticating to remote MCP servers using bearer tokens stored in Kubernetes Secrets.
+// For security reasons, only secret references are supported (no plaintext values).
+type BearerTokenConfig struct {
+	// TokenSecretRef references a Kubernetes Secret containing the bearer token
+	// +kubebuilder:validation:Required
+	TokenSecretRef *SecretKeyRef `json:"tokenSecretRef"`
+}
+
+// EmbeddedAuthServerConfig holds configuration for the embedded OAuth2/OIDC authorization server.
+// This enables running an authorization server that delegates authentication to upstream IDPs.
+type EmbeddedAuthServerConfig struct {
+	// Issuer is the issuer identifier for this authorization server.
+	// This will be included in the "iss" claim of issued tokens.
+	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
+	Issuer string `json:"issuer"`
+
+	// SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
+	// Supports key rotation by allowing multiple keys (oldest keys are used for verification only).
+	// If not specified, an ephemeral signing key will be auto-generated (development only -
+	// JWTs will be invalid after restart).
+	// +kubebuilder:validation:MaxItems=5
+	// +optional
+	SigningKeySecretRefs []SecretKeyRef `json:"signingKeySecretRefs,omitempty"`
+
+	// HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
+	// authorization codes and refresh tokens (opaque tokens).
+	// Current secret must be at least 32 bytes and cryptographically random.
+	// Supports secret rotation via multiple entries (first is current, rest are for verification).
+	// If not specified, an ephemeral secret will be auto-generated (development only -
+	// auth codes and refresh tokens will be invalid after restart).
+	// +optional
+	HMACSecretRefs []SecretKeyRef `json:"hmacSecretRefs,omitempty"`
+
+	// TokenLifespans configures the duration that various tokens are valid.
+	// If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
+	// +optional
+	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
+
+	// UpstreamProviders configures connections to upstream Identity Providers.
+	// The embedded auth server delegates authentication to these providers.
+	// Currently only a single upstream provider is supported (validated at runtime).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
+
+	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
+
+	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
+	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+}
+
+// TokenLifespanConfig holds configuration for token lifetimes.
+type TokenLifespanConfig struct {
+	// AccessTokenLifespan is the duration that access tokens are valid.
+	// Format: Go duration string (e.g., "1h", "30m", "24h").
+	// If empty, defaults to 1 hour.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	AccessTokenLifespan string `json:"accessTokenLifespan,omitempty"`
+
+	// RefreshTokenLifespan is the duration that refresh tokens are valid.
+	// Format: Go duration string (e.g., "168h", "7d" as "168h").
+	// If empty, defaults to 7 days (168h).
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	RefreshTokenLifespan string `json:"refreshTokenLifespan,omitempty"`
+
+	// AuthCodeLifespan is the duration that authorization codes are valid.
+	// Format: Go duration string (e.g., "10m", "5m").
+	// If empty, defaults to 10 minutes.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	AuthCodeLifespan string `json:"authCodeLifespan,omitempty"`
+}
+
+// UpstreamProviderType identifies the type of upstream Identity Provider.
+type UpstreamProviderType string
+
+const (
+	// UpstreamProviderTypeOIDC is for OIDC providers with discovery support
+	UpstreamProviderTypeOIDC UpstreamProviderType = "oidc"
+
+	// UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints
+	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
+)
+
+// UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+type UpstreamProviderConfig struct {
+	// Name uniquely identifies this upstream provider.
+	// Used for routing decisions and session binding in multi-upstream scenarios.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Type specifies the provider type: "oidc" or "oauth2"
+	// +kubebuilder:validation:Enum=oidc;oauth2
+	// +kubebuilder:validation:Required
+	Type UpstreamProviderType `json:"type"`
+
+	// OIDCConfig contains OIDC-specific configuration.
+	// Required when Type is "oidc", must be nil when Type is "oauth2".
+	// +optional
+	OIDCConfig *OIDCUpstreamConfig `json:"oidcConfig,omitempty"`
+
+	// OAuth2Config contains OAuth 2.0-specific configuration.
+	// Required when Type is "oauth2", must be nil when Type is "oidc".
+	// +optional
+	OAuth2Config *OAuth2UpstreamConfig `json:"oauth2Config,omitempty"`
+}
+
+// OIDCUpstreamConfig contains configuration for OIDC providers.
+// OIDC providers support automatic endpoint discovery via the issuer URL.
+type OIDCUpstreamConfig struct {
+	// IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
+	// Must be a valid HTTPS URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https://.*$`
+	IssuerURL string `json:"issuerUrl"`
+
+	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+	// +kubebuilder:validation:Required
+	ClientID string `json:"clientId"`
+
+	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+	// Optional for public clients using PKCE instead of client secret.
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+	// +optional
+	RedirectURI string `json:"redirectUri,omitempty"`
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// If not specified, defaults to ["openid", "offline_access"].
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+
+	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
+	// By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
+	// Use this to override the endpoint URL, HTTP method, or field mappings for providers
+	// that return non-standard claim names in their UserInfo response.
+	// +optional
+	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+}
+
+// OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
+// OAuth 2.0 providers require explicit endpoint configuration.
+type OAuth2UpstreamConfig struct {
+	// AuthorizationEndpoint is the URL for the OAuth authorization endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://.*$`
+	AuthorizationEndpoint string `json:"authorizationEndpoint"`
+
+	// TokenEndpoint is the URL for the OAuth token endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://.*$`
+	TokenEndpoint string `json:"tokenEndpoint"`
+
+	// UserInfo contains configuration for fetching user information from the upstream provider.
+	// Required for OAuth2 providers to resolve user identity.
+	// +kubebuilder:validation:Required
+	UserInfo *UserInfoConfig `json:"userInfo"`
+
+	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+	// +kubebuilder:validation:Required
+	ClientID string `json:"clientId"`
+
+	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+	// Optional for public clients using PKCE instead of client secret.
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+	// +optional
+	RedirectURI string `json:"redirectUri,omitempty"`
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// UserInfoConfig contains configuration for fetching user information from an upstream provider.
+// This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
+// like GitHub's /user API.
+type UserInfoConfig struct {
+	// EndpointURL is the URL of the userinfo endpoint.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https?://.*$`
+	EndpointURL string `json:"endpointUrl"`
+
+	// HTTPMethod is the HTTP method to use for the userinfo request.
+	// If not specified, defaults to GET.
+	// +kubebuilder:validation:Enum=GET;POST
+	// +optional
+	HTTPMethod string `json:"httpMethod,omitempty"`
+
+	// AdditionalHeaders contains extra headers to include in the userinfo request.
+	// Useful for providers that require specific headers (e.g., GitHub's Accept header).
+	// +optional
+	AdditionalHeaders map[string]string `json:"additionalHeaders,omitempty"`
+
+	// FieldMapping contains custom field mapping configuration for non-standard providers.
+	// If nil, standard OIDC field names are used ("sub", "name", "email").
+	// +optional
+	FieldMapping *UserInfoFieldMapping `json:"fieldMapping,omitempty"`
+}
+
+// UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
+// This allows adapting non-standard provider responses to the canonical UserInfo structure.
+// Each field supports an ordered list of claim names to try. The first non-empty value
+// found will be used.
+//
+// Example for GitHub:
+//
+//	fieldMapping:
+//	  subjectFields: ["id", "login"]
+//	  nameFields: ["name", "login"]
+//	  emailFields: ["email"]
+type UserInfoFieldMapping struct {
+	// SubjectFields is an ordered list of field names to try for the user ID.
+	// The first non-empty value found will be used.
+	// Default: ["sub"]
+	// +optional
+	SubjectFields []string `json:"subjectFields,omitempty"`
+
+	// NameFields is an ordered list of field names to try for the display name.
+	// The first non-empty value found will be used.
+	// Default: ["name"]
+	// +optional
+	NameFields []string `json:"nameFields,omitempty"`
+
+	// EmailFields is an ordered list of field names to try for the email address.
+	// The first non-empty value found will be used.
+	// Default: ["email"]
+	// +optional
+	EmailFields []string `json:"emailFields,omitempty"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

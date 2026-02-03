@@ -50,6 +50,14 @@ type AuthorizationServerConfig struct {
 	*fosite.Config
 	SigningKey  *jose.JSONWebKey
 	SigningJWKS *jose.JSONWebKeySet
+	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
+	// Security: An empty list means NO audiences are permitted (secure default).
+	AllowedAudiences []string
+	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+	// This is advertised in /.well-known/openid-configuration and
+	// /.well-known/oauth-authorization-server discovery endpoints.
+	ScopesSupported []string
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -72,6 +80,12 @@ type AuthorizationServerParams struct {
 	SigningKeyID         string
 	SigningKeyAlgorithm  string
 	SigningKey           crypto.Signer
+	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
+	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
+	// Security: An empty list means NO audiences are permitted (secure default).
+	AllowedAudiences []string
+	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
+	ScopesSupported []string
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -98,6 +112,16 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("issuer must not have a trailing slash")
 	}
 
+	return nil
+}
+
+// validateAllowedAudiences validates that all allowed audiences are valid RFC 8707 URIs.
+func validateAllowedAudiences(audiences []string) error {
+	for i, aud := range audiences {
+		if err := ValidateAudienceURI(aud); err != nil {
+			return fmt.Errorf("allowed audience [%d] %q is invalid: %w", i, aud, err)
+		}
+	}
 	return nil
 }
 
@@ -154,6 +178,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		return nil, fmt.Errorf("authorization code lifespan must be between %v and %v", MinAuthCodeLifespan, MaxAuthCodeLifespan)
 	}
 
+	// Validate allowed audiences are valid RFC 8707 URIs
+	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
+		return nil, err
+	}
+
 	// Build JWK from signing key
 	jwk := jose.JSONWebKey{
 		Key:       cfg.SigningKey,
@@ -175,9 +204,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:      fositeConfig,
-		SigningKey:  &jwk,
-		SigningJWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		Config:           fositeConfig,
+		SigningKey:       &jwk,
+		SigningJWKS:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
+		AllowedAudiences: cfg.AllowedAudiences,
+		ScopesSupported:  cfg.ScopesSupported,
 	}, nil
 }
 

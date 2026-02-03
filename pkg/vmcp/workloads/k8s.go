@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package workloads
 
 import (
@@ -18,6 +21,7 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -194,7 +198,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	}
 
 	// Calculate effective proxy mode
-	effectiveProxyMode := getEffectiveProxyMode(transportType, mcpServer.Spec.ProxyMode)
+	effectiveProxyMode := types.GetEffectiveProxyMode(transportType, mcpServer.Spec.ProxyMode)
 
 	// Generate URL from status or reconstruct from spec
 	url := mcpServer.Status.URL
@@ -328,8 +332,12 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 
 	// Populate backend auth fields with typed strategy
 	backend.AuthConfig = strategy
+	// Also store the reference to the MCPExternalAuthConfig resource name
+	// This is used for status reporting and debugging
+	backend.AuthConfigRef = authConfigRef.Name
 
-	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s, configRef=%s",
+		resourceKind, resourceName, strategy.Type, authConfigRef.Name)
 	return nil
 }
 
@@ -451,23 +459,6 @@ func (d *k8sDiscoverer) discoverRemoteProxyAuthConfig(
 		"MCPRemoteProxy",
 		backend,
 	)
-}
-
-// getEffectiveProxyMode calculates the effective proxy mode based on transport type and configured proxy mode.
-// This replicates the logic from pkg/workloads/types/proxy_mode.go
-func getEffectiveProxyMode(transportType transporttypes.TransportType, configuredProxyMode string) string {
-	// If proxy mode is explicitly configured, use it
-	if configuredProxyMode != "" {
-		return configuredProxyMode
-	}
-
-	// For stdio transports, default to streamable-http proxy mode
-	if transportType == transporttypes.TransportTypeStdio {
-		return transporttypes.ProxyModeStreamableHTTP.String()
-	}
-
-	// For direct transports (SSE, streamable-http), use the transport type as proxy mode
-	return transportType.String()
 }
 
 // isStandardK8sAnnotation checks if an annotation key is a standard Kubernetes annotation.

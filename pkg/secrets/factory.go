@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package secrets
 
 import (
@@ -15,7 +18,7 @@ import (
 	"github.com/adrg/xdg"
 	"golang.org/x/term"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets/keyring"
@@ -53,21 +56,18 @@ const (
 	// OnePasswordType represents the 1Password secret provider.
 	OnePasswordType ProviderType = "1password"
 
-	// NoneType represents the none secret provider.
-	NoneType ProviderType = "none"
-
 	// EnvironmentType represents the environment variable secret provider
 	EnvironmentType ProviderType = "environment"
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
-var ErrUnknownManagerType = thverrors.WithCode(
+var ErrUnknownManagerType = httperr.WithCode(
 	errors.New("unknown secret manager type"),
 	http.StatusBadRequest,
 )
 
 // ErrSecretsNotSetup is returned when secrets functionality is used before running setup.
-var ErrSecretsNotSetup = thverrors.WithCode(
+var ErrSecretsNotSetup = httperr.WithCode(
 	errors.New("secrets provider not configured. "+
 		"Please run 'thv secret setup' to configure a secrets provider first"),
 	http.StatusNotFound,
@@ -108,8 +108,6 @@ func ValidateProviderWithPassword(ctx context.Context, providerType ProviderType
 		return validateEncryptedProvider(ctx, provider, result)
 	case OnePasswordType:
 		return validateOnePasswordProvider(ctx, provider, result)
-	case NoneType:
-		return validateNoneProvider(result)
 	case EnvironmentType:
 		return ValidateEnvironmentProvider(ctx, provider, result)
 	default:
@@ -193,16 +191,8 @@ func validateOnePasswordProvider(ctx context.Context, provider Provider, result 
 	return result
 }
 
-// validateNoneProvider validates the none provider (always succeeds)
-func validateNoneProvider(result *SetupResult) *SetupResult {
-	// None provider doesn't need validation, it always works
-	result.Success = true
-	result.Message = "None provider validation successful"
-	return result
-}
-
 // ErrKeyringNotAvailable is returned when the OS keyring is not available for the encrypted provider.
-var ErrKeyringNotAvailable = thverrors.WithCode(
+var ErrKeyringNotAvailable = httperr.WithCode(
 	errors.New("OS keyring is not available. "+
 		"The encrypted provider requires an OS keyring to securely store passwords. "+
 		"Please use a different secrets provider (e.g., 1password) "+
@@ -262,8 +252,6 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		}
 	case OnePasswordType:
 		primary, err = NewOnePasswordManager()
-	case NoneType:
-		primary, err = NewNoneManager()
 	case EnvironmentType:
 		// Direct environment provider - no fallback needed
 		return NewEnvironmentProvider(), nil
@@ -344,7 +332,7 @@ func GetSecretsPassword(optionalPassword string) ([]byte, bool, error) {
 // (e.g., after successful decryption of the secrets file).
 func StoreSecretsPassword(password []byte) error {
 	provider := getKeyringProvider()
-	logger.Info(fmt.Sprintf("writing password to %s", provider.Name()))
+	logger.Debugf("writing password to %s", provider.Name())
 	err := provider.Set(keyringService, keyringService, string(password))
 	if err != nil {
 		return fmt.Errorf("failed to store password in keyring: %w", err)

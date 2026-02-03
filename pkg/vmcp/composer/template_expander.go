@@ -1,13 +1,17 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package composer provides composite tool workflow execution for Virtual MCP Server.
 package composer
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"text/template"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/templates"
 )
 
 const (
@@ -29,13 +33,7 @@ type defaultTemplateExpander struct {
 // NewTemplateExpander creates a new template expander.
 func NewTemplateExpander() TemplateExpander {
 	return &defaultTemplateExpander{
-		funcMap: template.FuncMap{
-			"json": jsonEncode,
-			"quote": func(s string) string {
-				return fmt.Sprintf("%q", s)
-			},
-			"fromJson": fromJson,
-		},
+		funcMap: templates.FuncMap(),
 	}
 }
 
@@ -236,23 +234,4 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 	default:
 		return false, fmt.Errorf("condition must evaluate to 'true' or 'false', got: %q", result)
 	}
-}
-
-// jsonEncode is a template function that encodes a value as JSON.
-func jsonEncode(v any) (string, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode JSON: %w", err)
-	}
-	return string(b), nil
-}
-
-// fromJson is a template function that parses a JSON string into a value.
-// It is useful when the underlying MCP server does not support structured content.
-func fromJson(s string) (any, error) {
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
-	}
-	return v, nil
 }

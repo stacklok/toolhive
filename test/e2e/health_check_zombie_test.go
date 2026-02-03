@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,9 +50,9 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 		}
 	})
 
-	Describe("Process exit on health check failure", func() {
+	Describe("Transport detection of health check failure", func() {
 		Context("when a remote server's health checks fail", func() {
-			It("should exit cleanly instead of becoming a zombie process", func() {
+			It("should detect the failure and attempt restart instead of becoming a zombie", func() {
 				By("Starting a controllable mock HTTP server")
 				var err error
 				mockServer, err = newControllableMockServer()
@@ -75,6 +76,13 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				thvPID := thvCmd.Process.Pid
 				GinkgoWriter.Printf("thv process started with PID: %d\n", thvPID)
 
+				// Ensure cleanup on test failure
+				defer func() {
+					if proc, err := os.FindProcess(thvPID); err == nil {
+						_ = proc.Kill()
+					}
+				}()
+
 				By("Waiting for thv to register as running")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
@@ -88,36 +96,48 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				mockServer.SetHealthy(false)
 				GinkgoWriter.Printf("Mock server now returning 500 errors\n")
 
-				By("Waiting for health checks to fail and process to exit")
-				// Health checks run every 10s, need 3 failures with 5s retry delay
-				// Total time: ~45-60 seconds for health check failure detection
-				// Plus some buffer for the process to actually exit
-				processExited := waitForProcessExit(thvPID, 90*time.Second)
+				By("Waiting for health checks to fail and restart to be attempted")
+				// Health checks run every 10s, need 3 failures
+				// After 3 failures, the proxy should stop and restart should be attempted
+				// We verify this by checking for "restart needed" or "Restarting" in logs
 
-				if !processExited {
-					// If we get here, the process is still running - this is the zombie bug
-					GinkgoWriter.Printf("ZOMBIE DETECTED: Process %d is still running after health check failures\n", thvPID)
+				logFile := getLogFilePath(serverName)
+				GinkgoWriter.Printf("Checking log file: %s\n", logFile)
 
-					// Check if the port is still listening (it shouldn't be if proxy stopped)
-					portListening := isPortListening(mockServer.port)
-					GinkgoWriter.Printf("Mock server port %d listening: %v\n", mockServer.port, portListening)
+				// Wait for the restart attempt to appear in logs
+				// This confirms the fix is working - the transport detected "not running"
+				// and triggered the restart mechanism (instead of hanging as zombie)
+				restartDetected := waitForLogPattern(logFile, "restart needed", 90*time.Second)
 
-					// Force kill the zombie for cleanup
-					if proc, err := os.FindProcess(thvPID); err == nil {
-						_ = proc.Kill()
+				if !restartDetected {
+					// Check if process is still running
+					processRunning := isProcessRunning(thvPID)
+					GinkgoWriter.Printf("Process %d running: %v\n", thvPID, processRunning)
+
+					// Dump relevant log lines for debugging
+					if logContent, err := os.ReadFile(logFile); err == nil {
+						lines := strings.Split(string(logContent), "\n")
+						GinkgoWriter.Printf("Last 20 log lines:\n")
+						start := len(lines) - 20
+						if start < 0 {
+							start = 0
+						}
+						for _, line := range lines[start:] {
+							GinkgoWriter.Printf("  %s\n", line)
+						}
 					}
 				}
 
-				Expect(processExited).To(BeTrue(),
-					"thv process should exit cleanly after health check failures, not become a zombie")
+				Expect(restartDetected).To(BeTrue(),
+					"Transport should detect health check failure and trigger restart (not hang as zombie)")
 
-				By("Verifying the workload is marked as unhealthy")
+				By("Verifying the server is marked as unhealthy or restarting")
+				// Give a moment for status to update
+				time.Sleep(2 * time.Second)
 				stdout, _ = e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
-				// The workload should either be marked unhealthy or not appear at all
-				if strings.Contains(stdout, serverName) {
-					Expect(stdout).To(ContainSubstring("unhealthy"),
-						"Server should be marked as unhealthy if still listed")
-				}
+				GinkgoWriter.Printf("Server list output:\n%s\n", stdout)
+				// The server should still be listed (restart in progress or unhealthy)
+				Expect(stdout).To(ContainSubstring(serverName), "Server should still be listed")
 			})
 		})
 	})
@@ -212,12 +232,31 @@ func (m *controllableMockServer) Stop() {
 	}
 }
 
-// waitForProcessExit waits for a process to exit within the given timeout
-func waitForProcessExit(pid int, timeout time.Duration) bool {
+// getLogFilePath returns the path to the log file for a given server name
+func getLogFilePath(serverName string) string {
+	// ToolHive stores logs in platform-specific locations
+	// On macOS: ~/Library/Application Support/toolhive/logs/
+	// On Linux: ~/.local/share/toolhive/logs/
+	homeDir, _ := os.UserHomeDir()
+
+	// Try macOS path first
+	macOSPath := filepath.Join(homeDir, "Library", "Application Support", "toolhive", "logs", serverName+".log")
+	if _, err := os.Stat(macOSPath); err == nil {
+		return macOSPath
+	}
+
+	// Try Linux path
+	linuxPath := filepath.Join(homeDir, ".local", "share", "toolhive", "logs", serverName+".log")
+	return linuxPath
+}
+
+// waitForLogPattern waits for a pattern to appear in the log file
+func waitForLogPattern(logFile string, pattern string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		if !isProcessRunning(pid) {
+		content, err := os.ReadFile(logFile)
+		if err == nil && strings.Contains(string(content), pattern) {
 			return true
 		}
 		time.Sleep(1 * time.Second)

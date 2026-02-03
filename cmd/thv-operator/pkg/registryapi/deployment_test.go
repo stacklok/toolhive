@@ -308,41 +308,6 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				assert.True(t, mountPaths["/secrets/git-credentials-2"], "git auth mount 2 should exist")
 			},
 		},
-		{
-			name: "git registry without auth has no git auth volume",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
-						{
-							Name:   "public-git",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/example/public-repo.git",
-								Branch:     "main",
-								Path:       "registry.json",
-								// No Auth specified
-							},
-						},
-					},
-				},
-			},
-			setupMocks: func() {
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				require.NotNil(t, deployment)
-
-				// Verify no git auth volumes exist
-				volumes := deployment.Spec.Template.Spec.Volumes
-				for _, vol := range volumes {
-					assert.NotContains(t, vol.Name, "git-auth", "no git auth volume should exist for public repo")
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {

@@ -180,17 +180,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
 			inspectorUIPort, transportTypeStr, serverPort, suffix, authToken)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
-		logger.Infof("Press Ctrl+C to stop the inspector container")
 
-		<-ctx.Done()
-		logger.Info("Interrupt received, stopping inspector container...")
-
-		cleanupErr := cleanupInspectorContainer(context.Background(), "inspector")
-		if cleanupErr != nil {
-			logger.Warnf("Failed to cleanup inspector container: %v", cleanupErr)
-		} else {
-			logger.Info("Inspector container cleaned up successfully")
-		}
 		return nil
 	case <-ctx.Done():
 		logger.Info("Context cancelled during inspector startup, cleaning up...")

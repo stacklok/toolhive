@@ -140,7 +140,8 @@
           "type": "array",
           "description": "File system paths the server needs read access to (will be mounted from the host)",
           "items": {
-            "$ref": "#/definitions/mount_declaration"
+            "type": "string",
+            "pattern": "^(/[^/\\0]+)+/?$"
           },
           "uniqueItems": true
         },
@@ -148,7 +149,8 @@
           "type": "array",
           "description": "File system paths the server needs write access to (will be mounted from the host)",
           "items": {
-            "$ref": "#/definitions/mount_declaration"
+            "type": "string",
+            "pattern": "^(/[^/\\0]+)+/?$"
           },
           "uniqueItems": true
         },
@@ -156,18 +158,6 @@
           "type": "boolean",
           "description": "Whether the container should run in privileged mode",
           "default": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "mount_declaration": {
-      "type": "object",
-      "description": "A file system mount declaration",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File system path to mount",
-          "pattern": "^(/[^/\\0]+)+/?$"
         }
       },
       "additionalProperties": false

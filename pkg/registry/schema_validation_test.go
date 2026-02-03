@@ -943,6 +943,349 @@ func TestValidatePublisherProvidedExtensions_RemoteConverterOutput(t *testing.T)
 	assert.NoError(t, err, "Remote converter output should validate against the schema")
 }
 
+// TestValidateUpstreamRegistry_WithExtensions tests that ValidateUpstreamRegistry also validates extensions
+func TestValidateUpstreamRegistry_WithExtensions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		data          string
+		wantErr       bool
+		errorContains string
+	}{
+		{
+			name: "valid registry with valid extensions",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [
+						{
+							"name": "io.github.stacklok/test-server",
+							"description": "A test server",
+							"version": "1.0.0",
+							"_meta": {
+								"io.modelcontextprotocol.registry/publisher-provided": {
+									"io.github.stacklok": {
+										"ghcr.io/test/server:v1.0.0": {
+											"status": "active",
+											"tier": "Official",
+											"tools": ["tool1"]
+										}
+									}
+								}
+							}
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry without extensions",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [
+						{
+							"name": "io.github.stacklok/test-server",
+							"description": "A test server",
+							"version": "1.0.0"
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry with _meta but no publisher-provided",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [
+						{
+							"name": "io.github.stacklok/test-server",
+							"description": "A test server",
+							"version": "1.0.0",
+							"_meta": {
+								"some-other-key": {}
+							}
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "invalid extensions - missing required status",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [
+						{
+							"name": "io.github.stacklok/test-server",
+							"description": "A test server",
+							"version": "1.0.0",
+							"_meta": {
+								"io.modelcontextprotocol.registry/publisher-provided": {
+									"io.github.stacklok": {
+										"ghcr.io/test/server:v1.0.0": {
+											"tier": "Official"
+										}
+									}
+								}
+							}
+						}
+					]
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "status",
+		},
+		{
+			name: "invalid extensions - invalid tier value",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [
+						{
+							"name": "io.github.stacklok/test-server",
+							"description": "A test server",
+							"version": "1.0.0",
+							"_meta": {
+								"io.modelcontextprotocol.registry/publisher-provided": {
+									"io.github.stacklok": {
+										"ghcr.io/test/server:v1.0.0": {
+											"status": "active",
+											"tier": "InvalidTier"
+										}
+									}
+								}
+							}
+						}
+					]
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "tier",
+		},
+		{
+			name: "valid registry with extensions in groups",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "test-group",
+							"description": "A test group",
+							"servers": [
+								{
+									"name": "io.github.stacklok/grouped-server",
+									"description": "A grouped server",
+									"version": "1.0.0",
+									"_meta": {
+										"io.modelcontextprotocol.registry/publisher-provided": {
+											"io.github.stacklok": {
+												"ghcr.io/test/grouped:v1.0.0": {
+													"status": "active"
+												}
+											}
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "invalid extensions in group server",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "test-group",
+							"description": "A test group",
+							"servers": [
+								{
+									"name": "io.github.stacklok/grouped-server",
+									"description": "A grouped server",
+									"version": "1.0.0",
+									"_meta": {
+										"io.modelcontextprotocol.registry/publisher-provided": {
+											"io.github.stacklok": {
+												"ghcr.io/test/grouped:v1.0.0": {
+													"status": "invalid-status"
+												}
+											}
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateUpstreamRegistry([]byte(tt.data))
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateServerJSON tests the ValidateServerJSON function
+func TestValidateServerJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		data               string
+		validateExtensions bool
+		wantErr            bool
+		errorContains      string
+	}{
+		{
+			name: "valid server without extension validation",
+			data: `{
+				"name": "test-server",
+				"description": "A test server",
+				"version": "1.0.0"
+			}`,
+			validateExtensions: false,
+			wantErr:            false,
+		},
+		{
+			name: "valid server with valid extensions",
+			data: `{
+				"name": "test-server",
+				"description": "A test server",
+				"version": "1.0.0",
+				"_meta": {
+					"io.modelcontextprotocol.registry/publisher-provided": {
+						"io.github.stacklok": {
+							"ghcr.io/test/server:v1.0.0": {
+								"status": "active",
+								"tier": "Official"
+							}
+						}
+					}
+				}
+			}`,
+			validateExtensions: true,
+			wantErr:            false,
+		},
+		{
+			name: "server with invalid extensions - validate enabled",
+			data: `{
+				"name": "test-server",
+				"description": "A test server",
+				"version": "1.0.0",
+				"_meta": {
+					"io.modelcontextprotocol.registry/publisher-provided": {
+						"io.github.stacklok": {
+							"ghcr.io/test/server:v1.0.0": {
+								"tier": "Official"
+							}
+						}
+					}
+				}
+			}`,
+			validateExtensions: true,
+			wantErr:            true,
+			errorContains:      "status",
+		},
+		{
+			name: "server with invalid extensions - validate disabled",
+			data: `{
+				"name": "test-server",
+				"description": "A test server",
+				"version": "1.0.0",
+				"_meta": {
+					"io.modelcontextprotocol.registry/publisher-provided": {
+						"io.github.stacklok": {
+							"ghcr.io/test/server:v1.0.0": {
+								"tier": "InvalidTier"
+							}
+						}
+					}
+				}
+			}`,
+			validateExtensions: false,
+			wantErr:            false,
+		},
+		{
+			name:               "invalid JSON",
+			data:               `{invalid json`,
+			validateExtensions: false,
+			wantErr:            true,
+			errorContains:      "invalid",
+		},
+		{
+			name: "server without _meta - validate enabled",
+			data: `{
+				"name": "test-server",
+				"description": "A test server"
+			}`,
+			validateExtensions: true,
+			wantErr:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateServerJSON([]byte(tt.data), tt.validateExtensions)
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestConverterFixtures_PublisherProvidedSchemaValidation validates that converter output fixture files
 // containing _meta extensions conform to the publisher-provided schema.
 // This ensures that the converter-produced extensions remain valid as the schema evolves.

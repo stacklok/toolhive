@@ -5,6 +5,7 @@ package registry
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"testing"
 
@@ -610,6 +611,384 @@ func walkJSONObjects(root map[string]any, paths ...string) (map[string]any, bool
 		current = next
 	}
 	return current, true
+}
+
+// TestValidatePublisherProvidedExtensions tests the ValidatePublisherProvidedExtensions function
+func TestValidatePublisherProvidedExtensions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		data          string
+		wantErr       bool
+		errorContains string
+	}{
+		{
+			name: "valid image extensions",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"tier": "Official",
+						"tools": ["tool1", "tool2"],
+						"tags": ["api", "test"],
+						"metadata": {
+							"stars": 100,
+							"pulls": 5000,
+							"last_updated": "2025-01-15T10:30:00Z"
+						},
+						"permissions": {
+							"network": {
+								"outbound": {
+									"allow_host": [".example.com"],
+									"allow_port": [443]
+								}
+							}
+						},
+						"args": ["--verbose"],
+						"docker_tags": ["v1.0.0", "latest"],
+						"proxy_port": 8080,
+						"custom_metadata": {
+							"maintainer": "Test User"
+						}
+					}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid remote extensions",
+			data: `{
+				"io.github.stacklok": {
+					"https://api.example.com/mcp": {
+						"status": "active",
+						"tier": "Community",
+						"tools": ["remote_tool"],
+						"tags": ["remote", "api"],
+						"metadata": {
+							"stars": 50,
+							"pulls": 1000,
+							"last_updated": "2025-01-15T10:30:00Z"
+						},
+						"oauth_config": {
+							"issuer": "https://auth.example.com",
+							"client_id": "test-client",
+							"scopes": ["openid", "profile"],
+							"use_pkce": true,
+							"oauth_params": {
+								"prompt": "consent"
+							},
+							"callback_port": 8000,
+							"resource": "https://api.example.com"
+						},
+						"env_vars": [
+							{
+								"name": "API_KEY",
+								"description": "API key for authentication",
+								"required": true,
+								"secret": true
+							}
+						],
+						"custom_metadata": {
+							"provider": "Example Corp"
+						}
+					}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid minimal extensions (status only)",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/minimal/server:latest": {
+						"status": "active"
+					}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "missing required status field",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"tier": "Official"
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "status",
+		},
+		{
+			name: "invalid status value",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "invalid-status"
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "status",
+		},
+		{
+			name: "invalid tier value",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"tier": "InvalidTier"
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "tier",
+		},
+		{
+			name: "invalid proxy_port (too high)",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"proxy_port": 70000
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "proxy_port",
+		},
+		{
+			name: "invalid metadata stars (negative)",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"metadata": {
+							"stars": -1
+						}
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "stars",
+		},
+		{
+			name: "invalid oauth_config callback_port",
+			data: `{
+				"io.github.stacklok": {
+					"https://api.example.com/mcp": {
+						"status": "active",
+						"oauth_config": {
+							"callback_port": 0
+						}
+					}
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "callback_port",
+		},
+		{
+			name: "valid provenance structure",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active",
+						"provenance": {
+							"sigstore_url": "tuf-repo-cdn.sigstore.dev",
+							"repository_uri": "https://github.com/example/server",
+							"signer_identity": "/.github/workflows/release.yml",
+							"runner_environment": "github-hosted",
+							"cert_issuer": "https://token.actions.githubusercontent.com"
+						}
+					}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "empty publisher namespace is valid",
+			data: `{
+				"io.github.stacklok": {}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "allows other publisher namespaces",
+			data: `{
+				"io.github.stacklok": {
+					"ghcr.io/example/server:v1.0.0": {
+						"status": "active"
+					}
+				},
+				"io.example.other": {
+					"arbitrary": "data"
+				}
+			}`,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidatePublisherProvidedExtensions([]byte(tt.data))
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidatePublisherProvidedExtensions_ConverterOutput tests that actual converter output validates
+func TestValidatePublisherProvidedExtensions_ConverterOutput(t *testing.T) {
+	t.Parallel()
+
+	// This is a realistic output from the createImageExtensions converter
+	converterOutput := `{
+		"io.github.stacklok": {
+			"ghcr.io/github/github-mcp-server:v0.19.1": {
+				"status": "Active",
+				"tier": "Official",
+				"tools": [
+					"add_comment_to_pending_review",
+					"create_issue",
+					"get_file_contents"
+				],
+				"tags": ["api", "github", "repository"],
+				"metadata": {
+					"stars": 23700,
+					"pulls": 5000,
+					"last_updated": "2025-10-18T02:26:51Z"
+				},
+				"permissions": {
+					"network": {
+						"outbound": {
+							"allow_host": [".github.com", ".githubusercontent.com"],
+							"allow_port": [443]
+						}
+					}
+				},
+				"provenance": {
+					"cert_issuer": "https://token.actions.githubusercontent.com",
+					"repository_uri": "https://github.com/github/github-mcp-server",
+					"runner_environment": "github-hosted",
+					"signer_identity": "/.github/workflows/docker-publish.yml",
+					"sigstore_url": "tuf-repo-cdn.sigstore.dev"
+				},
+				"docker_tags": ["v0.19.1", "v0.19.0", "latest"],
+				"proxy_port": 8080,
+				"custom_metadata": {
+					"maintainer": "GitHub",
+					"license": "MIT"
+				}
+			}
+		}
+	}`
+
+	err := ValidatePublisherProvidedExtensions([]byte(converterOutput))
+	assert.NoError(t, err, "Converter output should validate against the schema")
+}
+
+// TestValidatePublisherProvidedExtensions_RemoteConverterOutput tests remote server converter output
+func TestValidatePublisherProvidedExtensions_RemoteConverterOutput(t *testing.T) {
+	t.Parallel()
+
+	// This is a realistic output from the createRemoteExtensions converter
+	converterOutput := `{
+		"io.github.stacklok": {
+			"https://api.example.com/mcp": {
+				"status": "active",
+				"tier": "Community",
+				"tools": ["get_data", "send_notification", "query_api"],
+				"tags": ["remote", "sse", "api"],
+				"metadata": {
+					"stars": 150,
+					"pulls": 500,
+					"last_updated": "2025-10-20T10:00:00Z"
+				},
+				"oauth_config": {
+					"issuer": "https://auth.example.com",
+					"client_id": "example-client",
+					"scopes": ["openid", "profile"]
+				},
+				"env_vars": [
+					{
+						"name": "API_ENDPOINT",
+						"description": "Base URL for API calls",
+						"required": false,
+						"default": "https://api.example.com"
+					},
+					{
+						"name": "CLIENT_SECRET",
+						"description": "Client secret for OAuth",
+						"required": true,
+						"secret": true
+					}
+				],
+				"custom_metadata": {
+					"provider": "Example Corp",
+					"api_version": "v2"
+				}
+			}
+		}
+	}`
+
+	err := ValidatePublisherProvidedExtensions([]byte(converterOutput))
+	assert.NoError(t, err, "Remote converter output should validate against the schema")
+}
+
+// TestConverterFixtures_PublisherProvidedSchemaValidation validates that converter output fixture files
+// containing _meta extensions conform to the publisher-provided schema.
+// This ensures that the converter-produced extensions remain valid as the schema evolves.
+//
+// Note: Only "expected_*" files are validated since they represent what ToolHive converters produce.
+// The "input_*" files represent external registry data which may contain additional fields
+// that ToolHive tolerates but doesn't produce.
+func TestConverterFixtures_PublisherProvidedSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	// Expected output fixtures that contain _meta with publisher-provided extensions
+	// These represent what ToolHive converters produce and should conform to the schema
+	// Paths are relative to pkg/registry/ (the current package directory)
+	fixturesWithMeta := []string{
+		"converters/testdata/image_to_server/expected_github.json",
+		"converters/testdata/remote_to_server/expected_example.json",
+	}
+
+	for _, fixturePath := range fixturesWithMeta {
+		t.Run(fixturePath, func(t *testing.T) {
+			t.Parallel()
+
+			// Read the fixture file from disk
+			data, err := os.ReadFile(fixturePath)
+			require.NoError(t, err, "Failed to read fixture: %s", fixturePath)
+
+			// Parse the JSON to extract the _meta field
+			var serverJSON map[string]any
+			require.NoError(t, json.Unmarshal(data, &serverJSON), "Failed to parse fixture JSON")
+
+			// Extract _meta["io.modelcontextprotocol.registry/publisher-provided"]
+			meta, ok := serverJSON["_meta"].(map[string]any)
+			require.True(t, ok, "Fixture should have _meta field")
+
+			publisherProvided, ok := meta["io.modelcontextprotocol.registry/publisher-provided"].(map[string]any)
+			require.True(t, ok, "Fixture should have publisher-provided extensions in _meta")
+
+			// Serialize just the publisher-provided extensions for validation
+			extensionsData, err := json.Marshal(publisherProvided)
+			require.NoError(t, err, "Failed to marshal publisher-provided extensions")
+
+			// Validate against the schema
+			err = ValidatePublisherProvidedExtensions(extensionsData)
+			assert.NoError(t, err, "Fixture %s publisher-provided extensions should validate against schema", fixturePath)
+		})
+	}
 }
 
 // TestUpstreamRegistrySchemaVersionSync ensures that the schema reference in

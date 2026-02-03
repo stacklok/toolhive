@@ -923,8 +923,7 @@ func TestMonitor_CircuitBreakerDisabled(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
 
-	// Circuit breaker should be nil
-	assert.Nil(t, monitor.circuitBreakerConfig)
+	// Circuit breaker is disabled (nil config passed to status tracker)
 
 	// Start monitor
 	ctx := context.Background()
@@ -985,7 +984,8 @@ func TestMonitor_CircuitBreakerEnabled(t *testing.T) {
 	monitor, err := NewMonitor(mockClient, backends, config)
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
-	assert.NotNil(t, monitor.circuitBreakerConfig)
+
+	// Circuit breaker is enabled (config passed to status tracker)
 
 	ctx := context.Background()
 

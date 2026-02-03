@@ -61,10 +61,6 @@ type Monitor struct {
 	// Protected by backendsMu.
 	activeChecks map[string]context.CancelFunc
 
-	// circuitBreakerConfig contains circuit breaker configuration.
-	// nil means circuit breaker is disabled.
-	circuitBreakerConfig *CircuitBreakerConfig
-
 	// ctx is the context for the monitor's lifecycle.
 	ctx context.Context
 
@@ -117,13 +113,19 @@ type MonitorConfig struct {
 // CircuitBreakerConfig contains circuit breaker configuration.
 type CircuitBreakerConfig struct {
 	// Enabled controls whether circuit breaker is active.
+	// +kubebuilder:default=false
 	Enabled bool
 
 	// FailureThreshold is the number of failures before opening the circuit.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5
 	// Must be >= 1. Recommended: 5 failures.
 	FailureThreshold int
 
 	// Timeout is the duration to wait in open state before attempting recovery.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+	// +kubebuilder:default="60s"
 	// Recommended: 60s.
 	Timeout time.Duration
 }
@@ -172,16 +174,16 @@ func NewMonitor(
 	// Create health checker with degraded threshold
 	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
 
-	// Create status tracker
-	statusTracker := newStatusTracker(config.UnhealthyThreshold)
+	// Create status tracker with circuit breaker configuration
+	// The status tracker will lazily initialize circuit breakers as needed
+	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
 	return &Monitor{
-		checker:              checker,
-		statusTracker:        statusTracker,
-		checkInterval:        config.CheckInterval,
-		backends:             backends,
-		activeChecks:         make(map[string]context.CancelFunc),
-		circuitBreakerConfig: config.CircuitBreaker,
+		checker:       checker,
+		statusTracker: statusTracker,
+		checkInterval: config.CheckInterval,
+		backends:      backends,
+		activeChecks:  make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -216,25 +218,14 @@ func (m *Monitor) Start(ctx context.Context) error {
 	logger.Infof("Starting health monitor for %d backends (interval: %v, threshold: %d)",
 		len(m.backends), m.checkInterval, m.statusTracker.unhealthyThreshold)
 
-	// Log circuit breaker configuration
-	if m.circuitBreakerConfig != nil && m.circuitBreakerConfig.Enabled {
-		logger.Infof("Circuit breaker enabled (failure threshold: %d, timeout: %v)",
-			m.circuitBreakerConfig.FailureThreshold, m.circuitBreakerConfig.Timeout)
-	}
+	// Circuit breaker is configured in the status tracker and will be lazily initialized
 
 	// Start health check goroutine for each backend
 	m.backendsMu.Lock()
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
 
-		// Initialize circuit breaker if enabled
-		if m.circuitBreakerConfig != nil && m.circuitBreakerConfig.Enabled {
-			m.statusTracker.InitializeCircuitBreaker(
-				backend.ID,
-				m.circuitBreakerConfig.FailureThreshold,
-				m.circuitBreakerConfig.Timeout,
-			)
-		}
+		// Circuit breaker will be lazily initialized on first health check
 
 		backendCtx, cancel := context.WithCancel(m.ctx)
 		m.activeChecks[backend.ID] = cancel
@@ -324,14 +315,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 			logger.Infof("Starting health monitoring for new backend: %s", backend.Name)
 			backendCopy := backend
 
-			// Initialize circuit breaker if enabled
-			if m.circuitBreakerConfig != nil && m.circuitBreakerConfig.Enabled {
-				m.statusTracker.InitializeCircuitBreaker(
-					id,
-					m.circuitBreakerConfig.FailureThreshold,
-					m.circuitBreakerConfig.Timeout,
-				)
-			}
+			// Circuit breaker will be lazily initialized on first health check
 
 			backendCtx, cancel := context.WithCancel(m.ctx)
 			m.activeChecks[id] = cancel
@@ -398,29 +382,10 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
 	logger.Debugf("Performing health check for backend %s (%s)", backend.Name, backend.BaseURL)
 
-	// Check circuit breaker state before attempting health check
-	if m.circuitBreakerConfig != nil && m.circuitBreakerConfig.Enabled {
-		if !m.statusTracker.CanAttemptHealthCheck(backend.ID) {
-			// CanAttemptHealthCheck returns false in two cases:
-			// 1. Circuit is OPEN - completely blocked
-			// 2. Circuit is HALF-OPEN but a test is already in progress
-			cbState, _ := m.statusTracker.GetCircuitBreakerState(backend.ID)
-			switch cbState {
-			case CircuitOpen:
-				logger.Debugf("Circuit breaker OPEN for backend %s, skipping health check", backend.Name)
-			case CircuitHalfOpen:
-				logger.Debugf("Circuit breaker HALF-OPEN with test in progress for backend %s, skipping health check", backend.Name)
-			case CircuitClosed:
-				// This should not happen - circuit is closed but CanAttemptHealthCheck returned false
-				logger.Debugf("Circuit breaker state inconsistency for backend %s, skipping health check", backend.Name)
-			}
-			return
-		}
-
-		// If we reach here with a half-open circuit, we're attempting the recovery test
-		if cbState, exists := m.statusTracker.GetCircuitBreakerState(backend.ID); exists && cbState == CircuitHalfOpen {
-			logger.Debugf("Circuit breaker testing recovery for backend %s", backend.Name)
-		}
+	// Check if circuit breaker allows health check
+	// Status tracker handles circuit breaker logic based on its configuration
+	if !m.statusTracker.ShouldAttemptHealthCheck(backend.ID, backend.Name) {
+		return
 	}
 
 	// Create BackendTarget from Backend

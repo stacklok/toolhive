@@ -56,7 +56,7 @@ func TestNewStatusTracker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := newStatusTracker(tt.threshold)
+			tracker := newStatusTracker(tt.threshold, nil)
 			require.NotNil(t, tracker)
 			assert.Equal(t, tt.expectedThreshold, tracker.unhealthyThreshold, tt.description)
 			assert.NotNil(t, tracker.states)
@@ -67,7 +67,7 @@ func TestNewStatusTracker(t *testing.T) {
 func TestStatusTracker_RecordSuccess(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Record success for new backend
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -88,7 +88,7 @@ func TestStatusTracker_RecordSuccess(t *testing.T) {
 func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record multiple failures
@@ -112,7 +112,7 @@ func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
 func TestStatusTracker_RecordFailure_BelowThreshold(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// First failure - should initialize with unknown status (below threshold)
@@ -134,7 +134,7 @@ func TestStatusTracker_RecordFailure_BelowThreshold(t *testing.T) {
 func TestStatusTracker_RecordFailure_ReachThreshold(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record failures up to threshold
@@ -152,7 +152,7 @@ func TestStatusTracker_RecordFailure_ReachThreshold(t *testing.T) {
 func TestStatusTracker_RecordFailure_StatusTransitions(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 
 	// Start with healthy
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -200,7 +200,7 @@ func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := newStatusTracker(2)
+			tracker := newStatusTracker(2, nil)
 			testErr := errors.New("test error")
 
 			// Record failures to reach threshold
@@ -217,7 +217,7 @@ func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
 func TestStatusTracker_GetStatus_NonExistent(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	status, exists := tracker.GetStatus("nonexistent")
 	assert.False(t, exists)
@@ -227,7 +227,7 @@ func TestStatusTracker_GetStatus_NonExistent(t *testing.T) {
 func TestStatusTracker_GetState_NonExistent(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	state, exists := tracker.GetState("nonexistent")
 	assert.False(t, exists)
@@ -237,7 +237,7 @@ func TestStatusTracker_GetState_NonExistent(t *testing.T) {
 func TestStatusTracker_GetAllStates(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Add multiple backends with different states
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -260,7 +260,7 @@ func TestStatusTracker_GetAllStates(t *testing.T) {
 func TestStatusTracker_GetAllStates_Empty(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	allStates := tracker.GetAllStates()
 	assert.NotNil(t, allStates)
@@ -270,7 +270,7 @@ func TestStatusTracker_GetAllStates_Empty(t *testing.T) {
 func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Get states
@@ -288,7 +288,7 @@ func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
 func TestStatusTracker_IsHealthy(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Healthy backend
 	tracker.RecordSuccess("backend-healthy", "Healthy Backend", vmcp.BackendHealthy)
@@ -306,7 +306,7 @@ func TestStatusTracker_IsHealthy(t *testing.T) {
 func TestStatusTracker_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	numGoroutines := 10
 	numOperations := 100
 
@@ -362,7 +362,7 @@ func TestStatusTracker_ConcurrentAccess(t *testing.T) {
 func TestStatusTracker_StateTimestamps(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 	testErr := errors.New("test error")
 
 	// Initial success
@@ -396,7 +396,7 @@ func TestStatusTracker_StateTimestamps(t *testing.T) {
 func TestStatusTracker_MultipleBackends(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 
 	// Backend 1: Healthy
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -426,7 +426,7 @@ func TestStatusTracker_MultipleBackends(t *testing.T) {
 func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record 5 failures (well over threshold)
@@ -455,7 +455,7 @@ func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
 func TestState_Immutability(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("test error")
 
 	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
@@ -479,7 +479,7 @@ func TestState_Immutability(t *testing.T) {
 func TestStatusTracker_ThresholdOf1(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(1)
+	tracker := newStatusTracker(1, nil)
 	testErr := errors.New("test error")
 
 	// First failure should immediately mark as unhealthy
@@ -495,10 +495,16 @@ func TestStatusTracker_ThresholdOf1(t *testing.T) {
 func TestStatusTracker_CircuitBreakerInitialization(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 5,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
 
-	// Initialize circuit breaker for backend
-	tracker.InitializeCircuitBreaker("backend-1", 5, 60*time.Second)
+	// Circuit breaker is lazily initialized on first health check
+	// Record a success to trigger initialization
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Verify circuit breaker exists and is in closed state
 	cbState, exists := tracker.GetCircuitBreakerState("backend-1")
@@ -513,8 +519,12 @@ func TestStatusTracker_CircuitBreakerInitialization(t *testing.T) {
 func TestStatusTracker_CircuitBreakerRecordSuccess(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
-	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
 
 	// Record failure to increment circuit breaker count
 	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
@@ -533,8 +543,12 @@ func TestStatusTracker_CircuitBreakerRecordSuccess(t *testing.T) {
 func TestStatusTracker_CircuitBreakerRecordFailure(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
-	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
 
 	testErr := errors.New("health check failed")
 
@@ -555,8 +569,15 @@ func TestStatusTracker_CircuitBreakerRecordFailure(t *testing.T) {
 func TestStatusTracker_CircuitBreakerStateInSnapshot(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
-	tracker.InitializeCircuitBreaker("backend-1", 2, 60*time.Second)
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	// Record initial failure to create circuit breaker
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
 
 	// Get initial state snapshot
 	state, exists := tracker.GetState("backend-1")
@@ -564,8 +585,7 @@ func TestStatusTracker_CircuitBreakerStateInSnapshot(t *testing.T) {
 	assert.Equal(t, CircuitClosed, state.CircuitState)
 	assert.False(t, state.CircuitLastChanged.IsZero())
 
-	// Open circuit
-	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+	// Open circuit with second failure
 	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
 
 	// Get state snapshot after opening
@@ -577,7 +597,7 @@ func TestStatusTracker_CircuitBreakerStateInSnapshot(t *testing.T) {
 func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Don't initialize circuit breaker
 	// CanAttemptHealthCheck should always return true
@@ -600,8 +620,12 @@ func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
 func TestStatusTracker_CircuitBreakerHalfOpen(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
-	tracker.InitializeCircuitBreaker("backend-1", 2, 50*time.Millisecond)
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          50 * time.Millisecond,
+	}
+	tracker := newStatusTracker(3, cbConfig)
 
 	testErr := errors.New("health check failed")
 
@@ -629,7 +653,7 @@ func TestState_JSONSerialization(t *testing.T) {
 	t.Parallel()
 
 	// Test that LastError is excluded from JSON and LastErrorCategory is included
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Record a failure with a timeout error that contains sensitive information in the wrapped error
 	sensitiveErr := errors.New("timeout connecting to https://internal-server.example.com:8080/api/health?token=secret123")

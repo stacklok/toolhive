@@ -15,7 +15,7 @@ import (
 func TestCircuitBreaker_InitialState(t *testing.T) {
 	t.Parallel()
 
-	cb := NewCircuitBreaker(5, 60*time.Second)
+	cb := newCircuitBreaker(5, 60*time.Second, "")
 
 	assert.Equal(t, CircuitClosed, cb.GetState())
 	assert.Equal(t, 0, cb.GetFailureCount())
@@ -26,7 +26,7 @@ func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
 	t.Parallel()
 
 	threshold := 3
-	cb := NewCircuitBreaker(threshold, 60*time.Second)
+	cb := newCircuitBreaker(threshold, 60*time.Second, "")
 
 	// Record failures below threshold - should stay closed
 	for i := 0; i < threshold-1; i++ {
@@ -46,7 +46,7 @@ func TestCircuitBreaker_OpenToHalfOpen(t *testing.T) {
 	t.Parallel()
 
 	timeout := 100 * time.Millisecond
-	cb := NewCircuitBreaker(3, timeout)
+	cb := newCircuitBreaker(3, timeout, "")
 
 	// Open the circuit
 	for i := 0; i < 3; i++ {
@@ -70,7 +70,7 @@ func TestCircuitBreaker_HalfOpenToClosed(t *testing.T) {
 	t.Parallel()
 
 	timeout := 50 * time.Millisecond
-	cb := NewCircuitBreaker(3, timeout)
+	cb := newCircuitBreaker(3, timeout, "")
 
 	// Open the circuit
 	for i := 0; i < 3; i++ {
@@ -93,7 +93,7 @@ func TestCircuitBreaker_HalfOpenToOpen(t *testing.T) {
 	t.Parallel()
 
 	timeout := 50 * time.Millisecond
-	cb := NewCircuitBreaker(3, timeout)
+	cb := newCircuitBreaker(3, timeout, "")
 
 	// Open the circuit
 	for i := 0; i < 3; i++ {
@@ -114,7 +114,7 @@ func TestCircuitBreaker_HalfOpenToOpen(t *testing.T) {
 func TestCircuitBreaker_ResetOnSuccess(t *testing.T) {
 	t.Parallel()
 
-	cb := NewCircuitBreaker(5, 60*time.Second)
+	cb := newCircuitBreaker(5, 60*time.Second, "")
 
 	// Record some failures
 	cb.RecordFailure()
@@ -131,7 +131,7 @@ func TestCircuitBreaker_ResetOnSuccess(t *testing.T) {
 func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	cb := NewCircuitBreaker(100, 100*time.Millisecond)
+	cb := newCircuitBreaker(100, 100*time.Millisecond, "")
 	iterations := 1000
 
 	var wg sync.WaitGroup
@@ -174,7 +174,7 @@ func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
 func TestCircuitBreaker_StateTransitionTimestamps(t *testing.T) {
 	t.Parallel()
 
-	cb := NewCircuitBreaker(2, 50*time.Millisecond)
+	cb := newCircuitBreaker(2, 50*time.Millisecond, "")
 
 	initialTime := cb.GetLastStateChange()
 	require.False(t, initialTime.IsZero())
@@ -201,7 +201,7 @@ func TestCircuitBreaker_StateTransitionTimestamps(t *testing.T) {
 func TestCircuitBreaker_GetSnapshot(t *testing.T) {
 	t.Parallel()
 
-	cb := NewCircuitBreaker(3, 60*time.Second)
+	cb := newCircuitBreaker(3, 60*time.Second, "")
 
 	// Record some failures
 	cb.RecordFailure()
@@ -225,7 +225,7 @@ func TestCircuitBreaker_HalfOpenSingleTest(t *testing.T) {
 	t.Parallel()
 
 	timeout := 50 * time.Millisecond
-	cb := NewCircuitBreaker(2, timeout)
+	cb := newCircuitBreaker(2, timeout, "")
 
 	// Open the circuit
 	cb.RecordFailure()
@@ -255,7 +255,7 @@ func TestCircuitBreaker_ZeroThreshold(t *testing.T) {
 	t.Parallel()
 
 	// Edge case: threshold of 1 should open immediately on first failure
-	cb := NewCircuitBreaker(1, 60*time.Second)
+	cb := newCircuitBreaker(1, 60*time.Second, "")
 
 	// Should be closed initially
 	assert.Equal(t, CircuitClosed, cb.GetState())
@@ -270,7 +270,7 @@ func TestCircuitBreaker_MultipleOpenCloseTransitions(t *testing.T) {
 	t.Parallel()
 
 	timeout := 50 * time.Millisecond
-	cb := NewCircuitBreaker(2, timeout)
+	cb := newCircuitBreaker(2, timeout, "")
 
 	// First cycle: open then close
 	cb.RecordFailure()

@@ -154,7 +154,7 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 }
 
 // IsRunning checks if the proxy is running.
-func (p *HTTPProxy) IsRunning(_ context.Context) (bool, error) {
+func (p *HTTPProxy) IsRunning() (bool, error) {
 	select {
 	case <-p.shutdownCh:
 		return false, nil

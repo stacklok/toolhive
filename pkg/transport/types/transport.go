@@ -104,7 +104,7 @@ type Transport interface {
 	Stop(ctx context.Context) error
 
 	// IsRunning checks if the transport is currently running.
-	IsRunning(ctx context.Context) (bool, error)
+	IsRunning() (bool, error)
 
 	// SetRemoteURL sets the remote URL for the MCP server.
 	// For transports that don't support remote servers (e.g., stdio), this is a no-op.
@@ -174,7 +174,7 @@ type Proxy interface {
 	// IsRunning checks if the proxy is currently running.
 	// This is used by HTTPTransport to detect when the proxy has stopped
 	// (e.g., due to health check failure) even if the transport itself hasn't been stopped.
-	IsRunning(ctx context.Context) (bool, error)
+	IsRunning() (bool, error)
 
 	// GetMessageChannel returns the channel for messages to/from the destination.
 	GetMessageChannel() chan jsonrpc2.Message

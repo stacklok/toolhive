@@ -232,7 +232,7 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 }
 
 // IsRunning checks if the proxy is running.
-func (p *HTTPSSEProxy) IsRunning(_ context.Context) (bool, error) {
+func (p *HTTPSSEProxy) IsRunning() (bool, error) {
 	select {
 	case <-p.shutdownCh:
 		return false, nil

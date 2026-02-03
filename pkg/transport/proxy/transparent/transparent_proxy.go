@@ -657,7 +657,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 }
 
 // IsRunning checks if the proxy is running.
-func (p *TransparentProxy) IsRunning(_ context.Context) (bool, error) {
+func (p *TransparentProxy) IsRunning() (bool, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 

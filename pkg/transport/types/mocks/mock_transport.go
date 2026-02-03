@@ -223,18 +223,18 @@ func (m *MockTransport) EXPECT() *MockTransportMockRecorder {
 }
 
 // IsRunning mocks base method.
-func (m *MockTransport) IsRunning(ctx context.Context) (bool, error) {
+func (m *MockTransport) IsRunning() (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsRunning", ctx)
+	ret := m.ctrl.Call(m, "IsRunning")
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IsRunning indicates an expected call of IsRunning.
-func (mr *MockTransportMockRecorder) IsRunning(ctx any) *gomock.Call {
+func (mr *MockTransportMockRecorder) IsRunning() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockTransport)(nil).IsRunning), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockTransport)(nil).IsRunning))
 }
 
 // Mode mocks base method.
@@ -394,18 +394,18 @@ func (mr *MockProxyMockRecorder) GetMessageChannel() *gomock.Call {
 }
 
 // IsRunning mocks base method.
-func (m *MockProxy) IsRunning(ctx context.Context) (bool, error) {
+func (m *MockProxy) IsRunning() (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsRunning", ctx)
+	ret := m.ctrl.Call(m, "IsRunning")
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IsRunning indicates an expected call of IsRunning.
-func (mr *MockProxyMockRecorder) IsRunning(ctx any) *gomock.Call {
+func (mr *MockProxyMockRecorder) IsRunning() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockProxy)(nil).IsRunning), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockProxy)(nil).IsRunning))
 }
 
 // SendMessageToDestination mocks base method.

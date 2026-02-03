@@ -419,7 +419,7 @@ func (t *HTTPTransport) ShouldRestart() bool {
 // It checks both the transport's shutdown channel and the proxy's running state.
 // This ensures that if the proxy stops (e.g., due to health check failure),
 // the transport is also reported as not running, allowing the runner to exit cleanly.
-func (t *HTTPTransport) IsRunning(ctx context.Context) (bool, error) {
+func (t *HTTPTransport) IsRunning() (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -432,7 +432,7 @@ func (t *HTTPTransport) IsRunning(ctx context.Context) (bool, error) {
 		// When health checks fail, the proxy stops itself but the transport's
 		// shutdownCh may not be closed, causing the runner to hang as a zombie process.
 		if t.proxy != nil {
-			proxyRunning, err := t.proxy.IsRunning(ctx)
+			proxyRunning, err := t.proxy.IsRunning()
 			if err != nil {
 				return false, err
 			}

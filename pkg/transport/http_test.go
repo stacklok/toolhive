@@ -267,14 +267,14 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockProxy := mocks.NewMockProxy(ctrl)
-		mockProxy.EXPECT().IsRunning(gomock.Any()).Return(true, nil)
+		mockProxy.EXPECT().IsRunning().Return(true, nil)
 
 		transport := &HTTPTransport{
 			shutdownCh: make(chan struct{}),
 			proxy:      mockProxy,
 		}
 
-		running, err := transport.IsRunning(t.Context())
+		running, err := transport.IsRunning()
 		assert.NoError(t, err)
 		assert.True(t, running, "Should be running when both transport and proxy are running")
 	})
@@ -286,14 +286,14 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockProxy := mocks.NewMockProxy(ctrl)
-		mockProxy.EXPECT().IsRunning(gomock.Any()).Return(false, nil)
+		mockProxy.EXPECT().IsRunning().Return(false, nil)
 
 		transport := &HTTPTransport{
 			shutdownCh: make(chan struct{}),
 			proxy:      mockProxy,
 		}
 
-		running, err := transport.IsRunning(t.Context())
+		running, err := transport.IsRunning()
 		assert.NoError(t, err)
 		assert.False(t, running, "Should NOT be running when proxy is stopped (health check failure scenario)")
 	})
@@ -309,7 +309,7 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 			proxy:      nil, // proxy should not be checked when shutdown channel is closed
 		}
 
-		running, err := transport.IsRunning(t.Context())
+		running, err := transport.IsRunning()
 		assert.NoError(t, err)
 		assert.False(t, running, "Should NOT be running when shutdown channel is closed")
 	})
@@ -322,7 +322,7 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 			proxy:      nil,
 		}
 
-		running, err := transport.IsRunning(t.Context())
+		running, err := transport.IsRunning()
 		assert.NoError(t, err)
 		assert.True(t, running, "Should be running when no proxy is set (nil proxy)")
 	})
@@ -334,14 +334,14 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockProxy := mocks.NewMockProxy(ctrl)
-		mockProxy.EXPECT().IsRunning(gomock.Any()).Return(false, fmt.Errorf("proxy error"))
+		mockProxy.EXPECT().IsRunning().Return(false, fmt.Errorf("proxy error"))
 
 		transport := &HTTPTransport{
 			shutdownCh: make(chan struct{}),
 			proxy:      mockProxy,
 		}
 
-		_, err := transport.IsRunning(t.Context())
+		_, err := transport.IsRunning()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "proxy error")
 	})

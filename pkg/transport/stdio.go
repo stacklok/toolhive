@@ -293,7 +293,7 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 }
 
 // IsRunning checks if the transport is currently running.
-func (t *StdioTransport) IsRunning(_ context.Context) (bool, error) {
+func (t *StdioTransport) IsRunning() (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 

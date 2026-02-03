@@ -13,6 +13,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+// AWS STS session duration bounds (match AWS STS limits).
+const (
+	minSessionDuration int32 = 900   // 15 minutes
+	maxSessionDuration int32 = 43200 // 12 hours
+)
+
 // SetupWebhookWithManager sets up the webhook with the Manager
 func (r *MCPExternalAuthConfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -57,7 +63,17 @@ func (*MCPExternalAuthConfig) ValidateDelete(_ context.Context, _ runtime.Object
 
 // validate performs validation on the MCPExternalAuthConfig spec
 func (r *MCPExternalAuthConfig) validate() error {
-	// Ensure the correct configuration is set for the selected type
+	// Validate type-specific configuration presence
+	if err := r.validateConfigPresence(); err != nil {
+		return err
+	}
+
+	// Delegate to type-specific validation
+	return r.validateTypeSpecific()
+}
+
+// validateConfigPresence ensures the correct configuration is set for the selected type
+func (r *MCPExternalAuthConfig) validateConfigPresence() error {
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
 		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
 	}
@@ -70,16 +86,23 @@ func (r *MCPExternalAuthConfig) validate() error {
 	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
 		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
 	}
+	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
+		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
+	}
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
 		if r.Spec.TokenExchange != nil ||
 			r.Spec.HeaderInjection != nil ||
 			r.Spec.BearerToken != nil ||
-			r.Spec.EmbeddedAuthServer != nil {
+			r.Spec.EmbeddedAuthServer != nil ||
+			r.Spec.AWSSts != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
 		}
 	}
+	return nil
+}
 
-	// Delegate to type-specific validation
+// validateTypeSpecific delegates to the appropriate type-specific validation
+func (r *MCPExternalAuthConfig) validateTypeSpecific() error {
 	switch r.Spec.Type {
 	case ExternalAuthTypeTokenExchange:
 		return r.validateTokenExchange()
@@ -91,6 +114,8 @@ func (r *MCPExternalAuthConfig) validate() error {
 		return r.validateUnauthenticated()
 	case ExternalAuthTypeEmbeddedAuthServer:
 		return r.validateEmbeddedAuthServer()
+	case ExternalAuthTypeAWSSts:
+		return r.validateAWSSts()
 	default:
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
 	}
@@ -155,6 +180,54 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	}
 	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+	}
+
+	return nil
+}
+
+// validateAWSSts validates awsSts type configuration
+func (r *MCPExternalAuthConfig) validateAWSSts() error {
+	cfg := r.Spec.AWSSts
+	if cfg == nil {
+		return nil
+	}
+
+	// Region is required
+	if cfg.Region == "" {
+		return fmt.Errorf("awsSts.region is required")
+	}
+
+	// At least one of fallbackRoleArn or roleMappings must be configured
+	// Both can be set: fallbackRoleArn is used when no mapping matches
+	hasRoleArn := cfg.FallbackRoleArn != ""
+	hasRoleMappings := len(cfg.RoleMappings) > 0
+
+	if !hasRoleArn && !hasRoleMappings {
+		return fmt.Errorf("awsSts: at least one of fallbackRoleArn or roleMappings must be configured")
+	}
+
+	// Validate role mappings if present
+	for i, mapping := range cfg.RoleMappings {
+		if mapping.RoleArn == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d].roleArn is required", i)
+		}
+		// Exactly one of claim or matcher must be set
+		if mapping.Claim == "" && mapping.Matcher == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: exactly one of claim or matcher must be set", i)
+		}
+		if mapping.Claim != "" && mapping.Matcher != "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: claim and matcher are mutually exclusive", i)
+		}
+	}
+
+	// Validate session duration if set
+	// Bounds match AWS STS limits: 900s (15 min) to 43200s (12 hours)
+	if cfg.SessionDuration != nil {
+		duration := *cfg.SessionDuration
+		if duration < minSessionDuration || duration > maxSessionDuration {
+			return fmt.Errorf("awsSts.sessionDuration must be between %d and %d seconds",
+				minSessionDuration, maxSessionDuration)
+		}
 	}
 
 	return nil

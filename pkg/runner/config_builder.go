@@ -509,6 +509,9 @@ func WithMiddlewareFromFlags(
 		// headers are not yet resolved at builder time. It is added in Runner.Run()
 		// after WithSecrets() resolves all secret references.
 
+		// NOTE: AWS STS middleware is NOT added here because it is only configured
+		// through the operator path via PopulateMiddlewareConfigs(), not via CLI flags.
+
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)

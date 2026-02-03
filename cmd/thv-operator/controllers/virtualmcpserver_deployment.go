@@ -508,6 +508,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// Controller integration will be in a future task
 		return nil, nil
 
+	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+		// AWS STS authentication doesn't require secret mounting via env vars
+		// It uses the incoming OIDC token for AssumeRoleWithWebIdentity
+		return nil, nil
+
 	default:
 		return nil, nil // Not applicable
 	}

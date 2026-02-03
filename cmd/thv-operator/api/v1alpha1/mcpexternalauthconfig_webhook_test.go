@@ -848,6 +848,288 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 			expectWarning: true,
 			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
 		},
+		// awsSts test cases
+		{
+			name: "valid awsSts with fallbackRoleArn only",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-awssts-rolearn",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "us-east-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid awsSts with roleMappings only (claim-based)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-awssts-mappings",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-west-2",
+						RoleMappings: []RoleMapping{
+							{
+								Claim:   "admins",
+								RoleArn: "arn:aws:iam::123456789012:role/AdminRole",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid awsSts with fallbackRoleArn and roleMappings",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-awssts-fallback",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "eu-west-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
+						RoleMappings: []RoleMapping{
+							{
+								Claim:   "admins",
+								RoleArn: "arn:aws:iam::123456789012:role/AdminRole",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid awsSts with matcher-based role mapping",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-awssts-matcher",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-east-1",
+						RoleMappings: []RoleMapping{
+							{
+								Matcher: `"admins" in claims["groups"]`,
+								RoleArn: "arn:aws:iam::123456789012:role/AdminRole",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "awsSts without config should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+				},
+			},
+			expectError: true,
+			errorMsg:    "awsSts configuration must be set if and only if type is 'awsSts'",
+		},
+		{
+			name: "awsSts missing region should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "awsSts.region is required",
+		},
+		{
+			name: "awsSts neither fallbackRoleArn nor roleMappings should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-east-1",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "at least one of fallbackRoleArn or roleMappings must be configured",
+		},
+		{
+			name: "awsSts roleMapping with neither claim nor matcher should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-east-1",
+						RoleMappings: []RoleMapping{
+							{
+								RoleArn: "arn:aws:iam::123456789012:role/TestRole",
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "exactly one of claim or matcher must be set",
+		},
+		{
+			name: "awsSts roleMapping with both claim and matcher should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-east-1",
+						RoleMappings: []RoleMapping{
+							{
+								Claim:   "admins",
+								Matcher: `"admins" in claims["groups"]`,
+								RoleArn: "arn:aws:iam::123456789012:role/TestRole",
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "claim and matcher are mutually exclusive",
+		},
+		{
+			name: "awsSts roleMapping missing roleArn should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region: "us-east-1",
+						RoleMappings: []RoleMapping{
+							{
+								Claim: "admins",
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "awsSts.roleMappings[0].roleArn is required",
+		},
+		{
+			name: "awsSts invalid session duration too low should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "us-east-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+						SessionDuration: int32Ptr(100),
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "awsSts.sessionDuration must be between 900 and 43200 seconds",
+		},
+		{
+			name: "awsSts invalid session duration too high should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "us-east-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+						SessionDuration: int32Ptr(50000),
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "awsSts.sessionDuration must be between 900 and 43200 seconds",
+		},
+		{
+			name: "awsSts with tokenExchange should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeAWSSts,
+					AWSSts: &AWSStsConfig{
+						Region:          "us-east-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+					},
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						Audience: "backend-service",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "tokenExchange configuration must be set if and only if type is 'tokenExchange'",
+		},
+		{
+			name: "unauthenticated with awsSts should fail",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-invalid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					AWSSts: &AWSStsConfig{
+						Region:          "us-east-1",
+						FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+					},
+				},
+			},
+			expectError:   true,
+			errorMsg:      "awsSts configuration must be set if and only if type is 'awsSts'",
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
+		},
 	}
 
 	for _, tt := range tests {
@@ -933,4 +1215,8 @@ func TestMCPExternalAuthConfig_ValidateDelete(t *testing.T) {
 	warnings, err := config.ValidateDelete(context.Background(), config)
 	require.NoError(t, err)
 	assert.Nil(t, warnings)
+}
+
+func int32Ptr(v int32) *int32 {
+	return &v
 }

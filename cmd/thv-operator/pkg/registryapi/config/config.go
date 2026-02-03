@@ -534,22 +534,23 @@ func buildGitAuthConfig(auth *mcpv1alpha1.GitAuthConfig) (*GitAuthConfig, error)
 		return nil, fmt.Errorf("git auth password secret reference name is required")
 	}
 
+	if auth.PasswordSecretRef.Key == "" {
+		return nil, fmt.Errorf("git auth password secret reference key is required")
+	}
+
 	return &GitAuthConfig{
 		Username:     auth.Username,
 		PasswordFile: buildGitPasswordFilePath(&auth.PasswordSecretRef),
 	}, nil
 }
 
-// buildGitPasswordFilePath constructs the file path where a git password secret will be mounted
+// buildGitPasswordFilePath constructs the file path where a git password secret will be mounted.
+// The secretRef must have both Name and Key set (validated by buildGitAuthConfig).
 func buildGitPasswordFilePath(secretRef *corev1.SecretKeySelector) string {
 	if secretRef == nil {
 		return ""
 	}
-	key := secretRef.Key
-	if key == "" {
-		key = "password"
-	}
-	return fmt.Sprintf("/secrets/%s/%s", secretRef.Name, key)
+	return fmt.Sprintf("/secrets/%s/%s", secretRef.Name, secretRef.Key)
 }
 
 func buildAPISourceConfig(api *mcpv1alpha1.APISource) (*APIConfig, error) {

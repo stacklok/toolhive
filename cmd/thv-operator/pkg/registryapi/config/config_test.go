@@ -526,7 +526,7 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 		assert.Equal(t, "/secrets/git-credentials/token", config.Registries[1].Git.Auth.PasswordFile)
 	})
 
-	t.Run("git auth with default key", func(t *testing.T) {
+	t.Run("git auth missing password secret key", func(t *testing.T) {
 		t.Parallel()
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
@@ -547,7 +547,7 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 									LocalObjectReference: corev1.LocalObjectReference{
 										Name: "git-credentials",
 									},
-									// Key is empty - should default to "password"
+									// Key is empty - should cause an error
 								},
 							},
 						},
@@ -559,11 +559,9 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
-		require.NoError(t, err)
-		require.NotNil(t, config)
-		require.Len(t, config.Registries, 2)
-		require.NotNil(t, config.Registries[1].Git.Auth)
-		assert.Equal(t, "/secrets/git-credentials/password", config.Registries[1].Git.Auth.PasswordFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git auth password secret reference key is required")
+		assert.Nil(t, config)
 	})
 
 	t.Run("git auth missing username", func(t *testing.T) {
@@ -642,37 +640,6 @@ func TestBuildConfig_GitAuth(t *testing.T) {
 		assert.Nil(t, config)
 	})
 
-	t.Run("git source without auth is valid", func(t *testing.T) {
-		t.Parallel()
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-registry",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "public-git-registry",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						Git: &mcpv1alpha1.GitSource{
-							Repository: "https://github.com/example/public-repo.git",
-							Branch:     "main",
-							Path:       "registry.json",
-							// No Auth specified - should be valid
-						},
-					},
-				},
-			},
-		}
-
-		manager := NewConfigManager(mcpRegistry)
-		config, err := manager.BuildConfig()
-
-		require.NoError(t, err)
-		require.NotNil(t, config)
-		require.Len(t, config.Registries, 2)
-		require.NotNil(t, config.Registries[1].Git)
-		assert.Nil(t, config.Registries[1].Git.Auth)
-	})
 }
 
 func TestBuildConfig_APISource(t *testing.T) {

@@ -96,6 +96,21 @@ jobs:
             exit 1
           fi
 
+      - name: Extract release triggering actor
+        id: actor
+        run: |
+          # Extract the Release-Triggered-By trailer from the commit
+          # This trailer is added by releaseo to preserve the original workflow triggerer
+          TRIGGERED_BY=$(git log -1 --format='%(trailers:key=Release-Triggered-By,valueonly)' | tr -d '[:space:]')
+
+          if [ -n "$TRIGGERED_BY" ]; then
+            echo "✅ Found release triggering actor: $TRIGGERED_BY"
+            echo "triggered_by=$TRIGGERED_BY" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No Release-Triggered-By trailer found in commit"
+            echo "triggered_by=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Check if tag exists
         id: check-tag
         run: |
@@ -112,6 +127,8 @@ jobs:
         if: steps.check-tag.outputs.exists == 'false'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
+          TRIGGERED_BY="${{ steps.actor.outputs.triggered_by }}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
@@ -120,9 +137,17 @@ jobs:
 
           # Create GitHub Release (triggers releaser.yml via release event)
           # Note: Must use PAT (GH_TOKEN) because GITHUB_TOKEN cannot trigger other workflows
-          gh release create "$TAG" \
-            --title "Release $TAG" \
-            --generate-notes
+          # Include actor metadata as HTML comment if available (parsed by releaser.yml)
+          if [ -n "$TRIGGERED_BY" ]; then
+            gh release create "$TAG" \
+              --title "Release $TAG" \
+              --generate-notes \
+              --notes "<!-- Release-Triggered-By: $TRIGGERED_BY -->"
+          else
+            gh release create "$TAG" \
+              --title "Release $TAG" \
+              --generate-notes
+          fi
           echo "Created GitHub Release: $TAG"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}

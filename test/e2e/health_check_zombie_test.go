@@ -265,16 +265,6 @@ func waitForLogPattern(logFile string, pattern string, timeout time.Duration) bo
 	return false
 }
 
-// isPortListening checks if a port is currently listening
-func isPortListening(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 1*time.Second)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
 // generateHealthCheckTestServerName creates a unique server name for health check tests
 func generateHealthCheckTestServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, GinkgoRandomSeed())

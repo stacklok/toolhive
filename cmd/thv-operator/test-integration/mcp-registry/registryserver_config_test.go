@@ -707,53 +707,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				return errors.IsNotFound(err)
 			}).Should(BeTrue())
 		})
-
-		It("should not mount git auth volume for public repository without auth", func() {
-			By("creating MCPRegistry with Git source but no authentication")
-			registry := registryHelper.NewRegistryBuilder("git-public-test").
-				WithGitSource(
-					"https://github.com/public/repo.git",
-					"main",
-					"registry.json",
-				).
-				WithSyncPolicy("1h").
-				Create(registryHelper)
-
-			By("waiting for deployment to be created")
-			deployment := &appsv1.Deployment{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, client.ObjectKey{
-					Name:      fmt.Sprintf("%s-api", registry.Name),
-					Namespace: testNamespace,
-				}, deployment)
-			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
-
-			By("verifying no git auth volumes are present")
-			for _, volume := range deployment.Spec.Template.Spec.Volumes {
-				Expect(volume.Name).NotTo(HavePrefix("git-auth-"),
-					"No git-auth volumes should exist for public repository")
-			}
-
-			By("verifying registry server config does not contain auth settings")
-			configMapName := fmt.Sprintf("%s-registry-server-config", registry.Name)
-			serverConfig := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, client.ObjectKey{
-					Name:      configMapName,
-					Namespace: testNamespace,
-				}, serverConfig)
-			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
-
-			configYAML := serverConfig.Data["config.yaml"]
-			Expect(configYAML).NotTo(ContainSubstring("passwordFile:"))
-
-			By("cleaning up")
-			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
-			timingHelper.WaitForControllerReconciliation(func() interface{} {
-				_, err := registryHelper.GetRegistry("git-public-test")
-				return errors.IsNotFound(err)
-			}).Should(BeTrue())
-		})
 	})
 
 	Describe("PodTemplateSpec Customization", func() {

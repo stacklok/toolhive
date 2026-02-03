@@ -1162,14 +1162,14 @@ func TestWithGitAuthMount(t *testing.T) {
 		assert.True(t, volumeMount.ReadOnly)
 	})
 
-	t.Run("uses default key when not specified", func(t *testing.T) {
+	t.Run("does nothing when key is empty", func(t *testing.T) {
 		t.Parallel()
 
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: testSecretName,
 			},
-			// Key is empty - should default to "password"
+			// Key is empty - should be skipped (key is required)
 		}
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)
@@ -1178,20 +1178,10 @@ func TestWithGitAuthMount(t *testing.T) {
 			WithGitAuthMount(testContainerName, secretRef),
 		).Build()
 
-		// Find the secret volume
-		var secretVolume *corev1.Volume
-		for i := range pts.Spec.Volumes {
-			if pts.Spec.Volumes[i].Name == testVolumeName {
-				secretVolume = &pts.Spec.Volumes[i]
-				break
-			}
+		// No volume should be added when key is empty
+		for _, vol := range pts.Spec.Volumes {
+			assert.NotContains(t, vol.Name, "git-auth", "no git-auth volume should be added when key is empty")
 		}
-
-		require.NotNil(t, secretVolume)
-		require.NotNil(t, secretVolume.Secret)
-		require.Len(t, secretVolume.Secret.Items, 1)
-		assert.Equal(t, "password", secretVolume.Secret.Items[0].Key)
-		assert.Equal(t, "password", secretVolume.Secret.Items[0].Path)
 	})
 
 	t.Run("does nothing when secret name is empty", func(t *testing.T) {

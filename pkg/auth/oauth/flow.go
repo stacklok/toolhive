@@ -187,7 +187,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("Starting OAuth callback server on port %d", f.port)
+		logger.Debugf("Starting OAuth callback server on port %d", f.port)
 		if err := f.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errorChan <- fmt.Errorf("failed to start callback server: %w", err)
 		}
@@ -229,7 +229,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 	// Wait for token, error, or cancellation
 	select {
 	case token := <-tokenChan:
-		logger.Info("OAuth flow completed successfully")
+		logger.Debug("OAuth flow completed successfully")
 		return f.processToken(ctx, token), nil
 	case err := <-errorChan:
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)

@@ -74,7 +74,7 @@ func performTelemetryConfigMigration() error {
 	}
 
 	if migratedCount > 0 {
-		logger.Infof("Successfully migrated telemetry config for %d workload(s)", migratedCount)
+		logger.Debugf("Successfully migrated telemetry config for %d workload(s)", migratedCount)
 	}
 
 	return nil

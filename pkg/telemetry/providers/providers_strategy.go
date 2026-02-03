@@ -52,7 +52,7 @@ func (*OTLPTracerStrategy) CreateTracerProvider(
 	config Config,
 	res *resource.Resource,
 ) (trace.TracerProvider, func(context.Context) error, error) {
-	logger.Infof("Creating OTLP tracer provider for endpoint: %s with sampling rate: %.2f",
+	logger.Debugf("Creating OTLP tracer provider for endpoint: %s with sampling rate: %.2f",
 		config.OTLPEndpoint, config.SamplingRate)
 
 	otlpConfig := otlp.Config{
@@ -117,7 +117,7 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 
 	// Add OTLP reader if enabled
 	if s.EnableOTLP {
-		logger.Infof("Adding OTLP metrics reader for endpoint: %s", config.OTLPEndpoint)
+		logger.Debugf("Adding OTLP metrics reader for endpoint: %s", config.OTLPEndpoint)
 
 		otlpConfig := otlp.Config{
 			Endpoint:     config.OTLPEndpoint,
@@ -135,7 +135,7 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 
 	// Add Prometheus reader if enabled
 	if s.EnablePrometheus {
-		logger.Infof("Adding Prometheus metrics reader")
+		logger.Debugf("Adding Prometheus metrics reader")
 		promConfig := prometheus.Config{
 			EnableMetricsPath:     true,
 			IncludeRuntimeMetrics: true,
@@ -193,7 +193,7 @@ func (s *StrategySelector) SelectTracerStrategy() TracerStrategy {
 
 	// Log informational message when endpoint is configured but tracing is disabled
 	if hasEndpoint && !tracingEnabled {
-		logger.Infof("OTLP endpoint configured but tracing is disabled")
+		logger.Debugf("OTLP endpoint configured but tracing is disabled")
 	}
 
 	return &NoOpTracerStrategy{}

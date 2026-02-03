@@ -501,6 +501,63 @@ spec:
                         Git defines the Git repository source configuration
                         Mutually exclusive with ConfigMapRef, API, and PVCRef
                       properties:
+                        auth:
+                          description: |-
+                            Auth defines optional authentication for private Git repositories.
+                            When specified, enables HTTP Basic authentication using the provided
+                            username and password/token from a Kubernetes Secret.
+                          properties:
+                            passwordSecretRef:
+                              description: |-
+                                PasswordSecretRef references a Kubernetes Secret containing the password or token
+                                for Git authentication. The secret value will be mounted as a file and its path
+                                passed to the registry server via the git.auth.passwordFile configuration.
+
+                                Example secret:
+                                  apiVersion: v1
+                                  kind: Secret
+                                  metadata:
+                                    name: git-credentials
+                                  stringData:
+                                    token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+                                Then reference it as:
+                                  passwordSecretRef:
+                                    name: git-credentials
+                                    key: token
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            username:
+                              description: |-
+                                Username is the Git username for HTTP Basic authentication.
+                                For GitHub/GitLab token-based auth, this is typically the literal string "git"
+                                or the token itself depending on the provider.
+                              minLength: 1
+                              type: string
+                          required:
+                          - passwordSecretRef
+                          - username
+                          type: object
                         branch:
                           description: Branch is the Git branch to use (mutually exclusive
                             with Tag and Commit)

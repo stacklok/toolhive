@@ -1084,3 +1084,204 @@ func TestWithPGPassMount(t *testing.T) {
 		assert.Len(t, pts.Spec.InitContainers, 1)
 	})
 }
+
+func TestWithGitAuthMount(t *testing.T) {
+	t.Parallel()
+
+	// Test constants
+	const (
+		testSecretName        = "git-credentials"
+		testVolumeName        = "git-auth-git-credentials"
+		testContainerName     = "registry-api"
+		testExpectedMountPath = "/secrets/git-credentials"
+	)
+
+	t.Run("adds secret volume for git auth", func(t *testing.T) {
+		t.Parallel()
+
+		secretRef := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: testSecretName,
+			},
+			Key: "token",
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef),
+		).Build()
+
+		// Find the secret volume
+		var secretVolume *corev1.Volume
+		for i := range pts.Spec.Volumes {
+			if pts.Spec.Volumes[i].Name == testVolumeName {
+				secretVolume = &pts.Spec.Volumes[i]
+				break
+			}
+		}
+
+		require.NotNil(t, secretVolume, "git-auth volume should exist")
+		require.NotNil(t, secretVolume.Secret)
+		assert.Equal(t, testSecretName, secretVolume.Secret.SecretName)
+		require.Len(t, secretVolume.Secret.Items, 1)
+		assert.Equal(t, "token", secretVolume.Secret.Items[0].Key)
+		assert.Equal(t, "token", secretVolume.Secret.Items[0].Path)
+	})
+
+	t.Run("adds volume mount at correct path", func(t *testing.T) {
+		t.Parallel()
+
+		secretRef := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: testSecretName,
+			},
+			Key: "token",
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef),
+		).Build()
+
+		require.Len(t, pts.Spec.Containers, 1)
+		container := pts.Spec.Containers[0]
+
+		// Find the volume mount
+		var volumeMount *corev1.VolumeMount
+		for i := range container.VolumeMounts {
+			if container.VolumeMounts[i].Name == testVolumeName {
+				volumeMount = &container.VolumeMounts[i]
+				break
+			}
+		}
+
+		require.NotNil(t, volumeMount, "git-auth volume mount should exist")
+		assert.Equal(t, testExpectedMountPath, volumeMount.MountPath)
+		assert.True(t, volumeMount.ReadOnly)
+	})
+
+	t.Run("uses default key when not specified", func(t *testing.T) {
+		t.Parallel()
+
+		secretRef := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: testSecretName,
+			},
+			// Key is empty - should default to "password"
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef),
+		).Build()
+
+		// Find the secret volume
+		var secretVolume *corev1.Volume
+		for i := range pts.Spec.Volumes {
+			if pts.Spec.Volumes[i].Name == testVolumeName {
+				secretVolume = &pts.Spec.Volumes[i]
+				break
+			}
+		}
+
+		require.NotNil(t, secretVolume)
+		require.NotNil(t, secretVolume.Secret)
+		require.Len(t, secretVolume.Secret.Items, 1)
+		assert.Equal(t, "password", secretVolume.Secret.Items[0].Key)
+		assert.Equal(t, "password", secretVolume.Secret.Items[0].Path)
+	})
+
+	t.Run("does nothing when secret name is empty", func(t *testing.T) {
+		t.Parallel()
+
+		secretRef := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: "", // Empty name should be skipped
+			},
+			Key: "token",
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef),
+		).Build()
+
+		// No volumes should be added
+		assert.Empty(t, pts.Spec.Volumes)
+		// No volume mounts on container
+		require.Len(t, pts.Spec.Containers, 1)
+		assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
+	})
+
+	t.Run("supports multiple git auth secrets", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			secretName1 = "git-credentials-1"
+			secretName2 = "git-credentials-2"
+		)
+
+		secretRef1 := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: secretName1,
+			},
+			Key: "token",
+		}
+		secretRef2 := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: secretName2,
+			},
+			Key: "password",
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef1),
+			WithGitAuthMount(testContainerName, secretRef2),
+		).Build()
+
+		// Should have 2 volumes
+		assert.Len(t, pts.Spec.Volumes, 2)
+
+		// Should have 2 volume mounts
+		require.Len(t, pts.Spec.Containers, 1)
+		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
+
+		// Verify mount paths
+		mountPaths := make(map[string]bool)
+		for _, mount := range pts.Spec.Containers[0].VolumeMounts {
+			mountPaths[mount.MountPath] = true
+		}
+		assert.True(t, mountPaths["/secrets/"+secretName1])
+		assert.True(t, mountPaths["/secrets/"+secretName2])
+	})
+
+	t.Run("volumes are idempotent when called multiple times with same secret", func(t *testing.T) {
+		t.Parallel()
+
+		secretRef := corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: testSecretName,
+			},
+			Key: "token",
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(
+			WithContainer(corev1.Container{Name: testContainerName}),
+			WithGitAuthMount(testContainerName, secretRef),
+			WithGitAuthMount(testContainerName, secretRef),
+		).Build()
+
+		// Volumes are idempotent - should only have 1 volume
+		assert.Len(t, pts.Spec.Volumes, 1)
+		// Volume mounts are idempotent - should only have 1 volume mount
+		require.Len(t, pts.Spec.Containers, 1)
+		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+	})
+}

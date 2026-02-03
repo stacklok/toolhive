@@ -474,6 +474,207 @@ func TestBuildConfig_GitSource(t *testing.T) {
 	})
 }
 
+func TestBuildConfig_GitAuth(t *testing.T) {
+	t.Parallel()
+	// Test suite for Git authentication configuration
+
+	t.Run("valid git source with auth", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "private-git-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/private-repo.git",
+							Branch:     "main",
+							Path:       "registry.json",
+							Auth: &mcpv1alpha1.GitAuthConfig{
+								Username: "git",
+								PasswordSecretRef: corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "git-credentials",
+									},
+									Key: "token",
+								},
+							},
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "1h",
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// Second registry should be the user-specified git registry with auth
+		assert.Equal(t, "private-git-registry", config.Registries[1].Name)
+		require.NotNil(t, config.Registries[1].Git)
+		require.NotNil(t, config.Registries[1].Git.Auth)
+		assert.Equal(t, "git", config.Registries[1].Git.Auth.Username)
+		assert.Equal(t, "/secrets/git-credentials/token", config.Registries[1].Git.Auth.PasswordFile)
+	})
+
+	t.Run("git auth with default key", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "private-git-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/private-repo.git",
+							Branch:     "main",
+							Path:       "registry.json",
+							Auth: &mcpv1alpha1.GitAuthConfig{
+								Username: "git",
+								PasswordSecretRef: corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "git-credentials",
+									},
+									// Key is empty - should default to "password"
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.Len(t, config.Registries, 2)
+		require.NotNil(t, config.Registries[1].Git.Auth)
+		assert.Equal(t, "/secrets/git-credentials/password", config.Registries[1].Git.Auth.PasswordFile)
+	})
+
+	t.Run("git auth missing username", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "private-git-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/private-repo.git",
+							Branch:     "main",
+							Path:       "registry.json",
+							Auth: &mcpv1alpha1.GitAuthConfig{
+								// Username is empty - should cause an error
+								PasswordSecretRef: corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "git-credentials",
+									},
+									Key: "token",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git auth username is required")
+		assert.Nil(t, config)
+	})
+
+	t.Run("git auth missing password secret name", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "private-git-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/private-repo.git",
+							Branch:     "main",
+							Path:       "registry.json",
+							Auth: &mcpv1alpha1.GitAuthConfig{
+								Username: "git",
+								PasswordSecretRef: corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "", // Empty name should cause an error
+									},
+									Key: "token",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git auth password secret reference name is required")
+		assert.Nil(t, config)
+	})
+
+	t.Run("git source without auth is valid", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "public-git-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/public-repo.git",
+							Branch:     "main",
+							Path:       "registry.json",
+							// No Auth specified - should be valid
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.Len(t, config.Registries, 2)
+		require.NotNil(t, config.Registries[1].Git)
+		assert.Nil(t, config.Registries[1].Git.Auth)
+	})
+}
+
 func TestBuildConfig_APISource(t *testing.T) {
 	t.Parallel()
 	// Test suite for API source validation

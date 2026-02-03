@@ -140,6 +140,51 @@ Supported repository URL formats:
 - `git://example.com/repo.git` - Git protocol
 - `file:///path/to/local/repo` - Local filesystem (for testing)
 
+#### Private Repository Authentication
+
+For private Git repositories, you can configure authentication using HTTP Basic Auth:
+
+```yaml
+# First, create a Secret containing your Git credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  password: "ghp_your_github_token_here"  # GitHub PAT, GitLab token, etc.
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: private-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Private MCP Registry"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        repository: "https://github.com/org/private-mcp-registry"
+        branch: "main"
+        path: "registry.json"
+        auth:
+          username: "git"  # Use "git" for GitHub PATs
+          passwordSecretRef:
+            name: git-credentials
+            key: password
+      syncPolicy:
+        interval: "1h"
+```
+
+**Authentication notes:**
+- For **GitHub Personal Access Tokens (PATs)**: Use `username: "git"` with the PAT as the password
+- For **GitLab tokens**: Use `username: "oauth2"` with the token as the password
+- For **Bitbucket app passwords**: Use your Bitbucket username with the app password
+- The Secret must exist in the same namespace as the MCPRegistry
+- The password file is securely mounted at `/secrets/{secretName}/password` in the registry-api pod
+
 ### API Source
 
 Synchronize from HTTP/HTTPS API endpoints compatible with 
@@ -482,7 +527,25 @@ status:
 
 ### Secret Management
 
-**Note**: Secret management for Git authentication is planned but not yet implemented. Currently, only public repositories are supported for Git sources.
+Git authentication credentials are stored securely in Kubernetes Secrets:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  password: "ghp_your_token_here"
+```
+
+**Best practices for Git credentials:**
+1. **Use tokens, not passwords**: Prefer GitHub PATs, GitLab tokens, or app passwords over account passwords
+2. **Scope tokens minimally**: Grant only `repo:read` or equivalent read-only permissions
+3. **Rotate regularly**: Set up token rotation policies
+4. **Use separate tokens per registry**: Don't share tokens across registries
+5. **Consider RBAC**: Limit which service accounts can read the credentials Secret
 
 ### Image Security
 
@@ -598,6 +661,40 @@ spec:
   # No sync policy = manual sync only
 ```
 
+### Private Git Repository Registry
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: private-repo-token
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  token: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: private-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Private Organization Registry"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        repository: "https://github.com/myorg/private-mcp-servers"
+        branch: "main"
+        path: "registry.json"
+        auth:
+          username: "git"
+          passwordSecretRef:
+            name: private-repo-token
+            key: token
+      syncPolicy:
+        interval: "30m"
+```
+
 ### Multiple Registries
 
 You can configure multiple registry sources in a single MCPRegistry:
@@ -640,4 +737,5 @@ Each registry configuration must have a unique `name` within the MCPRegistry.
 - [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
+- [Private Git Registry Example](../../examples/operator/mcp-registries/mcpregistry-git-private.yaml)
 - [Registry Schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)

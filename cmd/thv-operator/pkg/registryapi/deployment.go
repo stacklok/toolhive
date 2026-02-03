@@ -163,6 +163,13 @@ func (*manager) buildRegistryAPIDeployment(
 		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
 	}
 
+	// Add git auth mounts for registries that have authentication configured
+	for _, registry := range mcpRegistry.Spec.Registries {
+		if registry.Git != nil && registry.Git.Auth != nil {
+			opts = append(opts, WithGitAuthMount(registryAPIContainerName, registry.Git.Auth.PasswordSecretRef))
+		}
+	}
+
 	// Build PodTemplateSpec with defaults and user customizations merged
 	builder := NewPodTemplateSpecBuilderFrom(userPTS)
 	podTemplateSpec := builder.Apply(opts...).Build()

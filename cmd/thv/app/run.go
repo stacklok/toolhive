@@ -340,7 +340,7 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
 	err := <-errCh
 	if !process.IsDetached() {
-		logger.Errorf("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
 		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
 	return err

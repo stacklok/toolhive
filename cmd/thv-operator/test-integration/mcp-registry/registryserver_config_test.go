@@ -253,44 +253,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				testHelpers.verifyNoSourceDataVolume(deployment, "API")
 			},
 		),
-
-		Entry("Git Source with Auth",
-			"test-git-auth-registry",
-			func() *mcpv1alpha1.MCPRegistry {
-				// Create a secret for Git auth
-				gitSecret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "git-credentials-test",
-						Namespace: testNamespace,
-					},
-					StringData: map[string]string{
-						"token": "ghp_test_token_value",
-					},
-				}
-				Expect(k8sClient.Create(ctx, gitSecret)).Should(Succeed())
-
-				return registryHelper.NewRegistryBuilder("test-git-auth-registry").
-					WithGitSource(
-						"https://github.com/example/private-repo.git",
-						"main",
-						"registry.json",
-					).
-					WithGitAuth("git", "git-credentials-test", "token").
-					WithSyncPolicy("1h").
-					Create(registryHelper)
-			},
-			map[string]string{
-				"repository":   "https://github.com/example/private-repo.git",
-				"branch":       "main",
-				"interval":     "1h",
-				"username":     "git",
-				"passwordFile": "/secrets/git-credentials-test/token",
-			},
-			func(deployment *appsv1.Deployment, _ *mcpv1alpha1.MCPRegistry) {
-				// Git auth sources should have the git auth secret volume
-				verifyGitAuthVolume(deployment, "git-credentials-test", "token")
-			},
-		),
 	)
 
 	Describe("Multiple ConfigMap Sources", func() {

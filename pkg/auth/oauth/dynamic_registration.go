@@ -344,6 +344,6 @@ func registerClientDynamicallyWithClient(
 		return nil, err
 	}
 
-	logger.Infof("Successfully registered OAuth client dynamically - client_id: %s", response.ClientID)
+	logger.Debugf("Successfully registered OAuth client dynamically - client_id: %s", response.ClientID)
 	return response, nil
 }

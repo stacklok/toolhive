@@ -35,6 +35,7 @@ type VMCPSession struct {
 	*transportsession.StreamableSession
 	routingTable *vmcp.RoutingTable
 	tools        []vmcp.Tool // Stores tools with InputSchema for type coercion
+	clientPool   interface{} // Stores BackendClientPool for session-scoped client pooling
 	mu           sync.RWMutex
 }
 
@@ -97,6 +98,22 @@ func (s *VMCPSession) SetTools(tools []vmcp.Tool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tools = tools
+}
+
+// GetClientPool retrieves the client pool for this session.
+// Returns nil if no pool has been set yet.
+func (s *VMCPSession) GetClientPool() interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.clientPool
+}
+
+// SetClientPool sets the client pool for this session.
+// Used by pooled backend client to cache MCP clients per session.
+func (s *VMCPSession) SetClientPool(pool interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clientPool = pool
 }
 
 // Type identifies this as a streamable vMCP session.

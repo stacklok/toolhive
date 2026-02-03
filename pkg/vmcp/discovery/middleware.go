@@ -61,6 +61,8 @@ func Middleware(
 				ctx, err = handleInitializeRequest(ctx, r, manager, registry)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
+				// Store session ID in context for downstream components (e.g., pooled client)
+				ctx = context.WithValue(ctx, transportsession.SessionIDContextKey, sessionID)
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
 			}
 

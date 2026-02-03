@@ -61,28 +61,53 @@ Present the recommendation with justification to the user.
 
 ### Step 5: Trigger the Release Workflow
 
-After user confirms the bump type:
+**IMPORTANT**: Present the analysis and recommendation to the user and WAIT for explicit confirmation before proceeding.
 
-```bash
-gh workflow run create-release-pr.yml -f bump_type=<patch|minor|major>
+After user confirms the bump type, use the GitHub MCP tool to trigger the workflow:
+
+```
+mcp__github__run_workflow(
+  owner: "stacklok",
+  repo: "toolhive",
+  workflow_id: "create-release-pr.yml",
+  ref: "main",
+  inputs: { "bump_type": "<patch|minor|major>" }
+)
 ```
 
 ### Step 6: Monitor and Report
 
-Check workflow status:
-```bash
-gh run list --workflow=create-release-pr.yml --limit 1
+1. Get the workflow run status:
+```
+mcp__github__list_workflow_runs(
+  owner: "stacklok",
+  repo: "toolhive",
+  workflow_id: "create-release-pr.yml",
+  per_page: 1
+)
 ```
 
-Watch until completion:
-```bash
-gh run watch <run-id> --exit-status
+2. Poll until completion (check the `status` field until it shows "completed"):
+```
+mcp__github__get_workflow_run(
+  owner: "stacklok",
+  repo: "toolhive",
+  run_id: <run_id from step 1>
+)
 ```
 
-Find the created PR:
-```bash
-gh pr list --search "Release v<new-version>" --state open
+3. Find the created PR:
 ```
+mcp__github__list_pull_requests(
+  owner: "stacklok",
+  repo: "toolhive",
+  state: "open",
+  sort: "created",
+  direction: "desc",
+  per_page: 5
+)
+```
+Look for the PR with title matching "Release v<new-version>".
 
 Report the PR URL to the user.
 
@@ -124,5 +149,6 @@ New features (OAuth auth server, ExcludeAll) warrant a minor version bump.
 ## Error Handling
 
 - **No tags found**: Repository may not have any releases yet. Check `git tag` output.
-- **Workflow trigger fails**: Ensure `gh` CLI is authenticated with proper permissions.
-- **PR not found**: The workflow may still be running. Wait and retry.
+- **Workflow trigger fails**: Ensure GitHub MCP server is configured and has proper permissions. The token needs `actions:write` scope.
+- **PR not found**: The workflow may still be running. Poll `mcp__github__get_workflow_run` until status is "completed", then search for the PR.
+- **Workflow run failed**: Use `mcp__github__get_workflow_run` to check the `conclusion` field. If "failure", use `mcp__github__get_job_logs` to investigate.

@@ -357,7 +357,7 @@ func readRequestBody(req *http.Request) []byte {
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
-			logger.Errorf("Failed to read request body: %v", err)
+			logger.Warnf("Failed to read request body: %v", err)
 		} else {
 			reqBody = buf
 		}
@@ -371,7 +371,7 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		Method string `json:"method"`
 	}
 	if err := json.Unmarshal(body, &rpc); err != nil {
-		logger.Errorf("Failed to parse JSON-RPC body: %v", err)
+		logger.Debugf("Failed to parse JSON-RPC body: %v", err)
 		return false
 	}
 	if rpc.Method == "initialize" {
@@ -595,10 +595,10 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	for {
 		select {
 		case <-parentCtx.Done():
-			logger.Infof("Context cancelled, stopping health monitor for %s", p.targetURI)
+			logger.Debugf("Context cancelled, stopping health monitor for %s", p.targetURI)
 			return
 		case <-p.shutdownCh:
-			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
+			logger.Debugf("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
 			if !p.serverInitialized() {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
@@ -116,6 +117,9 @@ type RunConfig struct {
 	// When set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs
 	// for upstream IdP tokens before forwarding requests to the MCP server.
 	UpstreamSwapConfig *upstreamswap.Config `json:"upstream_swap_config,omitempty" yaml:"upstream_swap_config,omitempty"`
+
+	// AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services
+	AWSStsConfig *awssts.Config `json:"aws_sts_config,omitempty" yaml:"aws_sts_config,omitempty"`
 
 	// DEPRECATED: Middleware configuration.
 	// AuthzConfig contains the authorization configuration

@@ -21,6 +21,7 @@
 // upstream IDP operations. The interface captures essential OAuth/OIDC
 // operations without leaking implementation details:
 //
+//   - Type: Returns the provider type identifier
 //   - AuthorizationURL: Build redirect URL for user authentication
 //   - ExchangeCode: Exchange authorization code for tokens
 //   - RefreshTokens: Refresh expired tokens
@@ -30,18 +31,14 @@
 // # Type Hierarchy
 //
 //	OAuth2Provider (interface)
-//	    |
-//	BaseOAuth2Provider (pure OAuth 2.0 implementation)
-//
-// Future: OIDCProvider will extend BaseOAuth2Provider with OIDC-specific
-// features like ID token validation and nonce verification.
+//	    ├── BaseOAuth2Provider (concrete - pure OAuth 2.0, uses UserInfo for identity)
+//	    └── OIDCProviderImpl (concrete - OIDC with discovery, validates ID tokens for identity)
 //
 // # Value Objects
 //
 //   - Tokens: Token response from upstream IDP
 //   - UserInfo: User claims from UserInfo endpoint
 //   - OAuth2Config: Configuration for OAuth 2.0 providers
-//   - IDTokenClaims: Parsed claims from ID token (for future OIDC support)
 //
 // # Usage
 //

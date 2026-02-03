@@ -44,7 +44,7 @@ jobs:
         id: release
         uses: stacklok/releaseo@b7022753f832cac36a9e07769a679a7c1ca72fe2 # v0.0.3
         with:
-          releaseo_version: v0.0.1
+          releaseo_version: v0.0.3
           bump_type: ${{ inputs.bump_type }}
           token: ${{ secrets.RELEASE_TOKEN }}
           version_files: |

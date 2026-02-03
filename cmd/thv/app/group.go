@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -23,7 +24,6 @@ import (
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -78,7 +78,7 @@ func validateGroupArg() func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return fmt.Errorf("group name is required. Hint: use 'thv group list' to see available groups")
 		}
-		if err := validation.ValidateGroupName(args[0]); err != nil {
+		if err := groupval.ValidateName(args[0]); err != nil {
 			return fmt.Errorf("invalid group name: %w", err)
 		}
 		return nil

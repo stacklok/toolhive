@@ -12,13 +12,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -100,7 +100,7 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) error
 	}
 
 	// Validate group name
-	if err := validation.ValidateGroupName(req.Name); err != nil {
+	if err := groupval.ValidateName(req.Name); err != nil {
 		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,
@@ -137,7 +137,7 @@ func (s *GroupsRoutes) getGroup(w http.ResponseWriter, r *http.Request) error {
 	name := chi.URLParam(r, "name")
 
 	// Validate group name
-	if err := validation.ValidateGroupName(name); err != nil {
+	if err := groupval.ValidateName(name); err != nil {
 		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,
@@ -173,7 +173,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) error
 	name := chi.URLParam(r, "name")
 
 	// Validate group name
-	if err := validation.ValidateGroupName(name); err != nil {
+	if err := groupval.ValidateName(name); err != nil {
 		return httperr.WithCode(
 			fmt.Errorf("invalid group name: %w", err),
 			http.StatusBadRequest,

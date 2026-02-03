@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -104,7 +104,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) e
 
 	// Apply group filtering if specified
 	if groupFilter != "" {
-		if err := validation.ValidateGroupName(groupFilter); err != nil {
+		if err := groupval.ValidateName(groupFilter); err != nil {
 			return httperr.WithCode(
 				fmt.Errorf("invalid group name: %w", err),
 				http.StatusBadRequest,

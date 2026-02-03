@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,8 +39,7 @@ func inspectorCommand() *cobra.Command {
 		Use:   "inspector [workload-name]",
 		Short: "Launches the MCP Inspector UI and connects it to the specified MCP server",
 		Long:  `Launches the MCP Inspector UI and connects it to the specified MCP server`,
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Args:  cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			return inspectorCmdFunc(cmd, args)
 		},
 	}
@@ -92,7 +93,8 @@ func waitForInspectorReady(ctx context.Context, port int, statusChan chan bool) 
 }
 
 func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+	ctx, stopSignal := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignal()
 
 	// Get server name from args
 	if len(args) == 0 || args[0] == "" {
@@ -178,8 +180,23 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
 			inspectorUIPort, transportTypeStr, serverPort, suffix, authToken)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
+		logger.Infof("Press Ctrl+C to stop the inspector container")
+
+		<-ctx.Done()
+		logger.Info("Interrupt received, stopping inspector container...")
+
+		cleanupErr := cleanupInspectorContainer(context.Background(), "inspector")
+		if cleanupErr != nil {
+			logger.Warnf("Failed to cleanup inspector container: %v", cleanupErr)
+		} else {
+			logger.Info("Inspector container cleaned up successfully")
+		}
 		return nil
 	case <-ctx.Done():
+		logger.Info("Context cancelled during inspector startup, cleaning up...")
+		if cleanupErr := cleanupInspectorContainer(context.Background(), "inspector"); cleanupErr != nil {
+			logger.Warnf("Failed to cleanup inspector container: %v", cleanupErr)
+		}
 		return fmt.Errorf("context cancelled while waiting for workload to start")
 	}
 }
@@ -213,4 +230,32 @@ func getServerPortAndTransport(ctx context.Context, serverName string) (int, typ
 	}
 
 	return 0, types.TransportTypeSSE, fmt.Errorf("server with name %s not found", serverName)
+}
+
+func cleanupInspectorContainer(ctx context.Context, name string) error {
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create runtime for cleanup: %w", err)
+	}
+
+	manager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager for cleanup: %w", err)
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	complete, err := manager.DeleteWorkloads(cleanupCtx, []string{name})
+	if err != nil {
+		return fmt.Errorf("failed to cleanup inspector container: %w", err)
+	}
+
+	if complete != nil {
+		if err := complete(); err != nil {
+			return fmt.Errorf("cleanup completion error: %w", err)
+		}
+	}
+
+	return nil
 }

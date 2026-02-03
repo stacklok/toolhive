@@ -5,13 +5,13 @@
 // the ToolHive Desktop application's CLI management.
 package desktop
 
-// CurrentSchemaVersion is the expected schema version for marker files.
-const CurrentSchemaVersion = 1
+// currentSchemaVersion is the expected schema version for marker files.
+const currentSchemaVersion = 1
 
-// CliSourceMarker represents the marker file schema written by the
+// cliSourceMarker represents the marker file schema written by the
 // ToolHive Desktop application at ~/.toolhive/.cli-source.
 // This marker indicates that the desktop app manages the CLI installation.
-type CliSourceMarker struct {
+type cliSourceMarker struct {
 	// SchemaVersion is the version of the marker file schema.
 	// Must be 1 for the current implementation.
 	SchemaVersion int `json:"schema_version"`
@@ -43,8 +43,8 @@ type CliSourceMarker struct {
 	DesktopVersion string `json:"desktop_version"`
 }
 
-// ValidationResult represents the result of desktop alignment validation.
-type ValidationResult struct {
+// validationResult represents the result of desktop alignment validation.
+type validationResult struct {
 	// HasConflict indicates whether a conflict was detected.
 	HasConflict bool
 

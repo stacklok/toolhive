@@ -17,15 +17,15 @@ const (
 	markerFileName = ".cli-source"
 )
 
-// ErrMarkerNotFound is returned when the marker file does not exist.
-var ErrMarkerNotFound = errors.New("marker file not found")
+// errMarkerNotFound is returned when the marker file does not exist.
+var errMarkerNotFound = errors.New("marker file not found")
 
-// ErrInvalidMarker is returned when the marker file exists but is invalid.
-var ErrInvalidMarker = errors.New("invalid marker file")
+// errInvalidMarker is returned when the marker file exists but is invalid.
+var errInvalidMarker = errors.New("invalid marker file")
 
-// GetMarkerFilePath returns the path to the CLI source marker file.
+// getMarkerFilePath returns the path to the CLI source marker file.
 // The marker file is located at ~/.toolhive/.cli-source
-func GetMarkerFilePath() (string, error) {
+func getMarkerFilePath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -33,52 +33,52 @@ func GetMarkerFilePath() (string, error) {
 	return filepath.Join(homeDir, toolhiveDir, markerFileName), nil
 }
 
-// ReadMarkerFile reads and parses the CLI source marker file.
-// Returns ErrMarkerNotFound if the file doesn't exist.
-// Returns ErrInvalidMarker if the file exists but cannot be parsed or has
+// readMarkerFile reads and parses the CLI source marker file.
+// Returns errMarkerNotFound if the file doesn't exist.
+// Returns errInvalidMarker if the file exists but cannot be parsed or has
 // an invalid schema version.
-func ReadMarkerFile() (*CliSourceMarker, error) {
-	markerPath, err := GetMarkerFilePath()
+func readMarkerFile() (*cliSourceMarker, error) {
+	markerPath, err := getMarkerFilePath()
 	if err != nil {
 		return nil, err
 	}
 
-	return ReadMarkerFileFromPath(markerPath)
+	return readMarkerFileFromPath(markerPath)
 }
 
-// ReadMarkerFileFromPath reads and parses the CLI source marker file from
+// readMarkerFileFromPath reads and parses the CLI source marker file from
 // a specific path. This is useful for testing.
-func ReadMarkerFileFromPath(path string) (*CliSourceMarker, error) {
-	// #nosec G304 -- path is always the marker file path from GetMarkerFilePath or tests
+func readMarkerFileFromPath(path string) (*cliSourceMarker, error) {
+	// #nosec G304 -- path is always the marker file path from getMarkerFilePath or tests
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrMarkerNotFound
+			return nil, errMarkerNotFound
 		}
 		return nil, err
 	}
 
-	var marker CliSourceMarker
+	var marker cliSourceMarker
 	if err := json.Unmarshal(data, &marker); err != nil {
-		return nil, ErrInvalidMarker
+		return nil, errInvalidMarker
 	}
 
 	// Validate schema version
-	if marker.SchemaVersion != CurrentSchemaVersion {
-		return nil, ErrInvalidMarker
+	if marker.SchemaVersion != currentSchemaVersion {
+		return nil, errInvalidMarker
 	}
 
 	// Validate source field
 	if marker.Source != "desktop" {
-		return nil, ErrInvalidMarker
+		return nil, errInvalidMarker
 	}
 
 	return &marker, nil
 }
 
-// MarkerFileExists checks if the marker file exists without reading it.
-func MarkerFileExists() (bool, error) {
-	markerPath, err := GetMarkerFilePath()
+// markerFileExists checks if the marker file exists without reading it.
+func markerFileExists() (bool, error) {
+	markerPath, err := getMarkerFilePath()
 	if err != nil {
 		return false, err
 	}

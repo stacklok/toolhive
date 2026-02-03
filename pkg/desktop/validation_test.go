@@ -22,13 +22,13 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 		setupFile  func(t *testing.T, dir string) string
 		wantErr    error
 		wantMarker bool
-		validateFn func(t *testing.T, marker *CliSourceMarker)
+		validateFn func(t *testing.T, marker *cliSourceMarker)
 	}{
 		{
 			name: "valid marker file",
 			setupFile: func(t *testing.T, dir string) string {
 				t.Helper()
-				marker := CliSourceMarker{
+				marker := cliSourceMarker{
 					SchemaVersion:  1,
 					Source:         "desktop",
 					InstallMethod:  "symlink",
@@ -41,7 +41,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			},
 			wantErr:    nil,
 			wantMarker: true,
-			validateFn: func(t *testing.T, marker *CliSourceMarker) {
+			validateFn: func(t *testing.T, marker *cliSourceMarker) {
 				t.Helper()
 				assert.Equal(t, 1, marker.SchemaVersion)
 				assert.Equal(t, "desktop", marker.Source)
@@ -56,7 +56,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				t.Helper()
 				return filepath.Join(dir, "nonexistent")
 			},
-			wantErr:    ErrMarkerNotFound,
+			wantErr:    errMarkerNotFound,
 			wantMarker: false,
 		},
 		{
@@ -67,7 +67,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				require.NoError(t, os.WriteFile(path, []byte("not valid json"), 0600))
 				return path
 			},
-			wantErr:    ErrInvalidMarker,
+			wantErr:    errInvalidMarker,
 			wantMarker: false,
 		},
 		{
@@ -84,7 +84,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				}
 				return writeMarkerFileRaw(t, dir, marker)
 			},
-			wantErr:    ErrInvalidMarker,
+			wantErr:    errInvalidMarker,
 			wantMarker: false,
 		},
 		{
@@ -101,14 +101,14 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				}
 				return writeMarkerFileRaw(t, dir, marker)
 			},
-			wantErr:    ErrInvalidMarker,
+			wantErr:    errInvalidMarker,
 			wantMarker: false,
 		},
 		{
 			name: "valid marker with copy method",
 			setupFile: func(t *testing.T, dir string) string {
 				t.Helper()
-				marker := CliSourceMarker{
+				marker := cliSourceMarker{
 					SchemaVersion:  1,
 					Source:         "desktop",
 					InstallMethod:  "copy",
@@ -121,7 +121,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			},
 			wantErr:    nil,
 			wantMarker: true,
-			validateFn: func(t *testing.T, marker *CliSourceMarker) {
+			validateFn: func(t *testing.T, marker *cliSourceMarker) {
 				t.Helper()
 				assert.Equal(t, "copy", marker.InstallMethod)
 				assert.Equal(t, "abc123", marker.CLIChecksum)
@@ -135,7 +135,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			dir := t.TempDir()
 			path := tt.setupFile(t, dir)
 
-			marker, err := ReadMarkerFileFromPath(path)
+			marker, err := readMarkerFileFromPath(path)
 
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
@@ -163,7 +163,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Point the home directory to our temp dir
 		setHomeDir(t, dir)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		assert.False(t, result.HasConflict)
 	})
@@ -176,7 +176,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Write a marker file pointing to a non-existent binary
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
@@ -193,7 +193,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Point home to our temp dir
 		setHomeDir(t, dir)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		assert.False(t, result.HasConflict, "should not conflict when target doesn't exist")
 	})
@@ -215,7 +215,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		resolvedExe = filepath.Clean(resolvedExe)
 
 		// Write a marker file pointing to the current executable
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
@@ -232,7 +232,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Point home to our temp dir
 		setHomeDir(t, dir)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		assert.False(t, result.HasConflict, "should not conflict when paths match")
 	})
@@ -249,7 +249,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		require.NoError(t, os.WriteFile(fakeBinaryPath, []byte("fake"), 0755))
 
 		// Write a marker file pointing to the fake binary
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
@@ -266,7 +266,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Point home to our temp dir
 		setHomeDir(t, dir)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		assert.True(t, result.HasConflict, "should conflict when paths differ")
 		assert.NotEmpty(t, result.Message)
@@ -277,7 +277,7 @@ func TestCheckDesktopAlignment(t *testing.T) {
 func TestValidateDesktopAlignment(t *testing.T) {
 	t.Run("skip validation when env var is set", func(t *testing.T) {
 		// Set the skip env var
-		t.Setenv(EnvSkipDesktopCheck, "1")
+		t.Setenv(envSkipDesktopCheck, "1")
 
 		// Even with a conflicting setup, validation should be skipped
 		err := ValidateDesktopAlignment()
@@ -285,21 +285,21 @@ func TestValidateDesktopAlignment(t *testing.T) {
 	})
 
 	t.Run("skip validation when env var is true", func(t *testing.T) {
-		t.Setenv(EnvSkipDesktopCheck, "true")
+		t.Setenv(envSkipDesktopCheck, "true")
 
 		err := ValidateDesktopAlignment()
 		assert.NoError(t, err)
 	})
 
 	t.Run("skip validation when env var is TRUE", func(t *testing.T) {
-		t.Setenv(EnvSkipDesktopCheck, "TRUE")
+		t.Setenv(envSkipDesktopCheck, "TRUE")
 
 		err := ValidateDesktopAlignment()
 		assert.NoError(t, err)
 	})
 
 	t.Run("does not skip when env var is false", func(t *testing.T) {
-		t.Setenv(EnvSkipDesktopCheck, "false")
+		t.Setenv(envSkipDesktopCheck, "false")
 
 		// With no marker file, should succeed
 		dir := t.TempDir()
@@ -374,7 +374,7 @@ func TestPathsEqual(t *testing.T) {
 func TestBuildConflictMessage(t *testing.T) {
 	t.Parallel()
 
-	marker := &CliSourceMarker{
+	marker := &cliSourceMarker{
 		SchemaVersion:  1,
 		Source:         "desktop",
 		InstallMethod:  "symlink",
@@ -407,7 +407,7 @@ func TestGetTargetPath(t *testing.T) {
 
 	t.Run("symlink method with target", func(t *testing.T) {
 		t.Parallel()
-		marker := &CliSourceMarker{
+		marker := &cliSourceMarker{
 			InstallMethod: "symlink",
 			SymlinkTarget: "/path/to/binary",
 		}
@@ -417,7 +417,7 @@ func TestGetTargetPath(t *testing.T) {
 
 	t.Run("symlink method without target", func(t *testing.T) {
 		t.Parallel()
-		marker := &CliSourceMarker{
+		marker := &cliSourceMarker{
 			InstallMethod: "symlink",
 			SymlinkTarget: "",
 		}
@@ -427,7 +427,7 @@ func TestGetTargetPath(t *testing.T) {
 
 	t.Run("copy method", func(t *testing.T) {
 		t.Parallel()
-		marker := &CliSourceMarker{
+		marker := &cliSourceMarker{
 			InstallMethod: "copy",
 			CLIChecksum:   "abc123",
 		}
@@ -507,10 +507,10 @@ func TestReadMarkerFileFromPathWithReadError(t *testing.T) {
 	path := filepath.Join(dir, "marker-dir")
 	require.NoError(t, os.MkdirAll(path, 0755))
 
-	marker, err := ReadMarkerFileFromPath(path)
-	// Should return an error that is NOT ErrMarkerNotFound (it's a read error)
+	marker, err := readMarkerFileFromPath(path)
+	// Should return an error that is NOT errMarkerNotFound (it's a read error)
 	assert.Error(t, err)
-	assert.NotErrorIs(t, err, ErrMarkerNotFound)
+	assert.NotErrorIs(t, err, errMarkerNotFound)
 	assert.Nil(t, marker)
 }
 
@@ -527,7 +527,7 @@ func TestMarkerFileExists(t *testing.T) {
 
 		setHomeDir(t, dir)
 
-		exists, err := MarkerFileExists()
+		exists, err := markerFileExists()
 		require.NoError(t, err)
 		assert.True(t, exists)
 	})
@@ -537,7 +537,7 @@ func TestMarkerFileExists(t *testing.T) {
 
 		setHomeDir(t, dir)
 
-		exists, err := MarkerFileExists()
+		exists, err := markerFileExists()
 		require.NoError(t, err)
 		assert.False(t, exists)
 	})
@@ -552,7 +552,7 @@ func TestReadMarkerFile(t *testing.T) {
 		thDir := filepath.Join(dir, ".toolhive")
 		require.NoError(t, os.MkdirAll(thDir, 0755))
 
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
@@ -568,7 +568,7 @@ func TestReadMarkerFile(t *testing.T) {
 
 		setHomeDir(t, dir)
 
-		result, err := ReadMarkerFile()
+		result, err := readMarkerFile()
 		require.NoError(t, err)
 		assert.Equal(t, "1.0.0", result.CLIVersion)
 	})
@@ -578,8 +578,8 @@ func TestReadMarkerFile(t *testing.T) {
 
 		setHomeDir(t, dir)
 
-		_, err := ReadMarkerFile()
-		assert.ErrorIs(t, err, ErrMarkerNotFound)
+		_, err := readMarkerFile()
+		assert.ErrorIs(t, err, errMarkerNotFound)
 	})
 }
 
@@ -588,7 +588,7 @@ func TestGetMarkerFilePath(t *testing.T) {
 
 	t.Run("returns path in home directory", func(t *testing.T) {
 		t.Parallel()
-		path, err := GetMarkerFilePath()
+		path, err := getMarkerFilePath()
 		require.NoError(t, err)
 		assert.Contains(t, path, ".toolhive")
 		assert.Contains(t, path, ".cli-source")
@@ -609,7 +609,7 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 		require.NoError(t, os.WriteFile(fakeBinaryPath, []byte("fake"), 0755))
 
 		// Write a marker file pointing to the fake binary
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
@@ -645,7 +645,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		require.NoError(t, os.MkdirAll(thDir, 0755))
 
 		// Write a marker file with copy method (no symlink target)
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "copy",
@@ -661,7 +661,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 
 		setHomeDir(t, dir)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		assert.False(t, result.HasConflict, "copy method on non-Windows should not cause conflict (validation skipped)")
 	})
@@ -687,7 +687,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		require.NoError(t, os.WriteFile(fakeCLIPath, []byte("fake cli"), 0755))
 
 		// Write a marker file with copy method
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "copy",
@@ -704,7 +704,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		setHomeDir(t, dir)
 		t.Setenv("LOCALAPPDATA", localAppData)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		// Should detect a conflict because current exe is not the fake CLI
 		assert.True(t, result.HasConflict, "copy method on Windows should detect conflict when running different CLI")
@@ -726,7 +726,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		require.NoError(t, os.MkdirAll(localAppData, 0755))
 
 		// Write a marker file with copy method
-		marker := CliSourceMarker{
+		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "copy",
@@ -743,7 +743,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		setHomeDir(t, dir)
 		t.Setenv("LOCALAPPDATA", localAppData)
 
-		result, err := CheckDesktopAlignment()
+		result, err := checkDesktopAlignment()
 		require.NoError(t, err)
 		// Should not conflict because the target binary doesn't exist
 		assert.False(t, result.HasConflict, "copy method on Windows should not conflict when target doesn't exist")
@@ -753,7 +753,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {
 	t.Parallel()
 
-	marker := &CliSourceMarker{
+	marker := &cliSourceMarker{
 		SchemaVersion:  1,
 		Source:         "desktop",
 		InstallMethod:  "symlink",
@@ -776,7 +776,7 @@ func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {
 
 // Helper functions for tests
 
-func writeMarkerFile(t *testing.T, dir string, marker CliSourceMarker) string {
+func writeMarkerFile(t *testing.T, dir string, marker cliSourceMarker) string {
 	t.Helper()
 	path := filepath.Join(dir, "marker.json")
 	data, err := json.Marshal(marker)

@@ -12,9 +12,9 @@ import (
 	"strings"
 )
 
-// EnvSkipDesktopCheck is the environment variable name that can be set to
+// envSkipDesktopCheck is the environment variable name that can be set to
 // skip the desktop validation check. Set to "1" or "true" to skip.
-const EnvSkipDesktopCheck = "TOOLHIVE_SKIP_DESKTOP_CHECK"
+const envSkipDesktopCheck = "TOOLHIVE_SKIP_DESKTOP_CHECK"
 
 // ErrDesktopConflict is returned when a conflict is detected between the
 // current CLI and the desktop-managed CLI.
@@ -38,7 +38,7 @@ func ValidateDesktopAlignment() error {
 		return nil
 	}
 
-	result, err := CheckDesktopAlignment()
+	result, err := checkDesktopAlignment()
 	if err != nil {
 		// Treat errors during validation as non-fatal - don't block the CLI
 		return nil
@@ -51,15 +51,15 @@ func ValidateDesktopAlignment() error {
 	return nil
 }
 
-// CheckDesktopAlignment performs the desktop alignment check and returns
-// a detailed result. This is useful for programmatic inspection.
-func CheckDesktopAlignment() (*ValidationResult, error) {
-	result := &ValidationResult{}
+// checkDesktopAlignment performs the desktop alignment check and returns
+// a detailed result.
+func checkDesktopAlignment() (*validationResult, error) {
+	result := &validationResult{}
 
 	// Read the marker file
-	marker, err := ReadMarkerFile()
+	marker, err := readMarkerFile()
 	if err != nil {
-		if errors.Is(err, ErrMarkerNotFound) || errors.Is(err, ErrInvalidMarker) {
+		if errors.Is(err, errMarkerNotFound) || errors.Is(err, errInvalidMarker) {
 			// No marker or invalid marker - no conflict
 			return result, nil
 		}
@@ -118,14 +118,14 @@ func CheckDesktopAlignment() (*ValidationResult, error) {
 // shouldSkipValidation checks if the validation should be skipped via
 // environment variable.
 func shouldSkipValidation() bool {
-	val := os.Getenv(EnvSkipDesktopCheck)
+	val := os.Getenv(envSkipDesktopCheck)
 	val = strings.ToLower(strings.TrimSpace(val))
 	return val == "1" || val == "true"
 }
 
 // getTargetPath extracts the target binary path from the marker based on
 // the installation method and platform.
-func getTargetPath(marker *CliSourceMarker) string {
+func getTargetPath(marker *cliSourceMarker) string {
 	if marker.InstallMethod == "symlink" && marker.SymlinkTarget != "" {
 		return marker.SymlinkTarget
 	}
@@ -192,7 +192,7 @@ func fileExists(path string) bool {
 }
 
 // buildConflictMessage creates a user-friendly conflict error message.
-func buildConflictMessage(desktopPath, currentPath string, marker *CliSourceMarker) string {
+func buildConflictMessage(desktopPath, currentPath string, marker *cliSourceMarker) string {
 	var sb strings.Builder
 
 	sb.WriteString("The ToolHive Desktop application manages a CLI installation at:\n")

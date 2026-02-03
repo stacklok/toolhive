@@ -11,7 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/desktop"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -74,14 +73,14 @@ var _ = Describe("Desktop Validation", Label("core", "desktop", "e2e"), func() {
 				err := os.MkdirAll(toolhiveDir, 0755)
 				Expect(err).ToNot(HaveOccurred())
 
-				marker := desktop.CliSourceMarker{
-					SchemaVersion:  1,
-					Source:         "desktop",
-					InstallMethod:  "symlink",
-					CLIVersion:     "1.0.0",
-					SymlinkTarget:  "/nonexistent/path/to/thv",
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+				marker := map[string]interface{}{
+					"schema_version":  1,
+					"source":          "desktop",
+					"install_method":  "symlink",
+					"cli_version":     "1.0.0",
+					"symlink_target":  "/nonexistent/path/to/thv",
+					"installed_at":    "2026-01-22T10:30:00Z",
+					"desktop_version": "2.0.0",
 				}
 				markerData, err := json.Marshal(marker)
 				Expect(err).ToNot(HaveOccurred())
@@ -112,14 +111,14 @@ var _ = Describe("Desktop Validation", Label("core", "desktop", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Creating a marker file pointing to the fake binary")
-				marker := desktop.CliSourceMarker{
-					SchemaVersion:  1,
-					Source:         "desktop",
-					InstallMethod:  "symlink",
-					CLIVersion:     "1.0.0",
-					SymlinkTarget:  fakeBinaryPath,
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+				marker := map[string]interface{}{
+					"schema_version":  1,
+					"source":          "desktop",
+					"install_method":  "symlink",
+					"cli_version":     "1.0.0",
+					"symlink_target":  fakeBinaryPath,
+					"installed_at":    "2026-01-22T10:30:00Z",
+					"desktop_version": "2.0.0",
 				}
 				markerData, err := json.Marshal(marker)
 				Expect(err).ToNot(HaveOccurred())
@@ -154,14 +153,14 @@ var _ = Describe("Desktop Validation", Label("core", "desktop", "e2e"), func() {
 				err = os.WriteFile(fakeBinaryPath, []byte("fake binary content"), 0755)
 				Expect(err).ToNot(HaveOccurred())
 
-				marker := desktop.CliSourceMarker{
-					SchemaVersion:  1,
-					Source:         "desktop",
-					InstallMethod:  "symlink",
-					CLIVersion:     "1.0.0",
-					SymlinkTarget:  fakeBinaryPath,
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+				marker := map[string]interface{}{
+					"schema_version":  1,
+					"source":          "desktop",
+					"install_method":  "symlink",
+					"cli_version":     "1.0.0",
+					"symlink_target":  fakeBinaryPath,
+					"installed_at":    "2026-01-22T10:30:00Z",
+					"desktop_version": "2.0.0",
 				}
 				markerData, err := json.Marshal(marker)
 				Expect(err).ToNot(HaveOccurred())

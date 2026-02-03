@@ -510,7 +510,7 @@ The following headers cannot be configured for forwarding due to security concer
 
 ```bash
 # Add custom headers when proxying to a remote MCP server
-thv proxy --remote-url https://mcp.example.com --header "X-Custom-Header: value" --header "X-API-Key: secret"
+thv proxy my-server --target-uri https://mcp.example.com --remote-forward-headers "X-Custom-Header=value" --remote-forward-headers "X-API-Key=secret"
 ```
 
 ## Data Flow Through Context

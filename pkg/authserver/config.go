@@ -233,14 +233,23 @@ type UserInfoFieldMappingRunConfig struct {
 }
 
 // UpstreamConfig wraps an upstream IDP configuration with identifying metadata.
+// It supports both OIDC providers (with discovery) and pure OAuth 2.0 providers.
 type UpstreamConfig struct {
 	// Name uniquely identifies this upstream.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	// Config contains the OAuth 2.0 provider configuration.
-	Config *upstream.OAuth2Config `json:"config" yaml:"config"`
+	// Type specifies the provider type: "oidc" or "oauth2".
+	Type UpstreamProviderType `json:"type" yaml:"type"`
+
+	// OAuth2Config contains OAuth 2.0 provider configuration.
+	// Used when Type is "oauth2". Must be nil when Type is "oidc".
+	OAuth2Config *upstream.OAuth2Config `json:"oauth2_config,omitempty" yaml:"oauth2_config,omitempty"`
+
+	// OIDCConfig contains OIDC provider configuration (uses discovery).
+	// Used when Type is "oidc". Must be nil when Type is "oauth2".
+	OIDCConfig *upstream.OIDCConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 }
 
 // Config is the pure configuration for the OAuth authorization server.
@@ -306,11 +315,11 @@ type Config struct {
 // GetUpstream returns the primary upstream configuration.
 // For current single-upstream deployments, this returns the only configured upstream.
 // Returns nil if no upstreams are configured (call Validate first).
-func (c *Config) GetUpstream() *upstream.OAuth2Config {
+func (c *Config) GetUpstream() *UpstreamConfig {
 	if len(c.Upstreams) == 0 {
 		return nil
 	}
-	return c.Upstreams[0].Config
+	return &c.Upstreams[0]
 }
 
 // Validate checks that the Config is valid.
@@ -374,12 +383,30 @@ func (c *Config) validateUpstreams() error {
 		}
 		seenNames[up.Name] = true
 
-		// Validate the upstream config
-		if up.Config == nil {
-			return fmt.Errorf("upstream %q: config is required", up.Name)
-		}
-		if err := up.Config.Validate(); err != nil {
-			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		// Validate based on provider type
+		switch up.Type {
+		case UpstreamProviderTypeOIDC:
+			if up.OIDCConfig == nil {
+				return fmt.Errorf("upstream %q: oidc_config is required for OIDC provider", up.Name)
+			}
+			if up.OAuth2Config != nil {
+				return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
+			}
+			if err := up.OIDCConfig.Validate(); err != nil {
+				return fmt.Errorf("upstream %q: %w", up.Name, err)
+			}
+		case UpstreamProviderTypeOAuth2:
+			if up.OAuth2Config == nil {
+				return fmt.Errorf("upstream %q: oauth2_config is required for OAuth2 provider", up.Name)
+			}
+			if up.OIDCConfig != nil {
+				return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
+			}
+			if err := up.OAuth2Config.Validate(); err != nil {
+				return fmt.Errorf("upstream %q: %w", up.Name, err)
+			}
+		default:
+			return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
 		}
 	}
 

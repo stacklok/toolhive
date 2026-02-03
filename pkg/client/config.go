@@ -70,6 +70,8 @@ const (
 	Antigravity MCPClient = "antigravity"
 	// Zed represents the Zed editor.
 	Zed MCPClient = "zed"
+	// GeminiCli represents the Google Gemini CLI.
+	GeminiCli MCPClient = "gemini-cli"
 )
 
 // Extension is extension of the client config file.
@@ -103,7 +105,8 @@ type mcpClientConfig struct {
 	Extension                     Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio mapped to streamable-http (SSE deprecated)
 	IsTransportTypeFieldSupported bool
-	MCPServersUrlLabel            string
+	// MCPServersUrlLabelMap maps transport type to URL field name (e.g., "url", "serverUrl", "httpUrl")
+	MCPServersUrlLabelMap map[types.TransportType]string
 	// YAML-specific configuration (only used when Extension == YAML)
 	YAMLStorageType     YAMLStorageType        // How servers are stored in YAML (map or array)
 	YAMLIdentifierField string                 // For array type: field name that identifies the server
@@ -138,7 +141,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:   Cline,
@@ -160,7 +167,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamableHttp",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -182,7 +193,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:   VSCode,
@@ -204,7 +219,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           Cursor,
@@ -221,7 +240,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// Adding type field is not explicitly required though, Cursor auto-detects and is able to
 		// connect to both sse and streamable-http types
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -236,7 +259,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           Windsurf,
@@ -251,7 +278,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "serverUrl",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "serverUrl",
+			types.TransportTypeSSE:            "serverUrl",
+			types.TransportTypeStreamableHTTP: "serverUrl",
+		},
 	},
 	{
 		ClientType:           WindsurfJetBrains,
@@ -266,7 +297,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "serverUrl",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "serverUrl",
+			types.TransportTypeSSE:            "serverUrl",
+			types.TransportTypeStreamableHTTP: "serverUrl",
+		},
 	},
 	{
 		ClientType:           AmpCli,
@@ -286,6 +321,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           AmpVSCode,
@@ -305,6 +345,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           AmpVSCodeInsider,
@@ -324,6 +369,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           AmpCursor,
@@ -343,6 +393,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           AmpWindsurf,
@@ -362,6 +417,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           LMStudio,
@@ -376,7 +436,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           Goose,
@@ -396,7 +460,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamable_http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "uri",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "uri",
+			types.TransportTypeSSE:            "uri",
+			types.TransportTypeStreamableHTTP: "uri",
+		},
 		// YAML configuration
 		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
@@ -423,7 +491,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: false,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           Continue,
@@ -438,7 +510,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 		// YAML configuration
 		YAMLStorageType:     YAMLStorageTypeArray,
 		YAMLIdentifierField: "name",
@@ -456,7 +532,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "remote",
 		},
 		IsTransportTypeFieldSupported: true, // OpenCode requires "type": "remote" for URL-based servers
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:           Kiro,
@@ -471,6 +551,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
 	},
 	{
 		ClientType:                    Antigravity,
@@ -480,7 +565,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:                       []string{".gemini", "antigravity"},
 		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
-		MCPServersUrlLabel:            "serverUrl",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "serverUrl",
+			types.TransportTypeSSE:            "serverUrl",
+			types.TransportTypeStreamableHTTP: "serverUrl",
+		},
 	},
 	{
 		ClientType:           Zed,
@@ -495,7 +584,28 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
-		MCPServersUrlLabel:            "url",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+	},
+	{
+		ClientType:           GeminiCli,
+		Description:          "Google Gemini CLI",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".gemini"},
+		Extension:            JSON,
+		// Gemini CLI uses different URL fields based on transport type:
+		// - SSE transport uses "url" field
+		// - Streamable HTTP transport uses "httpUrl" field
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "httpUrl",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "httpUrl",
+		},
 	},
 }
 
@@ -662,20 +772,48 @@ func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transpor
 		if cf.ClientType != cm.clientIntegrations[i].ClientType {
 			continue
 		}
-		isServerUrl := cm.clientIntegrations[i].MCPServersUrlLabel == "serverUrl"
-		mappedTransportType, ok := cm.clientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
-		if cm.clientIntegrations[i].IsTransportTypeFieldSupported && ok {
-			if isServerUrl {
-				return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url, Type: mappedTransportType})
-			}
-			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
-		}
-		if isServerUrl {
-			return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url})
-		}
-		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
+		server := buildMCPServer(url, transportType, &cm.clientIntegrations[i])
+		return cf.ConfigUpdater.Upsert(name, server)
 	}
 	return nil
+}
+
+// buildMCPServer constructs an MCPServer struct with the appropriate URL field and optional type field.
+// The URL field name is determined by looking up the transport type in MCPServersUrlLabelMap.
+// If the map is nil or the transport type is not found, it falls back to "url" as the default.
+// For most clients, all transport types map to the same URL field (e.g., "url"), but some clients
+// like Gemini CLI use different URL fields per transport type (e.g., "url" for SSE, "httpUrl" for streamable HTTP).
+func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPServer {
+	server := MCPServer{}
+
+	// Determine the URL field name from the transport type using MCPServersUrlLabelMap
+	urlFieldName := "url" // default fallback
+	if clientCfg.MCPServersUrlLabelMap != nil {
+		if mappedUrlField, ok := clientCfg.MCPServersUrlLabelMap[types.TransportType(transportType)]; ok {
+			urlFieldName = mappedUrlField
+		}
+	}
+
+	// Set the URL in the appropriate field
+	switch urlFieldName {
+	case "serverUrl":
+		server.ServerUrl = url
+	case "httpUrl":
+		server.HttpUrl = url
+	case "uri":
+		server.Uri = url
+	default:
+		server.Url = url
+	}
+
+	// Add transport type field if supported by the client
+	if clientCfg.IsTransportTypeFieldSupported {
+		if mappedType, ok := clientCfg.SupportedTransportTypesMap[types.TransportType(transportType)]; ok {
+			server.Type = mappedType
+		}
+	}
+
+	return server
 }
 
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.

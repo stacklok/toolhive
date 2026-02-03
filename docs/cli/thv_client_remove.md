@@ -28,6 +28,7 @@ Valid clients:
   - cline: Cline extension for VS Code
   - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
+  - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application

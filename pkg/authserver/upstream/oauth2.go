@@ -80,8 +80,8 @@ type OAuth2Provider interface {
 	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
 
 	// ResolveIdentity validates tokens and returns the canonical subject.
-	// For OIDC providers with ID tokens, it validates the token and nonce.
-	// For OAuth2 providers or as fallback, it fetches UserInfo.
+	// For OIDC providers, it validates the ID token and nonce (ID token required).
+	// For pure OAuth2 providers, it fetches UserInfo to resolve identity.
 	ResolveIdentity(ctx context.Context, tokens *Tokens, nonce string) (subject string, err error)
 
 	// FetchUserInfo retrieves user information using the provided access token.

@@ -84,7 +84,7 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 
 // Start starts the MCP server
 func (s *Server) Start() error {
-	logger.Infof("Starting ToolHive MCP server on http://%s:%s/mcp", s.config.Host, s.config.Port)
+	logger.Debugf("Starting ToolHive MCP server on http://%s:%s/mcp", s.config.Host, s.config.Port)
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("MCP server error: %w", err)
 	}
@@ -93,7 +93,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the MCP server
 func (s *Server) Shutdown(ctx context.Context) error {
-	logger.Info("Shutting down MCP server...")
+	logger.Debug("Shutting down MCP server...")
 	return s.httpServer.Shutdown(ctx)
 }
 

@@ -99,7 +99,7 @@ func createSquidContainer(
 	squidConfPath string,
 ) (string, error) {
 
-	logger.Infof("Setting up squid container for %s with image %s...", squidContainerName, getSquidImage())
+	logger.Debugf("Setting up squid container for %s with image %s...", squidContainerName, getSquidImage())
 	squidLabels := map[string]string{}
 	lb.AddStandardLabels(squidLabels, squidContainerName, squidContainerName, "stdio", 80)
 	squidLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
@@ -112,7 +112,7 @@ func createSquidContainer(
 		// Check if the squid image exists locally before failing
 		_, inspectErr := c.imageManager.ImageExists(ctx, squidImage)
 		if inspectErr == nil {
-			logger.Infof("Squid image %s exists locally, continuing despite pull failure", squidImage)
+			logger.Debugf("Squid image %s exists locally, continuing despite pull failure", squidImage)
 		} else {
 			return "", fmt.Errorf("failed to pull squid image: %w", err)
 		}

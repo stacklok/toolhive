@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,10 @@ const (
 
 	// DefaultHealthCheckRetryDelay is the default delay between retry attempts
 	DefaultHealthCheckRetryDelay = 5 * time.Second
+
+	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
+	// This is primarily useful for testing with shorter intervals.
+	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -197,6 +202,18 @@ func NewTransparentProxy(
 	)
 }
 
+// getHealthCheckInterval returns the health check interval to use.
+// Uses TOOLHIVE_HEALTH_CHECK_INTERVAL environment variable if set and valid,
+// otherwise returns the default interval.
+func getHealthCheckInterval() time.Duration {
+	if val := os.Getenv(HealthCheckIntervalEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			return d
+		}
+	}
+	return DefaultHealthCheckInterval
+}
+
 // newTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
 func newTransparentProxyWithOptions(
 	host string,
@@ -231,7 +248,7 @@ func newTransparentProxyWithOptions(
 		onUnauthorizedResponse: onUnauthorizedResponse,
 		endpointPrefix:         endpointPrefix,
 		trustProxyHeaders:      trustProxyHeaders,
-		healthCheckInterval:    DefaultHealthCheckInterval,
+		healthCheckInterval:    getHealthCheckInterval(),
 		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
 		healthCheckPingTimeout: DefaultPingerTimeout,
 	}

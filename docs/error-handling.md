@@ -32,17 +32,17 @@ import (
     "errors"
     "net/http"
     
-    thverrors "github.com/stacklok/toolhive/pkg/errors"
+    "github.com/stacklok/toolhive-core/httperr"
 )
 
 // Define an error with a status code
-var ErrWorkloadNotFound = thverrors.WithCode(
+var ErrWorkloadNotFound = httperr.WithCode(
     errors.New("workload not found"),
     http.StatusNotFound,
 )
 
 // Create a new error inline with a status code
-return thverrors.WithCode(
+return httperr.WithCode(
     fmt.Errorf("invalid request: %w", err),
     http.StatusBadRequest,
 )
@@ -53,7 +53,7 @@ return thverrors.WithCode(
 Use `errors.Code()` to extract the HTTP status code from an error:
 
 ```go
-code := thverrors.Code(err)  // Returns 500 if no code is found
+code := httperr.Code(err)  // Returns 500 if no code is found
 ```
 
 ### Error Definitions
@@ -109,7 +109,7 @@ func (s *Routes) getWorkload(w http.ResponseWriter, r *http.Request) error {
     
     // For errors without a status code, wrap with WithCode
     if someCondition {
-        return thverrors.WithCode(
+        return httperr.WithCode(
             fmt.Errorf("invalid input"),
             http.StatusBadRequest,
         )

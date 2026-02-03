@@ -126,7 +126,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 				// Validate issuer matches before merging
 				if oauthDoc.Issuer == doc.Issuer {
 					doc.RegistrationEndpoint = oauthDoc.RegistrationEndpoint
-					logger.Infof("Found registration_endpoint in OAuth authorization server metadata: %s", doc.RegistrationEndpoint)
+					logger.Debugf("Found registration_endpoint in OAuth authorization server metadata: %s", doc.RegistrationEndpoint)
 				} else {
 					logger.Warnf("Issuer mismatch between OIDC (%s) and OAuth (%s) discovery documents, not merging registration_endpoint",
 						doc.Issuer, oauthDoc.Issuer)

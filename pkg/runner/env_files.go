@@ -26,7 +26,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to read env files directory %s: %w", dirPath, err)
 	}
 
-	logger.Infof("Env files directory %s detected, processing environment files", dirPath)
+	logger.Debugf("Env files directory %s detected, processing environment files", dirPath)
 
 	allEnvVars := make(map[string]string)
 	processedCount := 0
@@ -56,7 +56,7 @@ func processEnvFilesDirectory(dirPath string) (map[string]string, error) {
 		processedCount++
 	}
 
-	logger.Infof("Processed %d env files, %d environment variables extracted", processedCount, len(allEnvVars))
+	logger.Debugf("Processed %d env files, %d environment variables extracted", processedCount, len(allEnvVars))
 	return allEnvVars, nil
 }
 

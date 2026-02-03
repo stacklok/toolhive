@@ -188,7 +188,7 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
 			logger.Warnf("Failed to persist DCR client credentials: %v", err)
 		} else {
-			logger.Infof("Successfully persisted DCR client credentials for future restarts")
+			logger.Debugf("Successfully persisted DCR client credentials for future restarts")
 		}
 	}
 

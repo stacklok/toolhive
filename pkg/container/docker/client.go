@@ -216,7 +216,7 @@ func (c *Client) DeployWorkload(
 			return 0, fmt.Errorf("failed to create external networks: %w", err)
 		}
 	} else {
-		logger.Infof("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
+		logger.Debugf("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
 	}
 
 	networkIsolation := false
@@ -804,7 +804,7 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 		return "", false
 	}
 
-	logger.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
+	logger.Debugf("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }
 
@@ -1381,7 +1381,7 @@ func (c *Client) createContainer(
 
 func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string,
 	attachStdio bool, networkName string, endpointsConfig map[string]*network.EndpointSettings) (string, string, error) {
-	logger.Infof("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
+	logger.Debugf("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
 	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
@@ -1392,7 +1392,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		// Check if the DNS image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
 		if inspectErr == nil {
-			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
+			logger.Debugf("DNS image %s exists locally, continuing despite pull failure", DnsImage)
 		} else {
 			return "", "", fmt.Errorf("failed to pull DNS image: %w", err)
 		}
@@ -1503,7 +1503,7 @@ func (c *Client) createMcpContainer(
 	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
 		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
 		// The NetworkMode in hostConfig will handle the networking
-		logger.Infof("Using custom network mode: %s", permissionConfig.NetworkMode)
+		logger.Debugf("Using custom network mode: %s", permissionConfig.NetworkMode)
 		// Leave internalEndpointsConfig as empty map
 	} else if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{

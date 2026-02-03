@@ -29,6 +29,8 @@ type ConfigUpdater interface {
 type MCPServer struct {
 	Url       string `json:"url,omitempty"`
 	ServerUrl string `json:"serverUrl,omitempty"`
+	HttpUrl   string `json:"httpUrl,omitempty"`
+	Uri       string `json:"uri,omitempty"`
 	Type      string `json:"type,omitempty"`
 }
 

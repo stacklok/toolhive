@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
@@ -54,7 +54,7 @@ func TestManager_Create(t *testing.T) {
 			setupMock: func(mock *mocks.MockStore) {
 				mock.EXPECT().
 					CreateExclusive(gomock.Any(), "existinggroup").
-					Return(nil, thverrors.WithCode(errors.New("state 'existinggroup' already exists"), http.StatusConflict))
+					Return(nil, httperr.WithCode(errors.New("state 'existinggroup' already exists"), http.StatusConflict))
 			},
 			expectError: true,
 			errorMsg:    "already exists",

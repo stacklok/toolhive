@@ -779,7 +779,8 @@ func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transpor
 }
 
 // buildMCPServer constructs an MCPServer struct with the appropriate URL field and optional type field.
-// The URL field name is always derived from the transport type using MCPServersUrlLabelMap.
+// The URL field name is determined by looking up the transport type in MCPServersUrlLabelMap.
+// If the map is nil or the transport type is not found, it falls back to "url" as the default.
 // For most clients, all transport types map to the same URL field (e.g., "url"), but some clients
 // like Gemini CLI use different URL fields per transport type (e.g., "url" for SSE, "httpUrl" for streamable HTTP).
 func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPServer {

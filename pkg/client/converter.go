@@ -31,9 +31,11 @@ func NewGenericYAMLConverter(cfg *mcpClientConfig) *GenericYAMLConverter {
 	// Extract the servers path from MCPServersPathPrefix (remove leading "/")
 	serversPath := strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
 
-	// Extract a default URL label from MCPServersUrlLabelMap
-	// For YAML configs, all transport types typically use the same URL field
-	// so we pick from Streamable HTTP as the default
+	// Extract a default URL label from MCPServersUrlLabelMap.
+	// For YAML configs, all transport types typically use the same URL field,
+	// so we pick one representative transport type to get the label.
+	// Priority: StreamableHTTP (most common for URL-based servers in modern MCP clients),
+	// then Stdio as fallback. If neither is present, default to "url".
 	urlLabel := "url"
 	if cfg.MCPServersUrlLabelMap != nil {
 		if label, ok := cfg.MCPServersUrlLabelMap[types.TransportTypeStreamableHTTP]; ok {
@@ -60,7 +62,9 @@ func (g *GenericYAMLConverter) ConvertFromMCPServer(serverName string, server MC
 	result["name"] = serverName
 
 	// Handle URL field - extract from whichever MCPServer field has a value
-	// and use the configured URL label for the output key
+	// and use the configured URL label for the output key.
+	// Check fields in priority order based on client specificity:
+	// Uri (Goose) → ServerUrl (Windsurf) → HttpUrl (Gemini) → Url (default/most common)
 	url := ""
 	switch {
 	case server.Uri != "":

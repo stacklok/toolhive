@@ -39,6 +39,12 @@ Do NOT invoke for:
 - [ ] Packages focused on single responsibilities
 - [ ] Follows Go standard project layout
 
+### Issue Resolution
+- [ ] If PR links to issues with "fixes", "closes", or "resolves" keywords, verify the PR fully addresses the issue
+- [ ] If PR links to issues with "ref", "references", or "relates to" keywords, verify the PR partially addresses the issue
+- [ ] Check PR description or commit messages for issue references (e.g., "Fixes #123")
+- [ ] Ensure issue requirements are met by the code changes
+
 ### Go Conventions
 - [ ] Idiomatic Go style and naming
 - [ ] Proper error handling (no ignored errors)
@@ -79,6 +85,12 @@ Do NOT invoke for:
 - [ ] Database queries optimized
 - [ ] Container operations batched where possible
 
+### Backwards Compatibility
+- [ ] Changes to behavior, defaults, or error handling won't break existing users
+- [ ] API/CLI changes maintain compatibility or include deprecation warnings
+- [ ] Config/schema changes have migration paths
+- [ ] Breaking changes are explicitly documented in PR description
+
 ## Review Process
 
 1. **Understand the change**: Read the code and understand its purpose
@@ -90,7 +102,6 @@ Do NOT invoke for:
 ## Output Format
 
 Provide feedback as:
-- **Positive observations**: What was done well
 - **Required changes**: Must be fixed before merge
 - **Suggestions**: Nice-to-have improvements
 - **Questions**: Clarifications needed

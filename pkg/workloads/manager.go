@@ -841,11 +841,11 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 	// Try to read the PID and kill the process
 	pid, err := d.statuses.GetWorkloadPID(ctx, name)
 	if err != nil {
-		logger.Debugf("No PID file found for %s, proxy may not be running in detached mode", name)
+		logger.Debugf("No PID found for %s, proxy may not be running in detached mode", name)
 		return
 	}
 
-	// PID file found, try to kill the process
+	// PID found, try to kill the process
 	logger.Debugf("Stopping proxy process (PID: %d)...", pid)
 	if err := process.KillProcess(pid); err != nil {
 		logger.Debugf("Warning: Failed to kill proxy process: %v", err)
@@ -853,9 +853,9 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 		logger.Debugf("Proxy process stopped")
 	}
 
-	// Clean up PID file after successful kill
-	if err := process.RemovePIDFile(name); err != nil {
-		logger.Debugf("Warning: Failed to remove PID file: %v", err)
+	// Remove old PID from
+	if err := d.statuses.ResetWorkloadPID(ctx, name); err != nil {
+		logger.Warnf("Warning: Failed to reset workload %s PID: %v", name, err)
 	}
 }
 
@@ -1366,12 +1366,6 @@ func (d *DefaultManager) stopSingleContainerWorkload(ctx context.Context, worklo
 		logger.Debugf("Skipping proxy stop for auxiliary workload %s", name)
 	} else {
 		d.stopProcess(ctx, name)
-	}
-
-	// TODO: refactor the StopProcess function to stop dealing explicitly with PID files.
-	// Note that this is not a blocker for k8s since this code path is not called there.
-	if err := d.statuses.ResetWorkloadPID(ctx, name); err != nil {
-		logger.Warnf("Warning: Failed to reset workload %s PID: %v", name, err)
 	}
 
 	logger.Debugf("Stopping containers for %s...", name)

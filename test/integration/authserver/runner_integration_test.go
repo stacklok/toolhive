@@ -90,15 +90,17 @@ func TestRunner_EmbeddedAuthServerIntegration(t *testing.T) {
 		defer server.Close()
 
 		// OAuth endpoints should work
-		oauthClient := helpers.NewOAuthClient(t, server.URL)
+		oauthClient := helpers.NewOAuthClient(server.URL)
 
 		// JWKS should be accessible
-		jwks, statusCode := oauthClient.GetJWKS()
+		jwks, statusCode, err := oauthClient.GetJWKS()
+		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, jwks, "keys")
 
 		// OAuth discovery should be accessible
-		metadata, statusCode := oauthClient.GetOAuthDiscovery()
+		metadata, statusCode, err := oauthClient.GetOAuthDiscovery()
+		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, metadata, "issuer")
 
@@ -127,17 +129,19 @@ func TestRunner_EmbeddedAuthServerIntegration(t *testing.T) {
 
 		// Make concurrent requests to various endpoints
 		var wg sync.WaitGroup
-		errors := make(chan error, 10)
+		type result struct {
+			statusCode int
+			err        error
+		}
+		results := make(chan result, 10)
 
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				client := helpers.NewOAuthClient(t, server.URL)
-				_, statusCode := client.GetJWKS()
-				if statusCode != http.StatusOK {
-					errors <- assert.AnError
-				}
+				client := helpers.NewOAuthClient(server.URL)
+				_, statusCode, err := client.GetJWKS()
+				results <- result{statusCode: statusCode, err: err}
 			}()
 		}
 
@@ -150,10 +154,11 @@ func TestRunner_EmbeddedAuthServerIntegration(t *testing.T) {
 
 		select {
 		case <-done:
-			// Success - check no errors
-			close(errors)
-			for err := range errors {
-				t.Errorf("concurrent request failed: %v", err)
+			// Success - check results in main goroutine (safe to use require here)
+			close(results)
+			for r := range results {
+				require.NoError(t, r.err, "concurrent request should not error")
+				assert.Equal(t, http.StatusOK, r.statusCode, "concurrent request should succeed")
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("timeout waiting for concurrent requests")
@@ -219,13 +224,15 @@ func TestRunner_AuthServerPrefixHandlersRoutingPriority(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := helpers.NewOAuthClient(t, server.URL)
+	client := helpers.NewOAuthClient(server.URL)
 
 	// OAuth endpoints should be handled by auth server, not MCP handler
-	_, statusCode := client.GetJWKS()
+	_, statusCode, err := client.GetJWKS()
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, statusCode, "JWKS should be handled by auth server")
 
-	_, statusCode = client.GetOAuthDiscovery()
+	_, statusCode, err = client.GetOAuthDiscovery()
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, statusCode, "OAuth discovery should be handled by auth server")
 
 	// MCP endpoints should go to MCP handler
@@ -252,8 +259,9 @@ func TestRunner_AuthServerLifecycleWithContext(t *testing.T) {
 	defer server.Close()
 
 	// Verify server works
-	client := helpers.NewOAuthClient(t, server.URL)
-	_, statusCode := client.GetJWKS()
+	client := helpers.NewOAuthClient(server.URL)
+	_, statusCode, err := client.GetJWKS()
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, statusCode)
 
 	// Cancel context

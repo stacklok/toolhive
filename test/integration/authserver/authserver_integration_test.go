@@ -48,10 +48,11 @@ func TestEmbeddedAuthServer_DiscoveryEndpoints(t *testing.T) {
 	defer server.Close()
 
 	// Create OAuth client for testing
-	client := helpers.NewOAuthClient(t, server.URL)
+	client := helpers.NewOAuthClient(server.URL)
 
 	t.Run("JWKS endpoint returns valid key set", func(t *testing.T) {
-		jwks, statusCode := client.GetJWKS()
+		jwks, statusCode, err := client.GetJWKS()
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, jwks, "keys")
@@ -69,7 +70,8 @@ func TestEmbeddedAuthServer_DiscoveryEndpoints(t *testing.T) {
 	})
 
 	t.Run("OAuth discovery endpoint returns valid metadata", func(t *testing.T) {
-		metadata, statusCode := client.GetOAuthDiscovery()
+		metadata, statusCode, err := client.GetOAuthDiscovery()
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
@@ -95,7 +97,8 @@ func TestEmbeddedAuthServer_DiscoveryEndpoints(t *testing.T) {
 	})
 
 	t.Run("OIDC discovery endpoint returns valid metadata", func(t *testing.T) {
-		metadata, statusCode := client.GetOIDCDiscovery()
+		metadata, statusCode, err := client.GetOIDCDiscovery()
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
@@ -133,7 +136,7 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 	defer server.Close()
 
 	// Create OAuth client
-	client := helpers.NewOAuthClient(t, server.URL)
+	client := helpers.NewOAuthClient(server.URL)
 
 	// Register a test client first (required for authorization to work)
 	clientMetadata := map[string]interface{}{
@@ -141,7 +144,8 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 		"redirect_uris": []string{"http://localhost:8080/callback"},
 		"grant_types":   []string{"authorization_code", "refresh_token"},
 	}
-	regResult, statusCode := client.RegisterClient(clientMetadata)
+	regResult, statusCode, err := client.RegisterClient(clientMetadata)
+	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, statusCode, "client registration should succeed")
 	clientID := regResult["client_id"].(string)
 
@@ -216,7 +220,7 @@ func TestEmbeddedAuthServer_DynamicClientRegistration(t *testing.T) {
 	server := httptest.NewServer(authServer.Handler())
 	defer server.Close()
 
-	client := helpers.NewOAuthClient(t, server.URL)
+	client := helpers.NewOAuthClient(server.URL)
 
 	t.Run("Register new client successfully", func(t *testing.T) {
 		// Not parallel - shares server with other subtests
@@ -227,7 +231,8 @@ func TestEmbeddedAuthServer_DynamicClientRegistration(t *testing.T) {
 			"grant_types":   []string{"authorization_code", "refresh_token"},
 		}
 
-		result, statusCode := client.RegisterClient(clientMetadata)
+		result, statusCode, err := client.RegisterClient(clientMetadata)
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusCreated, statusCode)
 		assert.Contains(t, result, "client_id")
@@ -242,7 +247,8 @@ func TestEmbeddedAuthServer_DynamicClientRegistration(t *testing.T) {
 			"redirect_uris": []string{}, // Empty redirect URIs
 		}
 
-		_, statusCode := client.RegisterClient(clientMetadata)
+		_, statusCode, err := client.RegisterClient(clientMetadata)
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusBadRequest, statusCode)
 	})
@@ -269,7 +275,7 @@ func TestEmbeddedAuthServer_TokenEndpoint(t *testing.T) {
 	server := httptest.NewServer(authServer.Handler())
 	defer server.Close()
 
-	client := helpers.NewOAuthClient(t, server.URL)
+	client := helpers.NewOAuthClient(server.URL)
 
 	t.Run("Token request with invalid grant returns error", func(t *testing.T) {
 		// Not parallel - shares server with other subtests
@@ -279,7 +285,8 @@ func TestEmbeddedAuthServer_TokenEndpoint(t *testing.T) {
 			"code":       {"fake-code"},
 		}
 
-		result, statusCode := client.ExchangeToken(params)
+		result, statusCode, err := client.ExchangeToken(params)
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusBadRequest, statusCode)
 		assert.Contains(t, result, "error")
@@ -296,7 +303,8 @@ func TestEmbeddedAuthServer_TokenEndpoint(t *testing.T) {
 			// Missing code, redirect_uri, client_id
 		}
 
-		result, statusCode := client.ExchangeToken(params)
+		result, statusCode, err := client.ExchangeToken(params)
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusBadRequest, statusCode)
 		assert.Contains(t, result, "error")
@@ -394,8 +402,9 @@ func TestEmbeddedAuthServer_SigningKeyConfiguration(t *testing.T) {
 		server := httptest.NewServer(authServer.Handler())
 		defer server.Close()
 
-		client := helpers.NewOAuthClient(t, server.URL)
-		jwks, statusCode := client.GetJWKS()
+		client := helpers.NewOAuthClient(server.URL)
+		jwks, statusCode, err := client.GetJWKS()
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, jwks, "keys")
@@ -425,8 +434,9 @@ func TestEmbeddedAuthServer_SigningKeyConfiguration(t *testing.T) {
 		server := httptest.NewServer(authServer.Handler())
 		defer server.Close()
 
-		client := helpers.NewOAuthClient(t, server.URL)
-		jwks, statusCode := client.GetJWKS()
+		client := helpers.NewOAuthClient(server.URL)
+		jwks, statusCode, err := client.GetJWKS()
+		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		keys := jwks["keys"].([]interface{})

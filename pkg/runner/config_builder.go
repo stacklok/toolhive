@@ -841,7 +841,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
 		}
 		c.PermissionProfile.Network.Mode = b.networkMode
-		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
+		logger.Debugf("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts
@@ -1015,7 +1015,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Infof("Adding volume mount: %s -> %s (%s)",
+		logger.Debugf("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}

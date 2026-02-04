@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strings"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
-	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // cliManager implements the Manager interface using filesystem-based state storage
@@ -37,7 +37,7 @@ func NewCLIManager() (Manager, error) {
 // Create creates a new group with the given name
 func (m *cliManager) Create(ctx context.Context, name string) error {
 	// Validate group name
-	if err := validation.ValidateGroupName(name); err != nil {
+	if err := groupval.ValidateName(name); err != nil {
 		return fmt.Errorf("%w: %s - %w", ErrInvalidGroupName, name, err)
 	}
 
@@ -50,7 +50,7 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 	writer, err := m.groupStore.CreateExclusive(ctx, name)
 	if err != nil {
 		// Check if the error is a conflict (group already exists)
-		if thverrors.Code(err) == http.StatusConflict {
+		if httperr.Code(err) == http.StatusConflict {
 			return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
 		}
 		return fmt.Errorf("failed to create group: %w", err)

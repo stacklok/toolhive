@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 func TestErrorHandler(t *testing.T) {
@@ -41,7 +41,7 @@ func TestErrorHandler(t *testing.T) {
 		t.Parallel()
 
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("invalid input"),
 				http.StatusBadRequest,
 			)
@@ -60,7 +60,7 @@ func TestErrorHandler(t *testing.T) {
 		t.Parallel()
 
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("resource not found"),
 				http.StatusNotFound,
 			)
@@ -79,7 +79,7 @@ func TestErrorHandler(t *testing.T) {
 		t.Parallel()
 
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("resource already exists"),
 				http.StatusConflict,
 			)
@@ -98,7 +98,7 @@ func TestErrorHandler(t *testing.T) {
 		t.Parallel()
 
 		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("sensitive database error details"),
 				http.StatusInternalServerError,
 			)
@@ -138,7 +138,7 @@ func TestErrorHandler(t *testing.T) {
 	t.Run("handles wrapped error with code", func(t *testing.T) {
 		t.Parallel()
 
-		sentinelErr := thverrors.WithCode(
+		sentinelErr := httperr.WithCode(
 			errors.New("not found"),
 			http.StatusNotFound,
 		)

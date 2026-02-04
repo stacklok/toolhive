@@ -16,9 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // crdManager implements the Manager interface using Kubernetes CRDs
@@ -38,7 +38,7 @@ func NewCRDManager(k8sClient client.Client, namespace string) Manager {
 // Create creates a new group with the specified name.
 func (m *crdManager) Create(ctx context.Context, name string) error {
 	// Validate group name
-	if err := validation.ValidateGroupName(name); err != nil {
+	if err := groupval.ValidateName(name); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidGroupName, err)
 	}
 

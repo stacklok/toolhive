@@ -6,6 +6,8 @@ package client
 import (
 	"reflect"
 	"testing"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 const (
@@ -19,8 +21,12 @@ func createGooseConfig() *mcpClientConfig {
 	return &mcpClientConfig{
 		ClientType:           Goose,
 		MCPServersPathPrefix: "/extensions",
-		MCPServersUrlLabel:   "uri",
-		YAMLStorageType:      YAMLStorageTypeMap,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "uri",
+			types.TransportTypeSSE:            "uri",
+			types.TransportTypeStreamableHTTP: "uri",
+		},
+		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
 			"enabled":     true,
 			"timeout":     60,
@@ -34,9 +40,13 @@ func createContinueConfig() *mcpClientConfig {
 	return &mcpClientConfig{
 		ClientType:           Continue,
 		MCPServersPathPrefix: "/mcpServers",
-		MCPServersUrlLabel:   "url",
-		YAMLStorageType:      YAMLStorageTypeArray,
-		YAMLIdentifierField:  "name",
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		YAMLStorageType:     YAMLStorageTypeArray,
+		YAMLIdentifierField: "name",
 	}
 }
 

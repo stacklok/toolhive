@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containerd/errdefs v1.0.0
+	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/go-chi/chi/v5 v5.2.4
@@ -26,6 +27,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/modelcontextprotocol/registry v1.4.0
+	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
 	github.com/olekukonko/tablewriter v1.1.3
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
@@ -35,6 +37,7 @@ require (
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.4
 	github.com/spf13/viper v1.21.0
+	github.com/stacklok/toolhive-core v0.0.2
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
@@ -51,7 +54,6 @@ require (
 	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/exp/jsonrpc2 v0.0.0-20260112195511-716be5621a96
 	golang.org/x/mod v0.32.0
-	golang.org/x/net v0.49.0
 	golang.org/x/oauth2 v0.34.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.39.0
@@ -174,7 +176,6 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
-	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
 	github.com/olekukonko/errors v1.1.0 // indirect
@@ -237,6 +238,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp/event v0.0.0-20251219203646-944ab1f22d93 // indirect
+	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect

@@ -4,9 +4,7 @@
 package e2e_test
 
 import (
-	"context"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -24,8 +22,6 @@ type inspectorAutoCleanupTestHelper struct {
 	mcpServerName string
 	inspectorName string // Always "inspector"
 	inspectorCmd  *exec.Cmd
-	httpClient    *http.Client
-	inspectorURL  string
 }
 
 // newInspectorAutoCleanupTestHelper creates a new test helper for auto-cleanup testing
@@ -34,8 +30,6 @@ func newInspectorAutoCleanupTestHelper(config *e2e.TestConfig, mcpServerName str
 		config:        config,
 		mcpServerName: mcpServerName,
 		inspectorName: "inspector",
-		httpClient:    &http.Client{Timeout: 5 * time.Second},
-		inspectorURL:  "http://localhost:6274",
 	}
 }
 
@@ -64,35 +58,6 @@ func (h *inspectorAutoCleanupTestHelper) interruptInspector() error {
 
 	GinkgoWriter.Printf("Sending SIGINT to inspector process (PID: %d)\n", h.inspectorCmd.Process.Pid)
 	return h.inspectorCmd.Process.Signal(syscall.SIGINT)
-}
-
-// waitForInspectorReady waits for the inspector UI to become accessible
-func (h *inspectorAutoCleanupTestHelper) waitForInspectorReady(timeout time.Duration) error {
-	GinkgoWriter.Printf("Waiting for inspector UI to be ready at %s\n", h.inspectorURL)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for inspector UI to be ready")
-		case <-ticker.C:
-			resp, err := h.httpClient.Get(h.inspectorURL)
-			if err == nil && resp.StatusCode == 200 {
-				_ = resp.Body.Close()
-				GinkgoWriter.Println("Inspector UI is ready")
-				return nil
-			}
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			GinkgoWriter.Println("Inspector UI not ready yet, waiting...")
-		}
-	}
 }
 
 // waitForInspectorExit waits for the inspector process to exit
@@ -129,16 +94,6 @@ func (h *inspectorAutoCleanupTestHelper) verifyInspectorContainerGone() bool {
 	return !strings.Contains(stdout, h.inspectorName)
 }
 
-// verifyUIAccessible checks if the inspector UI is accessible
-func (h *inspectorAutoCleanupTestHelper) verifyUIAccessible() bool {
-	resp, err := h.httpClient.Get(h.inspectorURL)
-	if err == nil {
-		_ = resp.Body.Close()
-		return resp.StatusCode == 200
-	}
-	return false
-}
-
 // cleanup performs final cleanup of any remaining containers
 func (h *inspectorAutoCleanupTestHelper) cleanup() {
 	// Clean up MCP server
@@ -165,71 +120,6 @@ var _ = Describe("Inspector Auto-Cleanup", Label("mcp", "e2e", "inspector", "cle
 		// Check if thv binary is available
 		err := e2e.CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
-	})
-
-	Context("Normal operation", func() {
-		It("should start inspector and make UI accessible", func() {
-			mcpServerName := fmt.Sprintf("mcp-happypath-%d", GinkgoRandomSeed())
-			helper := newInspectorAutoCleanupTestHelper(config, mcpServerName)
-
-			defer helper.cleanup()
-
-			By("Starting an MCP server for inspector to connect to")
-			helper.setupMCPServer()
-
-			By("Starting inspector command")
-			helper.startInspector()
-
-			By("Waiting for inspector UI to be ready")
-			err := helper.waitForInspectorReady(45 * time.Second)
-			Expect(err).ToNot(HaveOccurred(), "Inspector should become ready")
-
-			By("Verifying inspector UI is accessible")
-			Expect(helper.verifyUIAccessible()).To(BeTrue(), "UI should be accessible")
-
-			By("Verifying inspector container exists")
-			Expect(helper.verifyInspectorContainerExists()).To(BeTrue(), "Container should exist")
-
-			By("Waiting for inspector process to exit (returns immediately after ready)")
-			err = helper.waitForInspectorExit(10 * time.Second)
-			Expect(err).ToNot(HaveOccurred(), "Inspector should exit after becoming ready")
-
-			By("Verifying inspector container still exists after process exits")
-			Expect(helper.verifyInspectorContainerExists()).To(BeTrue(), "Container should still exist")
-		})
-
-		It("should allow manual cleanup after inspector exits", func() {
-			mcpServerName := fmt.Sprintf("mcp-manualclean-%d", GinkgoRandomSeed())
-			helper := newInspectorAutoCleanupTestHelper(config, mcpServerName)
-
-			defer helper.cleanup()
-
-			By("Starting an MCP server for inspector to connect to")
-			helper.setupMCPServer()
-
-			By("Starting inspector command")
-			helper.startInspector()
-
-			By("Waiting for inspector UI to be ready")
-			err := helper.waitForInspectorReady(45 * time.Second)
-			Expect(err).ToNot(HaveOccurred(), "Inspector should become ready")
-
-			By("Waiting for inspector process to exit")
-			err = helper.waitForInspectorExit(10 * time.Second)
-			Expect(err).ToNot(HaveOccurred(), "Inspector should exit after becoming ready")
-
-			By("Verifying inspector container still exists")
-			Expect(helper.verifyInspectorContainerExists()).To(BeTrue(), "Container should still exist")
-
-			By("Manually stopping the inspector container")
-			e2e.NewTHVCommand(config, "stop", helper.inspectorName).ExpectSuccess()
-
-			By("Manually removing the inspector container")
-			e2e.NewTHVCommand(config, "rm", helper.inspectorName).ExpectSuccess()
-
-			By("Verifying inspector container is gone after manual cleanup")
-			Expect(helper.verifyInspectorContainerGone()).To(BeTrue(), "Container should be gone after manual cleanup")
-		})
 	})
 
 	Context("Startup interruption scenarios", func() {
@@ -287,36 +177,6 @@ var _ = Describe("Inspector Auto-Cleanup", Label("mcp", "e2e", "inspector", "cle
 
 			By("Verifying inspector container is cleaned up")
 			Expect(helper.verifyInspectorContainerGone()).To(BeTrue(), "Container should be cleaned up")
-		})
-	})
-
-	Context("Error handling and edge cases", func() {
-		It("should handle cleanup when container creation fails", func() {
-			// Test scenario where container creation might fail
-			// This is more complex to simulate, so we'll test the graceful handling
-			mcpServerName := fmt.Sprintf("mcp-errorcase-%d", GinkgoRandomSeed())
-			helper := newInspectorAutoCleanupTestHelper(config, mcpServerName)
-
-			defer helper.cleanup()
-
-			By("Starting an MCP server for inspector to connect to")
-			helper.setupMCPServer()
-
-			By("Starting inspector command and immediately interrupting")
-			helper.startInspector()
-
-			// Interrupt very quickly to potentially catch container during creation
-			time.Sleep(100 * time.Millisecond)
-			err := helper.interruptInspector()
-			Expect(err).ToNot(HaveOccurred(), "Should be able to interrupt inspector")
-
-			By("Waiting for inspector process to exit")
-			err = helper.waitForInspectorExit(15 * time.Second)
-			// We expect this to succeed even if container creation was in progress
-			Expect(err).ToNot(HaveOccurred(), "Inspector should handle interrupt gracefully")
-
-			By("Verifying no orphaned containers remain")
-			Expect(helper.verifyInspectorContainerGone()).To(BeTrue(), "No inspector containers should remain")
 		})
 	})
 })

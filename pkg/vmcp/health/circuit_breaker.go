@@ -22,16 +22,35 @@ const (
 	CircuitHalfOpen CircuitState = "half_open"
 )
 
+// CircuitBreaker defines the interface for circuit breaker implementations.
+type CircuitBreaker interface {
+	// RecordSuccess records a successful operation
+	RecordSuccess()
+	// RecordFailure records a failed operation
+	RecordFailure()
+	// CanAttempt checks if an operation should be allowed based on circuit state
+	CanAttempt() bool
+	// GetState returns the current state of the circuit breaker
+	GetState() CircuitState
+	// GetLastStateChange returns the time when the state last changed
+	GetLastStateChange() time.Time
+	// GetFailureCount returns the current failure count
+	GetFailureCount() int
+	// GetSnapshot returns an immutable snapshot of the circuit breaker state
+	GetSnapshot() circuitBreakerSnapshot
+}
+
 // circuitBreaker manages circuit breaker state for a single backend.
 // It implements the circuit breaker pattern to prevent cascading failures
 // by tracking failures and transitioning through states:
 // Closed → Open → HalfOpen → Closed
 type circuitBreaker struct {
-	mu sync.Mutex
-
 	// name is used for logging purposes to identify which backend this circuit breaker belongs to
+	// name is immutable after initialization and doesn't require mutex protection
 	name string
 
+	mu sync.Mutex
+	// Fields below are protected by mu
 	state            CircuitState
 	failureCount     int
 	failureThreshold int
@@ -67,8 +86,7 @@ func (cb *circuitBreaker) RecordSuccess() {
 	cb.halfOpenTestInProgress = false
 
 	if cb.state != CircuitClosed {
-		cb.state = CircuitClosed
-		cb.lastStateChange = time.Now()
+		cb.transitionTo(CircuitClosed)
 
 		// Log successful recovery
 		if previousState == CircuitHalfOpen {
@@ -83,23 +101,36 @@ func (cb *circuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	previousState := cb.state
 	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 	cb.halfOpenTestInProgress = false
 
 	if cb.state == CircuitClosed && cb.failureCount >= cb.failureThreshold {
-		cb.state = CircuitOpen
-		cb.lastStateChange = time.Now()
+		cb.transitionTo(CircuitOpen)
 		logger.Warnf("Circuit breaker for backend %s OPENED (threshold exceeded)", cb.name)
 	} else if cb.state == CircuitHalfOpen {
 		// Failed in half-open state, go back to open
-		cb.state = CircuitOpen
-		cb.lastStateChange = time.Now()
-		if previousState == CircuitHalfOpen {
-			logger.Warnf("Circuit breaker for backend %s returned to OPEN from half-open (recovery failed)", cb.name)
-		}
+		cb.transitionTo(CircuitOpen)
+		logger.Warnf("Circuit breaker for backend %s returned to OPEN from half-open (recovery failed)", cb.name)
 	}
+}
+
+// transitionTo changes the circuit breaker state and updates the lastStateChange timestamp.
+// Must be called with lock held.
+func (cb *circuitBreaker) transitionTo(newState CircuitState) {
+	cb.state = newState
+	cb.lastStateChange = time.Now()
+}
+
+// tryTransitionOpenToHalfOpen checks if the circuit is OPEN and timeout has elapsed,
+// and transitions to HALF_OPEN if so. Returns true if transition occurred.
+// Must be called with lock held.
+func (cb *circuitBreaker) tryTransitionOpenToHalfOpen() bool {
+	if cb.state == CircuitOpen && time.Since(cb.lastStateChange) >= cb.timeout {
+		cb.transitionTo(CircuitHalfOpen)
+		return true
+	}
+	return false
 }
 
 // CanAttempt checks if an operation should be allowed based on circuit state.
@@ -114,9 +145,7 @@ func (cb *circuitBreaker) CanAttempt() bool {
 
 	case CircuitOpen:
 		// Check if timeout has elapsed to transition to half-open
-		if time.Since(cb.lastStateChange) >= cb.timeout {
-			cb.state = CircuitHalfOpen
-			cb.lastStateChange = time.Now()
+		if cb.tryTransitionOpenToHalfOpen() {
 			cb.halfOpenTestInProgress = true
 			return true
 		}
@@ -158,6 +187,10 @@ func (cb *circuitBreaker) GetFailureCount() int {
 }
 
 // GetSnapshot returns an immutable snapshot of the circuit breaker state.
+// This is a read-only operation that does not trigger state transitions.
+// The snapshot reflects the current state at the time of the call.
+// Note: If the circuit is OPEN and the timeout has elapsed, the snapshot will still
+// show OPEN until the next call to CanAttempt() triggers the transition to HALF_OPEN.
 func (cb *circuitBreaker) GetSnapshot() circuitBreakerSnapshot {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -176,4 +209,44 @@ type circuitBreakerSnapshot struct {
 	FailureCount    int
 	LastStateChange time.Time
 	LastFailureTime time.Time
+}
+
+// alwaysClosedCircuit is a no-op circuit breaker implementation that always allows operations.
+// Used when circuit breaker is disabled.
+type alwaysClosedCircuit struct{}
+
+// RecordSuccess is a no-op for the always-closed circuit.
+func (*alwaysClosedCircuit) RecordSuccess() {}
+
+// RecordFailure is a no-op for the always-closed circuit.
+func (*alwaysClosedCircuit) RecordFailure() {}
+
+// CanAttempt always returns true for the always-closed circuit.
+func (*alwaysClosedCircuit) CanAttempt() bool {
+	return true
+}
+
+// GetState always returns CircuitClosed.
+func (*alwaysClosedCircuit) GetState() CircuitState {
+	return CircuitClosed
+}
+
+// GetLastStateChange returns zero time since the circuit never changes state.
+func (*alwaysClosedCircuit) GetLastStateChange() time.Time {
+	return time.Time{}
+}
+
+// GetFailureCount always returns 0.
+func (*alwaysClosedCircuit) GetFailureCount() int {
+	return 0
+}
+
+// GetSnapshot returns a snapshot representing a closed circuit with no failures.
+func (*alwaysClosedCircuit) GetSnapshot() circuitBreakerSnapshot {
+	return circuitBreakerSnapshot{
+		State:           CircuitClosed,
+		FailureCount:    0,
+		LastStateChange: time.Time{},
+		LastFailureTime: time.Time{},
+	}
 }

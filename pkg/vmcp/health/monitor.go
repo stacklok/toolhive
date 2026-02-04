@@ -218,14 +218,10 @@ func (m *Monitor) Start(ctx context.Context) error {
 	logger.Infof("Starting health monitor for %d backends (interval: %v, threshold: %d)",
 		len(m.backends), m.checkInterval, m.statusTracker.unhealthyThreshold)
 
-	// Circuit breaker is configured in the status tracker and will be lazily initialized
-
 	// Start health check goroutine for each backend
 	m.backendsMu.Lock()
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
-
-		// Circuit breaker will be lazily initialized on first health check
 
 		backendCtx, cancel := context.WithCancel(m.ctx)
 		m.activeChecks[backend.ID] = cancel

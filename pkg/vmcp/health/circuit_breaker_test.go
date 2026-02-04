@@ -221,6 +221,43 @@ func TestCircuitBreaker_GetSnapshot(t *testing.T) {
 	assert.True(t, snapshot2.LastStateChange.After(snapshot.LastStateChange))
 }
 
+func TestCircuitBreaker_GetSnapshotIsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	timeout := 50 * time.Millisecond
+	cb := newCircuitBreaker(2, timeout, "test-backend")
+
+	// Open the circuit
+	cb.RecordFailure()
+	cb.RecordFailure()
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	// GetSnapshot before timeout - should be OPEN
+	snapshot1 := cb.GetSnapshot()
+	assert.Equal(t, CircuitOpen, snapshot1.State)
+
+	// Wait for timeout to elapse
+	time.Sleep(timeout + 20*time.Millisecond)
+
+	// GetSnapshot after timeout - should STILL be OPEN (GetSnapshot is read-only)
+	snapshot2 := cb.GetSnapshot()
+	assert.Equal(t, CircuitOpen, snapshot2.State)
+	// LastStateChange should not have changed since no transition occurred
+	assert.Equal(t, snapshot1.LastStateChange, snapshot2.LastStateChange)
+
+	// Verify GetState also shows OPEN (no transition until CanAttempt is called)
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	// Now call CanAttempt which should trigger the OPEN -> HALF_OPEN transition
+	assert.True(t, cb.CanAttempt())
+	assert.Equal(t, CircuitHalfOpen, cb.GetState())
+
+	// Now GetSnapshot should show HALF_OPEN
+	snapshot3 := cb.GetSnapshot()
+	assert.Equal(t, CircuitHalfOpen, snapshot3.State)
+	assert.True(t, snapshot3.LastStateChange.After(snapshot1.LastStateChange))
+}
+
 func TestCircuitBreaker_HalfOpenSingleTest(t *testing.T) {
 	t.Parallel()
 

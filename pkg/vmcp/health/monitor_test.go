@@ -1014,7 +1014,7 @@ func TestMonitor_CircuitBreakerEnabled(t *testing.T) {
 	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// No more health checks should be attempted while circuit is open
-	// (mockClient won't expect any more Initialize calls)
+	// (mockClient won't expect any more ListCapabilities calls)
 
 	// Wait some time - no additional calls should be made
 	time.Sleep(300 * time.Millisecond)

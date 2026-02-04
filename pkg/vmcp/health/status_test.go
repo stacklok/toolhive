@@ -502,8 +502,8 @@ func TestStatusTracker_CircuitBreakerInitialization(t *testing.T) {
 	}
 	tracker := newStatusTracker(3, cbConfig)
 
-	// Circuit breaker is lazily initialized on first health check
-	// Record a success to trigger initialization
+	// Circuit breaker is initialized inline when state is created
+	// Record a success to create the backend state
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Verify circuit breaker exists and is in closed state
@@ -599,7 +599,7 @@ func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
 
 	tracker := newStatusTracker(3, nil)
 
-	// Don't initialize circuit breaker
+	// Circuit breaker is disabled (nil config), so alwaysClosedCircuit is used
 	// CanAttemptHealthCheck should always return true
 	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
 
@@ -608,13 +608,14 @@ func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
 		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
 	}
 
-	// Still should allow health checks (no circuit breaker)
+	// Still should allow health checks (no-op circuit breaker)
 	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
 	assert.False(t, tracker.IsCircuitOpen("backend-1"))
 
-	// Circuit breaker state should not exist
-	_, exists := tracker.GetCircuitBreakerState("backend-1")
-	assert.False(t, exists)
+	// Circuit breaker state should exist and be closed (using alwaysClosedCircuit)
+	cbState, exists := tracker.GetCircuitBreakerState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, cbState)
 }
 
 func TestStatusTracker_CircuitBreakerHalfOpen(t *testing.T) {

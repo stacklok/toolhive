@@ -60,3 +60,17 @@ func (h *RemoteProxyStatusTestHelper) WaitForURL(proxyName string, timeout time.
 	}, timeout, time.Second).ShouldNot(gomega.BeEmpty(),
 		"MCPRemoteProxy %s should have a URL set", proxyName)
 }
+
+// WaitForPhase waits for an MCPRemoteProxy to reach the specified phase
+func (h *RemoteProxyStatusTestHelper) WaitForPhase(
+	proxyName string, expectedPhase mcpv1alpha1.MCPRemoteProxyPhase, timeout time.Duration,
+) {
+	gomega.Eventually(func() mcpv1alpha1.MCPRemoteProxyPhase {
+		proxy, err := h.proxyHelper.GetRemoteProxy(proxyName)
+		if err != nil {
+			return ""
+		}
+		return proxy.Status.Phase
+	}, timeout, time.Second).Should(gomega.Equal(expectedPhase),
+		"MCPRemoteProxy %s should reach phase %s", proxyName, expectedPhase)
+}

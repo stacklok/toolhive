@@ -436,6 +436,7 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 	var (
 		testCtx       context.Context
 		proxyHelper   *MCPRemoteProxyTestHelper
+		statusHelper  *RemoteProxyStatusTestHelper
 		testNamespace string
 	)
 
@@ -445,6 +446,7 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 
 		// Initialize helpers
 		proxyHelper = NewMCPRemoteProxyTestHelper(testCtx, k8sClient, testNamespace)
+		statusHelper = NewRemoteProxyStatusTestHelper(testCtx, k8sClient, testNamespace)
 	})
 
 	AfterEach(func() {
@@ -461,18 +463,13 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase due to missing ExternalAuthConfig")
-			Eventually(func() mcpv1alpha1.MCPRemoteProxyPhase {
-				p, err := proxyHelper.GetRemoteProxy(proxy.Name)
-				if err != nil {
-					return ""
-				}
-				return p.Status.Phase
-			}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1alpha1.MCPRemoteProxyPhaseFailed))
+			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
-			By("verifying the error message mentions the missing config")
+			By("verifying the error message indicates the config was not found")
 			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status.Message).To(ContainSubstring("non-existent-auth-config"))
+			Expect(status.Message).To(ContainSubstring("not found"))
 		})
 
 		It("should successfully reconcile when referenced MCPExternalAuthConfig exists", func() {
@@ -628,18 +625,13 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase due to missing ToolConfig")
-			Eventually(func() mcpv1alpha1.MCPRemoteProxyPhase {
-				p, err := proxyHelper.GetRemoteProxy(proxy.Name)
-				if err != nil {
-					return ""
-				}
-				return p.Status.Phase
-			}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1alpha1.MCPRemoteProxyPhaseFailed))
+			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
-			By("verifying the error message mentions the missing config")
+			By("verifying the error message indicates the config was not found")
 			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status.Message).To(ContainSubstring("non-existent-tool-config"))
+			Expect(status.Message).To(ContainSubstring("not found"))
 		})
 
 		It("should successfully reconcile when referenced MCPToolConfig exists", func() {

@@ -1343,6 +1343,9 @@ const docTemplate = `{
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
                         "type": "boolean"
                     },
+                    "upstream_swap_config": {
+                        "$ref": "#/components/schemas/upstreamswap.Config"
+                    },
                     "volumes": {
                         "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
                         "items": {
@@ -1547,6 +1550,24 @@ const docTemplate = `{
                     "TransportTypeStreamableHTTP",
                     "TransportTypeInspector"
                 ]
+            },
+            "upstreamswap.Config": {
+                "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
+                "properties": {
+                    "custom_header_name": {
+                        "description": "CustomHeaderName is the header name when HeaderStrategy is \"custom\".",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
+                        "type": "string"
+                    },
+                    "token_type": {
+                        "description": "TokenType specifies which token to inject: \"access_token\" (default) or \"id_token\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
             },
             "v1.RegistryType": {
                 "description": "Type of registry (file, url, or default)",

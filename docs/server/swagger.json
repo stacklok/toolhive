@@ -397,7 +397,9 @@
                     "antigravity",
                     "zed",
                     "gemini-cli",
-                    "vscode-server"
+                    "vscode-server",
+                    "mistral-vibe",
+                    "codex"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -423,7 +425,9 @@
                     "Antigravity",
                     "Zed",
                     "GeminiCli",
-                    "VSCodeServer"
+                    "VSCodeServer",
+                    "MistralVibe",
+                    "Codex"
                 ]
             },
             "client.MCPClientStatus": {

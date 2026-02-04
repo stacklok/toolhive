@@ -404,7 +404,9 @@ const docTemplate = `{
                     "antigravity",
                     "zed",
                     "gemini-cli",
-                    "vscode-server"
+                    "vscode-server",
+                    "mistral-vibe",
+                    "codex"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -430,7 +432,9 @@ const docTemplate = `{
                     "Antigravity",
                     "Zed",
                     "GeminiCli",
-                    "VSCodeServer"
+                    "VSCodeServer",
+                    "MistralVibe",
+                    "Codex"
                 ]
             },
             "client.MCPClientStatus": {

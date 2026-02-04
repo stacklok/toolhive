@@ -191,6 +191,24 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/servers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           MistralVibe,
+			Description:          "Mistral Vibe IDE (Mock)",
+			RelPath:              []string{"mock_mistral_vibe"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeArray,
+		},
+		{
+			ClientType:           Codex,
+			Description:          "OpenAI Codex CLI (Mock)",
+			RelPath:              []string{"mock_codex"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeMap,
+		},
 	}
 }
 
@@ -380,6 +398,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Zed),
 					string(GeminiCli),
 					string(VSCodeServer),
+					string(MistralVibe),
+					string(Codex),
 				},
 			},
 		}
@@ -492,6 +512,10 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
 				assert.NotNil(t, content, "Continue config should be readable")
+			case MistralVibe, Codex:
+				// TOML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "TOML config should be readable")
 			}
 		}
 	})
@@ -526,7 +550,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+				MistralVibe, Codex:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -793,6 +818,119 @@ func TestCreateClientConfig(t *testing.T) {
 		hasExpectedError := strings.Contains(err.Error(), "failed to create client config file") ||
 			strings.Contains(err.Error(), "already exists")
 		assert.True(t, hasExpectedError, "Error should mention creation failure or file exists, got: %v", err.Error())
+	})
+}
+
+func TestCreateTOMLClientConfig(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(MistralVibe),
+				string(Codex),
+			},
+		},
+	}
+
+	t.Run("CreateTOMLArrayClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with array storage (MistralVibe)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           MistralVibe,
+				Description:          "Mistral Vibe IDE (Mock)",
+				RelPath:              []string{"mock_mistral_vibe"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeArray,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_mistral_vibe")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(MistralVibe)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateTOMLMapClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with map storage (Codex)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Codex,
+				Description:          "OpenAI Codex CLI (Mock)",
+				RelPath:              []string{"mock_codex"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeMap,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_codex")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(Codex)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
 	})
 }
 

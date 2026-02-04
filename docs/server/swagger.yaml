@@ -411,6 +411,8 @@ components:
       - zed
       - gemini-cli
       - vscode-server
+      - mistral-vibe
+      - codex
       type: string
       x-enum-varnames:
       - RooCode
@@ -436,6 +438,8 @@ components:
       - Zed
       - GeminiCli
       - VSCodeServer
+      - MistralVibe
+      - Codex
     client.MCPClientStatus:
       properties:
         client_type:

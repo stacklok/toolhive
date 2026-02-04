@@ -79,6 +79,10 @@ const (
 	GeminiCli MCPClient = "gemini-cli"
 	// VSCodeServer represents Microsoft's VS Code Server (remote development).
 	VSCodeServer MCPClient = "vscode-server"
+	// MistralVibe represents the Mistral Vibe IDE.
+	MistralVibe MCPClient = "mistral-vibe"
+	// Codex represents the OpenAI Codex CLI.
+	Codex MCPClient = "codex"
 )
 
 // Extension is extension of the client config file.
@@ -665,12 +669,44 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
+	},
+	{
+		ClientType:           MistralVibe,
+		Description:          "Mistral Vibe IDE",
+		SettingsFile:         "config.toml",
+		MCPServersPathPrefix: "/mcp_servers",
+		RelPath:              []string{".vibe"},
+		Extension:            TOML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "streamable-http",
+			types.TransportTypeSSE:            "http",
+			types.TransportTypeStreamableHTTP: "streamable-http",
+		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabelMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "url",
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		// TOML configuration: uses array-of-tables format [[mcp_servers]]
+		TOMLStorageType: TOMLStorageTypeArray,
+	},
+	{
+		ClientType:           Codex,
+		Description:          "OpenAI Codex CLI",
+		SettingsFile:         "config.toml",
+		MCPServersPathPrefix: "/mcp_servers",
+		RelPath:              []string{".codex"},
+		Extension:            TOML,
+		// Codex doesn't support a transport type field - it auto-detects
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		// TOML configuration: uses nested tables format [mcp_servers.servername]
+		TOMLStorageType: TOMLStorageTypeMap,
 	},
 }
 

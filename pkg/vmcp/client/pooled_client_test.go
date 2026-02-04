@@ -119,9 +119,11 @@ func TestPooledBackendClient_GetOrCreatePool(t *testing.T) {
 		vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
 		require.NoError(t, err)
 
-		storedPool := vmcpSess.GetClientPool()
-		assert.NotNil(t, storedPool)
-		assert.Same(t, pool, storedPool.(*BackendClientPool))
+		storedPoolInterface := vmcpSess.GetClientPool()
+		assert.NotNil(t, storedPoolInterface)
+		storedPool, ok := storedPoolInterface.(*BackendClientPool)
+		require.True(t, ok, "stored pool should be *BackendClientPool")
+		assert.Same(t, pool, storedPool)
 	})
 }
 
@@ -160,7 +162,7 @@ func TestWrapWithPooling(t *testing.T) {
 	})
 }
 
-func TestIsConnectionError(t *testing.T) {
+func TestShouldMarkUnhealthy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -223,7 +225,7 @@ func TestIsConnectionError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := isConnectionError(tt.err)
+			result := shouldMarkUnhealthy(tt.err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

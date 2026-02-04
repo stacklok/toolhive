@@ -55,9 +55,24 @@ func (s *LocalStorage) Load(_ context.Context, id string) (Session, error) {
 }
 
 // Delete removes a session from local storage.
+// If the session implements Close() error, it will be called before deletion.
 func (s *LocalStorage) Delete(_ context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("cannot delete session with empty ID")
+	}
+
+	// Try to close the session if it supports cleanup
+	if val, ok := s.sessions.Load(id); ok {
+		if session, ok := val.(Session); ok {
+			// Check if session implements Close() method
+			if closer, ok := session.(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil {
+					// Log error but continue with deletion
+					// We don't want to prevent deletion due to cleanup errors
+					_ = err // TODO: Add logger once available in this package
+				}
+			}
+		}
 	}
 
 	s.sessions.Delete(id)
@@ -87,8 +102,21 @@ func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) erro
 		return true
 	})
 
-	// Second pass: delete expired sessions
+	// Second pass: close and delete expired sessions
 	for _, id := range toDelete {
+		// Try to close the session if it supports cleanup
+		if val, ok := s.sessions.Load(id); ok {
+			if session, ok := val.(Session); ok {
+				// Check if session implements Close() method
+				if closer, ok := session.(interface{ Close() error }); ok {
+					if err := closer.Close(); err != nil {
+						// Log error but continue with deletion
+						// We don't want cleanup errors to prevent session expiration
+						_ = err // TODO: Add logger once available in this package
+					}
+				}
+			}
+		}
 		s.sessions.Delete(id)
 	}
 
@@ -96,6 +124,7 @@ func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) erro
 }
 
 // Close clears all sessions from local storage.
+// Calls Close() on sessions that implement it before removing them.
 func (s *LocalStorage) Close() error {
 	// Collect keys first to avoid modifying map during iteration
 	var toDelete []any
@@ -103,8 +132,20 @@ func (s *LocalStorage) Close() error {
 		toDelete = append(toDelete, key)
 		return true
 	})
-	// Clear all sessions
+	// Close and clear all sessions
 	for _, key := range toDelete {
+		// Try to close the session if it supports cleanup
+		if val, ok := s.sessions.Load(key); ok {
+			if session, ok := val.(Session); ok {
+				// Check if session implements Close() method
+				if closer, ok := session.(interface{ Close() error }); ok {
+					if err := closer.Close(); err != nil {
+						// Log error but continue with cleanup
+						_ = err // TODO: Add logger once available in this package
+					}
+				}
+			}
+		}
 		s.sessions.Delete(key)
 	}
 	return nil

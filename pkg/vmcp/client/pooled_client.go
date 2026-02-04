@@ -75,10 +75,12 @@ func (p *pooledBackendClient) getOrCreatePool(ctx context.Context) (*BackendClie
 	}
 
 	// Check if pool already exists in session
-	if poolData := vmcpSess.GetClientPool(); poolData != nil {
-		if pool, ok := poolData.(*BackendClientPool); ok {
+	if poolInterface := vmcpSess.GetClientPool(); poolInterface != nil {
+		// Type assert to concrete type
+		if pool, ok := poolInterface.(*BackendClientPool); ok {
 			return pool, nil
 		}
+		return nil, fmt.Errorf("invalid client pool type: %T", poolInterface)
 	}
 
 	// Create new pool and store in session
@@ -126,7 +128,7 @@ func (p *pooledBackendClient) CallTool(
 	result, err := p.callToolWithClient(ctx, c, target, toolName, arguments, meta)
 	if err != nil {
 		// Check if it's a connection error that warrants marking unhealthy
-		if isConnectionError(err) {
+		if shouldMarkUnhealthy(err) {
 			pool.MarkUnhealthy(target.WorkloadID)
 		}
 		return nil, err
@@ -165,7 +167,7 @@ func (p *pooledBackendClient) ReadResource(
 
 	result, err := p.readResourceWithClient(ctx, c, target, uri)
 	if err != nil {
-		if isConnectionError(err) {
+		if shouldMarkUnhealthy(err) {
 			pool.MarkUnhealthy(target.WorkloadID)
 		}
 		return nil, err
@@ -205,7 +207,7 @@ func (p *pooledBackendClient) GetPrompt(
 
 	result, err := p.getPromptWithClient(ctx, c, target, name, arguments)
 	if err != nil {
-		if isConnectionError(err) {
+		if shouldMarkUnhealthy(err) {
 			pool.MarkUnhealthy(target.WorkloadID)
 		}
 		return nil, err
@@ -214,10 +216,11 @@ func (p *pooledBackendClient) GetPrompt(
 	return result, nil
 }
 
-// isConnectionError checks if an error indicates a broken connection.
+// shouldMarkUnhealthy determines if an error indicates a broken connection
+// that warrants removing the client from the pool.
 // Returns true for network errors, connection resets, EOFs, and similar issues
 // that suggest the client should be recreated.
-func isConnectionError(err error) bool {
+func shouldMarkUnhealthy(err error) bool {
 	if err == nil {
 		return false
 	}

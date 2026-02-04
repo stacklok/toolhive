@@ -15,6 +15,13 @@ import (
 // Compile-time check that VMCPSession implements transportsession.Session interface.
 var _ transportsession.Session = (*VMCPSession)(nil)
 
+// ClientPool defines the interface for session-scoped client pooling.
+// This interface avoids import cycles by not depending on concrete client implementations.
+type ClientPool interface {
+	// Any methods that VMCPSession needs from the pool would go here.
+	// For now, this is a marker interface since VMCPSession only stores/retrieves the pool.
+}
+
 // VMCPSession extends StreamableSession with domain-specific routing data.
 // This keeps routing table state in the application layer (pkg/vmcp/server)
 // rather than polluting the transport layer (pkg/transport/session) with domain concerns.
@@ -35,7 +42,7 @@ type VMCPSession struct {
 	*transportsession.StreamableSession
 	routingTable *vmcp.RoutingTable
 	tools        []vmcp.Tool // Stores tools with InputSchema for type coercion
-	clientPool   interface{} // Stores BackendClientPool for session-scoped client pooling
+	clientPool   ClientPool  // Stores BackendClientPool for session-scoped client pooling
 	mu           sync.RWMutex
 }
 
@@ -102,7 +109,7 @@ func (s *VMCPSession) SetTools(tools []vmcp.Tool) {
 
 // GetClientPool retrieves the client pool for this session.
 // Returns nil if no pool has been set yet.
-func (s *VMCPSession) GetClientPool() interface{} {
+func (s *VMCPSession) GetClientPool() ClientPool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clientPool
@@ -110,7 +117,7 @@ func (s *VMCPSession) GetClientPool() interface{} {
 
 // SetClientPool sets the client pool for this session.
 // Used by pooled backend client to cache MCP clients per session.
-func (s *VMCPSession) SetClientPool(pool interface{}) {
+func (s *VMCPSession) SetClientPool(pool ClientPool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clientPool = pool
@@ -119,6 +126,22 @@ func (s *VMCPSession) SetClientPool(pool interface{}) {
 // Type identifies this as a streamable vMCP session.
 func (*VMCPSession) Type() transportsession.SessionType {
 	return transportsession.SessionTypeStreamable
+}
+
+// Close cleans up the session by closing the client pool if present.
+// This ensures all MCP client connections are properly closed.
+// Called automatically when the session expires or is explicitly deleted.
+func (s *VMCPSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.clientPool != nil {
+		// Type-assert to concrete pool type
+		if pool, ok := s.clientPool.(interface{ Close() error }); ok {
+			return pool.Close()
+		}
+	}
+	return nil
 }
 
 // VMCPSessionFactory creates a factory function for the session manager.

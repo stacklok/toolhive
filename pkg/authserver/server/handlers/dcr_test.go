@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 )
@@ -80,7 +81,7 @@ func TestRegisterClientHandler(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			stor := mocks.NewMockStorage(ctrl)
 			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(tc.storageErr).AnyTimes()
-			handler := &Handler{storage: stor}
+			handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{}}
 
 			var body []byte
 			if s, ok := tc.requestBody.(string); ok {
@@ -129,7 +130,7 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 			return nil
 		})
 
-	handler := &Handler{storage: stor}
+	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{}}
 
 	reqBody, err := json.Marshal(registration.DCRRequest{
 		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},

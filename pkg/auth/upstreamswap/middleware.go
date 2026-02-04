@@ -212,27 +212,27 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 4. Lookup upstream tokens
 			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
 			if err != nil {
-				logger.Debugf("upstreamswap: failed to get upstream tokens for session %s: %v", tsid, err)
+				logger.Debugf("upstreamswap: failed to get upstream tokens: %v", err)
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// 5. Check if expired (MVP: just log warning, continue with token)
 			if tokens.IsExpired(time.Now()) {
-				logger.Warnf("upstreamswap: upstream tokens expired for session %s", tsid)
+				logger.Warn("upstreamswap: upstream tokens expired")
 				// Continue with expired token - backend will reject if needed
 			}
 
 			// 6. Select and inject token
 			token := selectToken(tokens, tokenType)
 			if token == "" {
-				logger.Warnf("upstreamswap: selected token type %s is empty for session %s", tokenType, tsid)
+				logger.Warnf("upstreamswap: selected token type %s is empty", tokenType)
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			injectToken(r, token)
-			logger.Debugf("upstreamswap: injected upstream %s for session %s", tokenType, tsid)
+			logger.Debugf("upstreamswap: injected upstream %s token", tokenType)
 
 			next.ServeHTTP(w, r)
 		})

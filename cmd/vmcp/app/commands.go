@@ -15,8 +15,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/rest"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/telemetry"

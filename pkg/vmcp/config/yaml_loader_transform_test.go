@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive-core/env/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"

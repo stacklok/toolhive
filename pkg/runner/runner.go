@@ -420,10 +420,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Remove the PID file if it exists
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
 		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
@@ -458,7 +454,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Check if the transport is still running
-			running, err := transportHandler.IsRunning(ctx)
+			running, err := transportHandler.IsRunning()
 			if err != nil {
 				logger.Errorf("Error checking transport status: %v", err)
 				// Don't exit immediately on error, try again after pause
@@ -502,11 +498,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Clean up the PID file and state
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
+		// Remove the old PID from the state file
 		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}

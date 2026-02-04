@@ -10,10 +10,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
 // TestHTTPTransport_ShouldRestart tests the ShouldRestart logic
@@ -249,6 +251,100 @@ func TestHasTokenExchangeMiddleware(t *testing.T) {
 			assert.Equal(t, tt.want, hasTokenExchangeMiddleware(tt.middlewares))
 		})
 	}
+}
+
+// TestHTTPTransport_IsRunning tests that IsRunning correctly reflects both
+// transport and proxy running states. This is critical for detecting when
+// health checks fail and the proxy stops itself - the transport should also
+// report as not running so the runner can exit cleanly.
+func TestHTTPTransport_IsRunning(t *testing.T) {
+	t.Parallel()
+
+	t.Run("transport running with proxy running", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockProxy := mocks.NewMockProxy(ctrl)
+		mockProxy.EXPECT().IsRunning().Return(true, nil)
+
+		transport := &HTTPTransport{
+			shutdownCh: make(chan struct{}),
+			proxy:      mockProxy,
+		}
+
+		running, err := transport.IsRunning()
+		assert.NoError(t, err)
+		assert.True(t, running, "Should be running when both transport and proxy are running")
+	})
+
+	t.Run("transport running but proxy stopped", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockProxy := mocks.NewMockProxy(ctrl)
+		mockProxy.EXPECT().IsRunning().Return(false, nil)
+
+		transport := &HTTPTransport{
+			shutdownCh: make(chan struct{}),
+			proxy:      mockProxy,
+		}
+
+		running, err := transport.IsRunning()
+		assert.NoError(t, err)
+		assert.False(t, running, "Should NOT be running when proxy is stopped (health check failure scenario)")
+	})
+
+	t.Run("transport shutdown channel closed", func(t *testing.T) {
+		t.Parallel()
+
+		shutdownCh := make(chan struct{})
+		close(shutdownCh)
+
+		transport := &HTTPTransport{
+			shutdownCh: shutdownCh,
+			proxy:      nil, // proxy should not be checked when shutdown channel is closed
+		}
+
+		running, err := transport.IsRunning()
+		assert.NoError(t, err)
+		assert.False(t, running, "Should NOT be running when shutdown channel is closed")
+	})
+
+	t.Run("nil proxy is handled gracefully", func(t *testing.T) {
+		t.Parallel()
+
+		transport := &HTTPTransport{
+			shutdownCh: make(chan struct{}),
+			proxy:      nil,
+		}
+
+		running, err := transport.IsRunning()
+		assert.NoError(t, err)
+		assert.True(t, running, "Should be running when no proxy is set (nil proxy)")
+	})
+
+	t.Run("proxy error is propagated", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockProxy := mocks.NewMockProxy(ctrl)
+		mockProxy.EXPECT().IsRunning().Return(false, fmt.Errorf("proxy error"))
+
+		transport := &HTTPTransport{
+			shutdownCh: make(chan struct{}),
+			proxy:      mockProxy,
+		}
+
+		_, err := transport.IsRunning()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "proxy error")
+	})
 }
 
 func TestShouldEnableHealthCheck(t *testing.T) {

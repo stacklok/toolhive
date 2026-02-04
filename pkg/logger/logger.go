@@ -14,7 +14,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive-core/env"
 )
 
 // Debug logs a message at debug level using the singleton logger.

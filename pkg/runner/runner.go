@@ -454,7 +454,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Check if the transport is still running
-			running, err := transportHandler.IsRunning(ctx)
+			running, err := transportHandler.IsRunning()
 			if err != nil {
 				logger.Errorf("Error checking transport status: %v", err)
 				// Don't exit immediately on error, try again after pause

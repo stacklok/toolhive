@@ -169,26 +169,31 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		TTY:       false,
 	}
 
-	// Set up the attach request
+	// Set up the attach request URL (used to create fresh SPDY executors for each retry)
 	req := c.client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
 		Namespace(c.getCurrentNamespace()).
 		SubResource("attach").
 		VersionedParams(attachOpts, scheme.ParameterCodec)
-
-	config := c.config
-	// Create a SPDY executor
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create SPDY executor: %w", err)
-	}
+	attachURL := req.URL()
 
 	logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	go func() {
+		// Close pipes when this goroutine exits to signal the transport layer.
+		// This ensures processStdout() sees EOF and can attempt re-attachment or exit.
+		defer func() {
+			if err := stdoutWriter.Close(); err != nil {
+				logger.Debugf("Error closing stdout writer: %v", err)
+			}
+			if err := stdinReader.Close(); err != nil {
+				logger.Debugf("Error closing stdin reader: %v", err)
+			}
+		}()
+
 		// Create exponential backoff with extended retry window to handle pod restarts
 		// in both local and CI environments.
 		expBackoff := backoff.NewExponentialBackOff()
@@ -196,6 +201,15 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		expBackoff.InitialInterval = attachInitialRetryInterval
 
 		_, err := backoff.Retry(ctx, func() (any, error) {
+			// Create a fresh SPDY executor for each retry attempt.
+			// This is critical because the SPDY connection state becomes corrupted
+			// after certain failures (e.g., EOF from idle timeout), and reusing
+			// a stale executor prevents recovery.
+			exec, execErr := remotecommand.NewSPDYExecutor(c.config, "POST", attachURL)
+			if execErr != nil {
+				return nil, fmt.Errorf("failed to create SPDY executor: %w", execErr)
+			}
+
 			return nil, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 				Stdin:  stdinReader,
 				Stdout: stdoutWriter,

@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -24,6 +25,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	return map[string]types.MiddlewareFactory{
 		auth.MiddlewareType:                   auth.CreateMiddleware,
 		tokenexchange.MiddlewareType:          tokenexchange.CreateMiddleware,
+		upstreamswap.MiddlewareType:           upstreamswap.CreateMiddleware,
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
@@ -54,7 +56,18 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 	middlewareConfigs = append(middlewareConfigs, *authConfig)
 
+	// Upstream swap middleware (if embedded auth server is configured)
+	// This exchanges ToolHive JWTs for upstream IdP tokens when embedded auth server is used.
+	// IMPORTANT: Must run BEFORE token exchange middleware so it can read the `tsid` claim
+	// from the original ToolHive JWT before any token modification occurs.
+	middlewareConfigs, err = addUpstreamSwapMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
 	// Token exchange middleware (if configured)
+	// Runs after upstream swap so that if both are configured, upstream swap can first
+	// inject the upstream IdP token, then token exchange can further transform it if needed.
 	middlewareConfigs, err = addTokenExchangeMiddleware(middlewareConfigs, config.TokenExchangeConfig)
 	if err != nil {
 		return err
@@ -223,4 +236,36 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 		return nil, fmt.Errorf("failed to create usage metrics middleware config: %w", err)
 	}
 	return append(middlewares, *usageMetricsConfig), nil
+}
+
+// addUpstreamSwapMiddleware adds upstream swap middleware if the embedded auth server is configured.
+// This middleware exchanges ToolHive JWTs for upstream IdP tokens.
+// The middleware is only added when EmbeddedAuthServerConfig is set; if UpstreamSwapConfig
+// is nil, default configuration values are used.
+func addUpstreamSwapMiddleware(
+	middlewares []types.MiddlewareConfig,
+	config *RunConfig,
+) ([]types.MiddlewareConfig, error) {
+	// Only add middleware if embedded auth server is configured
+	if config.EmbeddedAuthServerConfig == nil {
+		return middlewares, nil
+	}
+
+	// Use provided config or defaults
+	upstreamSwapConfig := config.UpstreamSwapConfig
+	if upstreamSwapConfig == nil {
+		upstreamSwapConfig = &upstreamswap.Config{}
+	}
+
+	upstreamSwapParams := upstreamswap.MiddlewareParams{
+		Config: upstreamSwapConfig,
+	}
+	upstreamSwapMwConfig, err := types.NewMiddlewareConfig(
+		upstreamswap.MiddlewareType,
+		upstreamSwapParams,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upstream swap middleware config: %w", err)
+	}
+	return append(middlewares, *upstreamSwapMwConfig), nil
 }

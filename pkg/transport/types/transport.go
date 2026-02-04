@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
@@ -75,6 +76,16 @@ type MiddlewareRunner interface {
 
 	// GetConfig returns a config interface for middleware to access runner configuration
 	GetConfig() RunnerConfig
+
+	// GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
+	// The returned function should be called at request time to get current storage;
+	// it returns nil if storage becomes unavailable (e.g., during shutdown or if
+	// embedded auth server is not configured).
+	//
+	// This method always returns a non-nil function to support middleware creation
+	// before the embedded auth server is initialized. Storage availability is
+	// determined at request time when the returned function is called.
+	GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration

@@ -645,14 +645,6 @@ spec:
                             - fail
                             - best_effort
                             type: string
-                          statusReportingInterval:
-                            default: 30s
-                            description: |-
-                              StatusReportingInterval is the interval for reporting status updates to Kubernetes.
-                              This controls how often the vMCP runtime reports backend health and phase changes.
-                              Lower values provide faster status updates but increase API server load.
-                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                            type: string
                           unhealthyThreshold:
                             default: 3
                             description: UnhealthyThreshold is the number of consecutive
@@ -688,17 +680,74 @@ spec:
                   optimizer:
                     description: |-
                       Optimizer configures the MCP optimizer for context optimization on large toolsets.
-                      When enabled, vMCP exposes only find_tool and call_tool operations to clients
+                      When enabled, vMCP exposes optim_find_tool and optim_call_tool operations to clients
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
-                      embeddingService:
+                      embeddingBackend:
                         description: |-
-                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                          EmbeddingBackend specifies the embedding provider: "ollama", "openai-compatible", or "placeholder".
+                          - "ollama": Uses local Ollama HTTP API for embeddings
+                          - "openai-compatible": Uses OpenAI-compatible API (vLLM, OpenAI, etc.)
+                          - "placeholder": Uses deterministic hash-based embeddings (for testing/development)
+                        enum:
+                        - ollama
+                        - openai-compatible
+                        - placeholder
                         type: string
-                    required:
-                    - embeddingService
+                      embeddingDimension:
+                        description: |-
+                          EmbeddingDimension is the dimension of the embedding vectors.
+                          Common values:
+                          - 384: all-MiniLM-L6-v2, nomic-embed-text
+                          - 768: BAAI/bge-small-en-v1.5
+                          - 1536: OpenAI text-embedding-3-small
+                        minimum: 1
+                        type: integer
+                      embeddingModel:
+                        description: |-
+                          EmbeddingModel is the model name to use for embeddings.
+                          Required when EmbeddingBackend is "ollama" or "openai-compatible".
+                          Examples:
+                          - Ollama: "nomic-embed-text", "all-minilm"
+                          - vLLM: "BAAI/bge-small-en-v1.5"
+                          - OpenAI: "text-embedding-3-small"
+                        type: string
+                      embeddingURL:
+                        description: |-
+                          EmbeddingURL is the base URL for the embedding service (Ollama or OpenAI-compatible API).
+                          Required when EmbeddingBackend is "ollama" or "openai-compatible".
+                          Examples:
+                          - Ollama: "http://localhost:11434"
+                          - vLLM: "http://vllm-service:8000/v1"
+                          - OpenAI: "https://api.openai.com/v1"
+                        type: string
+                      enabled:
+                        description: |-
+                          Enabled determines whether the optimizer is active.
+                          When true, vMCP exposes optim_find_tool and optim_call_tool instead of all backend tools.
+                        type: boolean
+                      ftsDBPath:
+                        description: |-
+                          FTSDBPath is the path to the SQLite FTS5 database for BM25 text search.
+                          If empty, defaults to ":memory:" for in-memory FTS5, or "{PersistPath}/fts.db" if PersistPath is set.
+                          Hybrid search (semantic + BM25) is always enabled.
+                        type: string
+                      hybridSearchRatio:
+                        description: |-
+                          HybridSearchRatio controls the mix of semantic vs BM25 results in hybrid search.
+                          Value range: 0 (all BM25) to 100 (all semantic), representing percentage.
+                          Default: 70 (70% semantic, 30% BM25)
+                          Only used when FTSDBPath is set.
+                        maximum: 100
+                        minimum: 0
+                        type: integer
+                      persistPath:
+                        description: |-
+                          PersistPath is the optional filesystem path for persisting the chromem-go database.
+                          If empty, the database will be in-memory only (ephemeral).
+                          When set, tool metadata and embeddings are persisted to disk for faster restarts.
+                        type: string
                     type: object
                   outgoingAuth:
                     description: |-

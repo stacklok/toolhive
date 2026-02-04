@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"strings"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
-	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // validateHeaderNames checks that no header names are in the restricted set.
@@ -61,14 +61,14 @@ func parseHeaderString(header string) (string, string, error) {
 	value := header[idx+1:] // Value keeps leading/trailing whitespace intentionally
 
 	// Validate header name for RFC 7230 compliance (rejects CRLF, control chars)
-	if err := validation.ValidateHTTPHeaderName(name); err != nil {
+	if err := httpval.ValidateHeaderName(name); err != nil {
 		return "", "", fmt.Errorf("invalid header name in %q: %w", header, err)
 	}
 
 	// Validate header value for RFC 7230 compliance (rejects CRLF, control chars)
 	// Only validate non-empty values since empty header values are allowed
 	if value != "" {
-		if err := validation.ValidateHTTPHeaderValue(value); err != nil {
+		if err := httpval.ValidateHeaderValue(value); err != nil {
 			return "", "", fmt.Errorf("invalid header value in %q: %w", header, err)
 		}
 	}
@@ -129,7 +129,7 @@ func resolveHeaderSecrets(secretHeaders map[string]string) (map[string]string, e
 		}
 		// Validate resolved secret value for RFC 7230 compliance (rejects CRLF, control chars)
 		if value != "" {
-			if err := validation.ValidateHTTPHeaderValue(value); err != nil {
+			if err := httpval.ValidateHeaderValue(value); err != nil {
 				return nil, fmt.Errorf("secret %q for header %q contains invalid value: %w", secretName, headerName, err)
 			}
 		}

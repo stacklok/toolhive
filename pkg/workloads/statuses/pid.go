@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package process provides utilities for managing process-related operations,
-// such as PID file handling and process management.
-package process
+package statuses
 
 import (
 	"fmt"
@@ -16,6 +14,10 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
+
+/*
+ * NOTE: PID file functionality is deprecated. It should only be used by code which migrates PIDs to status files.
+ */
 
 // getOldPIDFilePath returns the legacy path to the PID file for a container (for backward compatibility)
 // Note: containerBaseName is pre-sanitized by the caller
@@ -73,10 +75,10 @@ func getPIDFilePathWithFallback(containerBaseName string) (string, error) {
 	return newPath, nil
 }
 
-// ReadPIDFile reads the process ID from a file
+// readPIDFile reads the process ID from a file
 // It checks both the new XDG location and the old temp directory location
 // Note: containerBaseName is pre-sanitized by the caller
-func ReadPIDFile(containerBaseName string) (int, error) {
+func readPIDFile(containerBaseName string) (int, error) {
 	// Skip PID file operations in Kubernetes runtime
 	if runtime.IsKubernetesRuntime() {
 		return 0, fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
@@ -117,9 +119,9 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 	return pid, nil
 }
 
-// RemovePIDFile removes the PID file
+// removePIDFile removes the PID file
 // It attempts to remove from both the new XDG location and the old temp directory location
-func RemovePIDFile(containerBaseName string) error {
+func removePIDFile(containerBaseName string) error {
 	// Skip PID file operations in Kubernetes runtime
 	if runtime.IsKubernetesRuntime() {
 		return nil

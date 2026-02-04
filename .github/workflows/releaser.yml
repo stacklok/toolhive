@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Verify tag matches VERSION file
         run: |
@@ -74,7 +74,7 @@ jobs:
       tree-state: ${{ steps.ldflags.outputs.tree-state }}
     steps:
       - id: checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
       - id: ldflags
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -187,14 +187,41 @@ jobs:
       id-token: write
     uses: ./.github/workflows/helm-publish.yml
 
+  extract-release-actor:
+    name: Extract Release Actor
+    runs-on: ubuntu-slim
+    outputs:
+      triggered_by: ${{ steps.extract.outputs.triggered_by }}
+    permissions:
+      contents: read
+    steps:
+      - name: Extract actor from release body
+        id: extract
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetch the release body and extract the Release-Triggered-By metadata
+          RELEASE_BODY=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json body --jq '.body')
+
+          # Extract username from HTML comment: <!-- Release-Triggered-By: username -->
+          TRIGGERED_BY=$(echo "$RELEASE_BODY" | grep -oP '(?<=<!-- Release-Triggered-By: )[^[:space:]]+(?= -->)' || true)
+
+          if [ -n "$TRIGGERED_BY" ]; then
+            echo "Found release triggering actor: $TRIGGERED_BY"
+            echo "triggered_by=$TRIGGERED_BY" >> $GITHUB_OUTPUT
+          else
+            echo "No Release-Triggered-By metadata found, falling back to github.actor"
+            echo "triggered_by=${{ github.actor }}" >> $GITHUB_OUTPUT
+          fi
+
   update-docs-website:
     name: Trigger Docs Update
-    needs: [ publish-helm ]
+    needs: [ publish-helm, extract-release-actor ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     with:
       version: ${{ github.ref_name }}
-      assign_to: ${{ github.actor }}
+      assign_to: ${{ needs.extract-release-actor.outputs.triggered_by }}
     secrets:
       DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
 
@@ -259,6 +286,7 @@ jobs:
       - image-build-and-push
       - update-docs-website
       - publish-helm
+      - extract-release-actor
     if: ${{ failure() }}
     runs-on: ubuntu-slim
     permissions: {}
@@ -288,7 +316,7 @@ jobs:
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Triggered by:*\n${{ github.actor }}"
+                      "text": "*Triggered by:*\n${{ needs.extract-release-actor.outputs.triggered_by || github.actor }}"
                     }
                   ]
                 },

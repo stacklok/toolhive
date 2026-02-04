@@ -395,7 +395,8 @@
                     "opencode",
                     "kiro",
                     "antigravity",
-                    "zed"
+                    "zed",
+                    "gemini-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -419,7 +420,8 @@
                     "OpenCode",
                     "Kiro",
                     "Antigravity",
-                    "Zed"
+                    "Zed",
+                    "GeminiCli"
                 ]
             },
             "client.MCPClientStatus": {

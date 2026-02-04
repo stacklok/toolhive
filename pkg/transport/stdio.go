@@ -669,9 +669,9 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 
 		// Check if container was removed (not just exited) using typed error
 		if errors.Is(err, docker.ErrContainerRemoved) {
-			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+			logger.Debugf("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
 		} else {
-			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+			logger.Debugf("Container %s exited. Will attempt automatic restart.", t.containerName)
 		}
 
 		// Check if the transport is already stopped before trying to stop it

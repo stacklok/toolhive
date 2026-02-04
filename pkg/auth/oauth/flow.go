@@ -187,7 +187,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("Starting OAuth callback server on port %d", f.port)
+		logger.Debugf("Starting OAuth callback server on port %d", f.port)
 		if err := f.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errorChan <- fmt.Errorf("failed to start callback server: %w", err)
 		}
@@ -229,7 +229,7 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 	// Wait for token, error, or cancellation
 	select {
 	case token := <-tokenChan:
-		logger.Info("OAuth flow completed successfully")
+		logger.Debug("OAuth flow completed successfully")
 		return f.processToken(ctx, token), nil
 	case err := <-errorChan:
 		return nil, fmt.Errorf("OAuth flow failed: %w", err)
@@ -449,7 +449,7 @@ func (*Flow) writeErrorPage(w http.ResponseWriter, err error) {
 }
 
 // processToken processes the received token and extracts claims
-func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResult {
+func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult {
 	result := &TokenResult{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
@@ -457,8 +457,13 @@ func (f *Flow) processToken(ctx context.Context, token *oauth2.Token) *TokenResu
 		Expiry:       token.Expiry,
 	}
 
-	// Create a base token source using the original token with the provided context
-	base := f.oauth2Config.TokenSource(ctx, token)
+	// Create a base token source using the original token with a background context.
+	// We use context.Background() instead of the passed ctx because the TokenSource
+	// is long-lived and will be used for token refresh operations long after the
+	// initial OAuth flow completes. Using the original ctx would cause "context canceled"
+	// errors when attempting to refresh tokens, as that context gets cancelled when
+	// the OAuth callback server shuts down.
+	base := f.oauth2Config.TokenSource(context.Background(), token)
 
 	// ReuseTokenSource ensures that refresh happens only when needed
 	f.tokenSource = oauth2.ReuseTokenSource(token, base)

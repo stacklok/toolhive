@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -66,6 +67,10 @@ type Runner struct {
 	// It is cancelled during Cleanup() to stop monitoring
 	monitoringCtx    context.Context
 	monitoringCancel context.CancelFunc
+
+	// embeddedAuthServer is the embedded OAuth/OIDC authorization server.
+	// Only initialized when Config.EmbeddedAuthServerConfig is set.
+	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -223,8 +228,28 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
 
+	// Initialize embedded auth server if configured
+	if r.Config.EmbeddedAuthServerConfig != nil {
+		var err error
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create embedded auth server: %w", err)
+		}
+		logger.Debug("Embedded authorization server initialized")
+
+		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
+		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
+		handler := r.embeddedAuthServer.Handler()
+		transportConfig.PrefixHandlers = map[string]http.Handler{
+			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
+			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
+			"/.well-known/openid-configuration":       handler, // OIDC Discovery
+			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
+		}
+	}
+
 	// Set up the transport
-	logger.Infof("Setting up %s transport...", r.Config.Transport)
+	logger.Debugf("Setting up %s transport...", r.Config.Transport)
 
 	// Prepare transport options based on workload type
 	var transportOpts []transport.Option
@@ -326,12 +351,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Start the transport (which also starts the container and monitoring)
-	logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
+	logger.Debugf("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %w", err)
 	}
 
-	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
+	logger.Debugf("MCP server %s started successfully", r.Config.ContainerName)
 
 	// Wait for the MCP server to accept initialize requests before updating client configurations.
 	// This prevents timing issues where clients try to connect before the server is fully ready.
@@ -381,10 +406,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		// operations complete successfully regardless of the parent context state.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
 		defer cleanupCancel()
-		logger.Infof("Stopping MCP server: %s", reason)
+		logger.Debugf("Stopping MCP server: %s", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
-		logger.Infof("Stopping %s transport...", r.Config.Transport)
+		logger.Debugf("Stopping %s transport...", r.Config.Transport)
 		if err := transportHandler.Stop(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
@@ -395,15 +420,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Remove the PID file if it exists
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
 		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
-		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
+		logger.Debugf("MCP server %s stopped", r.Config.ContainerName)
 	}
 
 	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
@@ -415,7 +436,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Write the PID to a file so the stop command can kill the process
 		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
 	} else {
-		logger.Info("Press Ctrl+C to stop or wait for container to exit")
+		// Notify that user that the workload has started successfully when using --foreground
+		fmt.Println("Workload started successfully. Press Ctrl+C to stop.")
 	}
 
 	// Create a done channel to signal when the server has been stopped
@@ -426,7 +448,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for {
 			// Safely check if transportHandler is nil
 			if transportHandler == nil {
-				logger.Info("Transport handler is nil, exiting monitoring routine...")
+				logger.Debug("Transport handler is nil, exiting monitoring routine...")
 				close(doneCh)
 				return
 			}
@@ -476,11 +498,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Clean up the PID file and state
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
+		// Remove the old PID from the state file
 		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}
@@ -494,7 +512,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Assume restart needed if we can't check
 		} else if !exists {
 			// Workload doesn't exist in `thv ls` - it was removed
-			logger.Infof(
+			logger.Debugf(
 				"Workload %s no longer exists. Removing from client configurations.",
 				r.Config.BaseName,
 			)
@@ -508,18 +526,18 @@ func (r *Runner) Run(ctx context.Context) error {
 				if removeErr != nil {
 					logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
 				} else {
-					logger.Infof(
+					logger.Debugf(
 						"Successfully removed %s from client configurations",
 						r.Config.ContainerName,
 					)
 				}
 			}
-			logger.Infof("MCP server %s stopped and cleaned up", r.Config.ContainerName)
+			logger.Debugf("MCP server %s stopped and cleaned up", r.Config.ContainerName)
 			return nil // Exit gracefully, no restart
 		}
 
 		// Workload still exists - signal restart needed
-		logger.Infof("MCP server %s stopped, restart needed", r.Config.ContainerName)
+		logger.Debugf("MCP server %s stopped, restart needed", r.Config.ContainerName)
 		return fmt.Errorf("container exited, restart needed")
 	}
 
@@ -674,6 +692,16 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 		}
 	}
 
+	// Close embedded auth server
+	if r.embeddedAuthServer != nil {
+		if err := r.embeddedAuthServer.Close(); err != nil {
+			logger.Warnf("Failed to close embedded auth server: %v", err)
+			if lastErr == nil {
+				lastErr = err
+			}
+		}
+	}
+
 	// Legacy telemetry provider cleanup (will be removed when telemetry middleware handles it)
 	if r.telemetryProvider != nil {
 		logger.Debug("Shutting down telemetry provider")
@@ -773,7 +801,7 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 				// For POST (streamable-http), also accept 200 OK
 				if resp.StatusCode == http.StatusOK {
 					elapsed := time.Since(startTime)
-					logger.Infof("MCP server is ready after %v (attempt %d)", elapsed, attempt)
+					logger.Debugf("MCP server is ready after %v (attempt %d)", elapsed, attempt)
 					return nil
 				}
 

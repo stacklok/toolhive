@@ -499,7 +499,7 @@ func (s *Server) shutdown() error {
 	}
 
 	s.cleanup()
-	logger.Infof("%s server stopped", s.addrType)
+	logger.Debugf("%s server stopped", s.addrType)
 	return nil
 }
 

@@ -257,7 +257,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Scheme: remoteURL.Scheme,
 			Host:   remoteURL.Host,
 		}).String()
-		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
+		logger.Debugf("Setting up transparent proxy to forward from host port %d to remote URL %s",
 			t.proxyPort, targetURI)
 	} else {
 		if t.containerName == "" {
@@ -269,7 +269,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			return fmt.Errorf("target URI not set for HTTP transport")
 		}
 		targetURI = t.targetURI
-		logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+		logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
 			t.proxyPort, targetURI)
 	}
 
@@ -314,7 +314,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
+	logger.Debugf("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
 	if isRemote {
@@ -389,9 +389,9 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 
 		// Check if container was removed (not just exited) using typed error
 		if errors.Is(err, docker.ErrContainerRemoved) {
-			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+			logger.Debugf("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
 		} else {
-			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+			logger.Debugf("Container %s exited. Will attempt automatic restart.", t.containerName)
 		}
 
 		// Stop the transport when the container exits/removed

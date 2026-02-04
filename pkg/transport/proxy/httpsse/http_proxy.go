@@ -158,7 +158,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Info("Prometheus metrics endpoint enabled at /metrics")
+		logger.Debug("Prometheus metrics endpoint enabled at /metrics")
 	}
 
 	// Create a listener to get the actual port when using port 0
@@ -188,9 +188,9 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		_, portStr, _ := net.SplitHostPort(actualAddr)
 		actualPort, _ := strconv.Atoi(portStr)
 
-		logger.Infof("HTTP proxy started on port %d", actualPort)
-		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
-		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
+		logger.Debugf("HTTP proxy started on port %d", actualPort)
+		logger.Debugf("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
+		logger.Debugf("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
 
 		if err := p.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("HTTP server error: %v", err)
@@ -350,7 +350,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	go func() {
 		<-ctx.Done()
 		p.removeClient(clientID)
-		logger.Infof("Client %s disconnected", clientID)
+		logger.Debugf("Client %s disconnected", clientID)
 	}()
 
 	// Send messages to the client
@@ -416,7 +416,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Log the message
-	logger.Infof("Received JSON-RPC message: %T", msg)
+	logger.Debugf("Received JSON-RPC message: %T", msg)
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {

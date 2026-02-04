@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -24,7 +25,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -340,7 +340,7 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
 	err := <-errCh
 	if !process.IsDetached() {
-		logger.Errorf("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
 		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
 	return err
@@ -498,7 +498,7 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 	if resourceFlag := cmd.Flags().Lookup("remote-auth-resource"); resourceFlag != nil && resourceFlag.Changed {
 		resource := resourceFlag.Value.String()
 		if resource != "" {
-			if err := validation.ValidateResourceURI(resource); err != nil {
+			if err := httpval.ValidateResourceURI(resource); err != nil {
 				return fmt.Errorf("invalid --remote-auth-resource: %w", err)
 			}
 		}

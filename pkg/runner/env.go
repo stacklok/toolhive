@@ -159,12 +159,12 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 	var byteValue []byte
 	var err error
 	if envVar.Secret {
-		logger.Infof("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
+		fmt.Printf("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
 		fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
 		byteValue, err = term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Println() // Move to the next line after hidden input
 	} else {
-		logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+		fmt.Printf("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
 		fmt.Printf("Enter value for %s: ", envVar.Name)
 		// For non-secret input, we can use a simple fmt.Scanln or bufio.Scanner
 		var input string

@@ -183,7 +183,7 @@ spec:
 - For **GitLab tokens**: Use `username: "oauth2"` with the token as the password
 - For **Bitbucket app passwords**: Use your Bitbucket username with the app password
 - The Secret must exist in the same namespace as the MCPRegistry
-- The password file is securely mounted at `/secrets/{secretName}/password` in the registry-api pod
+- The password file is securely mounted at `/secrets/{secretName}/{key}` in the registry-api pod, where `{key}` is the value specified in `passwordSecretRef.key`
 
 ### API Source
 

@@ -340,6 +340,10 @@ func WithPGPassMount(containerName, secretName string) PodTemplateSpecOption {
 // The mount path matches what buildGitPasswordFilePath() generates in the config,
 // ensuring the registry server can find the password file at the expected location.
 //
+// Volume naming uses the pattern "git-auth-{secretName}". If multiple registries
+// reference the same secret, the volume and mount are idempotent - only one volume
+// will be created due to the idempotency check in WithVolume.
+//
 // Parameters:
 //   - containerName: The name of the container to add the mount to
 //   - secretRef: The secret key selector referencing the password secret

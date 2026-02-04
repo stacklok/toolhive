@@ -26,6 +26,7 @@ import (
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
 const testValidYAML = `extensions: {}`
+const testValidTOML = ``
 
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
@@ -534,9 +535,12 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 
 			// Choose the appropriate content based on the file extension
 			var content []byte
-			if cfg.Extension == YAML {
+			switch cfg.Extension {
+			case YAML:
 				content = []byte(testValidYAML)
-			} else {
+			case TOML:
+				content = []byte(testValidTOML)
+			case JSON:
 				content = []byte(testValidJSON)
 			}
 

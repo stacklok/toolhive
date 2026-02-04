@@ -453,6 +453,13 @@ func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName str
 // ResetWorkloadPID resets the PID of a workload to 0.
 // This method will do nothing if the workload does not exist.
 func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName string) error {
+	// As a side effect, get rid of the PID file if any exists
+	err := removePIDFile(workloadName)
+	if err != nil {
+		// This is an expected error in most cases.
+		logger.Debugf("no PID for workload %s was removed", workloadName)
+	}
+
 	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
@@ -505,8 +512,8 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 	}
 
 	// Try to read PID from PID file
-	// The ReadPIDFile function handles checking both old and new locations
-	pid, err := process.ReadPIDFile(baseName)
+	// The readPIDFile function handles checking both old and new locations
+	pid, err := readPIDFile(baseName)
 	if err != nil {
 		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
 		return 0, false
@@ -514,7 +521,7 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
 
 	// Delete the PID file after successful migration
-	if err := process.RemovePIDFile(baseName); err != nil {
+	if err := removePIDFile(baseName); err != nil {
 		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
 		// Don't return false here - the migration succeeded, cleanup just failed
 	}

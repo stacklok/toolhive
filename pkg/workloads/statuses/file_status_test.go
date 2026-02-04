@@ -23,7 +23,6 @@ import (
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/process"
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
@@ -1831,8 +1830,8 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Clean up PID files after test completes
-	require.NoError(t, process.RemovePIDFile(workloadMigrate))
-	require.NoError(t, process.RemovePIDFile(workloadNoMigrate))
+	require.NoError(t, removePIDFile(workloadMigrate))
+	require.NoError(t, removePIDFile(workloadNoMigrate))
 
 	// Should have 2 workloads
 	require.Len(t, workloads, 2)

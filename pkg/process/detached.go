@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package process provides low level operations on OS processes
 package process
 
 import (

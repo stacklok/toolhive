@@ -52,6 +52,7 @@ jobs:
               path: version
             - file: deploy/charts/operator-crds/Chart.yaml
               path: appVersion
+              prefix: v
             - file: deploy/charts/operator/Chart.yaml
               path: version
             - file: deploy/charts/operator/Chart.yaml

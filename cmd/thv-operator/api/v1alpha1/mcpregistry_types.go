@@ -170,7 +170,7 @@ type GitAuthConfig struct {
 	//   metadata:
 	//     name: git-credentials
 	//   stringData:
-	//     token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+	//     token: <github token>
 	//
 	// Then reference it as:
 	//   passwordSecretRef:

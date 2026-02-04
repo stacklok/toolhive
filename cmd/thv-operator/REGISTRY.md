@@ -670,7 +670,7 @@ metadata:
   namespace: toolhive-system
 type: Opaque
 stringData:
-  token: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  token: "<github token>"
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry

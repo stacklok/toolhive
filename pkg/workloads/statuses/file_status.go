@@ -617,7 +617,8 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 }
 
 // readStatusFile reads and parses a workload status file from disk.
-func (*fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatusFile, error) {
+// If the file is corrupted, it attempts recovery using various strategies.
+func (f *fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatusFile, error) {
 	data, err := os.ReadFile(statusFilePath) //nolint:gosec // file path is constructed by our own function
 	if err != nil {
 		return nil, fmt.Errorf("failed to read status file: %w", err)
@@ -628,40 +629,173 @@ func (*fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatus
 		return nil, fmt.Errorf("status file is empty")
 	}
 
-	// Basic JSON structure validation
-	if !json.Valid(data) {
-		return nil, fmt.Errorf("status file contains invalid JSON")
-	}
-
+	// Attempt to parse the JSON
 	var statusFile workloadStatusFile
-	if err := json.Unmarshal(data, &statusFile); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal status file: %w", err)
+	parseErr := json.Unmarshal(data, &statusFile)
+
+	// If parsing succeeded, validate and return
+	if parseErr == nil {
+		if statusFile.Status == "" {
+			return nil, fmt.Errorf("status file missing required 'status' field")
+		}
+		if statusFile.CreatedAt.IsZero() {
+			return nil, fmt.Errorf("status file missing or invalid 'created_at' field")
+		}
+		return &statusFile, nil
 	}
 
-	// Validate essential fields
-	if statusFile.Status == "" {
-		return nil, fmt.Errorf("status file missing required 'status' field")
+	// Parsing failed - check if JSON is valid
+	if json.Valid(data) {
+		// JSON is structurally valid but unmarshal failed - this is unexpected
+		return nil, fmt.Errorf("failed to unmarshal valid JSON: %w", parseErr)
 	}
 
-	// Validate timestamps
-	if statusFile.CreatedAt.IsZero() {
-		return nil, fmt.Errorf("status file missing or invalid 'created_at' field")
+	// JSON is invalid - attempt recovery
+	logger.Warnf("status file %s contains invalid JSON, attempting recovery", statusFilePath)
+
+	recoveredFile, recoveryErr := f.attemptJSONRecovery(statusFilePath, data)
+	if recoveryErr != nil {
+		// Recovery failed - back up the corrupted file
+		backupPath := statusFilePath + ".corrupted"
+		if backupErr := os.WriteFile(backupPath, data, 0o600); backupErr == nil {
+			logger.Warnf("backed up corrupted status file to %s", backupPath)
+		}
+		return nil, fmt.Errorf("failed to parse status file (original error: %v, recovery failed: %v)", parseErr, recoveryErr)
 	}
 
-	return &statusFile, nil
+	logger.Infof("successfully recovered corrupted status file %s", statusFilePath)
+
+	// Auto-repair: write the recovered file back atomically
+	if repairErr := f.writeStatusFile(statusFilePath, *recoveredFile); repairErr != nil {
+		logger.Warnf("recovered status file but failed to auto-repair: %v", repairErr)
+		// Don't fail - we successfully recovered the data
+	} else {
+		logger.Debugf("auto-repaired status file %s", statusFilePath)
+	}
+
+	return recoveredFile, nil
+}
+
+// attemptJSONRecovery tries multiple strategies to recover corrupted JSON data.
+//
+//nolint:gocyclo // Multiple recovery strategies require conditional logic
+func (*fileStatusManager) attemptJSONRecovery(statusFilePath string, data []byte) (*workloadStatusFile, error) {
+	str := string(data)
+	var statusFile workloadStatusFile
+
+	// Strategy 1: Remove extra closing braces
+	openBraces := strings.Count(str, "{")
+	closeBraces := strings.Count(str, "}")
+
+	if closeBraces > openBraces {
+		// Remove extra closing braces from the end
+		trimmed := strings.TrimRight(str, "}")
+		reconstructed := trimmed + strings.Repeat("}", openBraces)
+
+		if err := json.Unmarshal([]byte(reconstructed), &statusFile); err == nil {
+			if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
+				logger.Debugf("recovered %s by removing %d extra closing brace(s)", statusFilePath, closeBraces-openBraces)
+				return &statusFile, nil
+			}
+		}
+	}
+
+	// Strategy 2: Add missing closing braces (truncated file)
+	if closeBraces < openBraces {
+		augmented := str + strings.Repeat("}", openBraces-closeBraces)
+
+		if err := json.Unmarshal([]byte(augmented), &statusFile); err == nil {
+			if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
+				logger.Debugf("recovered %s by adding %d missing closing brace(s)", statusFilePath, openBraces-closeBraces)
+				return &statusFile, nil
+			}
+		}
+	}
+
+	// Strategy 3: Try trimming whitespace and control characters
+	cleaned := strings.TrimSpace(str)
+	// Remove any null bytes or other control characters that might have been introduced
+	cleaned = strings.Map(func(r rune) rune {
+		if r == 0 || (r < 32 && r != '\n' && r != '\r' && r != '\t') {
+			return -1 // Remove character
+		}
+		return r
+	}, cleaned)
+
+	if err := json.Unmarshal([]byte(cleaned), &statusFile); err == nil {
+		if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
+			logger.Debugf("recovered %s by cleaning whitespace/control characters", statusFilePath)
+			return &statusFile, nil
+		}
+	}
+
+	return nil, fmt.Errorf("all recovery strategies failed")
 }
 
 // writeStatusFile writes a workload status file to disk with proper formatting.
+// Uses atomic file writes to prevent corruption from interrupted writes.
 func (*fileStatusManager) writeStatusFile(statusFilePath string, statusFile workloadStatusFile) error {
 	data, err := json.MarshalIndent(statusFile, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal status file: %w", err)
 	}
 
-	if err := os.WriteFile(statusFilePath, data, 0o600); err != nil {
+	if err := atomicWriteFile(statusFilePath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write status file: %w", err)
 	}
 
+	return nil
+}
+
+// atomicWriteFile writes data to a file atomically by writing to a temporary file
+// and then renaming it. This ensures that readers either see the complete old file
+// or the complete new file, never a partially written file.
+func atomicWriteFile(targetPath string, data []byte, perm os.FileMode) error {
+	// Create a temporary file in the same directory as the target file
+	// This ensures the temp file is on the same filesystem for atomic rename
+	dir := filepath.Dir(targetPath)
+	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Ensure cleanup of temp file on error
+	success := false
+	defer func() {
+		if !success {
+			tmpFile.Close()    //nolint:errcheck,gosec // best effort cleanup
+			os.Remove(tmpPath) //nolint:errcheck,gosec // best effort cleanup
+		}
+	}()
+
+	// Write data to temp file
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write to temp file: %w", err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	// Close the temp file before renaming
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Set the correct permissions on the temp file
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+
+	// Atomically rename temp file to target file
+	// This is atomic on POSIX systems (Linux, macOS, etc.)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	success = true
 	return nil
 }
 

@@ -834,7 +834,7 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		provider, err := NewOIDCProvider(ctx, config)
 		require.NoError(t, err)
 
-		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token")
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
 		require.NoError(t, err)
 
 		// Verify request parameters
@@ -864,8 +864,149 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		provider, err := NewOIDCProvider(ctx, config)
 		require.NoError(t, err)
 
-		_, err = provider.RefreshTokens(ctx, "")
+		_, err = provider.RefreshTokens(ctx, "", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "refresh token is required")
+	})
+
+	t.Run("refresh with matching subject succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+	})
+
+	t.Run("refresh with mismatched subject returns ErrSubjectMismatch", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "different-user")
+		require.ErrorIs(t, err, ErrSubjectMismatch)
+	})
+
+	t.Run("refresh without ID token skips subject validation", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+	})
+
+	t.Run("refresh with empty expectedSubject skips subject validation", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
 	})
 }

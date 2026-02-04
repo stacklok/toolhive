@@ -48,6 +48,11 @@ func (c *OIDCConfig) Validate() error {
 // the expected nonce from the authorization request.
 var ErrNonceMismatch = errors.New("ID token nonce does not match expected value")
 
+// ErrSubjectMismatch is returned when the sub claim in a refreshed ID token does not
+// match the expected subject from the original token response.
+// Per OIDC Core Section 12.2, the sub claim MUST be identical.
+var ErrSubjectMismatch = errors.New("ID token subject does not match expected value")
+
 // OIDCProviderImpl implements OAuth2Provider for OIDC-compliant identity providers.
 // It embeds BaseOAuth2Provider to share common OAuth 2.0 logic while adding
 // OIDC-specific functionality like discovery and ID token validation.
@@ -243,7 +248,7 @@ func (p *OIDCProviderImpl) validateIDToken(ctx context.Context, idToken, nonce s
 
 	token, err := p.verifier.Verify(ctx, idToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to verify ID token: %w", err)
 	}
 
 	// Validate nonce if expected (was sent in authorization request).
@@ -339,12 +344,15 @@ func (p *OIDCProviderImpl) ExchangeCode(ctx context.Context, code, codeVerifier 
 		return nil, err
 	}
 
-	// OIDC-specific: Validate ID token per OIDC Core Section 3.1.3.7.
+	// OIDC-specific: Validate ID token structure (signature, issuer, audience, expiry).
 	// Per Section 3.1.3.3, ID token MUST be present in OIDC token responses.
+	// Note: Nonce validation (Section 3.1.3.7) is deferred to ResolveIdentity,
+	// which has access to the expected nonce from the authorization request.
+	// Callers MUST call ResolveIdentity after ExchangeCode for full OIDC compliance.
 	if tokens.IDToken == "" {
 		return nil, errors.New("ID token required for OIDC provider")
 	}
-	if _, err := p.verifier.Verify(ctx, tokens.IDToken); err != nil {
+	if _, err := p.validateIDToken(ctx, tokens.IDToken, ""); err != nil {
 		return nil, fmt.Errorf("ID token validation failed: %w", err)
 	}
 
@@ -359,7 +367,7 @@ func (p *OIDCProviderImpl) ExchangeCode(ctx context.Context, code, codeVerifier 
 
 // RefreshTokens refreshes the upstream IDP tokens.
 // This overrides the base implementation to add OIDC-specific ID token validation.
-func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error) {
+func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
@@ -369,7 +377,7 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken strin
 	)
 
 	// Use base provider's implementation for token refresh
-	tokens, err := p.BaseOAuth2Provider.RefreshTokens(ctx, refreshToken)
+	tokens, err := p.BaseOAuth2Provider.RefreshTokens(ctx, refreshToken, expectedSubject)
 	if err != nil {
 		return nil, err
 	}
@@ -377,9 +385,18 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken strin
 	// OIDC-specific: Validate ID token if present.
 	// Per OIDC Core Section 12.2, refresh responses MAY include a new ID token
 	// (unlike ExchangeCode where it's required per Section 3.1.3.3).
+	// Nonce validation is intentionally omitted: Section 12.2 states that
+	// refreshed ID tokens SHOULD NOT contain a nonce claim, and no new
+	// authorization request exists to provide an expected nonce value.
+	// Full nonce validation occurs in ResolveIdentity during the initial auth flow.
 	if tokens.IDToken != "" && p.verifier != nil {
-		if _, err := p.verifier.Verify(ctx, tokens.IDToken); err != nil {
+		token, err := p.validateIDToken(ctx, tokens.IDToken, "")
+		if err != nil {
 			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
+		// OIDC Core Section 12.2: sub claim MUST be identical to the original.
+		if expectedSubject != "" && token.Subject != expectedSubject {
+			return nil, ErrSubjectMismatch
 		}
 	}
 

@@ -24,7 +24,7 @@
 //   - Type: Returns the provider type identifier
 //   - AuthorizationURL: Build redirect URL for user authentication
 //   - ExchangeCode: Exchange authorization code for tokens
-//   - RefreshTokens: Refresh expired tokens
+//   - RefreshTokens: Refresh expired tokens (with subject validation for OIDC)
 //   - ResolveIdentity: Resolve user identity from tokens
 //   - FetchUserInfo: Fetch user claims
 //

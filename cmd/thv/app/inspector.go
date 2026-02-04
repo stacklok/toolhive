@@ -155,6 +155,10 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		false, // Do not isolate network
 	)
 	if err != nil {
+		// Clean up any partially created container if deployment was interrupted
+		if cleanupErr := cleanupInspectorContainer(context.Background(), "inspector"); cleanupErr != nil {
+			logger.Debugf("Failed to cleanup inspector container after deployment error: %v", cleanupErr)
+		}
 		return fmt.Errorf("failed to create inspector workload: %w", err)
 	}
 

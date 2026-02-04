@@ -431,15 +431,14 @@ func (t *HTTPTransport) IsRunning() (bool, error) {
 		// Also check if the proxy is still running (handles health check failure case)
 		// When health checks fail, the proxy stops itself but the transport's
 		// shutdownCh may not be closed, causing the runner to hang as a zombie process.
+		proxyRunning := true
+		var err error
 		if t.proxy != nil {
-			proxyRunning, err := t.proxy.IsRunning()
+			proxyRunning, err = t.proxy.IsRunning()
 			if err != nil {
 				return false, err
 			}
-			if !proxyRunning {
-				return false, nil
-			}
 		}
-		return true, nil
+		return proxyRunning, nil
 	}
 }

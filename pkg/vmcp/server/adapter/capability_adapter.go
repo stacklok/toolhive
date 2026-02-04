@@ -208,3 +208,15 @@ func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 
 	return sdkTools, nil
 }
+
+// CreateOptimizerTools creates SDK tools for optimizer mode.
+//
+// When optimizer is enabled, only optim_find_tool and optim_call_tool are exposed
+// to clients instead of all backend tools. This method delegates to the standalone
+// CreateOptimizerToolsFromProvider function in optimizer_adapter.go for consistency.
+//
+// This keeps optimizer tool creation consistent with other tool types (backend,
+// composite) by going through the adapter layer.
+func (*CapabilityAdapter) CreateOptimizerTools(provider OptimizerHandlerProvider) ([]server.ServerTool, error) {
+	return CreateOptimizerToolsFromProvider(provider)
+}

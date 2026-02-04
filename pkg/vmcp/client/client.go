@@ -277,14 +277,7 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrCancelled, operation, backendID, err)
 	}
 
-	// 2. Type-based detection: Check for io.EOF errors
-	// These indicate the connection was closed unexpectedly
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("%w: failed to %s for backend %s (connection closed): %v",
-			vmcp.ErrBackendUnavailable, operation, backendID, err)
-	}
-
-	// 3. Type-based detection: Check for net.Error with Timeout() method
+	// 2. Type-based detection: Check for net.Error with Timeout() method
 	// This handles network timeouts from the standard library
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -292,7 +285,7 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// 4. String-based detection: Fall back to pattern matching for cases where
+	// 3. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -707,8 +700,6 @@ func (h *httpBackendClient) ReadResource(
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: data,
 		MimeType: mimeType,

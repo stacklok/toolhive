@@ -196,9 +196,16 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		return nil, err
 	}
 
+	// Apply default for ServiceVersion if not provided
+	// Documentation states: "When omitted, defaults to the ToolHive version"
+	serviceVersion := config.ServiceVersion
+	if serviceVersion == "" {
+		serviceVersion = versions.GetVersionInfo().Version
+	}
+
 	telemetryOptions := []providers.ProviderOption{
 		providers.WithServiceName(config.ServiceName),
-		providers.WithServiceVersion(config.ServiceVersion),
+		providers.WithServiceVersion(serviceVersion),
 		providers.WithOTLPEndpoint(config.Endpoint),
 		providers.WithHeaders(config.Headers),
 		providers.WithInsecure(config.Insecure),

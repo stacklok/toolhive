@@ -28,7 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	vmcpoptimizer "github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -186,17 +186,6 @@ This command checks:
 func getVersion() string {
 	// This will be replaced with actual version info using ldflags
 	return "dev"
-}
-
-// getStatusReportingInterval extracts the status reporting interval from config.
-// Returns 0 if not configured, which will use the default interval.
-func getStatusReportingInterval(cfg *config.Config) time.Duration {
-	if cfg.Operational != nil &&
-		cfg.Operational.FailureHandling != nil &&
-		cfg.Operational.FailureHandling.StatusReportingInterval > 0 {
-		return time.Duration(cfg.Operational.FailureHandling.StatusReportingInterval)
-	}
-	return 0
 }
 
 // loadAndValidateConfig loads and validates the vMCP configuration file
@@ -443,24 +432,42 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	serverCfg := &vmcpserver.Config{
-		Name:                    cfg.Name,
-		Version:                 getVersion(),
-		GroupRef:                cfg.Group,
-		Host:                    host,
-		Port:                    port,
-		AuthMiddleware:          authMiddleware,
-		AuthInfoHandler:         authInfoHandler,
-		TelemetryProvider:       telemetryProvider,
-		AuditConfig:             cfg.Audit,
-		HealthMonitorConfig:     healthMonitorConfig,
-		StatusReportingInterval: getStatusReportingInterval(cfg),
-		Watcher:                 backendWatcher,
-		StatusReporter:          statusReporter,
+		Name:                cfg.Name,
+		Version:             getVersion(),
+		GroupRef:            cfg.Group,
+		Host:                host,
+		Port:                port,
+		AuthMiddleware:      authMiddleware,
+		AuthInfoHandler:     authInfoHandler,
+		TelemetryProvider:   telemetryProvider,
+		AuditConfig:         cfg.Audit,
+		HealthMonitorConfig: healthMonitorConfig,
+		Watcher:             backendWatcher,
+		StatusReporter:      statusReporter,
 	}
 
-	if cfg.Optimizer != nil {
-		// TODO: update this with the real optimizer.
-		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizer
+	// Configure optimizer if enabled in YAML config
+	if cfg.Optimizer != nil && cfg.Optimizer.Enabled {
+		logger.Info("🔬 Optimizer enabled via configuration (chromem-go)")
+		serverCfg.OptimizerFactory = vmcpoptimizer.NewEmbeddingOptimizer
+		serverCfg.OptimizerConfig = cfg.Optimizer
+		persistInfo := "in-memory"
+		if cfg.Optimizer.PersistPath != "" {
+			persistInfo = cfg.Optimizer.PersistPath
+		}
+		// FTS5 is always enabled with configurable semantic/BM25 ratio
+		ratio := 70 // Default (70%)
+		if cfg.Optimizer.HybridSearchRatio != nil {
+			ratio = *cfg.Optimizer.HybridSearchRatio
+		}
+		searchMode := fmt.Sprintf("hybrid (%d%% semantic, %d%% BM25)",
+			ratio,
+			100-ratio)
+		logger.Infof("Optimizer configured: backend=%s, dimension=%d, persistence=%s, search=%s",
+			cfg.Optimizer.EmbeddingBackend,
+			cfg.Optimizer.EmbeddingDimension,
+			persistInfo,
+			searchMode)
 	}
 
 	// Convert composite tool configurations to workflow definitions

@@ -5,7 +5,6 @@ package health
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -53,13 +52,7 @@ type Monitor struct {
 	checkInterval time.Duration
 
 	// backends is the list of backends to monitor.
-	// Protected by backendsMu for thread-safe updates during backend changes.
-	backends   []vmcp.Backend
-	backendsMu sync.RWMutex
-
-	// activeChecks maps backend IDs to their cancel functions for dynamic backend management.
-	// Protected by backendsMu.
-	activeChecks map[string]context.CancelFunc
+	backends []vmcp.Backend
 
 	// ctx is the context for the monitor's lifecycle.
 	ctx context.Context
@@ -69,11 +62,6 @@ type Monitor struct {
 
 	// wg tracks running health check goroutines.
 	wg sync.WaitGroup
-
-	// initialCheckWg tracks the initial health check for each backend.
-	// This allows callers to wait for all initial health checks to complete
-	// before relying on health status.
-	initialCheckWg sync.WaitGroup
 
 	// mu protects the started and stopped flags.
 	mu sync.Mutex
@@ -122,12 +110,14 @@ func DefaultConfig() MonitorConfig {
 //   - client: BackendClient for communicating with backend MCP servers
 //   - backends: List of backends to monitor
 //   - config: Configuration for health monitoring
+//   - selfURL: Optional server's own URL. If provided, health checks targeting this URL are short-circuited.
 //
 // Returns (monitor, error). Error is returned if configuration is invalid.
 func NewMonitor(
 	client vmcp.BackendClient,
 	backends []vmcp.Backend,
 	config MonitorConfig,
+	selfURL string,
 ) (*Monitor, error) {
 	// Validate configuration
 	if config.CheckInterval <= 0 {
@@ -137,8 +127,8 @@ func NewMonitor(
 		return nil, fmt.Errorf("unhealthy threshold must be >= 1, got %d", config.UnhealthyThreshold)
 	}
 
-	// Create health checker with degraded threshold
-	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
+	// Create health checker with degraded threshold and self URL
+	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold, selfURL)
 
 	// Create status tracker
 	statusTracker := newStatusTracker(config.UnhealthyThreshold)
@@ -148,7 +138,6 @@ func NewMonitor(
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
 		backends:      backends,
-		activeChecks:  make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -184,28 +173,13 @@ func (m *Monitor) Start(ctx context.Context) error {
 		len(m.backends), m.checkInterval, m.statusTracker.unhealthyThreshold)
 
 	// Start health check goroutine for each backend
-	m.backendsMu.Lock()
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
-		backendCtx, cancel := context.WithCancel(m.ctx)
-		m.activeChecks[backend.ID] = cancel
 		m.wg.Add(1)
-		m.initialCheckWg.Add(1)                        // Track initial health check
-		go m.monitorBackend(backendCtx, backend, true) // true = initial backend
+		go m.monitorBackend(m.ctx, backend)
 	}
-	m.backendsMu.Unlock()
 
 	return nil
-}
-
-// WaitForInitialHealthChecks blocks until all backends have completed their initial health check.
-// This is useful for ensuring that health status is accurate before relying on it (e.g., before
-// reporting initial status to an external system).
-//
-// If the monitor was not started, this returns immediately (no initial checks to wait for).
-// This method is safe to call multiple times and from multiple goroutines.
-func (m *Monitor) WaitForInitialHealthChecks() {
-	m.initialCheckWg.Wait()
 }
 
 // Stop gracefully stops health monitoring.
@@ -221,11 +195,7 @@ func (m *Monitor) Stop() error {
 	}
 
 	// Cancel all health check goroutines
-	m.backendsMu.RLock()
-	backendCount := len(m.backends)
-	m.backendsMu.RUnlock()
-
-	logger.Infof("Stopping health monitor for %d backends", backendCount)
+	logger.Infof("Stopping health monitor for %d backends", len(m.backends))
 	m.cancel()
 	m.started = false
 	m.stopped = true
@@ -238,72 +208,9 @@ func (m *Monitor) Stop() error {
 	return nil
 }
 
-// UpdateBackends updates the list of backends being monitored.
-// Starts monitoring new backends and stops monitoring removed backends.
-// This method is safe to call while the monitor is running.
-func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
-	// Hold m.mu throughout to prevent race with Stop()
-	// This ensures m.wg.Add() cannot happen after Stop() calls m.wg.Wait()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.started || m.stopped {
-		return
-	}
-
-	m.backendsMu.Lock()
-	defer m.backendsMu.Unlock()
-
-	// Build maps of old and new backend IDs for comparison
-	oldBackends := make(map[string]vmcp.Backend)
-	for _, b := range m.backends {
-		oldBackends[b.ID] = b
-	}
-
-	newBackendsMap := make(map[string]vmcp.Backend)
-	for _, b := range newBackends {
-		newBackendsMap[b.ID] = b
-	}
-
-	// Update backends list before starting goroutines
-	// This ensures GetHealthSummary sees new backends before their health checks complete
-	m.backends = newBackends
-
-	// Start monitoring for new backends
-	for id, backend := range newBackendsMap {
-		if _, exists := oldBackends[id]; !exists {
-			logger.Infof("Starting health monitoring for new backend: %s", backend.Name)
-			backendCopy := backend
-			backendCtx, cancel := context.WithCancel(m.ctx)
-			m.activeChecks[id] = cancel
-			m.wg.Add(1)
-			// Clear the "removed" flag if this backend was previously removed
-			// This allows health check results to be recorded again
-			m.statusTracker.ClearRemovedFlag(id)
-			go m.monitorBackend(backendCtx, &backendCopy, false) // false = dynamically added backend
-		}
-	}
-
-	// Stop monitoring for removed backends and clean up their state
-	for id, backend := range oldBackends {
-		if _, exists := newBackendsMap[id]; !exists {
-			logger.Infof("Stopping health monitoring for removed backend: %s", backend.Name)
-			if cancel, ok := m.activeChecks[id]; ok {
-				cancel()
-				delete(m.activeChecks, id)
-			}
-			// Remove backend from status tracker so it no longer appears in status reports
-			m.statusTracker.RemoveBackend(id)
-		}
-	}
-}
-
 // monitorBackend performs periodic health checks for a single backend.
 // This runs in a background goroutine and continues until the context is cancelled.
-// The isInitial parameter indicates whether this is an initial backend (started in Start())
-// or a dynamically added backend (added via UpdateBackends()). Only initial backends
-// participate in the initialCheckWg synchronization.
-func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isInitial bool) {
+func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend) {
 	defer m.wg.Done()
 
 	logger.Debugf("Starting health monitoring for backend %s", backend.Name)
@@ -314,13 +221,6 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 
 	// Perform initial health check immediately
 	m.performHealthCheck(ctx, backend)
-
-	// Only signal completion for initial backends (started in Start()).
-	// Dynamically added backends (via UpdateBackends) don't participate in
-	// WaitForInitialHealthChecks() synchronization.
-	if isInitial {
-		m.initialCheckWg.Done() // Signal that initial check is complete
-	}
 
 	// Periodic health check loop
 	for {
@@ -337,8 +237,6 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
-	logger.Debugf("Performing health check for backend %s (%s)", backend.Name, backend.BaseURL)
-
 	// Create BackendTarget from Backend
 	target := &vmcp.BackendTarget{
 		WorkloadID:    backend.ID,
@@ -359,12 +257,10 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 
 	// Record result in status tracker
 	if err != nil {
-		logger.Debugf("Health check failed for backend %s: %v (status: %s)", backend.Name, err, status)
 		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
-		logger.Debugf("Health check succeeded for backend %s with status %s", backend.Name, status)
 		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
 	}
 }
@@ -479,10 +375,7 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 	// Pass configured backend count to distinguish between:
 	// - No backends configured (cold start) vs
 	// - Backends configured but no health data yet (waiting for first check)
-	m.backendsMu.RLock()
 	configuredBackendCount := len(m.backends)
-	m.backendsMu.RUnlock()
-
 	phase := determinePhase(summary, configuredBackendCount)
 	message := formatStatusMessage(summary, phase, configuredBackendCount)
 	discoveredBackends := m.convertToDiscoveredBackends(allStates)
@@ -545,38 +438,13 @@ func formatStatusMessage(summary Summary, phase vmcp.Phase, configuredBackendCou
 }
 
 // convertToDiscoveredBackends converts backend health states to DiscoveredBackend format.
-// Iterates over all backends that have health state. Backends are removed from the status
-// tracker when they're no longer being monitored (via UpdateBackends), so this only includes
-// backends that are currently tracked or in the process of being removed.
 func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmcp.DiscoveredBackend {
 	discoveredBackends := make([]vmcp.DiscoveredBackend, 0, len(allStates))
 
-	// Lock m.backends for reading to create a lookup map
-	m.backendsMu.RLock()
-	backendsByID := make(map[string]vmcp.Backend, len(m.backends))
-	for _, b := range m.backends {
-		backendsByID[b.ID] = b
-	}
-	m.backendsMu.RUnlock()
-
-	// Iterate over all backends with health state
-	for backendID, state := range allStates {
-		// Try to get backend info from current backends
-		backend, exists := backendsByID[backendID]
+	for _, backend := range m.backends {
+		state, exists := allStates[backend.ID]
 		if !exists {
-			// Backend not in current list - this should be rare now that we update
-			// m.backends before starting goroutines and ignore results for removed backends.
-			// Keep as defensive fallback.
-			discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
-				Name:            backendID,
-				URL:             "",
-				Status:          state.Status.ToCRDStatus(),
-				AuthConfigRef:   "",
-				AuthType:        "",
-				LastHealthCheck: metav1.NewTime(state.LastCheckTime),
-				Message:         formatBackendMessage(state),
-			})
-			continue
+			continue // Skip backends not yet tracked (shouldn't happen)
 		}
 
 		authConfigRef, authType := extractAuthInfo(backend)
@@ -608,17 +476,9 @@ func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
 }
 
 // formatBackendMessage creates a human-readable message for a backend's health state.
-// This returns generic error categories to avoid exposing sensitive error details in status.
-// Detailed errors are logged when they occur (in performHealthCheck) for debugging.
 func formatBackendMessage(state *State) string {
 	if state.LastError != nil {
-		// Categorize error using errors.Is() for generic status messages
-		// The detailed error is already logged in performHealthCheck for debugging
-		category := categorizeErrorForMessage(state.LastError)
-		if state.ConsecutiveFailures > 1 {
-			return fmt.Sprintf("%s (failures: %d)", category, state.ConsecutiveFailures)
-		}
-		return category
+		return fmt.Sprintf("%s (failures: %d)", state.LastError.Error(), state.ConsecutiveFailures)
 	}
 
 	switch state.Status {
@@ -638,46 +498,6 @@ func formatBackendMessage(state *State) string {
 	default:
 		return string(state.Status)
 	}
-}
-
-// categorizeErrorForMessage returns a generic error category message based on error type.
-// This prevents exposing sensitive error details (like URLs, credentials, etc.) in status messages.
-func categorizeErrorForMessage(err error) string {
-	if err == nil {
-		return "Unknown error"
-	}
-
-	// Authentication/Authorization errors
-	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
-		return "Authentication failed"
-	}
-	if vmcp.IsAuthenticationError(err) {
-		return "Authentication failed"
-	}
-
-	// Timeout errors
-	if errors.Is(err, vmcp.ErrTimeout) {
-		return "Health check timed out"
-	}
-	if vmcp.IsTimeoutError(err) {
-		return "Health check timed out"
-	}
-
-	// Cancellation errors
-	if errors.Is(err, vmcp.ErrCancelled) {
-		return "Health check cancelled"
-	}
-
-	// Connection/availability errors
-	if errors.Is(err, vmcp.ErrBackendUnavailable) {
-		return "Backend unavailable"
-	}
-	if vmcp.IsConnectionError(err) {
-		return "Connection failed"
-	}
-
-	// Generic fallback
-	return "Health check failed"
 }
 
 // buildConditions creates Kubernetes-style conditions based on health summary and phase.
@@ -721,22 +541,6 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	}
 
 	conditions = append(conditions, readyCondition)
-
-	// BackendsDiscovered condition - indicates whether backend discovery completed
-	// This is always true once the health monitor is running, as backends are discovered
-	// during aggregator initialization before the monitor starts.
-	backendsDiscoveredCondition := metav1.Condition{
-		Type:               vmcp.ConditionTypeBackendsDiscovered,
-		Status:             metav1.ConditionTrue,
-		LastTransitionTime: now,
-		Reason:             "BackendsDiscovered",
-		Message:            fmt.Sprintf("Discovered %d backends", configuredBackendCount),
-	}
-	if configuredBackendCount == 0 {
-		// No backends configured (cold start is valid)
-		backendsDiscoveredCondition.Message = "No backends configured"
-	}
-	conditions = append(conditions, backendsDiscoveredCondition)
 
 	// Degraded condition - true if any backends are degraded
 	if summary.Degraded > 0 {

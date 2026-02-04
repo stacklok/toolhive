@@ -8,23 +8,22 @@ includes:
 tasks:
   docs:
     desc: Regenerate the docs
-    deps: [swagger-install, helm-docs]
+    deps: [swagger-install, helm-docs-install]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
       - swag init -g pkg/api/server.go --v3.1 -o docs/server
-      - task: helm-docs
+      - helm-docs --chart-search-root=deploy/charts --template-files=./_templates.gotmpl --template-files=README.md.gotmpl
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
       - go install github.com/swaggo/swag/v2/cmd/swag@latest
 
-  helm-docs:
-    desc: Generate Helm chart documentation
+  helm-docs-install:
+    desc: Install the helm-docs tool to regenerate Helm chart documentation
     cmds:
-      - command -v helm-docs >/dev/null 2>&1 || go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
-      - helm-docs --chart-search-root=deploy/charts
+      - go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
 
   mock-install:
     desc: Install the mockgen tool for mock generation
@@ -177,6 +176,11 @@ tasks:
     desc: Run all tests (unit and e2e)
     deps: [test, test-e2e]
 
+  test-optimizer:
+    desc: Run optimizer integration tests with sqlite-vec
+    cmds:
+      - ./scripts/test-optimizer-with-sqlite-vec.sh
+
   build:
     desc: Build the binary
     deps: [gen]
@@ -220,12 +224,12 @@ tasks:
     cmds:
       - cmd: mkdir -p bin
         platforms: [linux, darwin]
-      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp ./cmd/vmcp
+      - cmd: go build -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp ./cmd/vmcp
         platforms: [linux, darwin]
       - cmd: cmd.exe /c mkdir bin
         platforms: [windows]
         ignore_error: true
-      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp.exe ./cmd/vmcp
+      - cmd: go build -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp.exe ./cmd/vmcp
         platforms: [windows]
 
   install-vmcp:
@@ -237,7 +241,7 @@ tasks:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
-      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
+      - go install -tags="fts5" -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
 
   all:
     desc: Run linting, tests, and build

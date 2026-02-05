@@ -27,6 +27,7 @@ type MiddlewareParams struct {
 // Middleware wraps audit middleware functionality
 type Middleware struct {
 	middleware types.MiddlewareFunction
+	auditor    *Auditor
 }
 
 // Handler returns the middleware function used by the proxy.
@@ -35,8 +36,10 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 }
 
 // Close cleans up any resources used by the middleware.
-func (*Middleware) Close() error {
-	// Audit middleware doesn't need cleanup
+func (m *Middleware) Close() error {
+	if m.auditor != nil {
+		return m.auditor.Close()
+	}
 	return nil
 }
 
@@ -75,13 +78,16 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid audit configuration: %w", err)
 	}
 
-	// Always use the transport-aware constructor
-	middleware, err := auditConfig.CreateMiddlewareWithTransport(params.TransportType)
+	// Create the auditor directly so we can store a reference for cleanup
+	auditor, err := NewAuditorWithTransport(auditConfig, params.TransportType)
 	if err != nil {
 		return fmt.Errorf("failed to create audit middleware: %w", err)
 	}
 
-	auditMw := &Middleware{middleware: middleware}
+	auditMw := &Middleware{
+		middleware: auditor.Middleware,
+		auditor:    auditor,
+	}
 	runner.AddMiddleware(config.Type, auditMw)
 	return nil
 }

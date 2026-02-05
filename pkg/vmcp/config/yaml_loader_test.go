@@ -12,8 +12,8 @@ import (
 
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/env"
-	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 

@@ -81,6 +81,337 @@ spec:
                 required:
                 - tokenSecretRef
                 type: object
+              embeddedAuthServer:
+                description: |-
+                  EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
+                  Only used when Type is "embeddedAuthServer"
+                properties:
+                  hmacSecretRefs:
+                    description: |-
+                      HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
+                      authorization codes and refresh tokens (opaque tokens).
+                      Current secret must be at least 32 bytes and cryptographically random.
+                      Supports secret rotation via multiple entries (first is current, rest are for verification).
+                      If not specified, an ephemeral secret will be auto-generated (development only -
+                      auth codes and refresh tokens will be invalid after restart).
+                    items:
+                      description: SecretKeyRef is a reference to a key within a Secret
+                      properties:
+                        key:
+                          description: Key is the key within the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    type: array
+                  issuer:
+                    description: |-
+                      Issuer is the issuer identifier for this authorization server.
+                      This will be included in the "iss" claim of issued tokens.
+                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+                    pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  signingKeySecretRefs:
+                    description: |-
+                      SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
+                      Supports key rotation by allowing multiple keys (oldest keys are used for verification only).
+                      If not specified, an ephemeral signing key will be auto-generated (development only -
+                      JWTs will be invalid after restart).
+                    items:
+                      description: SecretKeyRef is a reference to a key within a Secret
+                      properties:
+                        key:
+                          description: Key is the key within the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    maxItems: 5
+                    type: array
+                  tokenLifespans:
+                    description: |-
+                      TokenLifespans configures the duration that various tokens are valid.
+                      If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
+                    properties:
+                      accessTokenLifespan:
+                        description: |-
+                          AccessTokenLifespan is the duration that access tokens are valid.
+                          Format: Go duration string (e.g., "1h", "30m", "24h").
+                          If empty, defaults to 1 hour.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      authCodeLifespan:
+                        description: |-
+                          AuthCodeLifespan is the duration that authorization codes are valid.
+                          Format: Go duration string (e.g., "10m", "5m").
+                          If empty, defaults to 10 minutes.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      refreshTokenLifespan:
+                        description: |-
+                          RefreshTokenLifespan is the duration that refresh tokens are valid.
+                          Format: Go duration string (e.g., "168h", "7d" as "168h").
+                          If empty, defaults to 7 days (168h).
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
+                  upstreamProviders:
+                    description: |-
+                      UpstreamProviders configures connections to upstream Identity Providers.
+                      The embedded auth server delegates authentication to these providers.
+                      Currently only a single upstream provider is supported (validated at runtime).
+                    items:
+                      description: UpstreamProviderConfig defines configuration for
+                        an upstream Identity Provider.
+                      properties:
+                        name:
+                          description: |-
+                            Name uniquely identifies this upstream provider.
+                            Used for routing decisions and session binding in multi-upstream scenarios.
+                          minLength: 1
+                          type: string
+                        oauth2Config:
+                          description: |-
+                            OAuth2Config contains OAuth 2.0-specific configuration.
+                            Required when Type is "oauth2", must be nil when Type is "oidc".
+                          properties:
+                            authorizationEndpoint:
+                              description: AuthorizationEndpoint is the URL for the
+                                OAuth authorization endpoint.
+                              pattern: ^https?://.*$
+                              type: string
+                            clientId:
+                              description: ClientID is the OAuth 2.0 client identifier
+                                registered with the upstream IDP.
+                              type: string
+                            clientSecretRef:
+                              description: |-
+                                ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+                                Optional for public clients using PKCE instead of client secret.
+                              properties:
+                                key:
+                                  description: Key is the key within the secret
+                                  type: string
+                                name:
+                                  description: Name is the name of the secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            redirectUri:
+                              description: |-
+                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+                                URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                              type: string
+                            scopes:
+                              description: Scopes are the OAuth scopes to request
+                                from the upstream IDP.
+                              items:
+                                type: string
+                              type: array
+                            tokenEndpoint:
+                              description: TokenEndpoint is the URL for the OAuth
+                                token endpoint.
+                              pattern: ^https?://.*$
+                              type: string
+                            userInfo:
+                              description: |-
+                                UserInfo contains configuration for fetching user information from the upstream provider.
+                                Required for OAuth2 providers to resolve user identity.
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
+                          required:
+                          - authorizationEndpoint
+                          - clientId
+                          - tokenEndpoint
+                          - userInfo
+                          type: object
+                        oidcConfig:
+                          description: |-
+                            OIDCConfig contains OIDC-specific configuration.
+                            Required when Type is "oidc", must be nil when Type is "oauth2".
+                          properties:
+                            clientId:
+                              description: ClientID is the OAuth 2.0 client identifier
+                                registered with the upstream IDP.
+                              type: string
+                            clientSecretRef:
+                              description: |-
+                                ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+                                Optional for public clients using PKCE instead of client secret.
+                              properties:
+                                key:
+                                  description: Key is the key within the secret
+                                  type: string
+                                name:
+                                  description: Name is the name of the secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            issuerUrl:
+                              description: |-
+                                IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
+                                Must be a valid HTTPS URL.
+                              pattern: ^https://.*$
+                              type: string
+                            redirectUri:
+                              description: |-
+                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+                                URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                              type: string
+                            scopes:
+                              description: |-
+                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                If not specified, defaults to ["openid", "offline_access"].
+                              items:
+                                type: string
+                              type: array
+                            userInfoOverride:
+                              description: |-
+                                UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
+                                By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
+                                Use this to override the endpoint URL, HTTP method, or field mappings for providers
+                                that return non-standard claim names in their UserInfo response.
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
+                          required:
+                          - clientId
+                          - issuerUrl
+                          type: object
+                        type:
+                          description: 'Type specifies the provider type: "oidc" or
+                            "oauth2"'
+                          enum:
+                          - oidc
+                          - oauth2
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - issuer
+                - upstreamProviders
+                type: object
               headerInjection:
                 description: |-
                   HeaderInjection configures custom HTTP header injection
@@ -174,6 +505,7 @@ spec:
                 - headerInjection
                 - bearerToken
                 - unauthenticated
+                - embeddedAuthServer
                 type: string
             required:
             - type

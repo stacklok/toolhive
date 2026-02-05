@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -840,7 +841,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
 		}
 		c.PermissionProfile.Network.Mode = b.networkMode
-		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
+		logger.Debugf("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts
@@ -1014,7 +1015,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Infof("Adding volume mount: %s -> %s (%s)",
+		logger.Debugf("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
@@ -1113,4 +1114,13 @@ func (b *runConfigBuilder) ensureHeaderForward() *HeaderForwardConfig {
 		b.config.HeaderForward = &HeaderForwardConfig{}
 	}
 	return b.config.HeaderForward
+}
+
+// WithEmbeddedAuthServerConfig sets the embedded auth server configuration.
+// The config is a RunConfig with file paths and env var names for secrets.
+func WithEmbeddedAuthServerConfig(config *authserver.RunConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EmbeddedAuthServerConfig = config
+		return nil
+	}
 }

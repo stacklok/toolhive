@@ -4,6 +4,7 @@
 package health
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -27,6 +28,10 @@ type backendHealthState struct {
 
 	// lastTransitionTime is when the status last changed.
 	lastTransitionTime time.Time
+
+	// circuitBreaker manages circuit breaker state for this backend.
+	// Always non-nil; uses alwaysClosedCircuit when circuit breaker is disabled.
+	circuitBreaker CircuitBreaker
 }
 
 // statusTracker tracks health status for multiple backends.
@@ -44,6 +49,10 @@ type statusTracker struct {
 
 	// unhealthyThreshold is the number of consecutive failures before marking unhealthy.
 	unhealthyThreshold int
+
+	// circuitBreakerConfig contains circuit breaker configuration.
+	// nil means circuit breaker is disabled.
+	circuitBreakerConfig *CircuitBreakerConfig
 }
 
 // newStatusTracker creates a new status tracker.
@@ -51,18 +60,20 @@ type statusTracker struct {
 // Parameters:
 //   - unhealthyThreshold: Number of consecutive failures before marking backend unhealthy.
 //     Must be >= 1. Recommended: 3 failures.
+//   - circuitBreakerConfig: Circuit breaker configuration. nil to disable circuit breaker.
 //
 // Returns a new status tracker instance.
-func newStatusTracker(unhealthyThreshold int) *statusTracker {
+func newStatusTracker(unhealthyThreshold int, circuitBreakerConfig *CircuitBreakerConfig) *statusTracker {
 	if unhealthyThreshold < 1 {
 		logger.Warnf("Invalid unhealthyThreshold %d (must be >= 1), adjusting to 1", unhealthyThreshold)
 		unhealthyThreshold = 1
 	}
 
 	return &statusTracker{
-		states:             make(map[string]*backendHealthState),
-		removedBackends:    make(map[string]bool),
-		unhealthyThreshold: unhealthyThreshold,
+		states:               make(map[string]*backendHealthState),
+		removedBackends:      make(map[string]bool),
+		unhealthyThreshold:   unhealthyThreshold,
+		circuitBreakerConfig: circuitBreakerConfig,
 	}
 }
 
@@ -72,16 +83,102 @@ func (t *statusTracker) isRemoved(backendID string) bool {
 	return t.removedBackends[backendID]
 }
 
+// getOrCreateState retrieves an existing backend state or creates a new one with the specified initial values.
+// Must be called with lock held.
+// Returns the state and a boolean indicating whether it already existed.
+func (t *statusTracker) getOrCreateState(
+	backendID, backendName string,
+	initialStatus vmcp.BackendHealthStatus,
+	consecutiveFailures int,
+	err error,
+) (*backendHealthState, bool) {
+	state, exists := t.states[backendID]
+	if exists {
+		return state, true
+	}
+
+	// Create new state with circuit breaker initialized inline
+	state = &backendHealthState{
+		status:              initialStatus,
+		consecutiveFailures: consecutiveFailures,
+		lastCheckTime:       time.Now(),
+		lastError:           err,
+		lastTransitionTime:  time.Now(),
+		circuitBreaker: func() CircuitBreaker {
+			if t.circuitBreakerConfig == nil || !t.circuitBreakerConfig.Enabled {
+				return &alwaysClosedCircuit{}
+			}
+			return newCircuitBreaker(
+				t.circuitBreakerConfig.FailureThreshold,
+				t.circuitBreakerConfig.Timeout,
+				backendName,
+			)
+		}(),
+	}
+	t.states[backendID] = state
+
+	return state, false
+}
+
+// sanitizeError returns a sanitized error category string based on error type.
+// This prevents exposing sensitive error details (paths, URLs, credentials) in API responses.
+// Returns empty string if err is nil.
+func sanitizeError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	// Authentication/Authorization errors
+	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		return "authentication_failed"
+	}
+	if vmcp.IsAuthenticationError(err) {
+		return "authentication_failed"
+	}
+
+	// Timeout errors
+	if errors.Is(err, vmcp.ErrTimeout) {
+		return "timeout"
+	}
+	if vmcp.IsTimeoutError(err) {
+		return "timeout"
+	}
+
+	// Cancellation errors
+	if errors.Is(err, vmcp.ErrCancelled) {
+		return "cancelled"
+	}
+
+	// Connection/availability errors
+	if errors.Is(err, vmcp.ErrBackendUnavailable) {
+		return "backend_unavailable"
+	}
+	if vmcp.IsConnectionError(err) {
+		return "connection_failed"
+	}
+
+	// Generic fallback
+	return "health_check_failed"
+}
+
 // copyState creates an immutable copy of a backend health state.
 // Must be called with lock held.
 func (*statusTracker) copyState(state *backendHealthState) *State {
-	return &State{
+	result := &State{
 		Status:              state.status,
 		ConsecutiveFailures: state.consecutiveFailures,
 		LastCheckTime:       state.lastCheckTime,
+		LastErrorCategory:   sanitizeError(state.lastError),
 		LastError:           state.lastError,
 		LastTransitionTime:  state.lastTransitionTime,
 	}
+
+	// Include circuit breaker state
+	snapshot := state.circuitBreaker.GetSnapshot()
+	result.CircuitState = snapshot.State
+	result.CircuitLastChanged = snapshot.LastStateChange
+
+	return result
 }
 
 // RecordSuccess records a successful health check for a backend.
@@ -103,18 +200,11 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 		return
 	}
 
-	state, exists := t.states[backendID]
+	state, exists := t.getOrCreateState(backendID, backendName, status, 0, nil)
 	if !exists {
 		// Initialize new state - no failure history, so accept status as-is
-		state = &backendHealthState{
-			status:              status,
-			consecutiveFailures: 0,
-			lastCheckTime:       time.Now(),
-			lastError:           nil,
-			lastTransitionTime:  time.Now(),
-		}
-		t.states[backendID] = state
 		logger.Debugf("Backend %s initialized as %s", backendName, status)
+		state.circuitBreaker.RecordSuccess()
 		return
 	}
 
@@ -144,6 +234,9 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 	if previousStatus != state.status {
 		state.lastTransitionTime = time.Now()
 	}
+
+	// Update circuit breaker
+	state.circuitBreaker.RecordSuccess()
 }
 
 // RecordFailure records a failed health check for a backend.
@@ -165,18 +258,8 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		return
 	}
 
-	state, exists := t.states[backendID]
+	state, exists := t.getOrCreateState(backendID, backendName, vmcp.BackendUnknown, 1, err)
 	if !exists {
-		// Initialize new state
-		state = &backendHealthState{
-			status:              vmcp.BackendUnknown,
-			consecutiveFailures: 1,
-			lastCheckTime:       time.Now(),
-			lastError:           err,
-			lastTransitionTime:  time.Now(),
-		}
-		t.states[backendID] = state
-
 		// Check if threshold is reached on initialization (e.g., threshold of 1)
 		if state.consecutiveFailures >= t.unhealthyThreshold {
 			state.status = status
@@ -186,6 +269,8 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 			logger.Warnf("Backend %s initialized with failure (1/%d failures, status: %s): %v",
 				backendName, t.unhealthyThreshold, vmcp.BackendUnknown, err)
 		}
+
+		state.circuitBreaker.RecordFailure()
 		return
 	}
 
@@ -214,6 +299,9 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, current status: %s, incoming: %s): %v",
 			backendName, state.consecutiveFailures, t.unhealthyThreshold, state.status, status, err)
 	}
+
+	// Update circuit breaker
+	state.circuitBreaker.RecordFailure()
 }
 
 // GetStatus returns the current health status for a backend.
@@ -287,6 +375,86 @@ func (t *statusTracker) ClearRemovedFlag(backendID string) {
 	delete(t.removedBackends, backendID)
 }
 
+// CanAttemptHealthCheck checks if a health check should be attempted for a backend
+// based on the circuit breaker state. Returns true if the health check should proceed.
+//
+// If circuit breaker is disabled, always returns true (via alwaysClosedCircuit).
+// If circuit breaker is open, returns false to skip the health check.
+// If circuit breaker is half-open, allows a single test request.
+func (t *statusTracker) CanAttemptHealthCheck(backendID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		return true // Backend not tracked yet, allow health check
+	}
+
+	return state.circuitBreaker.CanAttempt()
+}
+
+// GetCircuitBreakerState returns the current circuit breaker state for a backend.
+// Returns (state, exists) where exists indicates if the backend is being tracked.
+// If circuit breaker is disabled, returns CircuitClosed (via alwaysClosedCircuit).
+func (t *statusTracker) GetCircuitBreakerState(backendID string) (CircuitState, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		return "", false
+	}
+
+	return state.circuitBreaker.GetState(), true
+}
+
+// IsCircuitOpen returns true if the circuit breaker is in the open state for a backend.
+// Returns false if the backend is not tracked.
+// When circuit breaker is disabled, returns false (alwaysClosedCircuit is never open).
+func (t *statusTracker) IsCircuitOpen(backendID string) bool {
+	state, exists := t.GetCircuitBreakerState(backendID)
+	return exists && state == CircuitOpen
+}
+
+// ShouldAttemptHealthCheck determines if a health check should be attempted for a backend.
+// This encapsulates circuit breaker logic and provides appropriate logging.
+// Returns true if the health check should proceed, false if it should be skipped.
+//
+// When circuit breaker is enabled, this method:
+// - Checks if a health check attempt is allowed based on circuit state
+// - Logs the reason when health checks are skipped (OPEN or HALF-OPEN with test in progress)
+// - Logs when attempting a recovery test in HALF-OPEN state
+//
+// Parameters:
+//   - backendID: Unique identifier for the backend
+//   - backendName: Human-readable name for logging
+func (t *statusTracker) ShouldAttemptHealthCheck(backendID, backendName string) bool {
+	// Check if circuit breaker allows the attempt
+	if !t.CanAttemptHealthCheck(backendID) {
+		// CanAttemptHealthCheck returns false in two cases:
+		// 1. Circuit is OPEN - completely blocked
+		// 2. Circuit is HALF-OPEN but a test is already in progress
+		cbState, _ := t.GetCircuitBreakerState(backendID)
+		switch cbState {
+		case CircuitOpen:
+			logger.Debugf("Circuit breaker OPEN for backend %s, skipping health check", backendName)
+		case CircuitHalfOpen:
+			logger.Debugf("Circuit breaker HALF-OPEN with test in progress for backend %s, skipping health check", backendName)
+		case CircuitClosed:
+			// This should not happen - circuit is closed but CanAttemptHealthCheck returned false
+			logger.Debugf("Circuit breaker state inconsistency for backend %s, skipping health check", backendName)
+		}
+		return false
+	}
+
+	// If we reach here with a half-open circuit, we're attempting the recovery test
+	if cbState, exists := t.GetCircuitBreakerState(backendID); exists && cbState == CircuitHalfOpen {
+		logger.Debugf("Circuit breaker testing recovery for backend %s", backendName)
+	}
+
+	return true
+}
+
 // State is an immutable snapshot of a backend's health state.
 // This is returned by GetState and GetAllStates to provide thread-safe access
 // to health information without holding locks.
@@ -300,9 +468,25 @@ type State struct {
 	// LastCheckTime is when the last health check was performed.
 	LastCheckTime time.Time
 
-	// LastError is the last error encountered (if any).
-	LastError error
+	// LastErrorCategory is a sanitized error category for API responses.
+	// Values: "authentication_failed", "timeout", "connection_failed", "backend_unavailable", etc.
+	// This field is safe to serialize and expose in API responses.
+	LastErrorCategory string
+
+	// LastError is the raw error encountered (if any).
+	// DEPRECATED: This field may contain sensitive information (paths, URLs, credentials)
+	// and should not be serialized to API responses. Use LastErrorCategory instead.
+	// The json:"-" tag prevents this field from being included in JSON marshaling.
+	LastError error `json:"-"`
 
 	// LastTransitionTime is when the status last changed.
 	LastTransitionTime time.Time
+
+	// CircuitState is the current circuit breaker state.
+	// When circuit breaker is disabled, this will be CircuitClosed (via alwaysClosedCircuit).
+	CircuitState CircuitState
+
+	// CircuitLastChanged is when the circuit breaker state last changed.
+	// When circuit breaker is disabled, this will be zero time (via alwaysClosedCircuit).
+	CircuitLastChanged time.Time
 }

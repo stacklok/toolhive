@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"time"
 
+	groupval "github.com/stacklok/toolhive-core/validation/group"
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -21,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -125,7 +126,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 
 	// Validate user-provided resource indicator (RFC 8707)
 	if req.OAuthConfig.Resource != "" {
-		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
+		if err := httpval.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
 			return nil, fmt.Errorf("%w: invalid resource parameter: %w", retriever.ErrInvalidRunConfig, err)
 		}
 	}
@@ -365,7 +366,7 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 		return req.Names, nil
 	}
 
-	if err := validation.ValidateGroupName(req.Group); err != nil {
+	if err := groupval.ValidateName(req.Group); err != nil {
 		return nil, fmt.Errorf("invalid group name: %w", err)
 	}
 

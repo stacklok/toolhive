@@ -6,6 +6,8 @@ package transparent
 import (
 	"bufio"
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -31,7 +33,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, true, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, true, false, "sse", nil, nil, "", false)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -88,7 +90,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -114,7 +116,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	p := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -154,7 +156,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, false, false, "", nil, nil, "", false)
+	proxy := NewTransparentProxy("localhost", 0, downstream.URL, nil, nil, nil, false, false, "", nil, nil, "", false)
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
@@ -363,7 +365,7 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, nil, false, false, "sse", nil, nil, "", false)
 
 	ctx := context.Background()
 
@@ -391,7 +393,7 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy but don't start it
-	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, nil, false, false, "sse", nil, nil, "", false)
 
 	ctx := context.Background()
 
@@ -426,7 +428,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false)
 
 	// Verify callback is set
 	assert.NotNil(t, proxy.onUnauthorizedResponse, "Callback should be set on proxy")
@@ -475,7 +477,7 @@ func TestTransparentProxy_UnauthorizedResponseCallback_Multiple401s(t *testing.T
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false)
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -520,7 +522,7 @@ func TestTransparentProxy_NoUnauthorizedCallbackOnSuccess(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create a proxy with unauthorized response callback and set targetURI
-	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, true, false, "streamable-http", nil, callback, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, target.URL, nil, nil, nil, true, false, "streamable-http", nil, callback, "", false)
 
 	// Create reverse proxy with tracing transport
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -546,7 +548,7 @@ func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with nil unauthorized response callback
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "streamable-http", nil, nil, "", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "streamable-http", nil, nil, "", false)
 
 	// Create a test server that returns 401
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -802,7 +804,7 @@ func TestGetSSERewriteConfig(t *testing.T) {
 			t.Parallel()
 
 			proxy := NewTransparentProxy(
-				"127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil,
+				"127.0.0.1", 0, "", nil, nil, nil, false, false, "sse", nil, nil,
 				tt.endpointPrefix, tt.trustProxyHeaders,
 			)
 
@@ -828,7 +830,7 @@ func TestSSEEndpointRewriting(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with X-Forwarded-Prefix trust enabled
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "", true)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "sse", nil, nil, "", true)
 
 	// Create a mock SSE server that returns an endpoint event
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -878,7 +880,7 @@ func TestSSEEndpointRewritingWithExplicitPrefix(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with explicit endpoint prefix
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/api/mcp", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "sse", nil, nil, "/api/mcp", false)
 
 	// Create a mock SSE server
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -920,7 +922,7 @@ func TestSSEMessageEventNotRewritten(t *testing.T) {
 	t.Parallel()
 
 	// Create a proxy with prefix configuration
-	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, false, false, "sse", nil, nil, "/playwright", false)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "sse", nil, nil, "/playwright", false)
 
 	// Create a mock SSE server that sends both endpoint and message events
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1007,6 +1009,7 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		serverURL,
 		nil,
 		nil,
+		nil,  // prefixHandlers
 		true, // enableHealthCheck
 		true, // isRemote
 		"sse",
@@ -1061,7 +1064,7 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 
 	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused after 3 consecutive failures")
 
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after connection failure")
 }
 
@@ -1116,7 +1119,7 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 		if tracker.isInvoked() {
 			callbackInvoked = true
 		}
-		running, _ := proxy.IsRunning(ctx)
+		running, _ := proxy.IsRunning()
 		if !running {
 			proxyStopped = true
 		}
@@ -1161,7 +1164,7 @@ func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	assert.True(t, tracker.isInvoked(), "Callback should be invoked after server becomes unavailable (3 consecutive failures)")
 
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after server becomes unavailable")
 }
 
@@ -1259,7 +1262,7 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 
 			assert.Equal(t, tc.expectCallback, tracker.isInvoked(), "%s: %s", tc.name, tc.description)
 
-			running, _ := proxy.IsRunning(ctx)
+			running, _ := proxy.IsRunning()
 			assert.Equal(t, tc.expectRunning, running, "%s: Proxy running state should match expectation", tc.name)
 		})
 	}
@@ -1289,7 +1292,7 @@ func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
 	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization")
 
 	// Proxy should still be running
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.True(t, running, "Proxy should continue running when server is not initialized")
 }
 
@@ -1315,6 +1318,436 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 
 	// Proxy should stop even without callback
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after health check failure even with nil callback")
+}
+
+// TestPrefixHandlers_MountingAndRouting tests that prefix handlers are correctly mounted
+// and that Go's ServeMux longest-match routing correctly routes requests
+func TestPrefixHandlers_MountingAndRouting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		requestPath        string
+		expectedHandler    string
+		expectedStatusCode int
+		description        string
+	}{
+		{
+			name:               "prefix handler matches /oauth/",
+			requestPath:        "/oauth/authorize",
+			expectedHandler:    "oauth",
+			expectedStatusCode: http.StatusOK,
+			description:        "Request to /oauth/* should be handled by oauth prefix handler",
+		},
+		{
+			name:               "prefix handler matches /oauth/ exact",
+			requestPath:        "/oauth/",
+			expectedHandler:    "oauth",
+			expectedStatusCode: http.StatusOK,
+			description:        "Request to /oauth/ should be handled by oauth prefix handler",
+		},
+		{
+			name:               "prefix handler matches /.well-known/oauth-authorization-server",
+			requestPath:        "/.well-known/oauth-authorization-server",
+			expectedHandler:    "oauth-as-metadata",
+			expectedStatusCode: http.StatusOK,
+			description:        "Request to auth server well-known endpoint should be handled by oauth prefix handler",
+		},
+		{
+			name:               "RFC 9728 endpoint still works",
+			requestPath:        "/.well-known/oauth-protected-resource",
+			expectedHandler:    "rfc9728",
+			expectedStatusCode: http.StatusOK,
+			description:        "RFC 9728 endpoint should be handled by auth info handler",
+		},
+		{
+			name:               "RFC 9728 endpoint with subpath",
+			requestPath:        "/.well-known/oauth-protected-resource/mcp",
+			expectedHandler:    "rfc9728",
+			expectedStatusCode: http.StatusOK,
+			description:        "RFC 9728 endpoint with subpath should be handled by auth info handler",
+		},
+		{
+			name:               "health endpoint bypasses prefix handlers",
+			requestPath:        "/health",
+			expectedHandler:    "", // Health uses internal health checker, not tracked
+			expectedStatusCode: http.StatusOK,
+			description:        "Health endpoint should not be handled by prefix handlers",
+		},
+		{
+			name:               "metrics endpoint bypasses prefix handlers",
+			requestPath:        "/metrics",
+			expectedHandler:    "metrics",
+			expectedStatusCode: http.StatusOK,
+			description:        "Metrics endpoint should not be handled by prefix handlers",
+		},
+		{
+			name:               "catch-all proxy receives other requests",
+			requestPath:        "/mcp",
+			expectedHandler:    "proxy",
+			expectedStatusCode: http.StatusOK,
+			description:        "Requests not matching any prefix should go to catch-all proxy",
+		},
+		{
+			name:               "root path goes to proxy",
+			requestPath:        "/",
+			expectedHandler:    "proxy",
+			expectedStatusCode: http.StatusOK,
+			description:        "Root path should go to catch-all proxy",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Track which handler was called
+			var handlerCalled string
+			var mu sync.Mutex
+
+			recordHandler := func(name string) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					mu.Lock()
+					handlerCalled = name
+					mu.Unlock()
+					w.WriteHeader(http.StatusOK)
+					w.Write([]byte(name))
+				})
+			}
+
+			// Create prefix handlers map
+			prefixHandlers := map[string]http.Handler{
+				"/oauth/": recordHandler("oauth"),
+				"/.well-known/oauth-authorization-server": recordHandler("oauth-as-metadata"),
+			}
+
+			// Create auth info handler for RFC 9728
+			authInfoHandler := recordHandler("rfc9728")
+
+			// Create Prometheus handler
+			prometheusHandler := recordHandler("metrics")
+
+			// Create a mock backend server
+			backend := httptest.NewServer(recordHandler("proxy"))
+			defer backend.Close()
+
+			// Create proxy with prefix handlers
+			proxy := NewTransparentProxy(
+				"127.0.0.1",
+				0,
+				backend.URL,
+				prometheusHandler,
+				authInfoHandler,
+				prefixHandlers,
+				true,  // enableHealthCheck
+				false, // isRemote
+				"streamable-http",
+				nil, // onHealthCheckFailed
+				nil, // onUnauthorizedResponse
+				"",
+				false,
+			)
+
+			ctx := context.Background()
+			err := proxy.Start(ctx)
+			require.NoError(t, err)
+			defer func() { _ = proxy.Stop(ctx) }()
+
+			// Get the actual port from the listener (port 0 means OS assigns a random port)
+			actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+			// Make request to the proxy
+			resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", proxy.host, actualPort, tt.requestPath))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			// Verify status code
+			assert.Equal(t, tt.expectedStatusCode, resp.StatusCode, tt.description)
+
+			// Verify the correct handler was called
+			mu.Lock()
+			actualHandler := handlerCalled
+			mu.Unlock()
+			// Skip handler verification for endpoints that use internal handlers (e.g., health checker)
+			if tt.expectedHandler != "" {
+				assert.Equal(t, tt.expectedHandler, actualHandler, tt.description)
+			}
+		})
+	}
+}
+
+// TestPrefixHandlers_NilMapDoesNotPanic tests that a nil PrefixHandlers map doesn't cause panic
+func TestPrefixHandlers_NilMapDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock backend server
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("proxy"))
+	}))
+	defer backend.Close()
+
+	// Create proxy with nil prefix handlers (should not panic)
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		backend.URL,
+		nil, // prometheusHandler
+		nil, // authInfoHandler
+		nil, // prefixHandlers - nil map
+		false,
+		false,
+		"streamable-http",
+		nil,
+		nil,
+		"",
+		false,
+	)
+
+	ctx := context.Background()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Get the actual port from the listener
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Make a request to verify proxy works normally
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d/test", proxy.host, actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Proxy should work with nil prefix handlers")
+}
+
+// TestPrefixHandlers_EmptyMapWorks tests that an empty PrefixHandlers map works correctly
+func TestPrefixHandlers_EmptyMapWorks(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock backend server
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("proxy"))
+	}))
+	defer backend.Close()
+
+	// Create proxy with empty prefix handlers map
+	emptyPrefixHandlers := make(map[string]http.Handler)
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		backend.URL,
+		nil, // prometheusHandler
+		nil, // authInfoHandler
+		emptyPrefixHandlers,
+		false,
+		false,
+		"streamable-http",
+		nil,
+		nil,
+		"",
+		false,
+	)
+
+	ctx := context.Background()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Get the actual port from the listener
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Make a request to verify proxy works normally
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d/test", proxy.host, actualPort))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Proxy should work with empty prefix handlers")
+}
+
+// TestPrefixHandlers_LongestMatchRouting tests that Go's ServeMux longest-match routing works
+func TestPrefixHandlers_LongestMatchRouting(t *testing.T) {
+	t.Parallel()
+
+	var handlerCalled string
+	var mu sync.Mutex
+
+	recordHandler := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mu.Lock()
+			handlerCalled = name
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		})
+	}
+
+	// Create prefix handlers with overlapping paths
+	// The more specific path should match first
+	prefixHandlers := map[string]http.Handler{
+		"/api/":         recordHandler("api-general"),
+		"/api/v1/":      recordHandler("api-v1"),
+		"/api/v1/users": recordHandler("api-v1-users"),
+	}
+
+	// Create a mock backend server
+	backend := httptest.NewServer(recordHandler("proxy"))
+	defer backend.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		backend.URL,
+		nil,
+		nil,
+		prefixHandlers,
+		false,
+		false,
+		"streamable-http",
+		nil,
+		nil,
+		"",
+		false,
+	)
+
+	ctx := context.Background()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Get the actual port from the listener
+	actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+	// Test that most specific path matches first
+	tests := []struct {
+		path            string
+		expectedHandler string
+	}{
+		{"/api/v1/users", "api-v1-users"},
+		{"/api/v1/other", "api-v1"},
+		{"/api/v2/something", "api-general"},
+		{"/other", "proxy"},
+	}
+
+	for _, tt := range tests {
+		mu.Lock()
+		handlerCalled = ""
+		mu.Unlock()
+
+		resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", proxy.host, actualPort, tt.path))
+		require.NoError(t, err)
+		resp.Body.Close()
+
+		mu.Lock()
+		actualHandler := handlerCalled
+		mu.Unlock()
+		assert.Equal(t, tt.expectedHandler, actualHandler, "Path %s should be handled by %s", tt.path, tt.expectedHandler)
+	}
+}
+
+// TestPrefixHandlers_WellKnownNamespaceCoexistence tests that RFC 9728 and auth server
+// well-known endpoints coexist correctly
+func TestPrefixHandlers_WellKnownNamespaceCoexistence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path            string
+		expectedHandler string
+		description     string
+	}{
+		{
+			path:            "/.well-known/oauth-authorization-server",
+			expectedHandler: "auth-server-metadata",
+			description:     "Auth server metadata endpoint",
+		},
+		{
+			path:            "/.well-known/openid-configuration",
+			expectedHandler: "oidc-config",
+			description:     "OIDC configuration endpoint",
+		},
+		{
+			path:            "/.well-known/jwks.json",
+			expectedHandler: "jwks",
+			description:     "JWKS endpoint",
+		},
+		{
+			path:            "/.well-known/oauth-protected-resource",
+			expectedHandler: "rfc9728-protected-resource",
+			description:     "RFC 9728 protected resource metadata",
+		},
+		{
+			path:            "/.well-known/oauth-protected-resource/mcp",
+			expectedHandler: "rfc9728-protected-resource",
+			description:     "RFC 9728 protected resource metadata with subpath",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.description, func(t *testing.T) {
+			t.Parallel()
+
+			// Each subtest creates its own proxy to be independent
+			var handlerCalled string
+			var mu sync.Mutex
+
+			recordHandler := func(name string) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					mu.Lock()
+					handlerCalled = name
+					mu.Unlock()
+					w.WriteHeader(http.StatusOK)
+				})
+			}
+
+			// Create prefix handlers for auth server well-known endpoints
+			prefixHandlers := map[string]http.Handler{
+				"/.well-known/oauth-authorization-server": recordHandler("auth-server-metadata"),
+				"/.well-known/openid-configuration":       recordHandler("oidc-config"),
+				"/.well-known/jwks.json":                  recordHandler("jwks"),
+			}
+
+			// RFC 9728 auth info handler
+			authInfoHandler := recordHandler("rfc9728-protected-resource")
+
+			// Create a mock backend
+			backend := httptest.NewServer(recordHandler("proxy"))
+			defer backend.Close()
+
+			proxy := NewTransparentProxy(
+				"127.0.0.1",
+				0,
+				backend.URL,
+				nil,
+				authInfoHandler,
+				prefixHandlers,
+				false,
+				false,
+				"streamable-http",
+				nil,
+				nil,
+				"",
+				false,
+			)
+
+			ctx := context.Background()
+			err := proxy.Start(ctx)
+			require.NoError(t, err)
+			defer func() { _ = proxy.Stop(ctx) }()
+
+			// Get the actual port from the listener
+			actualPort := proxy.listener.Addr().(*net.TCPAddr).Port
+
+			resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", proxy.host, actualPort, tt.path))
+			require.NoError(t, err)
+			resp.Body.Close()
+
+			mu.Lock()
+			actualHandler := handlerCalled
+			mu.Unlock()
+			assert.Equal(t, tt.expectedHandler, actualHandler, "%s: expected handler %s, got %s", tt.description, tt.expectedHandler, actualHandler)
+		})
+	}
 }

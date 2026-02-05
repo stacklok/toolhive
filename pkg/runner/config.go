@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -189,6 +190,11 @@ type RunConfig struct {
 
 	// HeaderForward contains configuration for injecting headers into requests to remote servers.
 	HeaderForward *HeaderForwardConfig `json:"header_forward,omitempty" yaml:"header_forward,omitempty"`
+
+	// EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
+	// When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
+	// This is the serializable RunConfig; secrets are referenced by file paths or env var names.
+	EmbeddedAuthServerConfig *authserver.RunConfig `json:"embedded_auth_server_config,omitempty" yaml:"embedded_auth_server_config,omitempty"` //nolint:lll
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

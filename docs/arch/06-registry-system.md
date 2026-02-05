@@ -20,30 +20,33 @@ graph TB
         Builtin[Built-in Registry<br/>Embedded JSON]
         Git[Git Repository]
         CM[ConfigMap]
+        ExtAPI[External Registry API<br/>ToolHive Registry Server<br/>or MCP Registry]
     end
 
     subgraph "ToolHive CLI"
         CLI[thv CLI]
-        Provider[Provider Interface<br/>Local/Remote]
+        Provider[Provider Interface<br/>Local/Remote/API]
     end
 
     subgraph "Kubernetes"
         MCPReg[MCPRegistry CRD]
         Operator[thv-operator]
-        API[Registry API Service<br/>Optional]
+        IntAPI[Internal Registry API<br/>Optional per-CRD]
     end
 
     Builtin --> Provider
+    ExtAPI --> Provider
     Git --> MCPReg
     CM --> MCPReg
     Provider --> CLI
 
     MCPReg --> Operator
-    Operator --> API
+    Operator --> IntAPI
 
     style Builtin fill:#81c784
     style Git fill:#90caf9
     style CM fill:#90caf9
+    style ExtAPI fill:#ce93d8
 ```
 
 ## Built-in Registry
@@ -334,12 +337,13 @@ ToolHive supports live MCP Registry API endpoints that implement the official [M
 
 **Set API registry:**
 ```bash
-thv config set-registry-api https://registry.example.com
+# URLs without .json extension are probed - if they implement /v0.1/servers, they're treated as API endpoints
+thv config set-registry https://registry.example.com
 ```
 
 **With private IP support:**
 ```bash
-thv config set-registry-api https://registry.internal.company.com --allow-private-ip
+thv config set-registry https://registry.internal.company.com --allow-private-ip
 ```
 
 **Check current registry:**
@@ -410,6 +414,18 @@ ToolHive automatically converts upstream MCP Registry types to internal format:
 - Use third-party registry services
 - Dynamic server catalogs that update frequently
 
+**Stacklok's Registry Server Implementation:**
+
+For organizations needing a full-featured registry server, [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) provides enterprise features:
+
+- Multiple data sources (Git, API, File, Managed, Kubernetes)
+- PostgreSQL backend for scalable storage
+- Enterprise OAuth 2.0/OIDC authentication (Okta, Auth0, Azure AD)
+- Background synchronization with automatic updates
+- Docker Compose and Kubernetes/Helm deployment options
+
+For detailed setup and configuration, see the [Registry Server documentation](https://docs.stacklok.com/toolhive/guides-registry/).
+
 ### Registry Priority
 
 When multiple registries configured, ToolHive uses this priority order:
@@ -419,16 +435,16 @@ When multiple registries configured, ToolHive uses this priority order:
 3. **Local Registry** (if configured) - Custom local file
 4. **Built-in Registry** - Default embedded registry
 
-The factory selects the first configured registry type in this order. To switch between registry types, use the appropriate CLI command:
+The factory selects the first configured registry type in this order. The `thv config set-registry` command auto-detects the registry type:
 
 ```bash
-# Set API registry (highest priority, for example, https://registry.modelcontextprotocol.io)
-thv config set-registry-api https://registry.example.com 
+# API registry - URLs without .json are probed for /v0.1/servers endpoint
+thv config set-registry https://registry.modelcontextprotocol.io
 
-# Set remote registry (if no API registry configured)
+# Remote static registry - URLs ending in .json are treated as static files
 thv config set-registry https://example.com/registry.json
 
-# Set local registry (if no API/remote registry configured)
+# Local file registry
 thv config set-registry /path/to/registry.json
 
 # Check current registry configuration
@@ -440,18 +456,58 @@ thv config unset-registry
 
 **Implementation**: `pkg/registry/factory.go`, `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/provider_api.go`
 
-## Registry API Server
+## Enterprise Registry Deployment
 
-> **Note**: The registry API server is being moved to a separate project and will be maintained independently.
+For organizations requiring a centralized, scalable registry server, [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) provides enterprise-grade capabilities.
 
-ToolHive includes a registry API server (`thv-registry-api`) for hosting custom MCP server registries.
+### When to Use ToolHive Registry Server
 
-**Key capabilities:**
-- HTTP API for serving registry data
-- File or Kubernetes ConfigMap storage
-- Used by `MCPRegistry` CRD in Kubernetes deployments
+| Scenario | Recommended Solution |
+|----------|---------------------|
+| Single user, local development | Built-in embedded registry (default) |
+| Team sharing curated servers | Static JSON file via `thv config set-registry https://example.com/registry.json` |
+| Dynamic organization-wide registry | Standalone ToolHive Registry Server with `thv config set-registry https://registry.company.com` |
+| Kubernetes cluster with shared registry | MCPRegistry CRD (deploys ToolHive Registry Server in-cluster) |
+| Multi-cluster enterprise | Standalone ToolHive Registry Server as central API, connect via `thv config set-registry` |
 
-The registry API server provides HTTP endpoints for serving registry data to other components.
+### Architecture Overview
+
+ToolHive Registry Server implements a 4-layer architecture:
+
+1. **API Layer**: Chi router with OAuth/OIDC middleware
+2. **Service Layer**: PostgreSQL or in-memory backends
+3. **Registry Layer**: Git, API, File, Managed, Kubernetes registry handlers
+4. **Sync Layer**: Background coordinator for automatic updates
+
+### Registry Types
+
+| Type | Sync Mode | Description |
+|------|-----------|-------------|
+| API | Automatic | Upstream MCP Registry API endpoints |
+| Git | Automatic | Git repositories containing registry JSON |
+| File | Automatic | Local filesystem (ToolHive or upstream format) |
+| Managed | On-demand | API-managed registries with publish/delete |
+| Kubernetes | On-demand | K8s deployment discovery |
+
+### Connecting ToolHive to Registry Server
+
+**CLI configuration:**
+```bash
+# Point CLI to your registry server
+thv config set-registry https://registry.company.com
+
+# For internal deployments
+thv config set-registry https://registry.internal.company.com --allow-private-ip
+```
+
+### Documentation Resources
+
+For complete registry server documentation, see:
+
+- [Registry Server Guides](https://docs.stacklok.com/toolhive/guides-registry/) - Configuration, authentication, deployment
+- [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API endpoint documentation
+- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
+
 
 ## MCPRegistry CRD (Kubernetes)
 
@@ -494,6 +550,26 @@ source:
 - Automatic sync from Git repository
 - Branch or tag tracking
 - Shallow clones for efficiency
+- Private repository authentication via HTTP Basic Auth
+
+**Private Repository Authentication:**
+
+```yaml
+registries:
+  - name: default
+    format: toolhive
+    git:
+      repository: https://github.com/org/private-registry
+      branch: main
+      path: registry.json
+      auth:
+        username: "git"  # Use "git" for GitHub PATs
+        passwordSecretRef:
+          name: git-credentials
+          key: password
+```
+
+The password is stored in a Kubernetes Secret and mounted securely in the registry-api pod.
 
 **Implementation**: `cmd/thv-operator/pkg/sources/git.go`
 
@@ -537,7 +613,7 @@ kubectl annotate mcpregistry company-registry \
 
 When `apiService.enabled: true`, operator creates:
 
-1. **Deployment**: Running `thv-registry-api`
+1. **Deployment**: Running [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) (image: `ghcr.io/stacklok/thv-registry-api`)
 2. **Service**: Exposing API endpoints
 3. **ConfigMap**: Containing registry data
 
@@ -766,8 +842,21 @@ kubectl get configmap company-registry-storage -o jsonpath='{.data.registry\.jso
 
 ## Related Documentation
 
+### Internal Documentation
 - [Core Concepts](02-core-concepts.md) - Registry concept
 - [Architecture Overview](00-overview.md) - Registry in platform
 - [Deployment Modes](01-deployment-modes.md) - Registry usage per mode
 - [Groups](07-groups.md) - Groups in registry
 - [Operator Architecture](09-operator-architecture.md) - MCPRegistry CRD
+
+### External Documentation
+- [ToolHive User Documentation](https://docs.stacklok.com/toolhive/) - User-facing guides
+- [Registry Server Documentation](https://docs.stacklok.com/toolhive/guides-registry/) - Enterprise registry server
+- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
+- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - MCP standard format
+- [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API specification
+
+### Related Repositories
+- [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) - Registry server component
+- [toolhive-registry](https://github.com/stacklok/toolhive-registry) - Curated server catalog
+- [MCP Registry](https://github.com/modelcontextprotocol/registry) - Upstream MCP registry specification

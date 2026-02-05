@@ -186,7 +186,7 @@ func NewCompositeProvider(
 
 	// Early return for no-op case
 	if selector.IsFullyNoOp() {
-		logger.Infof("No telemetry configured, using no-op providers")
+		logger.Debugf("No telemetry configured, using no-op providers")
 		return createNoOpProvider(), nil
 	}
 
@@ -222,7 +222,7 @@ func buildProviders(
 		return nil, err
 	}
 
-	logger.Infof("Telemetry providers created successfully")
+	logger.Debugf("Telemetry providers created successfully")
 	return composite, nil
 }
 

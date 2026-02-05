@@ -59,13 +59,16 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Generate client ID
 	clientID := uuid.NewString()
 
-	// Create fosite client using factory
+	// Create fosite client using factory.
+	// Use the server's advertised scopes so DCR clients can request any scope
+	// listed in scopes_supported. This keeps discovery and DCR consistent.
 	fositeClient, err := registration.New(registration.Config{
 		ID:            clientID,
 		RedirectURIs:  validated.RedirectURIs,
 		Public:        true,
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
+		Scopes:        h.config.ScopesSupported,
 	})
 	if err != nil {
 		logger.Errorw("failed to create client", "error", err)

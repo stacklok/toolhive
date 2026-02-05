@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -195,14 +197,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Infof("Using host port: %d", port)
+	logger.Debugf("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
 	var tokenSource oauth2.TokenSource
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
-	if remoteAuthFlags.EnableRemoteAuth || shouldDetectAuth() {
+	if shouldHandleOutgoingAuth() {
 		var result *discovery.OAuthFlowResult
 		result, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
@@ -214,10 +216,10 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 			if oauthConfig != nil {
 				introspectionURL = oauthConfig.IntrospectionEndpoint
-				logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+				logger.Debugf("Using OAuth config with introspection URL: %s", introspectionURL)
 			}
 		} else {
-			logger.Info("No OAuth configuration available, proceeding without outgoing authentication")
+			logger.Debug("No OAuth configuration available, proceeding without outgoing authentication")
 		}
 	}
 
@@ -250,7 +252,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the transparent proxy
-	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+	logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
@@ -260,6 +262,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyTargetURI,
 		nil,
 		authInfoHandler,
+		nil, // prefixHandlers - not configured for proxy command
 		false,
 		false, // isRemote
 		"",
@@ -272,12 +275,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
-	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
+	fmt.Printf("Transparent proxy started for server %s on port %d -> %s\n",
 		serverName, port, proxyTargetURI)
-	logger.Info("Press Ctrl+C to stop")
 
 	<-ctx.Done()
-	logger.Infof("Interrupt received, proxy is shutting down. Please wait for connections to close...")
+	fmt.Println("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
 	if err := proxy.CloseListener(); err != nil {
 		logger.Warnf("Error closing proxy listener: %v", err)
@@ -306,15 +308,36 @@ func getProxyOIDCConfig(cmd *cobra.Command) *auth.TokenValidatorConfig {
 	}
 }
 
-// shouldDetectAuth determines if we should try to detect authentication requirements
-func shouldDetectAuth() bool {
-	// Only try to detect auth if OAuth client ID is provided
-	// This prevents unnecessary requests when no OAuth config is available
-	return remoteAuthFlags.RemoteAuthClientID != ""
+// shouldHandleOutgoingAuth determines if outgoing authentication should be attempted.
+// This is true when:
+// - Remote auth is explicitly enabled via --remote-auth flag
+// - OAuth client ID is provided (allows auto-detection of auth requirements)
+// - Bearer token is configured via flag, file, or environment variable
+func shouldHandleOutgoingAuth() bool {
+	return remoteAuthFlags.EnableRemoteAuth ||
+		remoteAuthFlags.RemoteAuthClientID != "" ||
+		remoteAuthFlags.RemoteAuthBearerToken != "" ||
+		remoteAuthFlags.RemoteAuthBearerTokenFile != "" ||
+		os.Getenv(remote.BearerTokenEnvVarName) != ""
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
 func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResult, error) {
+	bearerToken, err := resolveSecret(
+		remoteAuthFlags.RemoteAuthBearerToken,
+		remoteAuthFlags.RemoteAuthBearerTokenFile,
+		remote.BearerTokenEnvVarName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
+	}
+	if bearerToken != "" {
+		logger.Debug("Using bearer token authentication for remote server")
+		return &discovery.OAuthFlowResult{
+			TokenSource: remote.NewBearerTokenSource(bearerToken),
+		}, nil
+	}
+
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {
@@ -363,7 +386,7 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 	}
 
 	if authInfo != nil {
-		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
+		logger.Debugf("Detected authentication requirement from server: %s", authInfo.Realm)
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{

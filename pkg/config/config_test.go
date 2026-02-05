@@ -13,7 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )

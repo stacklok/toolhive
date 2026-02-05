@@ -140,6 +140,45 @@ type GitSource struct {
 	// +kubebuilder:default=registry.json
 	// +optional
 	Path string `json:"path,omitempty"`
+
+	// Auth defines optional authentication for private Git repositories.
+	// When specified, enables HTTP Basic authentication using the provided
+	// username and password/token from a Kubernetes Secret.
+	// +optional
+	Auth *GitAuthConfig `json:"auth,omitempty"`
+}
+
+// GitAuthConfig defines authentication settings for private Git repositories.
+// Uses HTTP Basic authentication with username and password/token.
+// The password is stored in a Kubernetes Secret and mounted as a file
+// for the registry server to read.
+type GitAuthConfig struct {
+	// Username is the Git username for HTTP Basic authentication.
+	// For GitHub/GitLab token-based auth, this is typically the literal string "git"
+	// or the token itself depending on the provider.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Username string `json:"username"`
+
+	// PasswordSecretRef references a Kubernetes Secret containing the password or token
+	// for Git authentication. The secret value will be mounted as a file and its path
+	// passed to the registry server via the git.auth.passwordFile configuration.
+	//
+	// Example secret:
+	//   apiVersion: v1
+	//   kind: Secret
+	//   metadata:
+	//     name: git-credentials
+	//   stringData:
+	//     token: <github token>
+	//
+	// Then reference it as:
+	//   passwordSecretRef:
+	//     name: git-credentials
+	//     key: token
+	//
+	// +kubebuilder:validation:Required
+	PasswordSecretRef corev1.SecretKeySelector `json:"passwordSecretRef"`
 }
 
 // APISource defines API source configuration for ToolHive Registry APIs

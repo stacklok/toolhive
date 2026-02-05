@@ -47,6 +47,7 @@ type HTTPTransport struct {
 	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
+	prefixHandlers    map[string]http.Handler
 
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
@@ -99,6 +100,7 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
+	prefixHandlers map[string]http.Handler,
 	endpointPrefix string,
 	trustProxyHeaders bool,
 	middlewares ...types.NamedMiddleware,
@@ -123,6 +125,7 @@ func NewHTTPTransport(
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
+		prefixHandlers:    prefixHandlers,
 		endpointPrefix:    endpointPrefix,
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
@@ -254,7 +257,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			Scheme: remoteURL.Scheme,
 			Host:   remoteURL.Host,
 		}).String()
-		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
+		logger.Debugf("Setting up transparent proxy to forward from host port %d to remote URL %s",
 			t.proxyPort, targetURI)
 	} else {
 		if t.containerName == "" {
@@ -266,7 +269,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			return fmt.Errorf("target URI not set for HTTP transport")
 		}
 		targetURI = t.targetURI
-		logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+		logger.Debugf("Setting up transparent proxy to forward from host port %d to %s",
 			t.proxyPort, targetURI)
 	}
 
@@ -298,6 +301,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
+		t.prefixHandlers,
 		enableHealthCheck,
 		isRemote,
 		string(t.transportType),
@@ -310,7 +314,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
+	logger.Debugf("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
 
 	// For remote MCP servers, we don't need container monitoring
 	if isRemote {
@@ -385,9 +389,9 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 
 		// Check if container was removed (not just exited) using typed error
 		if errors.Is(err, docker.ErrContainerRemoved) {
-			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+			logger.Debugf("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
 		} else {
-			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+			logger.Debugf("Container %s exited. Will attempt automatic restart.", t.containerName)
 		}
 
 		// Stop the transport when the container exits/removed
@@ -412,7 +416,10 @@ func (t *HTTPTransport) ShouldRestart() bool {
 }
 
 // IsRunning checks if the transport is currently running.
-func (t *HTTPTransport) IsRunning(_ context.Context) (bool, error) {
+// It checks both the transport's shutdown channel and the proxy's running state.
+// This ensures that if the proxy stops (e.g., due to health check failure),
+// the transport is also reported as not running, allowing the runner to exit cleanly.
+func (t *HTTPTransport) IsRunning() (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -421,6 +428,17 @@ func (t *HTTPTransport) IsRunning(_ context.Context) (bool, error) {
 	case <-t.shutdownCh:
 		return false, nil
 	default:
-		return true, nil
+		// Also check if the proxy is still running (handles health check failure case)
+		// When health checks fail, the proxy stops itself but the transport's
+		// shutdownCh may not be closed, causing the runner to hang as a zombie process.
+		proxyRunning := true
+		var err error
+		if t.proxy != nil {
+			proxyRunning, err = t.proxy.IsRunning()
+			if err != nil {
+				return false, err
+			}
+		}
+		return proxyRunning, nil
 	}
 }

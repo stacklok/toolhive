@@ -21,7 +21,7 @@ The platform is designed to be extensible, allowing developers to build on top o
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        Client[MCP Client<br/>Claude Desktop, IDEs, etc.]
+        Client[MCP Client<br/>Claude Desktop, IDEs, VS Code Server, etc.]
     end
 
     subgraph "ToolHive Platform"
@@ -110,17 +110,17 @@ A specialized binary used by the Kubernetes operator. Located in `cmd/thv-proxyr
 Deployment (proxy-runner) -> StatefulSet (MCP server)
 ```
 
-### 4. Registry API Server (thv-registry-api)
+### 4. Registry Server (thv-registry-api)
 
-A registry API server for hosting custom MCP server registries. Located in `cmd/thv-registry-api/`.
+For enterprise registry deployments, [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) implements the MCP Registry API.
 
-> **Note**: The registry API server is being moved out of the main ToolHive repository into its own project.
+**Key capabilities:**
+- Multiple registry types (Git, API, File, Managed, Kubernetes)
+- PostgreSQL backend for scalable storage
+- Enterprise OAuth 2.0/OIDC authentication
+- Background synchronization with automatic updates
 
-**Key responsibilities:**
-- Serve MCP server registry data
-- Support ToolHive's registry format
-- Future support for upstream MCP registry format
-- Provide file-based and Kubernetes ConfigMap storage
+ToolHive CLI connects to registry servers via `thv config set-registry <url>`. For details, see [Registry System](06-registry-system.md).
 
 ### 5. Virtual MCP Server (vmcp)
 

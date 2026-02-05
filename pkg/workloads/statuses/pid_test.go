@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package process
+package statuses
 
 import (
 	"fmt"
@@ -43,7 +43,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 			"Failed to write PID file to old location")
 
 		// Read PID file (should find it in old location)
-		pid, err := ReadPIDFile(containerName)
+		pid, err := readPIDFile(containerName)
 		require.NoError(t, err, "Failed to read PID file from old location")
 		assert.Equal(t, testPID, pid, "PID mismatch")
 	})
@@ -81,7 +81,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 			"Failed to write PID file to new location")
 
 		// Read PID file (should prefer new location)
-		pid, err := ReadPIDFile(containerName)
+		pid, err := readPIDFile(containerName)
 		require.NoError(t, err, "Failed to read PID file")
 		assert.Equal(t, newPID, pid, "Should read from new location when both exist")
 	})
@@ -120,7 +120,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 			"Failed to write PID file to new location")
 
 		// Remove PID files
-		require.NoError(t, RemovePIDFile(containerName), "Failed to remove PID files")
+		require.NoError(t, removePIDFile(containerName), "Failed to remove PID files")
 
 		// Verify both locations are cleaned up
 		_, err = os.Stat(oldPath)
@@ -155,7 +155,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		require.NoError(t, os.WriteFile(oldPath, []byte(fmt.Sprintf("%d", testPID)), 0600),
 			"Failed to write PID file to old location")
 
-		err := RemovePIDFile(containerName)
+		err := removePIDFile(containerName)
 		assert.NoError(t, err, "Should handle removing only old file")
 
 		_, err = os.Stat(oldPath)
@@ -217,11 +217,11 @@ func TestPIDFileOperations(t *testing.T) {
 
 		// Clean up to ensure file doesn't exist
 		t.Cleanup(func() {
-			require.NoError(t, RemovePIDFile(containerName))
+			require.NoError(t, removePIDFile(containerName))
 		})
 
 		// Try to read non-existent file
-		_, err := ReadPIDFile(containerName)
+		_, err := readPIDFile(containerName)
 		assert.Error(t, err, "Should error when reading non-existent PID file")
 	})
 
@@ -233,12 +233,12 @@ func TestPIDFileOperations(t *testing.T) {
 
 		// Clean up to ensure file doesn't exist
 		t.Cleanup(func() {
-			require.NoError(t, RemovePIDFile(containerName))
+			require.NoError(t, removePIDFile(containerName))
 		})
 
 		// Removing non-existent file may or may not error (implementation dependent)
 		// Just ensure it doesn't panic
-		_ = RemovePIDFile(containerName)
+		_ = removePIDFile(containerName)
 	})
 }
 

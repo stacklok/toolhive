@@ -13,11 +13,11 @@ import (
 	"regexp"
 	"strings"
 
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
-var ErrInvalidWorkloadName = thverrors.WithCode(
+var ErrInvalidWorkloadName = httperr.WithCode(
 	errors.New("invalid workload name"),
 	http.StatusBadRequest,
 )

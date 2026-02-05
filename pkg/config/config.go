@@ -16,7 +16,7 @@ import (
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"

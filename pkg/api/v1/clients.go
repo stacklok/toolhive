@@ -12,11 +12,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -86,7 +86,7 @@ func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) error
 func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) error {
 	var newClient createClientRequest
 	if err := json.NewDecoder(r.Body).Decode(&newClient); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
@@ -105,7 +105,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) er
 
 	if err := c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("failed to register client: %w", err),
 				http.StatusBadRequest,
 			)
@@ -133,7 +133,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) er
 func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) error {
 	clientName := chi.URLParam(r, "name")
 	if clientName == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("client name is required"),
 			http.StatusBadRequest,
 		)
@@ -141,7 +141,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 
 	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("failed to unregister client: %w", err),
 				http.StatusBadRequest,
 			)
@@ -167,7 +167,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.Request) error {
 	clientName := chi.URLParam(r, "name")
 	if clientName == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("client name is required"),
 			http.StatusBadRequest,
 		)
@@ -175,7 +175,7 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 
 	groupName := chi.URLParam(r, "group")
 	if groupName == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("group name is required"),
 			http.StatusBadRequest,
 		)
@@ -184,7 +184,7 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 	// Remove client from the specific group
 	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName}); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("failed to unregister client from group: %w", err),
 				http.StatusBadRequest,
 			)
@@ -210,14 +210,14 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if len(req.Names) == 0 {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("at least one client name is required"),
 			http.StatusBadRequest,
 		)
@@ -230,7 +230,7 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 
 	if err := c.performClientRegistration(r.Context(), clients, req.Groups); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("failed to register clients: %w", err),
 				http.StatusBadRequest,
 			)
@@ -263,14 +263,14 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Request) error {
 	var req bulkClientRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid request body: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if len(req.Names) == 0 {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("at least one client name is required"),
 			http.StatusBadRequest,
 		)
@@ -284,7 +284,7 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 
 	if err := c.removeClient(r.Context(), clients, req.Groups); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("failed to unregister clients: %w", err),
 				http.StatusBadRequest,
 			)
@@ -324,7 +324,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	}
 
 	if len(groupNames) > 0 {
-		logger.Infof("Filtering workloads to groups: %v", groupNames)
+		logger.Debugf("Filtering workloads to groups: %v", groupNames)
 
 		filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 		if err != nil {
@@ -354,7 +354,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 			err := config.UpdateConfig(func(c *config.Config) {
 				for _, registeredClient := range c.Clients.RegisteredClients {
 					if registeredClient == string(clientToRegister.Name) {
-						logger.Infof("Client %s is already registered, skipping...", clientToRegister.Name)
+						logger.Debugf("Client %s is already registered, skipping...", clientToRegister.Name)
 						return
 					}
 				}
@@ -365,7 +365,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 			}
 
-			logger.Infof("Successfully registered client: %s\n", clientToRegister.Name)
+			logger.Debugf("Successfully registered client: %s\n", clientToRegister.Name)
 		}
 
 		err = c.clientManager.RegisterClients(clients, runningWorkloads)
@@ -464,7 +464,7 @@ func (c *ClientRoutes) removeClientGlobally(
 				if registeredClient == string(clientToRemove.Name) {
 					// Remove client from slice
 					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
+					logger.Debugf("Successfully unregistered client: %s\n", clientToRemove.Name)
 					return
 				}
 			}

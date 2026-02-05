@@ -167,6 +167,147 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				assert.True(t, hasVolume(volumes, "registry-data-source-default"))
 			},
 		},
+		{
+			name: "git auth secrets mounted correctly",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "private-git",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							Git: &mcpv1alpha1.GitSource{
+								Repository: "https://github.com/example/private-repo.git",
+								Branch:     "main",
+								Path:       "registry.json",
+								Auth: &mcpv1alpha1.GitAuthConfig{
+									Username: "git",
+									PasswordSecretRef: corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "git-credentials",
+										},
+										Key: "token",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			setupMocks: func() {
+			},
+			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				require.NotNil(t, deployment)
+
+				// Verify git auth volume exists
+				volumes := deployment.Spec.Template.Spec.Volumes
+				assert.True(t, hasVolume(volumes, "git-auth-git-credentials"), "git auth volume should exist")
+
+				// Find the git auth volume and verify its configuration
+				var gitAuthVolume *corev1.Volume
+				for i := range volumes {
+					if volumes[i].Name == "git-auth-git-credentials" {
+						gitAuthVolume = &volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, gitAuthVolume)
+				require.NotNil(t, gitAuthVolume.Secret)
+				assert.Equal(t, "git-credentials", gitAuthVolume.Secret.SecretName)
+				require.Len(t, gitAuthVolume.Secret.Items, 1)
+				assert.Equal(t, "token", gitAuthVolume.Secret.Items[0].Key)
+
+				// Verify container has git auth volume mount
+				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+				container := deployment.Spec.Template.Spec.Containers[0]
+
+				var gitAuthMount *corev1.VolumeMount
+				for i := range container.VolumeMounts {
+					if container.VolumeMounts[i].Name == "git-auth-git-credentials" {
+						gitAuthMount = &container.VolumeMounts[i]
+						break
+					}
+				}
+				require.NotNil(t, gitAuthMount, "git auth volume mount should exist")
+				assert.Equal(t, "/secrets/git-credentials", gitAuthMount.MountPath)
+				assert.True(t, gitAuthMount.ReadOnly)
+			},
+		},
+		{
+			name: "multiple git auth secrets mounted for multiple registries",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "private-git-1",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							Git: &mcpv1alpha1.GitSource{
+								Repository: "https://github.com/example/private-repo-1.git",
+								Branch:     "main",
+								Path:       "registry.json",
+								Auth: &mcpv1alpha1.GitAuthConfig{
+									Username: "git",
+									PasswordSecretRef: corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "git-credentials-1",
+										},
+										Key: "token",
+									},
+								},
+							},
+						},
+						{
+							Name:   "private-git-2",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							Git: &mcpv1alpha1.GitSource{
+								Repository: "https://github.com/example/private-repo-2.git",
+								Branch:     "main",
+								Path:       "registry.json",
+								Auth: &mcpv1alpha1.GitAuthConfig{
+									Username: "git",
+									PasswordSecretRef: corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "git-credentials-2",
+										},
+										Key: "password",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			setupMocks: func() {
+			},
+			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				require.NotNil(t, deployment)
+
+				// Verify both git auth volumes exist
+				volumes := deployment.Spec.Template.Spec.Volumes
+				assert.True(t, hasVolume(volumes, "git-auth-git-credentials-1"), "git auth volume 1 should exist")
+				assert.True(t, hasVolume(volumes, "git-auth-git-credentials-2"), "git auth volume 2 should exist")
+
+				// Verify container has both git auth volume mounts
+				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+				container := deployment.Spec.Template.Spec.Containers[0]
+
+				mountPaths := make(map[string]bool)
+				for _, mount := range container.VolumeMounts {
+					mountPaths[mount.MountPath] = true
+				}
+				assert.True(t, mountPaths["/secrets/git-credentials-1"], "git auth mount 1 should exist")
+				assert.True(t, mountPaths["/secrets/git-credentials-2"], "git auth mount 2 should exist")
+			},
+		},
 	}
 
 	for _, tt := range tests {

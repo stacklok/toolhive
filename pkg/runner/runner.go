@@ -36,6 +36,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
+// ErrContainerExitedRestartNeeded is returned when a container exits and needs to be restarted
+var ErrContainerExitedRestartNeeded = errors.New("container exited, restart needed")
+
 // Runner is responsible for running an MCP server with the provided configuration
 type Runner struct {
 	// Config is the configuration for the runner
@@ -559,7 +562,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Workload still exists - signal restart needed
 		logger.Debugf("MCP server %s stopped, restart needed", r.Config.ContainerName)
-		return fmt.Errorf("container exited, restart needed")
+		return ErrContainerExitedRestartNeeded
 	}
 
 	return nil

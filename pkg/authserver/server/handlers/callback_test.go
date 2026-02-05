@@ -94,7 +94,7 @@ func TestCallbackHandler_ExchangeCodeFailure(t *testing.T) {
 
 	// Configure upstream to fail code exchange
 	mockUpstream.exchangeErr = assert.AnError
-	mockUpstream.exchangeTokens = nil
+	mockUpstream.exchangeResult = nil
 
 	// Store a pending authorization
 	internalState := testInternalState
@@ -203,8 +203,9 @@ func TestCallbackHandler_IdentityResolutionFailure(t *testing.T) {
 	t.Parallel()
 	handler, storState, mockUpstream := handlerTestSetup(t)
 
-	// Configure upstream to fail identity resolution
-	mockUpstream.resolveIdentityErr = assert.AnError
+	// Configure upstream to fail identity resolution (now part of ExchangeCodeForIdentity)
+	mockUpstream.exchangeErr = assert.AnError
+	mockUpstream.exchangeResult = nil
 
 	// Store a pending authorization
 	internalState := testInternalState
@@ -225,11 +226,11 @@ func TestCallbackHandler_IdentityResolutionFailure(t *testing.T) {
 
 	handler.CallbackHandler(rec, req)
 
-	// Should fail because identity resolution failed
+	// Should fail because exchange/identity resolution failed
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
 	assert.Contains(t, location, "error=")
-	assert.Contains(t, location, "failed+to+verify+user+identity")
+	assert.Contains(t, location, "failed+to+exchange+authorization+code")
 }
 
 func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {

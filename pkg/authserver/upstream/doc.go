@@ -23,21 +23,19 @@
 //
 //   - Type: Returns the provider type identifier
 //   - AuthorizationURL: Build redirect URL for user authentication
-//   - ExchangeCode: Exchange authorization code for tokens
+//   - ExchangeCodeForIdentity: Exchange authorization code and resolve identity atomically
 //   - RefreshTokens: Refresh expired tokens (with subject validation for OIDC)
-//   - ResolveIdentity: Resolve user identity from tokens
-//   - FetchUserInfo: Fetch user claims
 //
 // # Type Hierarchy
 //
 //	OAuth2Provider (interface)
-//	    ├── BaseOAuth2Provider (concrete - pure OAuth 2.0, uses UserInfo for identity)
+//	    ├── BaseOAuth2Provider (concrete - pure OAuth 2.0, uses userinfo endpoint for identity)
 //	    └── OIDCProviderImpl (concrete - OIDC with discovery, validates ID tokens for identity)
 //
 // # Value Objects
 //
 //   - Tokens: Token response from upstream IDP
-//   - UserInfo: User claims from UserInfo endpoint
+//   - Identity: Combined tokens + subject from code exchange
 //   - OAuth2Config: Configuration for OAuth 2.0 providers
 //
 // # Usage
@@ -64,11 +62,10 @@
 //	// Build authorization URL
 //	authURL, err := provider.AuthorizationURL(state, pkceChallenge)
 //
-//	// After callback, exchange code for tokens
-//	tokens, err := provider.ExchangeCode(ctx, code, pkceVerifier)
-//
-//	// Resolve user identity
-//	subject, err := provider.ResolveIdentity(ctx, tokens, "")
+//	// After callback, exchange code and resolve identity atomically
+//	result, err := provider.ExchangeCodeForIdentity(ctx, code, pkceVerifier, nonce)
+//	// result.Tokens contains the upstream tokens
+//	// result.Subject contains the canonical user identifier
 //
 // # Extensibility
 //
@@ -76,15 +73,11 @@
 //
 // # UserInfo Extensibility
 //
-// The package supports flexible UserInfo fetching through the OAuth2Provider
-// interface's FetchUserInfo method and UserInfoConfig. This enables:
+// The package supports flexible userinfo fetching through UserInfoConfig.
+// This enables:
 //
 //   - Custom field mapping for non-standard provider responses
 //   - Additional headers for provider-specific requirements
-//
-// All OAuth2Provider implementations support FetchUserInfo directly:
-//
-//	userInfo, err := provider.FetchUserInfo(ctx, accessToken)
 //
 // For custom provider configuration, use UserInfoConfig:
 //

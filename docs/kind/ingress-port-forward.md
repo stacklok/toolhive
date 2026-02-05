@@ -73,3 +73,13 @@ The following is a Cursor MCP server entry:
 	}
 }
 ```
+
+For VS Code Server, add this to your MCP configuration:
+
+```json
+{
+	"mcpServers": {
+		"fetch": {"url": "http://localhost:8080/sse"}
+	}
+}
+```

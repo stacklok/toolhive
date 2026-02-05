@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -47,6 +49,15 @@ func (c *OIDCConfig) Validate() error {
 // the expected nonce from the authorization request.
 var ErrNonceMismatch = errors.New("ID token nonce does not match expected value")
 
+// ErrSubjectMismatch is returned when the sub claim in a refreshed ID token does not
+// match the expected subject from the original token response.
+// Per OIDC Core Section 12.2, the sub claim MUST be identical.
+var ErrSubjectMismatch = errors.New("ID token subject does not match expected value")
+
+// ErrNonceMissing is returned when the ID token does not contain a nonce claim
+// but one was expected (because a nonce was sent in the authorization request).
+var ErrNonceMissing = errors.New("ID token missing nonce claim when nonce was expected")
+
 // OIDCProviderImpl implements OAuth2Provider for OIDC-compliant identity providers.
 // It embeds BaseOAuth2Provider to share common OAuth 2.0 logic while adding
 // OIDC-specific functionality like discovery and ID token validation.
@@ -67,6 +78,13 @@ func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
 	}
+}
+
+// WithNonce adds an OIDC nonce parameter to the authorization request.
+// The nonce is used to associate a client session with an ID Token and to
+// prevent replay attacks. See OIDC Core Section 3.1.2.1.
+func WithNonce(nonce string) AuthorizationOption {
+	return WithAdditionalParams(map[string]string{"nonce": nonce})
 }
 
 // WithForceConsentScreen configures the provider to always request the consent screen
@@ -154,6 +172,13 @@ func NewOIDCProvider(
 		scopes = []string{"openid", "profile", "email"}
 	}
 
+	// Validate that openid scope is present for OIDC provider.
+	// Per OIDC Core, openid scope is mandatory for ID tokens. Without it, the IDP
+	// won't return an ID token, but OIDCProviderImpl requires one for identity resolution.
+	if !slices.Contains(scopes, "openid") {
+		return nil, errors.New("openid scope is required for OIDC provider; use BaseOAuth2Provider for pure OAuth 2.0 flows")
+	}
+
 	// Now create OAuth2Config from discovered endpoints + OIDC config.
 	// This allows the embedded BaseOAuth2Provider to use the discovered endpoints
 	// for token requests while preserving the original OIDC config.
@@ -219,18 +244,38 @@ func (p *OIDCProviderImpl) ResolveIdentity(ctx context.Context, tokens *Tokens, 
 		return "", fmt.Errorf("%w: ID token required for OIDC provider", ErrIdentityResolutionFailed)
 	}
 
-	claims, err := p.validateIDToken(ctx, tokens.IDToken, nonce)
+	validatedToken, err := p.validateIDToken(ctx, tokens.IDToken, nonce)
 	if err != nil {
-		return "", fmt.Errorf("%w: ID token validation failed: %v", ErrIdentityResolutionFailed, err)
+		logger.Debugw("ID token validation failed", "error", err)
+		return "", fmt.Errorf("%w: ID token validation failed", ErrIdentityResolutionFailed)
 	}
-	return claims.Subject, nil
+	return validatedToken.Subject, nil
 }
 
 // validateIDToken validates an ID token and returns the parsed token.
-// TODO: Implement full validation using p.verifier in a follow-up PR.
-func (*OIDCProviderImpl) validateIDToken(_ context.Context, _, _ string) (*oidc.IDToken, error) {
-	// Stub - full implementation in follow-up PR
-	return nil, errors.New("ID token validation not yet implemented")
+func (p *OIDCProviderImpl) validateIDToken(ctx context.Context, idToken, nonce string) (*oidc.IDToken, error) {
+	if p.verifier == nil {
+		return nil, errors.New("ID token verifier not initialized")
+	}
+
+	token, err := p.verifier.Verify(ctx, idToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify ID token: %w", err)
+	}
+
+	// Validate nonce if expected (was sent in authorization request).
+	// This ensures that when a nonce is provided, the token MUST contain it
+	// and it MUST match, preventing replay attacks.
+	if nonce != "" {
+		if token.Nonce == "" {
+			return nil, ErrNonceMissing
+		}
+		if token.Nonce != nonce {
+			return nil, ErrNonceMismatch
+		}
+	}
+
+	return token, nil
 }
 
 // supportsPKCE checks if the provider advertises S256 PKCE support.
@@ -239,6 +284,140 @@ func (p *OIDCProviderImpl) supportsPKCE() bool {
 		return false
 	}
 	return p.endpoints.SupportsPKCE()
+}
+
+// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
+// This overrides the base implementation to add OIDC-specific parameters (nonce, prompt)
+// and use discovered endpoints.
+func (p *OIDCProviderImpl) AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error) {
+	if p.endpoints == nil {
+		return "", errors.New("OIDC endpoints not discovered")
+	}
+
+	// Apply authorization options to extract nonce for logging
+	authOpts := &authorizationOptions{}
+	for _, opt := range opts {
+		opt(authOpts)
+	}
+
+	// Extract nonce from additionalParams if present
+	nonce := ""
+	if authOpts.additionalParams != nil {
+		nonce = authOpts.additionalParams["nonce"]
+	}
+
+	logger.Debugw("building authorization URL",
+		"authorization_endpoint", p.endpoints.AuthorizationEndpoint,
+		"has_pkce", codeChallenge != "",
+		"has_nonce", nonce != "",
+	)
+
+	// PKCE: Per RFC 7636 Section 5, clients SHOULD send PKCE parameters to all
+	// servers regardless of whether they advertise support. Servers that don't
+	// support PKCE will simply ignore the parameters.
+	if codeChallenge != "" && !p.supportsPKCE() {
+		logger.Debugw("sending PKCE to provider that does not advertise S256 support (per RFC 7636 Section 5)")
+	}
+
+	// Merge caller's opts with OIDC-specific params
+	allOpts := append(opts, WithAdditionalParams(p.buildOIDCParams())) //nolint:gocritic // intentionally appending single element
+
+	// Use the base implementation which uses oauth2Config (scopes already configured)
+	return p.buildAuthorizationURL(state, codeChallenge, allOpts...)
+}
+
+// buildOIDCParams builds the OIDC-specific authorization parameters.
+func (p *OIDCProviderImpl) buildOIDCParams() map[string]string {
+	params := make(map[string]string)
+
+	// Add prompt=consent if configured to force the consent screen
+	if p.forceConsentScreen {
+		params["prompt"] = "consent"
+	}
+
+	return params
+}
+
+// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
+// This overrides the base implementation to add OIDC-specific ID token validation.
+func (p *OIDCProviderImpl) ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
+	if p.endpoints == nil {
+		return nil, errors.New("OIDC endpoints not discovered")
+	}
+
+	logger.Debugw("exchanging authorization code for tokens",
+		"token_endpoint", p.endpoints.TokenEndpoint,
+		"has_pkce_verifier", codeVerifier != "",
+	)
+
+	// Use base provider's implementation for token exchange
+	tokens, err := p.BaseOAuth2Provider.ExchangeCode(ctx, code, codeVerifier)
+	if err != nil {
+		return nil, err
+	}
+
+	// OIDC-specific: Validate ID token structure (signature, issuer, audience, expiry).
+	// Per Section 3.1.3.3, ID token MUST be present in OIDC token responses.
+	// Note: Nonce validation (Section 3.1.3.7) is deferred to ResolveIdentity,
+	// which has access to the expected nonce from the authorization request.
+	// Callers MUST call ResolveIdentity after ExchangeCode for full OIDC compliance.
+	if tokens.IDToken == "" {
+		return nil, errors.New("ID token required for OIDC provider")
+	}
+	if _, err := p.validateIDToken(ctx, tokens.IDToken, ""); err != nil {
+		return nil, fmt.Errorf("ID token validation failed: %w", err)
+	}
+
+	logger.Debugw("authorization code exchange successful",
+		"has_refresh_token", tokens.RefreshToken != "",
+		"has_id_token", tokens.IDToken != "",
+		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return tokens, nil
+}
+
+// RefreshTokens refreshes the upstream IDP tokens.
+// This overrides the base implementation to add OIDC-specific ID token validation.
+func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error) {
+	if p.endpoints == nil {
+		return nil, errors.New("OIDC endpoints not discovered")
+	}
+
+	logger.Debugw("refreshing tokens",
+		"token_endpoint", p.endpoints.TokenEndpoint,
+	)
+
+	// Use base provider's implementation for token refresh
+	tokens, err := p.BaseOAuth2Provider.RefreshTokens(ctx, refreshToken, expectedSubject)
+	if err != nil {
+		return nil, err
+	}
+
+	// OIDC-specific: Validate ID token if present.
+	// Per OIDC Core Section 12.2, refresh responses MAY include a new ID token
+	// (unlike ExchangeCode where it's required per Section 3.1.3.3).
+	// Nonce validation is intentionally omitted: Section 12.2 states that
+	// refreshed ID tokens SHOULD NOT contain a nonce claim, and no new
+	// authorization request exists to provide an expected nonce value.
+	// Full nonce validation occurs in ResolveIdentity during the initial auth flow.
+	if tokens.IDToken != "" && p.verifier != nil {
+		token, err := p.validateIDToken(ctx, tokens.IDToken, "")
+		if err != nil {
+			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
+		// OIDC Core Section 12.2: sub claim MUST be identical to the original.
+		if expectedSubject != "" && token.Subject != expectedSubject {
+			return nil, ErrSubjectMismatch
+		}
+	}
+
+	logger.Debugw("token refresh successful",
+		"has_new_refresh_token", tokens.RefreshToken != "",
+		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	)
+
+	return tokens, nil
 }
 
 // validateDiscoveryDocument validates the OIDC discovery document.

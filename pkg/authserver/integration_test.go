@@ -206,6 +206,281 @@ func makeTokenRequest(t *testing.T, serverURL string, params url.Values) *http.R
 }
 
 // ============================================================================
+// Token Endpoint Error Handling Tests
+// ============================================================================
+
+// TestIntegration_TokenEndpoint_Errors tests various error conditions at the token endpoint.
+func TestIntegration_TokenEndpoint_Errors(t *testing.T) {
+	t.Parallel()
+
+	// Setup: Start mock IDP and auth server once for all subtests
+	m := startMockOIDC(t)
+
+	cases := []struct {
+		name           string
+		useRealCode    bool                     // whether to get a real auth code via full flow
+		modifyParams   func(url.Values, string) // modify params; receives auth code if useRealCode=true
+		expectedStatus int                      // expected HTTP status code per RFC 6749 Section 5.2
+		expectedErrors []string                 // acceptable OAuth error codes (any match passes)
+	}{
+		{
+			name:           "invalid_pkce_verifier",
+			useRealCode:    true,
+			expectedStatus: http.StatusBadRequest,
+			expectedErrors: []string{"invalid_grant"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Set("code_verifier", "wrong-verifier-that-wont-match-the-challenge")
+			},
+		},
+		{
+			name:           "invalid_code",
+			useRealCode:    false,
+			expectedStatus: http.StatusBadRequest,
+			expectedErrors: []string{"invalid_grant"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Set("code", "non-existent-auth-code")
+			},
+		},
+		{
+			name:           "missing_redirect_uri",
+			useRealCode:    true,
+			expectedStatus: http.StatusBadRequest,
+			expectedErrors: []string{"invalid_grant"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Del("redirect_uri")
+			},
+		},
+		{
+			name:           "wrong_client_id",
+			useRealCode:    true,
+			expectedStatus: http.StatusUnauthorized,
+			expectedErrors: []string{"invalid_client"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Set("client_id", "wrong-client-id")
+			},
+		},
+		{
+			name:           "missing_pkce_verifier",
+			useRealCode:    true,
+			expectedStatus: http.StatusBadRequest,
+			// fosite may return either depending on validation order
+			expectedErrors: []string{"invalid_request", "invalid_grant"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Del("code_verifier")
+			},
+		},
+		{
+			name:           "mismatched_redirect_uri",
+			useRealCode:    true,
+			expectedStatus: http.StatusBadRequest,
+			expectedErrors: []string{"invalid_grant"},
+			modifyParams: func(p url.Values, _ string) {
+				p.Set("redirect_uri", "http://evil.example.com/callback")
+			},
+		},
+		{
+			name:           "grant_type_confusion",
+			useRealCode:    true,
+			expectedStatus: http.StatusBadRequest,
+			expectedErrors: []string{"invalid_grant", "invalid_request"},
+			modifyParams: func(p url.Values, _ string) {
+				// Try to use an auth code as a refresh token
+				code := p.Get("code")
+				p.Set("grant_type", "refresh_token")
+				p.Set("refresh_token", code)
+				p.Del("code")
+				p.Del("code_verifier")
+				p.Del("redirect_uri")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Queue a mock user for the upstream IDP. Note: since subtests run in parallel,
+			// the FIFO pop order is nondeterministic across subtests. This is acceptable
+			// because these tests only verify error responses — user identity is irrelevant.
+			m.QueueUser(&mockoidc.MockUser{
+				Subject: "mock-user-" + tc.name,
+				Email:   tc.name + "@example.com",
+			})
+
+			ts := setupTestServerWithMockOIDC(t, m)
+			verifier := servercrypto.GeneratePKCEVerifier()
+			challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+			var authCode string
+			if tc.useRealCode {
+				authCode, _ = completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+					ClientID:     testClientID,
+					RedirectURI:  testRedirectURI,
+					State:        "test-state",
+					Challenge:    challenge,
+					Scope:        "openid profile",
+					ResponseType: "code",
+				})
+			} else {
+				authCode = "placeholder"
+			}
+
+			params := url.Values{
+				"grant_type":    {"authorization_code"},
+				"code":          {authCode},
+				"client_id":     {testClientID},
+				"redirect_uri":  {testRedirectURI},
+				"code_verifier": {verifier},
+			}
+			tc.modifyParams(params, authCode)
+
+			resp := makeTokenRequest(t, ts.Server.URL, params)
+			defer resp.Body.Close()
+
+			require.Equal(t, tc.expectedStatus, resp.StatusCode, "unexpected HTTP status code")
+
+			errResp := parseTokenResponse(t, resp)
+			errorField, ok := errResp["error"].(string)
+			require.True(t, ok, "error should be a string")
+			assert.Contains(t, tc.expectedErrors, errorField,
+				"expected one of %v, got %q", tc.expectedErrors, errorField)
+		})
+	}
+}
+
+// TestIntegration_TokenEndpoint_ReplayAttack tests that auth codes cannot be reused.
+func TestIntegration_TokenEndpoint_ReplayAttack(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Get a real auth code via the full flow
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "replay-test-state",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	// First request - should succeed
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	}
+
+	resp1 := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode, "first request should succeed")
+	resp1Body := parseTokenResponse(t, resp1)
+	assert.NotEmpty(t, resp1Body["access_token"], "first request should return access token")
+
+	// Second request with same code - should fail (replay attack)
+	resp2 := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp2.Body.Close()
+
+	require.GreaterOrEqual(t, resp2.StatusCode, 400, "second request should fail (replay attack)")
+
+	errResp := parseTokenResponse(t, resp2)
+	errorField, ok := errResp["error"].(string)
+	assert.True(t, ok, "error should be a string")
+	assert.NotEmpty(t, errorField, "error should not be empty")
+}
+
+// TestIntegration_TokenEndpoint_RefreshToken tests that refresh tokens can be used to get new access tokens.
+func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Get auth code with offline_access scope to receive a refresh token
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "refresh-test-state",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	// Exchange code for tokens
+	params := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	}
+
+	resp := makeTokenRequest(t, ts.Server.URL, params)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "initial token request should succeed")
+	tokenResp := parseTokenResponse(t, resp)
+
+	// Verify refresh token was returned
+	refreshToken, hasRefresh := tokenResp["refresh_token"].(string)
+	require.True(t, hasRefresh, "response should contain refresh_token field")
+	require.NotEmpty(t, refreshToken, "refresh_token should not be empty")
+
+	// Use the refresh token to get a new access token
+	refreshParams := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testClientID},
+	}
+
+	refreshResp := makeTokenRequest(t, ts.Server.URL, refreshParams)
+	defer refreshResp.Body.Close()
+	require.Equal(t, http.StatusOK, refreshResp.StatusCode, "refresh token request should succeed")
+	refreshTokenResp := parseTokenResponse(t, refreshResp)
+
+	// Verify we got a new access token
+	newAccessToken, ok := refreshTokenResp["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	assert.NotEmpty(t, newAccessToken, "new access_token should not be empty")
+
+	tokenType, ok := refreshTokenResp["token_type"].(string)
+	require.True(t, ok, "token_type should be a string")
+	assert.Equal(t, "bearer", strings.ToLower(tokenType))
+
+	// Verify expires_in is present and reasonable (RFC 6749 Section 5.1)
+	expiresIn, ok := refreshTokenResp["expires_in"].(float64)
+	require.True(t, ok, "expires_in should be a number")
+	assert.Greater(t, expiresIn, float64(0), "expires_in should be positive")
+
+	// Verify new access token is different from original
+	originalAccessToken := tokenResp["access_token"].(string)
+	assert.NotEqual(t, originalAccessToken, newAccessToken, "refreshed access token should differ from original")
+
+	// Verify refresh token rotation: a new refresh token should be issued
+	newRefreshToken, ok := refreshTokenResp["refresh_token"].(string)
+	require.True(t, ok, "refresh response should contain a new refresh_token")
+	assert.NotEqual(t, refreshToken, newRefreshToken, "token rotation must issue new refresh token")
+
+	// Verify old refresh token is rejected after rotation
+	replayParams := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testClientID},
+	}
+	replayResp := makeTokenRequest(t, ts.Server.URL, replayParams)
+	defer replayResp.Body.Close()
+	require.GreaterOrEqual(t, replayResp.StatusCode, 400, "old refresh token must be rejected after rotation")
+}
+
+// ============================================================================
 // Full PKCE Flow Integration Tests with Mock Upstream IDP (using mockoidc)
 // ============================================================================
 

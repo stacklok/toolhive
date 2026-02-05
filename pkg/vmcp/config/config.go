@@ -483,12 +483,16 @@ type CircuitBreakerConfig struct {
 	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// FailureThreshold is the number of failures before opening the circuit.
+	// Must be >= 1.
 	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
 	// +optional
 	FailureThreshold int `json:"failureThreshold,omitempty" yaml:"failureThreshold,omitempty"`
 
 	// Timeout is the duration to wait before attempting to close the circuit.
+	// Must be >= 1s to prevent thrashing.
 	// +kubebuilder:default="60s"
+	// +kubebuilder:validation:XValidation:rule="self == '' || duration(self) >= duration('1s')",message="timeout must be >= 1s"
 	// +optional
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }

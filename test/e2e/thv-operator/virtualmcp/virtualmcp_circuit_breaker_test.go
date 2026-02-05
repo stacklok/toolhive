@@ -10,11 +10,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -234,7 +233,9 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			// Check that backends are initially healthy or ready
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				// Initial status can be ready, degraded, or unknown (during startup)
-				if backend.Status != "ready" && backend.Status != "degraded" && backend.Status != "unknown" {
+				if backend.Status != mcpv1alpha1.BackendStatusReady &&
+					backend.Status != mcpv1alpha1.BackendStatusDegraded &&
+					backend.Status != mcpv1alpha1.BackendStatusUnknown {
 					return fmt.Errorf("backend %s has unexpected status: %s (message: %s)",
 						backend.Name, backend.Status, backend.Message)
 				}
@@ -245,43 +246,42 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 	})
 
 	It("should open circuit breaker when backend fails repeatedly", func() {
-		By("Scaling down unstable backend to simulate failure")
-		// Scale down both Deployment (proxy) and StatefulSet (MCP server)
-		Eventually(func() error {
-			// Scale down deployment
-			deployment := &appsv1.Deployment{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, deployment); err != nil {
-				return fmt.Errorf("failed to get deployment: %w", err)
-			}
-			deployment.Spec.Replicas = ptr.To(int32(0))
-			if err := k8sClient.Update(ctx, deployment); err != nil {
-				return fmt.Errorf("failed to scale deployment: %w", err)
-			}
+		By("Making unstable backend unavailable by changing to non-existent image")
+		backend := &mcpv1alpha1.MCPServer{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      backend2Name,
+			Namespace: testNamespace,
+		}, backend)).To(Succeed())
 
-			// Scale down statefulset
-			statefulset := &appsv1.StatefulSet{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, statefulset); err != nil {
-				return fmt.Errorf("failed to get statefulset: %w", err)
-			}
-			statefulset.Spec.Replicas = ptr.To(int32(0))
-			if err := k8sClient.Update(ctx, statefulset); err != nil {
-				return fmt.Errorf("failed to scale statefulset: %w", err)
-			}
+		backend.Spec.Image = "nonexistent/image:doesnotexist"
+		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
 
-			return nil
-		}, timeout, pollingInterval).Should(Succeed())
+		By("Waiting for backend pods to enter ImagePullBackOff state")
+		// Wait for pod to be in ImagePullBackOff or similar error state (same pattern as status reporting test)
+		Eventually(func() bool {
+			podList := &corev1.PodList{}
+			err := k8sClient.List(ctx, podList, client.InNamespace(testNamespace),
+				client.MatchingLabels{"app": backend2Name})
+			if err != nil || len(podList.Items) == 0 {
+				return false
+			}
+			pod := &podList.Items[0]
+			// Check if pod is not ready (container waiting due to image pull failure)
+			for _, containerStatus := range pod.Status.ContainerStatuses {
+				if containerStatus.State.Waiting != nil &&
+					(containerStatus.State.Waiting.Reason == "ImagePullBackOff" ||
+						containerStatus.State.Waiting.Reason == "ErrImagePull") {
+					return true
+				}
+			}
+			return false
+		}, timeout, pollingInterval).Should(BeTrue())
 
 		By("Waiting for circuit breaker to detect failures and open")
 		// Circuit breaker needs cbFailureThreshold consecutive failures
-		// Timeline: T=0 (check 1 starts), T=3s (fails), T=5s (check 2), T=8s (fails), T=10s (check 3), T=13s (fails)
-		// Circuit opens after 3rd failure at ~13s. Add buffer for pod termination and processing.
-		// Calculation: (threshold-1) × interval + threshold × timeout = 2×5s + 3×3s = 19s + 5s buffer = 24s
+		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
+		// Circuit opens after 3rd failure at ~12s. Add buffer for pod termination and processing.
+		// Calculation: (threshold-1) × interval + threshold × timeout = 2×5s + 3×2s = 10s + 6s = 16s + 5s buffer = 21s
 		failureDetectionTime := time.Duration(cbFailureThreshold-1)*cbHealthCheckInterval +
 			time.Duration(cbFailureThreshold)*cbHealthCheckTimeout
 		time.Sleep(failureDetectionTime + 5*time.Second)
@@ -309,20 +309,22 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				return fmt.Errorf("unstable backend not found in discovered backends")
 			}
 
-			// Check backend is unhealthy
-			if unstableBackend.Status != "unhealthy" && unstableBackend.Status != "unavailable" {
-				return fmt.Errorf("backend status is %s (expected unhealthy/unavailable), message: %s",
+			// Check backend is unavailable (unhealthy backends map to "unavailable" in CRD)
+			if unstableBackend.Status != mcpv1alpha1.BackendStatusUnavailable {
+				return fmt.Errorf("backend status is %s (expected unavailable), message: %s",
 					unstableBackend.Status, unstableBackend.Message)
 			}
 
-			// Check for circuit breaker message (circuit may not have opened yet depending on timing)
-			if strings.Contains(strings.ToLower(unstableBackend.Message), "circuit") {
-				GinkgoWriter.Printf("✓ Circuit breaker message detected: %s\n", unstableBackend.Message)
-			} else {
-				GinkgoWriter.Printf("⚠ Backend unhealthy but no circuit message yet: %s\n", unstableBackend.Message)
+			// Check circuit breaker state (should be "open" once threshold is reached)
+			if unstableBackend.CircuitBreakerState == "open" {
+				GinkgoWriter.Printf("✓ Circuit breaker opened (failures: %d, state: %s)\n",
+					unstableBackend.ConsecutiveFailures, unstableBackend.CircuitBreakerState)
+				return nil
 			}
 
-			return nil
+			// Circuit not open yet - may still be accumulating failures
+			return fmt.Errorf("circuit breaker not open yet (state: %s, failures: %d, threshold: %d)",
+				unstableBackend.CircuitBreakerState, unstableBackend.ConsecutiveFailures, cbFailureThreshold)
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Verifying VirtualMCPServer phase reflects backend failure")
@@ -335,8 +337,9 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				return err
 			}
 
-			// Phase should be Degraded (some backends unhealthy) or Failed (all unhealthy)
-			if vmcpServer.Status.Phase != "Degraded" && vmcpServer.Status.Phase != "Failed" {
+			// Phase should be Degraded (some backends unavailable) or Failed (all unavailable)
+			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseDegraded &&
+				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseFailed {
 				return fmt.Errorf("expected phase Degraded or Failed, got: %s", vmcpServer.Status.Phase)
 			}
 
@@ -345,50 +348,57 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 	})
 
 	It("should close circuit breaker when backend recovers", func() {
-		By("Restoring unstable backend by scaling up")
-		// Scale up both Deployment (proxy) and StatefulSet (MCP server)
+		By("Restoring unstable backend by fixing the image")
+		backend := &mcpv1alpha1.MCPServer{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      backend2Name,
+			Namespace: testNamespace,
+		}, backend)).To(Succeed())
+
+		backend.Spec.Image = images.YardstickServerImage
+		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
+
+		By("Deleting stuck pods to force recreation with fixed image")
+		// Pods in ImagePullBackOff don't automatically recreate when image is fixed
+		// Delete them to force the statefulset to create new pods with the correct image
+		podList := &corev1.PodList{}
+		Expect(k8sClient.List(ctx, podList,
+			client.InNamespace(testNamespace),
+			client.MatchingLabels{"app": backend2Name},
+		)).To(Succeed())
+		for i := range podList.Items {
+			if podList.Items[i].Status.Phase == corev1.PodPending {
+				GinkgoWriter.Printf("Deleting stuck pod %s in phase %s\n",
+					podList.Items[i].Name, podList.Items[i].Status.Phase)
+				Expect(k8sClient.Delete(ctx, &podList.Items[i])).To(Succeed())
+			}
+		}
+
+		By("Waiting for backend to become running again")
+		// Note: Recovery may take longer than initial setup because pods in ImagePullBackOff
+		// need to be recreated. Status reporting test intentionally skips recovery testing
+		// for this reason, but circuit breaker recovery is a key feature we must verify.
 		Eventually(func() error {
-			// Scale up deployment
-			deployment := &appsv1.Deployment{}
+			server := &mcpv1alpha1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend2Name,
 				Namespace: testNamespace,
-			}, deployment); err != nil {
-				return fmt.Errorf("failed to get deployment: %w", err)
+			}, server); err != nil {
+				return err
 			}
-			deployment.Spec.Replicas = ptr.To(int32(1))
-			if err := k8sClient.Update(ctx, deployment); err != nil {
-				return fmt.Errorf("failed to scale deployment: %w", err)
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
-
-			// Scale up statefulset
-			statefulset := &appsv1.StatefulSet{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, statefulset); err != nil {
-				return fmt.Errorf("failed to get statefulset: %w", err)
-			}
-			statefulset.Spec.Replicas = ptr.To(int32(1))
-			if err := k8sClient.Update(ctx, statefulset); err != nil {
-				return fmt.Errorf("failed to scale statefulset: %w", err)
-			}
-
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Waiting for backend pod to be ready")
-		time.Sleep(15 * time.Second) // Allow pod to start
-
-		By("Waiting for circuit breaker timeout and recovery")
-		// Circuit breaker timeout: cbTimeout (20s)
-		// Plus health check interval: cbHealthCheckInterval (5s)
-		// Plus buffer for processing: 15s
-		// Total: ~40s
-		recoveryTime := cbTimeout + cbHealthCheckInterval + 15*time.Second
-		time.Sleep(recoveryTime)
-
-		By("Verifying backend status improves after recovery")
+		By("Waiting for circuit breaker to transition to half-open and recover")
+		// Circuit breaker will:
+		// 1. Stay open for cbTimeout (20s)
+		// 2. Transition to half-open
+		// 3. Perform health check
+		// 4. Close if healthy
+		// We poll instead of sleeping to complete as soon as recovery happens
 		Eventually(func() error {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
@@ -412,13 +422,20 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Backend should be ready or degraded (recovering)
-			if unstableBackend.Status != "ready" && unstableBackend.Status != "degraded" {
-				return fmt.Errorf("backend status is still %s (expected ready/degraded after recovery), message: %s",
-					unstableBackend.Status, unstableBackend.Message)
+			if unstableBackend.Status != mcpv1alpha1.BackendStatusReady &&
+				unstableBackend.Status != mcpv1alpha1.BackendStatusDegraded {
+				return fmt.Errorf("backend status is still %s (expected ready/degraded after recovery), message: %s, circuitState: %s",
+					unstableBackend.Status, unstableBackend.Message, unstableBackend.CircuitBreakerState)
 			}
 
-			GinkgoWriter.Printf("✓ Backend recovered: status=%s, message=%s\n",
-				unstableBackend.Status, unstableBackend.Message)
+			// Circuit breaker should be closed after successful recovery
+			if unstableBackend.CircuitBreakerState != "closed" {
+				return fmt.Errorf("circuit breaker not closed yet (state: %s, status: %s)",
+					unstableBackend.CircuitBreakerState, unstableBackend.Status)
+			}
+
+			GinkgoWriter.Printf("✓ Backend recovered: status=%s, circuitState=%s, failures=%d\n",
+				unstableBackend.Status, unstableBackend.CircuitBreakerState, unstableBackend.ConsecutiveFailures)
 
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
@@ -434,7 +451,8 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Phase should return to Ready or Degraded (if still recovering)
-			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady && vmcpServer.Status.Phase != "Degraded" {
+			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady &&
+				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseDegraded {
 				return fmt.Errorf("expected phase Ready or Degraded after recovery, got: %s (message: %s)",
 					vmcpServer.Status.Phase, vmcpServer.Status.Message)
 			}
@@ -462,8 +480,10 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 		Expect(stableBackend).NotTo(BeNil(), "stable backend should be discovered")
 
-		// Stable backend should be ready or degraded (never unhealthy)
-		Expect(stableBackend.Status).To(Or(Equal("ready"), Equal("degraded")),
+		// Stable backend should be ready or degraded (never unavailable)
+		Expect(stableBackend.Status).To(Or(
+			Equal(mcpv1alpha1.BackendStatusReady),
+			Equal(mcpv1alpha1.BackendStatusDegraded)),
 			"stable backend should remain healthy, got status=%s message=%s",
 			stableBackend.Status, stableBackend.Message)
 

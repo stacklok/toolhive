@@ -549,7 +549,8 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 				logger.Warnf("Failed to close log file: %v", err)
 			}
 		}()
-		logger.Debugf("Logging to: %s", logFilePath)
+		// Keeping this log at INFO level until https://github.com/stacklok/toolhive/issues/3377 is fixed
+		logger.Infof("Logging to: %s", logFilePath)
 	}
 
 	// Use the start command to start the detached process

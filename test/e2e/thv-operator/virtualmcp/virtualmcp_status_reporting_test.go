@@ -153,7 +153,7 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 			// Check Ready condition
 			readyCondition := false
 			for _, cond := range server.Status.Conditions {
-				if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+				if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerReady && cond.Status == metav1.ConditionTrue {
 					readyCondition = true
 					break
 				}

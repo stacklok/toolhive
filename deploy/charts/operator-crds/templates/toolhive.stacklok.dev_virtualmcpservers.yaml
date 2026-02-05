@@ -635,6 +635,13 @@ spec:
                               health checks.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
+                          healthCheckTimeout:
+                            default: 10s
+                            description: |-
+                              HealthCheckTimeout is the maximum duration for a single health check operation.
+                              Should be less than HealthCheckInterval to prevent checks from queuing up.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
                           partialFailureMode:
                             default: fail
                             description: |-

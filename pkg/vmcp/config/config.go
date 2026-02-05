@@ -447,6 +447,12 @@ type FailureHandlingConfig struct {
 	// +optional
 	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty" yaml:"unhealthyThreshold,omitempty"`
 
+	// HealthCheckTimeout is the maximum duration for a single health check operation.
+	// Should be less than HealthCheckInterval to prevent checks from queuing up.
+	// +kubebuilder:default="10s"
+	// +optional
+	HealthCheckTimeout Duration `json:"healthCheckTimeout,omitempty" yaml:"healthCheckTimeout,omitempty"`
+
 	// StatusReportingInterval is the interval for reporting status updates to Kubernetes.
 	// This controls how often the vMCP runtime reports backend health and phase changes.
 	// Lower values provide faster status updates but increase API server load.

@@ -196,8 +196,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			}
 
 			// Only the composite tool should be exposed
-			Expect(len(tools.Tools)).To(Equal(1),
-				"Should expose exactly 1 tool (the composite), no backend tools")
+			Expect(tools.Tools).To(HaveLen(1), "Should expose exactly 1 tool (the composite), no backend tools")
 			Expect(tools.Tools[0].Name).To(Equal(compositeToolName))
 
 			// Verify NO backend tools are exposed
@@ -272,9 +271,10 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			// Find and verify Backend A config (ExcludeAll)
 			var backendAConfig, backendBConfig *vmcpconfig.WorkloadToolConfig
 			for _, toolConfig := range vmcpServer.Spec.Config.Aggregation.Tools {
-				if toolConfig.Workload == backendAName {
+				switch toolConfig.Workload {
+				case backendAName:
 					backendAConfig = toolConfig
-				} else if toolConfig.Workload == backendBName {
+				case backendBName:
 					backendBConfig = toolConfig
 				}
 			}

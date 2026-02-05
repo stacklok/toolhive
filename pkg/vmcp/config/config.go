@@ -308,12 +308,12 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-// - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//   advertised to MCP clients (visible in tools/list responses).
-// - ALL backend tools remain available in the internal routing table, allowing
-//   composite tools to call hidden backend tools.
-// - This enables curated experiences where raw backend tools are hidden from
-//   MCP clients but accessible through composite tool workflows.
+//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
+//     advertised to MCP clients (visible in tools/list responses).
+//   - ALL backend tools remain available in the internal routing table, allowing
+//     composite tools to call hidden backend tools.
+//   - This enables curated experiences where raw backend tools are hidden from
+//     MCP clients but accessible through composite tool workflows.
 //
 // +kubebuilder:object:generate=true
 // +gendoc

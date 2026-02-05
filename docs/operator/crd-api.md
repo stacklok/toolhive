@@ -125,7 +125,15 @@ _Appears in:_
 
 
 
-AggregationConfig defines tool aggregation and conflict resolution strategies.
+AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
+
+Tool Visibility vs Routing:
+- ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
+  advertised to MCP clients (visible in tools/list responses).
+- ALL backend tools remain available in the internal routing table, allowing
+  composite tools to call hidden backend tools.
+- This enables curated experiences where raw backend tools are hidden from
+  MCP clients but accessible through composite tool workflows.
 
 
 
@@ -137,7 +145,7 @@ _Appears in:_
 | `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
-| `excludeAllTools` _boolean_ | ExcludeAllTools excludes all tools from aggregation when true. |  | Optional: \{\} <br /> |
+| `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -598,9 +606,9 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `workload` _string_ | Workload is the name of the backend MCPServer workload. |  | Required: \{\} <br /> |
 | `toolConfigRef` _[vmcp.config.ToolConfigRef](#vmcpconfigtoolconfigref)_ | ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.<br />If specified, Filter and Overrides are ignored.<br />Only used when running in Kubernetes with the operator. |  | Optional: \{\} <br /> |
-| `filter` _string array_ | Filter is an inline list of tool names to allow (allow list).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
-| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
-| `excludeAll` _boolean_ | ExcludeAll excludes all tools from this workload when true. |  | Optional: \{\} <br /> |
+| `filter` _string array_ | Filter is an allow-list of tool names to advertise to MCP clients.<br />Tools NOT in this list are hidden from clients (not in tools/list response)<br />but remain available in the routing table for composite tools to use.<br />This enables selective exposure of backend tools while allowing composite<br />workflows to orchestrate all backend capabilities.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
+| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides for renaming and description changes.<br />Overrides are applied to tools before conflict resolution and affect both<br />advertising and routing (the overridden name is used everywhere).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
+| `excludeAll` _boolean_ | ExcludeAll hides all tools from this workload from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
 
 
 

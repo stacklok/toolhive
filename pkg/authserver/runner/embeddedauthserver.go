@@ -113,6 +113,14 @@ func (e *EmbeddedAuthServer) Close() error {
 	return e.closeErr
 }
 
+// IDPTokenStorage returns storage for upstream IDP tokens.
+// Returns nil if no upstream IDP is configured.
+// This is used by the upstream swap middleware to exchange ToolHive JWTs
+// for upstream IDP tokens.
+func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
+	return e.server.IDPTokenStorage()
+}
+
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
 // Returns a GeneratingProvider if config is nil or empty (development mode).
 func createKeyProvider(cfg *authserver.SigningKeyRunConfig) (keys.KeyProvider, error) {

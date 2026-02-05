@@ -105,7 +105,7 @@
     },
     "metadata": {
       "type": "object",
-      "description": "Popularity and activity metrics for the MCP server",
+      "description": "Popularity, activity metrics, and Kubernetes-specific metadata for the MCP server",
       "properties": {
         "stars": {
           "type": "number",
@@ -121,6 +121,35 @@
           "type": "string",
           "description": "Timestamp when the metadata was last updated, in RFC3339 format",
           "format": "date-time"
+        },
+        "kubernetes_kind": {
+          "type": "string",
+          "description": "Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)",
+          "examples": ["MCPServer", "VirtualMCPServer", "MCPRemoteProxy"]
+        },
+        "kubernetes_namespace": {
+          "type": "string",
+          "description": "Kubernetes namespace where the resource is deployed",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "kubernetes_name": {
+          "type": "string",
+          "description": "Kubernetes resource name",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "kubernetes_uid": {
+          "type": "string",
+          "description": "Kubernetes resource UID",
+          "format": "uuid"
+        },
+        "kubernetes_image": {
+          "type": "string",
+          "description": "Container image used by the Kubernetes workload (applicable to MCPServer)"
+        },
+        "kubernetes_transport": {
+          "type": "string",
+          "description": "Transport type configured for the Kubernetes workload (applicable to MCPServer)",
+          "enum": ["stdio", "sse", "streamable-http", "http"]
         }
       },
       "additionalProperties": false

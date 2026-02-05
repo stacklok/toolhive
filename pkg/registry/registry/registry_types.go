@@ -205,6 +205,19 @@ type Metadata struct {
 	Pulls int `json:"pulls" yaml:"pulls"`
 	// LastUpdated is the timestamp when the server was last updated, in RFC3339 format
 	LastUpdated string `json:"last_updated" yaml:"last_updated"`
+	// KubernetesKind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)
+	// This field is populated when the MCP server is running in a Kubernetes cluster
+	KubernetesKind string `json:"kubernetes_kind,omitempty" yaml:"kubernetes_kind,omitempty"`
+	// KubernetesNamespace is the Kubernetes namespace where the resource is deployed
+	KubernetesNamespace string `json:"kubernetes_namespace,omitempty" yaml:"kubernetes_namespace,omitempty"`
+	// KubernetesName is the Kubernetes resource name
+	KubernetesName string `json:"kubernetes_name,omitempty" yaml:"kubernetes_name,omitempty"`
+	// KubernetesUID is the Kubernetes resource UID
+	KubernetesUID string `json:"kubernetes_uid,omitempty" yaml:"kubernetes_uid,omitempty"`
+	// KubernetesImage is the container image used by the Kubernetes workload (applicable to MCPServer)
+	KubernetesImage string `json:"kubernetes_image,omitempty" yaml:"kubernetes_image,omitempty"`
+	// KubernetesTransport is the transport type configured for the Kubernetes workload (applicable to MCPServer)
+	KubernetesTransport string `json:"kubernetes_transport,omitempty" yaml:"kubernetes_transport,omitempty"`
 }
 
 // ParsedTime returns the LastUpdated field as a time.Time

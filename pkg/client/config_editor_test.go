@@ -984,3 +984,363 @@ func indexOf(s, substr string) int {
 	}
 	return -1
 }
+
+func TestTOMLMapConfigUpdaterUpsert(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	t.Run("AddNewMCPServerToEmptyTOML", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupEmptyTestTOMLConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		mcpServer := MCPServer{
+			Url: fmt.Sprintf("http://localhost:%s", uniqueId),
+		}
+
+		err := tmu.Upsert(testServerName, mcpServer)
+		if err != nil {
+			t.Fatalf("Failed to update TOML config: %v", err)
+		}
+
+		// Verify the TOML content
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		// Verify content contains expected nested table format
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "[mcp_servers."+testServerName+"]", "Should contain nested table syntax")
+		assert.Contains(t, contentStr, fmt.Sprintf("url = '%s'", mcpServer.Url), "Should contain URL")
+		// Should NOT contain array-of-tables format
+		assert.NotContains(t, contentStr, "[[mcp_servers]]", "Should NOT contain array-of-tables syntax")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("UpdateExistingServerInTOMLMap", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestTOMLMapConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Update the existing server
+		updatedServer := MCPServer{
+			Url: "http://localhost:9999/updated",
+		}
+
+		err := tmu.Upsert("existingServer", updatedServer)
+		if err != nil {
+			t.Fatalf("Failed to update TOML config: %v", err)
+		}
+
+		// Verify the TOML content was updated
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "url = 'http://localhost:9999/updated'", "Should contain updated URL")
+		// Ensure there's still only one server section
+		assert.Equal(t, 1, countOccurrences(contentStr, "[mcp_servers."), "Should have only one server entry")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("AddSecondServerToExistingTOMLMap", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestTOMLMapConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Add a new server
+		newServer := MCPServer{
+			Url: "http://localhost:8888/new",
+		}
+
+		err := tmu.Upsert("newServer", newServer)
+		if err != nil {
+			t.Fatalf("Failed to add new server to TOML config: %v", err)
+		}
+
+		// Verify both servers exist
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "[mcp_servers.existingServer]", "Should contain existing server")
+		assert.Contains(t, contentStr, "[mcp_servers.newServer]", "Should contain new server")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("PreserveOtherFieldsWhenUpserting", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, fmt.Sprintf("config-%s.toml", uniqueId))
+
+		// Create a TOML file with extra top-level fields
+		initialConfig := `# Codex config
+model = "gpt-4"
+
+[settings]
+debug = true
+
+[mcp_servers.existingServer]
+url = "http://localhost:8080"
+`
+		if err := os.WriteFile(configPath, []byte(initialConfig), 0600); err != nil {
+			t.Fatalf("Failed to write test TOML file: %v", err)
+		}
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Add a new server
+		newServer := MCPServer{
+			Url: "http://localhost:9090/new",
+		}
+
+		err := tmu.Upsert("newServer", newServer)
+		if err != nil {
+			t.Fatalf("Failed to add new server: %v", err)
+		}
+
+		// Verify other fields are preserved
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "model =", "Should preserve model field")
+		assert.Contains(t, contentStr, "[settings]", "Should preserve settings section")
+		assert.Contains(t, contentStr, "debug =", "Should preserve debug setting")
+		assert.Contains(t, contentStr, "[mcp_servers.newServer]", "Should contain new server")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("AddServerWithTransportType", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupEmptyTestTOMLConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		mcpServer := MCPServer{
+			Url:  "http://localhost:8080",
+			Type: "http",
+		}
+
+		err := tmu.Upsert(testServerName, mcpServer)
+		if err != nil {
+			t.Fatalf("Failed to update TOML config: %v", err)
+		}
+
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "transport = 'http'", "Should contain transport type")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+}
+
+func TestTOMLMapConfigUpdaterRemove(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	t.Run("RemoveExistingServerFromTOMLMap", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestTOMLMapConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		err := tmu.Remove("existingServer")
+		if err != nil {
+			t.Fatalf("Failed to remove server from TOML config: %v", err)
+		}
+
+		// Verify removal
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.NotContains(t, contentStr, "existingServer", "Should not contain removed server")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("RemoveNonExistentServerFromTOMLMap", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestTOMLMapConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Try to remove non-existent server
+		err := tmu.Remove("nonExistentServer")
+		if err != nil {
+			t.Fatalf("Should not error when removing non-existent server: %v", err)
+		}
+
+		// Verify existing server is still there
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read TOML file: %v", err)
+		}
+
+		contentStr := string(content)
+		assert.Contains(t, contentStr, "existingServer", "Existing server should still exist")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("RemoveFromEmptyTOMLMapFile", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupEmptyTestTOMLConfig(t, uniqueId)
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Try to remove from empty file
+		err := tmu.Remove("anyServer")
+		if err != nil {
+			t.Fatalf("Should not error when removing from empty file: %v", err)
+		}
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("RemoveFromNonExistentFile", func(t *testing.T) {
+		t.Parallel()
+
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "nonexistent.toml")
+
+		tmu := TOMLMapConfigUpdater{
+			Path:       configPath,
+			ServersKey: "mcp_servers",
+			URLField:   "url",
+		}
+
+		// Try to remove from non-existent file
+		err := tmu.Remove("anyServer")
+		if err != nil {
+			t.Fatalf("Should not error when file doesn't exist: %v", err)
+		}
+	})
+}
+
+// setupExistingTestTOMLMapConfig creates a temporary directory and a TOML config file with existing data
+// using the map-based format [section.servername]
+func setupExistingTestTOMLMapConfig(t *testing.T, testName string) (string, string) {
+	t.Helper()
+
+	tempDir, err := os.MkdirTemp("", "toolhive-toml-map-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, fmt.Sprintf("config-%s.toml", testName))
+
+	// Create a TOML config with existing server using nested table syntax
+	testConfig := fmt.Sprintf(`[mcp_servers.existingServer]
+url = "http://localhost:8080/existing-%s"
+`, testName)
+
+	if err := os.WriteFile(configPath, []byte(testConfig), 0600); err != nil {
+		t.Fatalf("Failed to write test TOML file: %v", err)
+	}
+
+	return tempDir, configPath
+}

@@ -105,6 +105,9 @@ const (
 type TOMLStorageType string
 
 const (
+	// TOMLStorageTypeMap represents servers stored as nested tables [section.servername].
+	// Example: [mcp_servers.myserver]
+	TOMLStorageTypeMap TOMLStorageType = "map"
 	// TOMLStorageTypeArray represents servers stored as array of tables [[section]].
 	// Example: [[mcp_servers]]
 	TOMLStorageTypeArray TOMLStorageType = "array"
@@ -893,12 +896,22 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 		serversKey := extractServersKeyFromConfig(clientCfg)
 		urlLabel := extractURLLabelFromConfig(clientCfg)
 
-		// Use array-of-tables format [[section]] (e.g., Mistral Vibe)
-		configUpdater = &TOMLConfigUpdater{
-			Path:            path,
-			ServersKey:      serversKey,
-			IdentifierField: "name", // TOML configs use "name" as the identifier
-			URLField:        urlLabel,
+		// Choose TOML updater based on storage type
+		if clientCfg.TOMLStorageType == TOMLStorageTypeMap {
+			// Use map-based format [section.servername] (e.g., Codex)
+			configUpdater = &TOMLMapConfigUpdater{
+				Path:       path,
+				ServersKey: serversKey,
+				URLField:   urlLabel,
+			}
+		} else {
+			// Default to array-of-tables format [[section]] (e.g., Mistral Vibe)
+			configUpdater = &TOMLConfigUpdater{
+				Path:            path,
+				ServersKey:      serversKey,
+				IdentifierField: "name", // TOML configs use "name" as the identifier
+				URLField:        urlLabel,
+			}
 		}
 	case JSON:
 		configUpdater = &JSONConfigUpdater{

@@ -812,6 +812,12 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 
 // getKeyFromJWKS gets the key from the JWKS.
 func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (interface{}, error) {
+	// Defensive check: JWKS URL must be set before calling this function.
+	// This invariant is normally guaranteed by ValidateToken calling ensureOIDCDiscovered first.
+	if v.jwksURL == "" {
+		return nil, ErrMissingJWKSURL
+	}
+
 	// Ensure JWKS is registered before attempting to use it
 	if err := v.ensureJWKSRegistered(ctx); err != nil {
 		return nil, fmt.Errorf("JWKS registration failed: %w", err)

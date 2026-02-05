@@ -6,6 +6,9 @@ package server_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -372,6 +375,140 @@ func TestNew_WithAuditConfig(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, s)
+		})
+	}
+}
+
+// startTestServer creates and starts a vMCP server for testing, returning
+// the server instance and its base URL. The server is automatically stopped
+// when the test completes.
+func startTestServer(t *testing.T) string {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+	// Allow discovery middleware to call List/Discover for requests that pass Accept validation.
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	srv, err := server.New(
+		context.Background(),
+		&server.Config{Host: "127.0.0.1", Port: 0},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Start(ctx)
+	}()
+
+	select {
+	case <-srv.Ready():
+	case err := <-done:
+		cancel()
+		t.Fatalf("server failed to start: %v", err)
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatalf("server did not become ready")
+	}
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Log("warning: server did not stop within timeout")
+		}
+	})
+
+	return fmt.Sprintf("http://%s", srv.Address())
+}
+
+func TestAcceptHeaderValidation(t *testing.T) {
+	t.Parallel()
+
+	baseURL := startTestServer(t)
+	mcpURL := baseURL + "/mcp"
+
+	tests := []struct {
+		name           string
+		method         string
+		acceptHeader   string
+		expectRejected bool
+	}{
+		{
+			name:           "GET without Accept header returns 406",
+			method:         http.MethodGet,
+			acceptHeader:   "",
+			expectRejected: true,
+		},
+		{
+			name:           "GET with Accept application/json returns 406",
+			method:         http.MethodGet,
+			acceptHeader:   "application/json",
+			expectRejected: true,
+		},
+		{
+			name:           "GET with Accept text/event-stream passes through",
+			method:         http.MethodGet,
+			acceptHeader:   "text/event-stream",
+			expectRejected: false,
+		},
+		{
+			name:           "GET with multiple Accept types including text/event-stream passes through",
+			method:         http.MethodGet,
+			acceptHeader:   "text/event-stream, application/json",
+			expectRejected: false,
+		},
+		{
+			name:           "POST without Accept header passes through",
+			method:         http.MethodPost,
+			acceptHeader:   "",
+			expectRejected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequestWithContext(context.Background(), tt.method, mcpURL, nil)
+			require.NoError(t, err)
+
+			if tt.acceptHeader != "" {
+				req.Header.Set("Accept", tt.acceptHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			if tt.expectRejected {
+				assert.Equal(t, http.StatusNotAcceptable, resp.StatusCode)
+				assert.Contains(t, string(body), "Not Acceptable")
+				assert.Contains(t, string(body), "text/event-stream")
+				assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+			} else {
+				assert.NotEqual(t, http.StatusNotAcceptable, resp.StatusCode,
+					"expected request to pass Accept validation but got 406")
+			}
 		})
 	}
 }

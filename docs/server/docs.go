@@ -403,7 +403,8 @@ const docTemplate = `{
                     "kiro",
                     "antigravity",
                     "zed",
-                    "gemini-cli"
+                    "gemini-cli",
+                    "vscode-server"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -428,7 +429,8 @@ const docTemplate = `{
                     "Kiro",
                     "Antigravity",
                     "Zed",
-                    "GeminiCli"
+                    "GeminiCli",
+                    "VSCodeServer"
                 ]
             },
             "client.MCPClientStatus": {

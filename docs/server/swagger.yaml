@@ -410,6 +410,7 @@ components:
       - antigravity
       - zed
       - gemini-cli
+      - vscode-server
       type: string
       x-enum-varnames:
       - RooCode
@@ -434,6 +435,7 @@ components:
       - Antigravity
       - Zed
       - GeminiCli
+      - VSCodeServer
     client.MCPClientStatus:
       properties:
         client_type:

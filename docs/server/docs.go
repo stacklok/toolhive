@@ -3765,7 +3765,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/delete": {
             "post": {
-                "description": "Delete multiple workloads by name or by group",
+                "description": "Delete multiple workloads by name or by group asynchronously.\nReturns 202 Accepted immediately. Deletion happens in the background.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -3795,7 +3795,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Accepted"
+                        "description": "Accepted - deletion started"
                     },
                     "400": {
                         "content": {
@@ -3918,7 +3918,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}": {
             "delete": {
-                "description": "Delete a workload",
+                "description": "Delete a workload asynchronously. Returns 202 Accepted immediately.\nThe deletion happens in the background. Poll the workload list to confirm deletion.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3939,7 +3939,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Accepted"
+                        "description": "Accepted - deletion started"
                     },
                     "400": {
                         "content": {

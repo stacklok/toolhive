@@ -199,7 +199,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) error
 	}
 
 	// Get the with-workloads flag from query parameter
-	withWorkloads := r.URL.Query().Get("with-workloads") == "true"
+	withWorkloads := r.URL.Query().Get("with-workloads") == "true" //nolint:goconst // Query parameter check
 
 	// Get all workloads and filter for the group
 	allWorkloads, err := s.workloadManager.ListWorkloads(ctx, true) // listAll=true to include stopped workloads

@@ -732,7 +732,7 @@ func (d *DefaultManager) deleteRemoteWorkload(ctx context.Context, name string, 
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
-		logger.Warnf("Failed to delete workload status for %s: %v", name, err)
+		return fmt.Errorf("failed to delete workload status for %s: %v", name, err)
 	}
 
 	logger.Debugf("Remote workload %s removed", name)
@@ -787,7 +787,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
-		logger.Warnf("Failed to delete workload status for %s: %v", name, err)
+		return fmt.Errorf("failed to delete workload status for %s: %v", name, err)
 	}
 
 	return nil
@@ -854,7 +854,7 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) {
 		logger.Debugf("Proxy process stopped")
 	}
 
-	// Remove old PID from
+	// Remove the PID of the terminated process
 	if err := d.statuses.ResetWorkloadPID(ctx, name); err != nil {
 		logger.Warnf("Failed to reset workload %s PID: %v", name, err)
 	}

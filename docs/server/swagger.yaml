@@ -2919,7 +2919,9 @@ paths:
       - workloads
   /api/v1beta/workloads/{name}:
     delete:
-      description: Delete a workload
+      description: |-
+        Delete a workload asynchronously. Returns 202 Accepted immediately.
+        The deletion happens in the background. Poll the workload list to confirm deletion.
       parameters:
       - description: Workload name
         in: path
@@ -2933,7 +2935,7 @@ paths:
             application/json:
               schema:
                 type: string
-          description: Accepted
+          description: Accepted - deletion started
         "400":
           content:
             application/json:
@@ -3201,7 +3203,9 @@ paths:
       - workloads
   /api/v1beta/workloads/delete:
     post:
-      description: Delete multiple workloads by name or by group
+      description: |-
+        Delete multiple workloads by name or by group asynchronously.
+        Returns 202 Accepted immediately. Deletion happens in the background.
       requestBody:
         content:
           application/json:
@@ -3219,7 +3223,7 @@ paths:
             application/json:
               schema:
                 type: string
-          description: Accepted
+          description: Accepted - deletion started
         "400":
           content:
             application/json:

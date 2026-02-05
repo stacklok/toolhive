@@ -32,7 +32,7 @@ var _ = Describe("Clients API Validation", Label("api", "clients", "validation",
 	Describe("Invalid client type validation", func() {
 		It("should return 400 Bad Request for unsupported client type", func() {
 			workloadName := e2e.GenerateUniqueServerName("validation-workload")
-			defer deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 
 			By("Creating a workload in the default group")
 			workloadReq := map[string]interface{}{
@@ -86,7 +86,7 @@ var _ = Describe("Clients API Validation", Label("api", "clients", "validation",
 		It("should return 400 Bad Request for bulk registration with invalid client type", func() {
 			workloadName := e2e.GenerateUniqueServerName("bulk-validation-workload")
 			groupName := fmt.Sprintf("bulk-validation-group-%d", time.Now().UnixNano())
-			defer deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 			defer deleteGroup(apiServer, groupName)
 
 			By("Creating a test group")

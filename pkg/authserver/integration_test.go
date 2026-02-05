@@ -213,9 +213,6 @@ func makeTokenRequest(t *testing.T, serverURL string, params url.Values) *http.R
 func TestIntegration_TokenEndpoint_Errors(t *testing.T) {
 	t.Parallel()
 
-	// Setup: Start mock IDP and auth server once for all subtests
-	m := startMockOIDC(t)
-
 	cases := []struct {
 		name           string
 		useRealCode    bool                     // whether to get a real auth code via full flow
@@ -299,9 +296,10 @@ func TestIntegration_TokenEndpoint_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Queue a mock user for the upstream IDP. Note: since subtests run in parallel,
-			// the FIFO pop order is nondeterministic across subtests. This is acceptable
-			// because these tests only verify error responses — user identity is irrelevant.
+			// Create a separate mock OIDC instance for each parallel subtest to avoid race conditions
+			m := startMockOIDC(t)
+
+			// Queue a mock user for this subtest's isolated upstream IDP
 			m.QueueUser(&mockoidc.MockUser{
 				Subject: "mock-user-" + tc.name,
 				Email:   tc.name + "@example.com",

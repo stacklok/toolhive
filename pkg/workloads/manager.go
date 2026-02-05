@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -23,6 +22,7 @@ import (
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -291,12 +291,8 @@ func (d *DefaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 func (d *DefaultManager) StopWorkloads(ctx context.Context, names []string) (CompletionFunc, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {
-		if err := types.ValidateWorkloadName(name); err != nil {
+		if err := fileutils.ValidateWorkloadNameForPath(name); err != nil {
 			return nil, fmt.Errorf("invalid workload name '%s': %w", name, err)
-		}
-		// Ensure workload name does not contain path traversal or separators
-		if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
-			return nil, fmt.Errorf("invalid workload name '%s': contains forbidden characters", name)
 		}
 	}
 
@@ -647,6 +643,11 @@ func (d *DefaultManager) GetLogs(ctx context.Context, workloadName string, follo
 // The lines parameter specifies the maximum number of lines to return from the end of the logs.
 // If lines is 0, all logs are returned.
 func (*DefaultManager) GetProxyLogs(_ context.Context, workloadName string, lines int) (string, error) {
+	// Validate workload name to prevent path traversal attacks
+	if err := fileutils.ValidateWorkloadNameForPath(workloadName); err != nil {
+		return "", fmt.Errorf("invalid workload name '%s': %w", workloadName, err)
+	}
+
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {

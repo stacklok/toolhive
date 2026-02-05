@@ -363,7 +363,7 @@ func TestBuildStatus_PhaseLogic(t *testing.T) {
 			t.Parallel()
 
 			// Create status tracker and populate with test states
-			tracker := newStatusTracker(1)
+			tracker := newStatusTracker(1, nil)
 			var backends []vmcp.Backend
 
 			for backendID, status := range tt.backendStates {
@@ -413,7 +413,7 @@ func TestBuildStatus_PendingPhase(t *testing.T) {
 	t.Parallel()
 
 	// Create tracker with no health data (simulating startup before first check)
-	tracker := newStatusTracker(1)
+	tracker := newStatusTracker(1, nil)
 
 	// Configure 2 backends but don't record any health data
 	backends := []vmcp.Backend{

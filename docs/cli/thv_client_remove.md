@@ -37,6 +37,7 @@ Valid clients:
   - trae: Trae IDE
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
+  - vscode-server: VS Code Server (remote development)
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs
   - zed: Zed editor

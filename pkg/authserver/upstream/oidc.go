@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -52,6 +53,10 @@ var ErrNonceMismatch = errors.New("ID token nonce does not match expected value"
 // match the expected subject from the original token response.
 // Per OIDC Core Section 12.2, the sub claim MUST be identical.
 var ErrSubjectMismatch = errors.New("ID token subject does not match expected value")
+
+// ErrNonceMissing is returned when the ID token does not contain a nonce claim
+// but one was expected (because a nonce was sent in the authorization request).
+var ErrNonceMissing = errors.New("ID token missing nonce claim when nonce was expected")
 
 // OIDCProviderImpl implements OAuth2Provider for OIDC-compliant identity providers.
 // It embeds BaseOAuth2Provider to share common OAuth 2.0 logic while adding
@@ -167,6 +172,13 @@ func NewOIDCProvider(
 		scopes = []string{"openid", "profile", "email"}
 	}
 
+	// Validate that openid scope is present for OIDC provider.
+	// Per OIDC Core, openid scope is mandatory for ID tokens. Without it, the IDP
+	// won't return an ID token, but OIDCProviderImpl requires one for identity resolution.
+	if !slices.Contains(scopes, "openid") {
+		return nil, errors.New("openid scope is required for OIDC provider; use BaseOAuth2Provider for pure OAuth 2.0 flows")
+	}
+
 	// Now create OAuth2Config from discovered endpoints + OIDC config.
 	// This allows the embedded BaseOAuth2Provider to use the discovered endpoints
 	// for token requests while preserving the original OIDC config.
@@ -256,7 +268,7 @@ func (p *OIDCProviderImpl) validateIDToken(ctx context.Context, idToken, nonce s
 	// and it MUST match, preventing replay attacks.
 	if nonce != "" {
 		if token.Nonce == "" {
-			return nil, errors.New("ID token missing nonce claim when nonce was expected")
+			return nil, ErrNonceMissing
 		}
 		if token.Nonce != nonce {
 			return nil, ErrNonceMismatch

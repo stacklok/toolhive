@@ -373,6 +373,28 @@ func TestNewOIDCProvider(t *testing.T) {
 		require.NotNil(t, provider)
 		// Force consent screen is tested in commit 2 with AuthorizationURL tests
 	})
+
+	t.Run("scopes without openid returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+				Scopes:       []string{"profile", "email"}, // missing openid
+			},
+			Issuer: mock.issuer,
+		}
+
+		ctx := context.Background()
+		_, err := NewOIDCProvider(ctx, config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "openid scope is required")
+	})
 }
 
 func TestValidateDiscoveryDocument(t *testing.T) {
@@ -516,6 +538,11 @@ func TestOIDCProviderImpl_ResolveIdentity(t *testing.T) {
 		_, err := provider.ResolveIdentity(ctx, tokens, "expected-nonce")
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+
+		// Also verify the underlying error is ErrNonceMissing via direct validation
+		_, validationErr := provider.validateIDToken(ctx, idToken, "expected-nonce")
+		require.Error(t, validationErr)
+		require.ErrorIs(t, validationErr, ErrNonceMissing)
 	})
 
 	// Error cases table

@@ -77,6 +77,8 @@ const (
 	Zed MCPClient = "zed"
 	// GeminiCli represents the Google Gemini CLI.
 	GeminiCli MCPClient = "gemini-cli"
+	// VSCodeServer represents Microsoft's VS Code Server (remote development).
+	VSCodeServer MCPClient = "vscode-server"
 )
 
 // Extension is extension of the client config file.
@@ -647,6 +649,27 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStdio:          "httpUrl",
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "httpUrl",
+		},
+	},
+	{
+		ClientType:   VSCodeServer,
+		Description:  "Microsoft's VS Code Server (remote development)",
+		SettingsFile: "mcp.json",
+		RelPath: []string{
+			".vscode-server", "data", "User",
+		},
+		MCPServersPathPrefix: "/servers",
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "http",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
 		},
 	},
 }

@@ -1,6 +1,37 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// config_editor.go provides ConfigUpdater implementations for editing MCP client
+// configuration files in JSON, YAML, and TOML formats.
+//
+// # Error Handling
+//
+// All ConfigUpdater methods (Upsert/Remove) return errors to their callers rather
+// than handling them internally. This design allows callers to decide the appropriate
+// action based on context:
+//
+//   - CLI commands (e.g., "thv client register"): Errors propagate up to Cobra's
+//     RunE function, which prints the error to stderr and exits with code 1.
+//     This is the correct behavior for explicit user commands.
+//
+//   - Background operations (e.g., RemoveServerFromClients during workload cleanup):
+//     Callers log errors as warnings and continue processing other clients.
+//     This allows partial success when some clients fail.
+//
+//   - Migrations: Errors are logged as warnings and the migration continues,
+//     allowing best-effort migration of client configurations.
+//
+// Write failures are logged at WARN level (not ERROR) because:
+//  1. The error is also returned to the caller who decides the severity
+//  2. Many callers (RemoveServerFromClients, migrations) treat these as non-fatal
+//  3. This avoids misleading ERROR logs for expected failure scenarios
+//
+// # File Locking
+//
+// All operations use file-based locking via withFileLock() to ensure safe concurrent
+// access. Each config file has a corresponding ".lock" file that is acquired before
+// any read-modify-write operation.
+
 package client
 
 import (
@@ -22,8 +53,17 @@ import (
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
+// All methods return errors rather than handling them internally, allowing callers to
+// determine the appropriate response (fatal error, warning, or ignore) based on context.
+// See the package-level documentation for details on error handling patterns.
 type ConfigUpdater interface {
+	// Upsert inserts or updates an MCP server configuration.
+	// Returns an error if the operation fails (file read/write, parsing, marshaling).
 	Upsert(serverName string, data MCPServer) error
+
+	// Remove removes an MCP server configuration.
+	// Returns nil if the server doesn't exist (idempotent).
+	// Returns an error only for actual failures (file read/write, parsing).
 	Remove(serverName string) error
 }
 
@@ -36,268 +76,11 @@ type MCPServer struct {
 	Type      string `json:"type,omitempty"`
 }
 
-// JSONConfigUpdater is a ConfigUpdater that is responsible for updating
-// JSON config files.
-type JSONConfigUpdater struct {
-	Path                 string
-	MCPServersPathPrefix string
-}
+// --- Shared helper functions ---
 
-// Upsert inserts or updates an MCP server in the MCP client config file
-func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	// Create a lock file
-	lockPath := jcu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	content, err := os.ReadFile(jcu.Path)
-	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
-	}
-
-	if len(content) == 0 {
-		// If the file is empty, we need to initialize it with an empty JSON object
-		content = []byte("{}")
-	}
-
-	content = ensurePathExists(content, jcu.MCPServersPathPrefix)
-
-	v, _ := hujson.Parse(content)
-
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		logger.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
-	}
-
-	patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
-	err = v.Patch([]byte(patch))
-	if err != nil {
-		logger.Errorf("Failed to patch file: %v", err)
-	}
-
-	formatted, _ := hujson.Format(v.Pack())
-	if err != nil {
-		logger.Errorf("Failed to format the patched file: %v", err)
-	}
-
-	// Write back to the file atomically
-	if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
-	}
-
-	logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
-
-	return nil
-}
-
-// Remove removes an MCP server from the MCP client config file
-func (jcu *JSONConfigUpdater) Remove(serverName string) error {
-	// Create a lock file
-	lockPath := jcu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	content, err := os.ReadFile(jcu.Path)
-	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
-	}
-
-	if len(content) == 0 {
-		// If the file is empty, there is nothing to remove.
-		return nil
-	}
-
-	v, _ := hujson.Parse(content)
-
-	// Check if the server exists by attempting the patch and handling the error gracefully
-	patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
-	err = v.Patch([]byte(patch))
-	if err != nil {
-		// If the patch fails because the path doesn't exist, that's fine - nothing to remove
-		if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
-			logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
-			return nil
-		}
-		// For other errors, return the error
-		logger.Errorf("Failed to patch file: %v", err)
-		return err
-	}
-
-	formatted, _ := hujson.Format(v.Pack())
-
-	// Write back to the file atomically
-	if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
-	}
-
-	logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
-
-	return nil
-}
-
-// YAMLConfigUpdater is a ConfigUpdater that is responsible for updating
-// YAML config files using a converter interface for flexibility.
-type YAMLConfigUpdater struct {
-	Path      string
-	Converter YAMLConverter
-}
-
-// Upsert inserts or updates an MCP server in the config.yaml file using the converter
-func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	// Create a lock file
-	lockPath := ycu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	content, err := os.ReadFile(ycu.Path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Use a generic map to preserve all existing fields, not just extensions
-	var config map[string]interface{}
-
-	// If file exists and is not empty, unmarshal existing config into generic map
-	if len(content) > 0 {
-		err = yaml.Unmarshal(content, &config)
-		if err != nil {
-			return fmt.Errorf("failed to parse existing YAML config: %w", err)
-		}
-	} else {
-		// Initialize empty map if file doesn't exist or is empty
-		config = make(map[string]interface{})
-	}
-
-	// Convert MCPServer using the converter
-	entry, err := ycu.Converter.ConvertFromMCPServer(serverName, data)
-	if err != nil {
-		return fmt.Errorf("failed to convert MCPServer: %w", err)
-	}
-
-	// Upsert the entry using the converter
-	err = ycu.Converter.UpsertEntry(config, serverName, entry)
-	if err != nil {
-		return fmt.Errorf("failed to upsert entry: %w", err)
-	}
-
-	// Marshal back to YAML
-	updatedContent, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal YAML: %w", err)
-	}
-
-	// Write back to file atomically
-	if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
-	return nil
-}
-
-// Remove removes an entry from the config.yaml file using the converter
-func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
-	// Create a lock file
-	lockPath := ycu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	// Read existing config
-	content, err := os.ReadFile(ycu.Path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist, nothing to remove
-			return nil
-		}
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	if len(content) == 0 {
-		// File is empty, nothing to remove
-		return nil
-	}
-
-	// Use a generic map to preserve all existing fields, not just extensions
-	var config map[string]interface{}
-	err = yaml.Unmarshal(content, &config)
-	if err != nil {
-		return fmt.Errorf("failed to parse YAML: %w", err)
-	}
-
-	err = ycu.Converter.RemoveEntry(config, serverName)
-	if err != nil {
-		return fmt.Errorf("failed to remove entry: %w", err)
-	}
-
-	updatedContent, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal YAML: %w", err)
-	}
-
-	// Write back to file atomically
-	if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	logger.Debugf("Successfully removed server %s from YAML config file", serverName)
-	return nil
-}
-
-// --- Shared TOML helper functions ---
-
-// tomlWithFileLock executes the given function while holding a file lock for the specified path.
-func tomlWithFileLock(path string, fn func() error) error {
+// withFileLock executes the given function while holding a file lock for the specified path.
+// This is used by all config updaters (JSON, YAML, TOML) to ensure safe concurrent access.
+func withFileLock(path string, fn func() error) error {
 	lockPath := path + ".lock"
 	fileLock := lockfile.NewTrackedLock(lockPath)
 
@@ -315,6 +98,211 @@ func tomlWithFileLock(path string, fn func() error) error {
 
 	return fn()
 }
+
+// JSONConfigUpdater is a ConfigUpdater that is responsible for updating
+// JSON config files.
+type JSONConfigUpdater struct {
+	Path                 string
+	MCPServersPathPrefix string
+}
+
+// Upsert inserts or updates an MCP server in the MCP client config file
+func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return withFileLock(jcu.Path, func() error {
+		content, err := os.ReadFile(jcu.Path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file: %w", err)
+		}
+
+		if len(content) == 0 {
+			// If the file is empty, we need to initialize it with an empty JSON object
+			content = []byte("{}")
+		}
+
+		content = ensurePathExists(content, jcu.MCPServersPathPrefix)
+
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON: %w", err)
+		}
+
+		dataJSON, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal MCPServer to JSON: %w", err)
+		}
+
+		patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
+		if err := v.Patch([]byte(patch)); err != nil {
+			return fmt.Errorf("failed to patch JSON: %w", err)
+		}
+
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("failed to format JSON: %w", err)
+		}
+
+		// Write back to the file atomically
+		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
+			logger.Warnf("Failed to write JSON config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an MCP server from the MCP client config file
+func (jcu *JSONConfigUpdater) Remove(serverName string) error {
+	return withFileLock(jcu.Path, func() error {
+		content, err := os.ReadFile(jcu.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// File doesn't exist, nothing to remove
+				return nil
+			}
+			return fmt.Errorf("failed to read file: %w", err)
+		}
+
+		if len(content) == 0 {
+			// If the file is empty, there is nothing to remove.
+			return nil
+		}
+
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON: %w", err)
+		}
+
+		// Check if the server exists by attempting the patch and handling the error gracefully
+		patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
+		if err := v.Patch([]byte(patch)); err != nil {
+			// If the patch fails because the path doesn't exist, that's fine - nothing to remove
+			if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
+				logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
+				return nil
+			}
+			// For other errors, return the error
+			return fmt.Errorf("failed to patch JSON: %w", err)
+		}
+
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("failed to format JSON: %w", err)
+		}
+
+		// Write back to the file atomically
+		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
+			logger.Warnf("Failed to write JSON config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
+		return nil
+	})
+}
+
+// YAMLConfigUpdater is a ConfigUpdater that is responsible for updating
+// YAML config files using a converter interface for flexibility.
+type YAMLConfigUpdater struct {
+	Path      string
+	Converter YAMLConverter
+}
+
+// Upsert inserts or updates an MCP server in the config.yaml file using the converter
+func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return withFileLock(ycu.Path, func() error {
+		content, err := os.ReadFile(ycu.Path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file: %w", err)
+		}
+
+		// Use a generic map to preserve all existing fields, not just extensions
+		var config map[string]any
+
+		// If file exists and is not empty, unmarshal existing config into generic map
+		if len(content) > 0 {
+			if err := yaml.Unmarshal(content, &config); err != nil {
+				return fmt.Errorf("failed to parse existing YAML config: %w", err)
+			}
+		} else {
+			// Initialize empty map if file doesn't exist or is empty
+			config = make(map[string]any)
+		}
+
+		// Convert MCPServer using the converter
+		entry, err := ycu.Converter.ConvertFromMCPServer(serverName, data)
+		if err != nil {
+			return fmt.Errorf("failed to convert MCPServer: %w", err)
+		}
+
+		// Upsert the entry using the converter
+		if err := ycu.Converter.UpsertEntry(config, serverName, entry); err != nil {
+			return fmt.Errorf("failed to upsert entry: %w", err)
+		}
+
+		// Marshal back to YAML
+		updatedContent, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+
+		// Write back to file atomically
+		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
+			logger.Warnf("Failed to write YAML config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an entry from the config.yaml file using the converter
+func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
+	return withFileLock(ycu.Path, func() error {
+		// Read existing config
+		content, err := os.ReadFile(ycu.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// File doesn't exist, nothing to remove
+				return nil
+			}
+			return fmt.Errorf("failed to read file: %w", err)
+		}
+
+		if len(content) == 0 {
+			// File is empty, nothing to remove
+			return nil
+		}
+
+		// Use a generic map to preserve all existing fields, not just extensions
+		var config map[string]any
+		if err := yaml.Unmarshal(content, &config); err != nil {
+			return fmt.Errorf("failed to parse YAML: %w", err)
+		}
+
+		if err := ycu.Converter.RemoveEntry(config, serverName); err != nil {
+			return fmt.Errorf("failed to remove entry: %w", err)
+		}
+
+		updatedContent, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+
+		// Write back to file atomically
+		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
+			logger.Warnf("Failed to write YAML config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully removed server %s from YAML config file", serverName)
+		return nil
+	})
+}
+
+// --- Shared TOML helper functions ---
 
 // readTOMLConfig reads and parses a TOML config file from the specified path.
 func readTOMLConfig(path string) (map[string]any, error) {
@@ -342,6 +330,7 @@ func writeTOMLConfig(path string, config map[string]any) error {
 		return fmt.Errorf("failed to marshal TOML: %w", err)
 	}
 	if err := fileutils.AtomicWriteFile(path, updatedContent, 0600); err != nil {
+		logger.Warnf("Failed to write TOML config file: %v", err)
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 	return nil
@@ -394,7 +383,7 @@ type TOMLConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the TOML config file
 func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return tomlWithFileLock(tcu.Path, func() error {
+	return withFileLock(tcu.Path, func() error {
 		config, err := readTOMLConfig(tcu.Path)
 		if err != nil {
 			return err
@@ -416,7 +405,7 @@ func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 // Remove removes an MCP server from the TOML config file
 func (tcu *TOMLConfigUpdater) Remove(serverName string) error {
-	return tomlWithFileLock(tcu.Path, func() error {
+	return withFileLock(tcu.Path, func() error {
 		config, err := readTOMLConfig(tcu.Path)
 		if err != nil {
 			return err
@@ -521,7 +510,7 @@ type TOMLMapConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the TOML config file using map format
 func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	return tomlWithFileLock(tmu.Path, func() error {
+	return withFileLock(tmu.Path, func() error {
 		config, err := readTOMLConfig(tmu.Path)
 		if err != nil {
 			return err
@@ -548,7 +537,7 @@ func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error
 
 // Remove removes an MCP server from the TOML config file
 func (tmu *TOMLMapConfigUpdater) Remove(serverName string) error {
-	return tomlWithFileLock(tmu.Path, func() error {
+	return withFileLock(tmu.Path, func() error {
 		config, err := readTOMLConfig(tmu.Path)
 		if err != nil {
 			return err

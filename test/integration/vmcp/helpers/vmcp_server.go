@@ -160,15 +160,15 @@ func NewVMCPServer(
 		conflictResolver = aggregator.NewPrefixConflictResolver(config.prefixFormat)
 	}
 
-	// Create aggregator
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
+	// Create aggregator (use best_effort mode for tests)
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, "best_effort", nil)
 
 	// Create discovery manager
 	discoveryMgr, err := discovery.NewManager(agg)
 	require.NoError(tb, err)
 
 	// Create router
-	rtr := router.NewDefaultRouter()
+	rtr := router.NewDefaultRouter("best_effort", nil)
 
 	// Create immutable backend registry for tests (backends don't change during test execution)
 	backendRegistry := vmcptypes.NewImmutableRegistry(backends)

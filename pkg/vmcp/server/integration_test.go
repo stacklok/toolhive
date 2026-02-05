@@ -118,8 +118,9 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	agg := aggregator.NewDefaultAggregator(
 		mockBackendClient,
 		conflictResolver,
-		nil, // no tool configs
-		nil, // no tracer provider in tests
+		nil,           // no tool configs
+		"best_effort", // partial failure mode
+		nil,           // no tracer provider in tests
 	)
 
 	// Step 3: Run aggregation on mock backends
@@ -164,7 +165,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Prompts))
 
 	// Step 4: Create router and add capabilities to context
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	// Add discovered capabilities to context
 	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, aggregatedCaps)
@@ -312,12 +313,12 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	// Create discovery manager
 	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
-	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, nil)
+	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil, "best_effort", nil)
 	discoveryMgr, err := discovery.NewManager(agg)
 	require.NoError(t, err)
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	// Create identity middleware for auth (must set identity for discovery)
 	identityMiddleware := func(next http.Handler) http.Handler {
@@ -502,7 +503,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 			Times(2)
 
 		resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, "best_effort", nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -540,7 +541,7 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 
 		resolver, err := aggregator.NewPriorityConflictResolver([]string{"backend1", "backend2"})
 		require.NoError(t, err)
-		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+		agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, "best_effort", nil)
 
 		result, err := agg.AggregateCapabilities(ctx, createBackendsWithConflicts())
 		require.NoError(t, err)
@@ -652,7 +653,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	}
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	// Create discovery manager
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
@@ -660,7 +661,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		Discover(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
 			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
+			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, "best_effort", nil)
 			return agg.AggregateCapabilities(ctx, backends)
 		}).
 		AnyTimes()
@@ -915,7 +916,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	backends := []vmcp.Backend{}
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	// Create identity middleware for auth
 	identityMiddleware := func(next http.Handler) http.Handler {

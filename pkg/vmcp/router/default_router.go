@@ -10,20 +10,37 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
+
+// HealthMonitor provides health status for backends (used for circuit breaker integration).
+type HealthMonitor interface {
+	// GetBackendState returns the health state for a backend.
+	GetBackendState(backendID string) (*health.State, error)
+	// IsBackendHealthy returns true if the backend is healthy.
+	IsBackendHealthy(backendID string) bool
+}
 
 // defaultRouter is a stateless router implementation that retrieves routing
 // information from the request context. With lazy discovery, capabilities are
 // discovered per-request and stored in context by the discovery middleware.
 //
-// This router is thread-safe by design since it maintains no mutable state.
+// This router is thread-safe by design with immutable configuration fields.
 type defaultRouter struct {
-	// No fields - routing table comes from request context
+	partialFailureMode string        // "fail" or "best_effort" - controls routing behavior with circuit breaker
+	healthMonitor      HealthMonitor // Optional health monitor for circuit breaker integration
 }
 
 // NewDefaultRouter creates a new default router instance.
-func NewDefaultRouter() Router {
-	return &defaultRouter{}
+// partialFailureMode controls behavior when circuit breaker is OPEN:
+//   - "fail": Return error immediately if circuit breaker is OPEN
+//   - "best_effort": Allow attempt even if circuit breaker is OPEN
+// healthMonitor is optional (nil disables circuit breaker checking).
+func NewDefaultRouter(partialFailureMode string, healthMonitor HealthMonitor) Router {
+	return &defaultRouter{
+		partialFailureMode: partialFailureMode,
+		healthMonitor:      healthMonitor,
+	}
 }
 
 // routeCapability is a generic helper that implements the common routing logic
@@ -78,8 +95,9 @@ func routeCapability(
 // RouteTool resolves a tool name to its backend target.
 // With lazy discovery, this method gets capabilities from the request context
 // instead of using a cached routing table.
-func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error) {
-	return routeCapability(
+// Checks circuit breaker state in fail mode before routing.
+func (r *defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error) {
+	target, err := routeCapability(
 		ctx,
 		toolName,
 		func(rt *vmcp.RoutingTable) map[string]*vmcp.BackendTarget { return rt.Tools },
@@ -87,13 +105,29 @@ func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.Bac
 		"Tool",
 		ErrToolNotFound,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check circuit breaker in fail mode
+	if r.partialFailureMode == "fail" && r.healthMonitor != nil {
+		state, err := r.healthMonitor.GetBackendState(target.WorkloadID)
+		if err == nil && state.CircuitState == health.CircuitOpen {
+			logger.Warnf("Circuit breaker OPEN for backend %s (tool: %s), failing in fail mode",
+				target.WorkloadID, toolName)
+			return nil, fmt.Errorf("%w: %s (circuit breaker open)", ErrBackendUnavailable, target.WorkloadID)
+		}
+	}
+
+	return target, nil
 }
 
 // RouteResource resolves a resource URI to its backend target.
 // With lazy discovery, this method gets capabilities from the request context
 // instead of using a cached routing table.
-func (*defaultRouter) RouteResource(ctx context.Context, uri string) (*vmcp.BackendTarget, error) {
-	return routeCapability(
+// Checks circuit breaker state in fail mode before routing.
+func (r *defaultRouter) RouteResource(ctx context.Context, uri string) (*vmcp.BackendTarget, error) {
+	target, err := routeCapability(
 		ctx,
 		uri,
 		func(rt *vmcp.RoutingTable) map[string]*vmcp.BackendTarget { return rt.Resources },
@@ -101,13 +135,29 @@ func (*defaultRouter) RouteResource(ctx context.Context, uri string) (*vmcp.Back
 		"Resource",
 		ErrResourceNotFound,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check circuit breaker in fail mode
+	if r.partialFailureMode == "fail" && r.healthMonitor != nil {
+		state, err := r.healthMonitor.GetBackendState(target.WorkloadID)
+		if err == nil && state.CircuitState == health.CircuitOpen {
+			logger.Warnf("Circuit breaker OPEN for backend %s (resource: %s), failing in fail mode",
+				target.WorkloadID, uri)
+			return nil, fmt.Errorf("%w: %s (circuit breaker open)", ErrBackendUnavailable, target.WorkloadID)
+		}
+	}
+
+	return target, nil
 }
 
 // RoutePrompt resolves a prompt name to its backend target.
 // With lazy discovery, this method gets capabilities from the request context
 // instead of using a cached routing table.
-func (*defaultRouter) RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error) {
-	return routeCapability(
+// Checks circuit breaker state in fail mode before routing.
+func (r *defaultRouter) RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error) {
+	target, err := routeCapability(
 		ctx,
 		name,
 		func(rt *vmcp.RoutingTable) map[string]*vmcp.BackendTarget { return rt.Prompts },
@@ -115,4 +165,19 @@ func (*defaultRouter) RoutePrompt(ctx context.Context, name string) (*vmcp.Backe
 		"Prompt",
 		ErrPromptNotFound,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check circuit breaker in fail mode
+	if r.partialFailureMode == "fail" && r.healthMonitor != nil {
+		state, err := r.healthMonitor.GetBackendState(target.WorkloadID)
+		if err == nil && state.CircuitState == health.CircuitOpen {
+			logger.Warnf("Circuit breaker OPEN for backend %s (prompt: %s), failing in fail mode",
+				target.WorkloadID, name)
+			return nil, fmt.Errorf("%w: %s (circuit breaker open)", ErrBackendUnavailable, target.WorkloadID)
+		}
+	}
+
+	return target, nil
 }

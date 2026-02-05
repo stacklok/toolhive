@@ -34,7 +34,7 @@ func createTestServer(t *testing.T) *server.Server {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	// Find an available port for parallel test execution
 	port := networking.FindAvailable()
@@ -178,7 +178,7 @@ func TestServer_SessionManager(t *testing.T) {
 
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-		rt := router.NewDefaultRouter()
+		rt := router.NewDefaultRouter("best_effort", nil)
 
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 		srv, err := server.New(context.Background(), &server.Config{
@@ -201,7 +201,7 @@ func TestServer_SessionManager(t *testing.T) {
 
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-		rt := router.NewDefaultRouter()
+		rt := router.NewDefaultRouter("best_effort", nil)
 
 		customTTL := 15 * time.Minute
 		backendRegistry := vmcp.NewImmutableRegistry([]vmcp.Backend{})

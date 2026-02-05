@@ -49,7 +49,7 @@ func createTestServerWithBackends(t *testing.T, backends []vmcp.Backend, groupRe
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")

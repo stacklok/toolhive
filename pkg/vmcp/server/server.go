@@ -118,7 +118,13 @@ type Config struct {
 
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
+	// Deprecated: Use HealthMonitor instead. This is kept for backward compatibility.
 	HealthMonitorConfig *health.MonitorConfig
+
+	// HealthMonitor is the optional pre-created health monitor.
+	// If provided, the server will use this instead of creating one from HealthMonitorConfig.
+	// This allows the health monitor to be shared with other components (e.g., router).
+	HealthMonitor *health.Monitor
 
 	// StatusReportingInterval is the interval for reporting status updates.
 	// If zero, defaults to 30 seconds.
@@ -340,10 +346,14 @@ func New(
 	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
 	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
 
-	// Create health monitor if configured
+	// Use pre-created health monitor if provided, otherwise create one from config
 	var healthMon *health.Monitor
-	if cfg.HealthMonitorConfig != nil {
-		// Get initial backends list from registry for health monitoring setup
+	if cfg.HealthMonitor != nil {
+		// Use pre-created monitor (shared with router for circuit breaker integration)
+		healthMon = cfg.HealthMonitor
+		logger.Info("Using pre-created health monitor (shared with router)")
+	} else if cfg.HealthMonitorConfig != nil {
+		// Create health monitor from config (legacy path, for backward compatibility)
 		initialBackends := backendRegistry.List(ctx)
 		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
 		if err != nil {

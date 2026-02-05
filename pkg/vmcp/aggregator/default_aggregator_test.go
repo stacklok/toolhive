@@ -36,7 +36,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.Error(t, err)
@@ -91,7 +91,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -121,7 +121,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 				return nil, errors.New("connection timeout")
 			}).Times(2)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -141,7 +141,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection failed"))
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.Error(t, err)
@@ -172,7 +172,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, "best_effort", nil)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -205,7 +205,7 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 			},
 		}
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, "best_effort", nil)
 		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
 		require.NoError(t, err)
@@ -264,7 +264,7 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		}
 		registry := vmcp.NewImmutableRegistry(backends)
 
-		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		agg := NewDefaultAggregator(nil, nil, nil, "best_effort", nil)
 		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
 
 		require.NoError(t, err)
@@ -332,7 +332,7 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -376,7 +376,7 @@ func TestDefaultAggregator_ExcludeAllTools(t *testing.T) {
 		aggregationConfig := &config.AggregationConfig{
 			ExcludeAllTools: true,
 		}
-		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, "best_effort", nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -407,7 +407,7 @@ func TestDefaultAggregator_ExcludeAllTools(t *testing.T) {
 		aggregationConfig := &config.AggregationConfig{
 			ExcludeAllTools: false,
 		}
-		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, "best_effort", nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -430,7 +430,7 @@ func TestDefaultAggregator_ExcludeAllTools(t *testing.T) {
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
 
 		// Create aggregator with nil aggregationConfig (default behavior)
-		agg := NewDefaultAggregator(mockClient, nil, nil, nil)
+		agg := NewDefaultAggregator(mockClient, nil, nil, "best_effort", nil)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
@@ -481,7 +481,7 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 			},
 		}
 
-		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, "best_effort", nil)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
@@ -528,7 +528,7 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 			ExcludeAllTools: true,
 		}
 
-		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, "best_effort", nil)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)

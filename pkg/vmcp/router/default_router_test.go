@@ -80,7 +80,7 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			r := router.NewDefaultRouter()
+			r := router.NewDefaultRouter("best_effort", nil)
 
 			// Setup routing table in context if provided
 			if tt.setupTable != nil {
@@ -170,7 +170,7 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			r := router.NewDefaultRouter()
+			r := router.NewDefaultRouter("best_effort", nil)
 
 			// Setup routing table in context if provided
 			if tt.setupTable != nil {
@@ -260,7 +260,7 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			r := router.NewDefaultRouter()
+			r := router.NewDefaultRouter("best_effort", nil)
 
 			// Setup routing table in context if provided
 			if tt.setupTable != nil {
@@ -308,7 +308,7 @@ func TestDefaultRouter_ConcurrentAccess(t *testing.T) {
 	}
 	ctx := discovery.WithDiscoveredCapabilities(context.Background(), caps)
 
-	r := router.NewDefaultRouter()
+	r := router.NewDefaultRouter("best_effort", nil)
 
 	// Run concurrent readers - router is stateless so this should be safe
 	const numGoroutines = 10

@@ -39,7 +39,7 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
@@ -111,7 +111,7 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")
@@ -186,7 +186,7 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	rt := router.NewDefaultRouter()
+	rt := router.NewDefaultRouter("best_effort", nil)
 
 	port := networking.FindAvailable()
 	require.NotZero(t, port, "Failed to find available port")

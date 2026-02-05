@@ -22,21 +22,24 @@ import (
 // defaultAggregator implements the Aggregator interface for capability aggregation.
 // It queries backends in parallel, handles failures gracefully, and merges capabilities.
 type defaultAggregator struct {
-	backendClient    vmcp.BackendClient
-	conflictResolver ConflictResolver
-	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
-	excludeAllTools  bool                                  // Global flag to exclude all tools
-	tracer           trace.Tracer
+	backendClient       vmcp.BackendClient
+	conflictResolver    ConflictResolver
+	toolConfigMap       map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
+	excludeAllTools     bool                                  // Global flag to exclude all tools
+	partialFailureMode  string                                // "fail" or "best_effort" - controls discovery behavior when backends fail
+	tracer              trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
 // aggregationConfig specifies aggregation settings including tool filtering/overrides and excludeAllTools.
+// partialFailureMode controls behavior when backends fail during discovery ("fail" or "best_effort").
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
 	conflictResolver ConflictResolver,
 	aggregationConfig *config.AggregationConfig,
+	partialFailureMode string,
 	tracerProvider trace.TracerProvider,
 ) Aggregator {
 	// Build tool config map for quick lookup by backend ID
@@ -61,11 +64,12 @@ func NewDefaultAggregator(
 	}
 
 	return &defaultAggregator{
-		backendClient:    backendClient,
-		conflictResolver: conflictResolver,
-		toolConfigMap:    toolConfigMap,
-		excludeAllTools:  excludeAllTools,
-		tracer:           tracer,
+		backendClient:      backendClient,
+		conflictResolver:   conflictResolver,
+		toolConfigMap:      toolConfigMap,
+		excludeAllTools:    excludeAllTools,
+		partialFailureMode: partialFailureMode,
+		tracer:             tracer,
 	}
 }
 
@@ -127,7 +131,8 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 }
 
 // QueryAllCapabilities queries all backends for their capabilities in parallel.
-// Handles backend failures gracefully (logs and continues with remaining backends).
+// Respects partialFailureMode: in "fail" mode, any backend failure causes entire discovery to fail.
+// In "best_effort" mode (default legacy behavior), logs warnings and continues with available backends.
 func (a *defaultAggregator) QueryAllCapabilities(
 	ctx context.Context,
 	backends []vmcp.Backend,
@@ -135,6 +140,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 	ctx, span := a.tracer.Start(ctx, "aggregator.QueryAllCapabilities",
 		trace.WithAttributes(
 			attribute.Int("backends.count", len(backends)),
+			attribute.String("partial_failure_mode", a.partialFailureMode),
 		),
 	)
 	defer func() {
@@ -145,7 +151,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		span.End()
 	}()
 
-	logger.Infof("Querying capabilities from %d backends", len(backends))
+	logger.Infof("Querying capabilities from %d backends (mode: %s)", len(backends), a.partialFailureMode)
 
 	// Use errgroup for parallel queries with context cancellation
 	g, ctx := errgroup.WithContext(ctx)
@@ -154,6 +160,7 @@ func (a *defaultAggregator) QueryAllCapabilities(
 	// Thread-safe map for results
 	var mu sync.Mutex
 	capabilities := make(map[string]*BackendCapabilities)
+	var failedBackends []string
 
 	// Query each backend in parallel
 	for _, backend := range backends {
@@ -161,9 +168,19 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		g.Go(func() error {
 			caps, err := a.QueryCapabilities(ctx, backend)
 			if err != nil {
-				// Log the error but continue with other backends
+				// Track failure
+				mu.Lock()
+				failedBackends = append(failedBackends, backend.ID)
+				mu.Unlock()
+
+				// In fail mode, any backend failure causes entire discovery to fail
+				if a.partialFailureMode == "fail" {
+					return fmt.Errorf("backend %s unavailable in fail mode: %w", backend.ID, err)
+				}
+
+				// In best_effort mode, log warning and continue with other backends
 				logger.Warnf("Failed to query backend %s: %v", backend.ID, err)
-				return nil // Don't fail the entire operation
+				return nil
 			}
 
 			// Store result safely
@@ -177,18 +194,27 @@ func (a *defaultAggregator) QueryAllCapabilities(
 
 	// Wait for all queries to complete
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("capability queries failed: %w", err)
+		// In fail mode, first backend failure propagates up
+		return nil, fmt.Errorf("capability discovery failed: %w", err)
 	}
 
 	if len(capabilities) == 0 {
 		return nil, fmt.Errorf("no backends returned capabilities")
 	}
 
+	// Log summary with failure information
+	if len(failedBackends) > 0 {
+		logger.Warnf("Capability discovery completed with %d/%d backends (%d failed: %v)",
+			len(capabilities), len(backends), len(failedBackends), failedBackends)
+	} else {
+		logger.Infof("Successfully queried %d/%d backends", len(capabilities), len(backends))
+	}
+
 	span.SetAttributes(
 		attribute.Int("successful.backends", len(capabilities)),
+		attribute.Int("failed.backends", len(failedBackends)),
 	)
 
-	logger.Infof("Successfully queried %d/%d backends", len(capabilities), len(backends))
 	return capabilities, nil
 }
 

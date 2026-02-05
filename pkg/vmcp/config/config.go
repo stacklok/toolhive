@@ -461,8 +461,21 @@ type FailureHandlingConfig struct {
 	StatusReportingInterval Duration `json:"statusReportingInterval,omitempty" yaml:"statusReportingInterval,omitempty"`
 
 	// PartialFailureMode defines behavior when some backends are unavailable.
-	// - fail: Fail entire request if any backend is unavailable
-	// - best_effort: Continue with available backends
+	//
+	// Behavior by layer:
+	// 1. Discovery (capability aggregation):
+	//    - fail: Fail entire discovery if ANY backend is unavailable
+	//    - best_effort: Log warnings and continue with available backends
+	//
+	// 2. Request routing:
+	//    - fail: Return error immediately if circuit breaker is OPEN for target backend
+	//    - best_effort: Attempt request even if circuit breaker is OPEN
+	//
+	// 3. Request handling:
+	//    - Both modes handle backend errors the same way (return MCP error response)
+	//    - Difference is WHETHER request is attempted (Layer 2)
+	//
+	// Default: fail (safer, deterministic, fail-fast behavior)
 	// +kubebuilder:validation:Enum=fail;best_effort
 	// +kubebuilder:default=fail
 	// +optional

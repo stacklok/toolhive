@@ -342,7 +342,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if telemetryProvider != nil {
 		tracerProvider = telemetryProvider.TracerProvider()
 	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
+
+	// Extract partial failure mode from config (controls discovery behavior when backends fail)
+	partialFailureMode := cfg.Operational.FailureHandling.PartialFailureMode
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, partialFailureMode, tracerProvider)
 
 	// Use DynamicRegistry for version-based cache invalidation
 	// Works in both standalone (CLI with YAML config) and Kubernetes (operator-deployed) modes
@@ -394,9 +397,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 		logger.Info("Kubernetes backend watcher started for dynamic backend discovery")
 	}
-
-	// Create router
-	rtr := vmcprouter.NewDefaultRouter()
 
 	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
 
@@ -479,6 +479,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		logger.Info("Health monitoring configured from operational settings")
 	}
 
+	// Create health monitor if configured (needed by router for circuit breaker integration)
+	var healthMon *health.Monitor
+	if healthMonitorConfig != nil {
+		healthMon, err = health.NewMonitor(backendClient, backends, *healthMonitorConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create health monitor: %w", err)
+		}
+		logger.Infow("Health monitoring enabled",
+			"check_interval", healthMonitorConfig.CheckInterval,
+			"unhealthy_threshold", healthMonitorConfig.UnhealthyThreshold,
+			"timeout", healthMonitorConfig.Timeout,
+			"degraded_threshold", healthMonitorConfig.DegradedThreshold)
+	} else {
+		logger.Info("Health monitoring disabled")
+	}
+
+	// Create router with failure mode and health monitor for circuit breaker integration
+	rtr := vmcprouter.NewDefaultRouter(partialFailureMode, healthMon)
+
 	// Create status reporter using factory (auto-detects K8s vs CLI mode)
 	statusReporter, err := vmcpstatus.NewReporter()
 	if err != nil {
@@ -495,7 +514,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler:         authInfoHandler,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             cfg.Audit,
-		HealthMonitorConfig:     healthMonitorConfig,
+		HealthMonitor:           healthMon, // Pass pre-created monitor (shared with router)
 		StatusReportingInterval: getStatusReportingInterval(cfg),
 		Watcher:                 backendWatcher,
 		StatusReporter:          statusReporter,

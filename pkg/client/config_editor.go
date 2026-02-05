@@ -16,6 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -92,8 +93,8 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		logger.Errorf("Failed to format the patched file: %v", err)
 	}
 
-	// Write back to the file
-	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
+	// Write back to the file atomically
+	if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
 		logger.Errorf("Failed to write file: %v", err)
 	}
 
@@ -150,8 +151,8 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 	formatted, _ := hujson.Format(v.Pack())
 
-	// Write back to the file
-	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
+	// Write back to the file atomically
+	if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
 		logger.Errorf("Failed to write file: %v", err)
 	}
 
@@ -224,8 +225,8 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		return fmt.Errorf("failed to marshal YAML: %w", err)
 	}
 
-	// Write back to file
-	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
+	// Write back to file atomically
+	if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -284,8 +285,8 @@ func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 		return fmt.Errorf("failed to marshal YAML: %w", err)
 	}
 
-	// Write back to file
-	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
+	// Write back to file atomically
+	if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -334,13 +335,13 @@ func readTOMLConfig(path string) (map[string]any, error) {
 	return config, nil
 }
 
-// writeTOMLConfig marshals and writes the config to the specified TOML file path.
+// writeTOMLConfig marshals and writes the config to the specified TOML file path atomically.
 func writeTOMLConfig(path string, config map[string]any) error {
 	updatedContent, err := toml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal TOML: %w", err)
 	}
-	if err := os.WriteFile(path, updatedContent, 0600); err != nil {
+	if err := fileutils.AtomicWriteFile(path, updatedContent, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 	return nil

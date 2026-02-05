@@ -347,28 +347,20 @@ var (
 	ErrMissingIssuerAndJWKSURL = errors.New("either issuer or JWKS URL must be provided")
 )
 
-// oidcDiscoveryParams holds the parameters needed to perform lazy OIDC discovery.
-type oidcDiscoveryParams struct {
-	issuer            string
-	caCertPath        string
-	authTokenFile     string
-	allowPrivateIP    bool
-	insecureAllowHTTP bool
-}
-
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
 	// OIDC configuration
-	issuer        string
-	audience      string
-	jwksURL       string
-	clientID      string
-	clientSecret  string // Optional client secret for introspection
-	jwksClient    *jwk.Cache
-	introspectURL string       // Optional introspection endpoint
-	client        *http.Client // HTTP client for making requests
-	resourceURL   string       // (RFC 9728)
-	registry      *Registry    // Token introspection providers
+	issuer            string
+	audience          string
+	jwksURL           string
+	clientID          string
+	clientSecret      string // Optional client secret for introspection
+	jwksClient        *jwk.Cache
+	introspectURL     string       // Optional introspection endpoint
+	client            *http.Client // HTTP client for making requests
+	resourceURL       string       // (RFC 9728)
+	registry          *Registry    // Token introspection providers
+	insecureAllowHTTP bool         // Allow HTTP (non-HTTPS) OIDC issuers for development/testing
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -380,10 +372,9 @@ type TokenValidator struct {
 	// the token validator is created.
 	// Uses mutex+flag instead of sync.Once so that failed discovery can be retried
 	// on subsequent ValidateToken calls (transient failures should not be permanent).
-	oidcDiscoveryMu     sync.Mutex
-	oidcDiscovered      bool
-	oidcDiscoveryErr    error
-	oidcDiscoveryConfig *oidcDiscoveryParams // Parameters needed to perform discovery later
+	oidcDiscoveryMu  sync.Mutex
+	oidcDiscovered   bool
+	oidcDiscoveryErr error
 }
 
 // TokenValidatorConfig contains configuration for the token validator.
@@ -433,8 +424,8 @@ type TokenValidatorConfig struct {
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
 func discoverOIDCConfiguration(
 	ctx context.Context,
-	issuer, caCertPath, authTokenFile string,
-	allowPrivateIP bool,
+	issuer string,
+	client *http.Client,
 	insecureAllowHTTP bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
 	// Validate issuer URL scheme
@@ -455,16 +446,6 @@ func discoverOIDCConfiguration(
 	req.Header.Set("User-Agent", oauth.UserAgent)
 	req.Header.Set("Accept", "application/json")
 
-	// Create HTTP client with CA bundle and auth token support
-	client, err := networking.NewHttpClientBuilder().
-		WithCABundle(caCertPath).
-		WithTokenFromFile(authTokenFile).
-		WithPrivateIPs(allowPrivateIP).
-		WithInsecureAllowHTTP(insecureAllowHTTP).
-		Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
@@ -591,7 +572,6 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	// Discovery is deferred when JWKS URL is not provided but issuer is,
 	// allowing the validator to start before the OIDC provider is ready.
 	// When set, ensureOIDCDiscovered will populate jwksURL on first use.
-	var discoveryConfig *oidcDiscoveryParams
 
 	// Skip discovery if TOOLHIVE_SKIP_OIDC_DISCOVERY is set (for testing only)
 	skipDiscovery := o.envReader.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
@@ -607,21 +587,11 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 			config.Issuer,
 		)
 	} else if jwksURL == "" && config.Issuer != "" {
-		// Instead of discovering now, defer it until first validation request.
-		// This allows the validator to be created even if the OIDC provider
-		// (which might be the same pod) is not yet ready.
-		discoveryConfig = &oidcDiscoveryParams{
-			issuer:            config.Issuer,
-			caCertPath:        config.CACertPath,
-			authTokenFile:     config.AuthTokenFile,
-			allowPrivateIP:    config.AllowPrivateIP,
-			insecureAllowHTTP: config.InsecureAllowHTTP,
-		}
 		logger.Debugf("OIDC discovery deferred for issuer '%s' - will discover on first validation request", config.Issuer)
 	}
 
-	// Ensure we have either an explicit JWKS URL or a pending lazy discovery
-	if jwksURL == "" && discoveryConfig == nil {
+	// Ensure we have either an explicit JWKS URL or an issuer to discover from
+	if jwksURL == "" && config.Issuer == "" {
 		return nil, ErrMissingIssuerAndJWKSURL
 	}
 
@@ -663,17 +633,17 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 
 	validator := &TokenValidator{
-		issuer:              config.Issuer,
-		audience:            config.Audience,
-		jwksURL:             jwksURL,
-		introspectURL:       config.IntrospectionURL,
-		clientID:            config.ClientID,
-		clientSecret:        clientSecret,
-		jwksClient:          cache,
-		client:              config.httpClient,
-		resourceURL:         config.ResourceURL,
-		registry:            registry,
-		oidcDiscoveryConfig: discoveryConfig,
+		issuer:            config.Issuer,
+		audience:          config.Audience,
+		jwksURL:           jwksURL,
+		introspectURL:     config.IntrospectionURL,
+		clientID:          config.ClientID,
+		clientSecret:      clientSecret,
+		jwksClient:        cache,
+		client:            config.httpClient,
+		resourceURL:       config.ResourceURL,
+		registry:          registry,
+		insecureAllowHTTP: config.InsecureAllowHTTP,
 	}
 
 	return validator, nil
@@ -734,8 +704,9 @@ const (
 // subsequent calls return immediately. This allows recovery from transient failures
 // (e.g., auth server not yet ready, temporary DNS issues, context cancellation).
 func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
-	// If no lazy discovery is configured, nothing to do
-	if v.oidcDiscoveryConfig == nil {
+	// If JWKS URL is already known or there is no issuer to discover from, nothing to do.
+	// After a successful discovery v.jwksURL is populated, so this returns early on subsequent calls.
+	if v.jwksURL != "" || v.issuer == "" {
 		return nil
 	}
 
@@ -746,8 +717,6 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	if v.oidcDiscovered {
 		return nil
 	}
-
-	config := v.oidcDiscoveryConfig
 
 	// Configure exponential backoff with jitter (provided by the library)
 	expBackoff := backoff.NewExponentialBackOff()
@@ -762,11 +731,9 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 
 		return discoverOIDCConfiguration(
 			attemptCtx,
-			config.issuer,
-			config.caCertPath,
-			config.authTokenFile,
-			config.allowPrivateIP,
-			config.insecureAllowHTTP,
+			v.issuer,
+			v.client,
+			v.insecureAllowHTTP,
 		)
 	}
 
@@ -777,7 +744,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 		backoff.WithNotify(func(err error, duration time.Duration) {
 			logger.Debugf(
 				"OIDC discovery for issuer '%s' failed, retrying in %v: %v",
-				config.issuer, duration, err,
+				v.issuer, duration, err,
 			)
 		}),
 	)
@@ -786,7 +753,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 		v.oidcDiscoveryErr = fmt.Errorf("%w: %w", ErrFailedToDiscoverOIDC, err)
 		logger.Errorf(
 			"OIDC discovery failed for issuer '%s' after %d attempts: %v",
-			config.issuer, oidcDiscoveryMaxAttempts, err,
+			v.issuer, oidcDiscoveryMaxAttempts, err,
 		)
 		// Do NOT set oidcDiscovered = true -- allow retry on next ValidateToken call
 		return v.oidcDiscoveryErr
@@ -804,7 +771,7 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	v.jwksRegistrationMu.Unlock()
 	logger.Debugf(
 		"OIDC discovery succeeded for issuer '%s': JWKS URL is '%s'",
-		config.issuer, doc.JWKSURI,
+		v.issuer, doc.JWKSURI,
 	)
 
 	return nil

@@ -23,6 +23,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
@@ -473,11 +474,25 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 	// Extract the test server's certificate to a temp CA bundle file
 	caCertPath := writeTestServerCert(t, oidcServer)
 
+	// Build an HTTP client with the test server's CA cert for use in discovery calls
+	buildTestClient := func(t *testing.T, caPath string, allowPrivateIP bool) *http.Client {
+		t.Helper()
+		client, err := networking.NewHttpClientBuilder().
+			WithCABundle(caPath).
+			WithPrivateIPs(allowPrivateIP).
+			Build()
+		if err != nil {
+			t.Fatalf("Failed to build HTTP client: %v", err)
+		}
+		return client
+	}
+
 	ctx := context.Background()
 
 	t.Run("successful discovery", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true, false)
+		client := buildTestClient(t, caCertPath, true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, client, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -494,7 +509,8 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("issuer with trailing slash", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true, false)
+		client := buildTestClient(t, caCertPath, true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", client, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -506,7 +522,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("invalid issuer URL", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false, false)
+		_, err := discoverOIDCConfiguration(ctx, "invalid-url", http.DefaultClient, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -514,7 +530,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("non-existent endpoint", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false, false)
+		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", http.DefaultClient, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -625,9 +641,9 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected empty JWKS URL before discovery but got %s", validator.jwksURL)
 		}
 
-		// Lazy discovery config should be set
-		if validator.oidcDiscoveryConfig == nil {
-			t.Error("Expected oidcDiscoveryConfig to be set for lazy discovery")
+		// Lazy discovery should be pending: issuer is set but jwksURL is empty
+		if validator.issuer == "" {
+			t.Error("Expected issuer to be set for lazy discovery")
 		}
 
 		// Trigger lazy OIDC discovery
@@ -1046,6 +1062,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		client:        http.DefaultClient,
 		issuer:        "opaque-issuer",
 		audience:      "opaque-audience",
+		jwksURL:       "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 		registry:      registry,
 	}
 
@@ -1519,6 +1536,7 @@ func TestMiddleware_WWWAuthenticate_InvalidOpaqueToken_NoIntrospectionConfigured
 
 	tv := &TokenValidator{
 		issuer:   issuer,
+		jwksURL:  "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 		registry: NewRegistry(),
 		// introspectURL intentionally empty to force the error path
 	}
@@ -1625,6 +1643,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 
 			tv := &TokenValidator{
 				issuer:        issuer,
+				jwksURL:       "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 				introspectURL: introspectTS.URL + "/introspect",
 				clientID:      "cid",
 				clientSecret:  "csecret",

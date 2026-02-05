@@ -1561,10 +1561,6 @@ const docTemplate = `{
                     "header_strategy": {
                         "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
                         "type": "string"
-                    },
-                    "token_type": {
-                        "description": "TokenType specifies which token to inject: \"access_token\" (default) or \"id_token\".",
-                        "type": "string"
                     }
                 },
                 "type": "object"

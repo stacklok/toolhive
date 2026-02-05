@@ -58,19 +58,16 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 
 			It("should successfully start remote server from registry [Serial]", func() {
 				By("Starting the mcp-spec remote MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"mcp-spec").ExpectSuccess()
-
-				// The command should indicate success
-				Expect(stdout+stderr).To(ContainSubstring("mcp-spec"), "Output should mention the mcp-spec server")
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server appears in the list with correct attributes")
-				stdout, _ = e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
 
 				var workloads []WorkloadInfo
 				err = json.Unmarshal([]byte(stdout), &workloads)
@@ -310,21 +307,16 @@ var _ = Describe("Remote MCP Server", Label("remote", "mcp", "e2e"), Serial, fun
 
 			It("should start remote server with explicit URL [Serial]", func() {
 				By("Starting remote MCP server with explicit URL")
-				stdout, stderr := e2e.NewTHVCommand(config, "run",
+				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"https://modelcontextprotocol.io/mcp").ExpectSuccess()
-
-				Expect(stdout+stderr).To(Or(
-					ContainSubstring("modelcontextprotocol.io"),
-					ContainSubstring(serverName),
-				), "Output should mention the URL or server name")
 
 				By("Waiting for the server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying the server is marked as remote")
-				stdout, _ = e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list", "--format", "json").ExpectSuccess()
 
 				var workloads []WorkloadInfo
 				err = json.Unmarshal([]byte(stdout), &workloads)

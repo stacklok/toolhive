@@ -10,40 +10,42 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
-
-	"github.com/stacklok/toolhive-core/env/mocks"
 )
 
-// TestUnstructuredLogsCheck tests the unstructuredLogs function
-func TestUnstructuredLogsCheck(t *testing.T) {
+// TestViperDebugProvider tests the viper-based debug provider
+func TestViperDebugProvider(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		envValue string
+		debug    bool
 		expected bool
 	}{
-		{"Default Case", "", true},
-		{"Explicitly True", "true", true},
-		{"Explicitly False", "false", false},
-		{"Invalid Value", "not-a-bool", true},
+		{"Debug Enabled", true, true},
+		{"Debug Disabled", false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
+			// Create a new viper instance for this test
+			v := viper.New()
+			v.Set("debug", tt.debug)
 
-			mockEnv := mocks.NewMockReader(ctrl)
-			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return(tt.envValue)
+			// Use the test viper instance
+			oldViper := viper.GetViper()
+			defer func() {
+				// Reset to original viper
+				*viper.GetViper() = *oldViper
+			}()
+			*viper.GetViper() = *v
 
-			if got := unstructuredLogsWithEnv(mockEnv); got != tt.expected {
-				t.Errorf("unstructuredLogsWithEnv() = %v, want %v", got, tt.expected)
+			provider := &viperDebugProvider{}
+			if got := provider.IsDebug(); got != tt.expected {
+				t.Errorf("viperDebugProvider.IsDebug() = %v, want %v", got, tt.expected)
 			}
 		})
 	}

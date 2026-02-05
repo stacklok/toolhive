@@ -1,16 +1,5 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 package storage
 
@@ -22,6 +11,9 @@ type Type string
 const (
 	// TypeMemory uses in-memory storage (default).
 	TypeMemory Type = "memory"
+
+	// TypeRedis uses Redis Sentinel-backed storage for distributed deployments.
+	TypeRedis Type = "redis"
 
 	// DefaultCleanupInterval is how often the background cleanup runs.
 	DefaultCleanupInterval = 5 * time.Minute
@@ -40,6 +32,10 @@ const (
 
 	// DefaultPKCETTL is the default TTL for PKCE requests (same as auth codes).
 	DefaultPKCETTL = 10 * time.Minute
+
+	// DefaultPublicClientTTL is the TTL for dynamically registered public clients.
+	// This prevents unbounded growth from DCR. Confidential clients don't expire.
+	DefaultPublicClientTTL = 30 * 24 * time.Hour // 30 days
 )
 
 // Config configures the storage backend.
@@ -61,4 +57,57 @@ func DefaultConfig() *Config {
 type RunConfig struct {
 	// Type specifies the storage backend type. Defaults to "memory".
 	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+
+	// RedisConfig is the Redis-specific configuration when Type is "redis".
+	RedisConfig *RedisRunConfig `json:"redisConfig,omitempty" yaml:"redisConfig,omitempty"`
+}
+
+// RedisRunConfig is the serializable Redis configuration for RunConfig.
+// This is designed for Sentinel-only deployments with ACL user authentication.
+type RedisRunConfig struct {
+	// DeploymentMode must be "sentinel" - only Sentinel deployments are supported.
+	DeploymentMode string `json:"deploymentMode" yaml:"deploymentMode"`
+
+	// SentinelConfig contains Sentinel-specific configuration.
+	SentinelConfig *SentinelRunConfig `json:"sentinelConfig,omitempty" yaml:"sentinelConfig,omitempty"`
+
+	// AuthType must be "aclUser" - only ACL user authentication is supported.
+	AuthType string `json:"authType" yaml:"authType"`
+
+	// ACLUserConfig contains ACL user authentication configuration.
+	ACLUserConfig *ACLUserRunConfig `json:"aclUserConfig,omitempty" yaml:"aclUserConfig,omitempty"`
+
+	// KeyPrefix for multi-tenancy, typically "thv:auth:{ns}:{name}:".
+	KeyPrefix string `json:"keyPrefix" yaml:"keyPrefix"`
+
+	// DialTimeout is the timeout for establishing connections (e.g., "5s").
+	DialTimeout string `json:"dialTimeout,omitempty" yaml:"dialTimeout,omitempty"`
+
+	// ReadTimeout is the timeout for read operations (e.g., "3s").
+	ReadTimeout string `json:"readTimeout,omitempty" yaml:"readTimeout,omitempty"`
+
+	// WriteTimeout is the timeout for write operations (e.g., "3s").
+	WriteTimeout string `json:"writeTimeout,omitempty" yaml:"writeTimeout,omitempty"`
+}
+
+// SentinelRunConfig contains Redis Sentinel configuration.
+type SentinelRunConfig struct {
+	// MasterName is the name of the Redis Sentinel master.
+	MasterName string `json:"masterName" yaml:"masterName"`
+
+	// SentinelAddrs is the list of Sentinel addresses (host:port).
+	SentinelAddrs []string `json:"sentinelAddrs" yaml:"sentinelAddrs"`
+
+	// DB is the Redis database number (default: 0).
+	DB int `json:"db,omitempty" yaml:"db,omitempty"`
+}
+
+// ACLUserRunConfig contains Redis ACL user authentication configuration.
+// Credentials are read from environment variables for security.
+type ACLUserRunConfig struct {
+	// UsernameEnvVar is the environment variable containing the Redis username.
+	UsernameEnvVar string `json:"usernameEnvVar" yaml:"usernameEnvVar"`
+
+	// PasswordEnvVar is the environment variable containing the Redis password.
+	PasswordEnvVar string `json:"passwordEnvVar" yaml:"passwordEnvVar"`
 }

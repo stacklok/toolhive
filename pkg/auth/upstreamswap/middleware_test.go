@@ -34,31 +34,9 @@ func TestValidateConfig(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name:    "nil config (defaults)",
+			name:    "empty config (defaults)",
 			cfg:     &Config{},
 			wantErr: false,
-		},
-		{
-			name: "valid access_token type",
-			cfg: &Config{
-				TokenType: TokenTypeAccessToken,
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid id_token type",
-			cfg: &Config{
-				TokenType: TokenTypeIDToken,
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid token type",
-			cfg: &Config{
-				TokenType: "invalid",
-			},
-			wantErr: true,
-			errMsg:  "invalid token_type",
 		},
 		{
 			name: "valid replace strategy",
@@ -103,50 +81,6 @@ func TestValidateConfig(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-		})
-	}
-}
-
-func TestSelectToken(t *testing.T) {
-	t.Parallel()
-
-	tokens := &storage.UpstreamTokens{
-		AccessToken: "access-token-value",
-		IDToken:     "id-token-value",
-	}
-
-	tests := []struct {
-		name      string
-		tokenType string
-		want      string
-	}{
-		{
-			name:      "access token (explicit)",
-			tokenType: TokenTypeAccessToken,
-			want:      "access-token-value",
-		},
-		{
-			name:      "access token (default empty)",
-			tokenType: "",
-			want:      "access-token-value",
-		},
-		{
-			name:      "id token",
-			tokenType: TokenTypeIDToken,
-			want:      "id-token-value",
-		},
-		{
-			name:      "unknown type defaults to access",
-			tokenType: "unknown",
-			want:      "access-token-value",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := selectToken(tokens, tt.tokenType)
-			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -365,7 +299,6 @@ func TestMiddleware_SuccessfulSwap_AccessToken(t *testing.T) {
 	}
 
 	cfg := &Config{
-		TokenType:      TokenTypeAccessToken,
 		HeaderStrategy: HeaderStrategyReplace,
 	}
 	middleware := createMiddlewareFunc(cfg, storageGetter)
@@ -394,57 +327,6 @@ func TestMiddleware_SuccessfulSwap_AccessToken(t *testing.T) {
 	assert.Equal(t, "Bearer upstream-access-token", capturedAuthHeader)
 }
 
-func TestMiddleware_SuccessfulSwap_IDToken(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	tokens := &storage.UpstreamTokens{
-		AccessToken: "upstream-access-token",
-		IDToken:     "upstream-id-token",
-		ExpiresAt:   time.Now().Add(1 * time.Hour),
-	}
-
-	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
-	mockStorage.EXPECT().
-		GetUpstreamTokens(gomock.Any(), "session-123").
-		Return(tokens, nil)
-
-	storageGetter := func() storage.UpstreamTokenStorage {
-		return mockStorage
-	}
-
-	cfg := &Config{
-		TokenType:      TokenTypeIDToken,
-		HeaderStrategy: HeaderStrategyReplace,
-	}
-	middleware := createMiddlewareFunc(cfg, storageGetter)
-
-	var capturedAuthHeader string
-	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		capturedAuthHeader = r.Header.Get("Authorization")
-	})
-
-	handler := middleware(nextHandler)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	identity := &auth.Identity{
-		Subject: "user123",
-		Claims: map[string]any{
-			"sub":                          "user123",
-			session.TokenSessionIDClaimKey: "session-123",
-		},
-	}
-	ctx := auth.WithIdentity(req.Context(), identity)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	assert.Equal(t, "Bearer upstream-id-token", capturedAuthHeader)
-}
-
 func TestMiddleware_CustomHeader(t *testing.T) {
 	t.Parallel()
 
@@ -466,7 +348,6 @@ func TestMiddleware_CustomHeader(t *testing.T) {
 	}
 
 	cfg := &Config{
-		TokenType:        TokenTypeAccessToken,
 		HeaderStrategy:   HeaderStrategyCustom,
 		CustomHeaderName: "X-Upstream-Token",
 	}
@@ -572,9 +453,7 @@ func TestMiddleware_EmptySelectedToken(t *testing.T) {
 		return mockStorage
 	}
 
-	cfg := &Config{
-		TokenType: TokenTypeAccessToken, // Selecting empty access token
-	}
+	cfg := &Config{}
 	middleware := createMiddlewareFunc(cfg, storageGetter)
 
 	var nextCalled bool
@@ -710,7 +589,6 @@ func TestCreateMiddleware(t *testing.T) {
 			name: "valid config creates middleware",
 			params: MiddlewareParams{
 				Config: &Config{
-					TokenType:      TokenTypeAccessToken,
 					HeaderStrategy: HeaderStrategyReplace,
 				},
 			},
@@ -746,17 +624,6 @@ func TestCreateMiddleware(t *testing.T) {
 				Config: &Config{
 					HeaderStrategy: HeaderStrategyCustom,
 					// Missing CustomHeaderName
-				},
-			},
-			expectError:         true,
-			errorMsg:            "invalid upstream swap configuration",
-			expectAddMiddleware: false,
-		},
-		{
-			name: "invalid token type fails validation",
-			params: MiddlewareParams{
-				Config: &Config{
-					TokenType: "invalid_token_type",
 				},
 			},
 			expectError:         true,

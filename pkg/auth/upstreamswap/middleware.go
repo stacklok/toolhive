@@ -21,14 +21,6 @@ import (
 // MiddlewareType is the type identifier for upstream swap middleware.
 const MiddlewareType = "upstreamswap"
 
-// Token type constants
-const (
-	// TokenTypeAccessToken uses the upstream access token (default).
-	TokenTypeAccessToken = "access_token"
-	// TokenTypeIDToken uses the upstream ID token.
-	TokenTypeIDToken = "id_token"
-)
-
 // Header injection strategy constants
 const (
 	// HeaderStrategyReplace replaces the Authorization header with the upstream token.
@@ -39,9 +31,6 @@ const (
 
 // Config holds configuration for upstream swap middleware.
 type Config struct {
-	// TokenType specifies which token to inject: "access_token" (default) or "id_token".
-	TokenType string `json:"token_type,omitempty" yaml:"token_type,omitempty"`
-
 	// HeaderStrategy determines how to inject the token: "replace" (default) or "custom".
 	HeaderStrategy string `json:"header_strategy,omitempty" yaml:"header_strategy,omitempty"`
 
@@ -108,12 +97,6 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 // validateConfig validates the upstream swap configuration.
 func validateConfig(cfg *Config) error {
-	// Validate token type
-	if cfg.TokenType != "" && cfg.TokenType != TokenTypeAccessToken && cfg.TokenType != TokenTypeIDToken {
-		return fmt.Errorf("invalid token_type: %s (valid values: '%s', '%s')",
-			cfg.TokenType, TokenTypeAccessToken, TokenTypeIDToken)
-	}
-
 	// Validate header strategy
 	if cfg.HeaderStrategy != "" &&
 		cfg.HeaderStrategy != HeaderStrategyReplace &&
@@ -147,18 +130,6 @@ func createCustomInjector(headerName string) injectionFunc {
 	}
 }
 
-// selectToken selects the appropriate token based on configuration.
-func selectToken(tokens *storage.UpstreamTokens, tokenType string) string {
-	switch tokenType {
-	case TokenTypeIDToken:
-		return tokens.IDToken
-	case TokenTypeAccessToken, "":
-		return tokens.AccessToken
-	default:
-		return tokens.AccessToken
-	}
-}
-
 // createMiddlewareFunc creates the actual middleware function.
 func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.MiddlewareFunction {
 	// Determine injection strategy at startup time
@@ -176,11 +147,6 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 	default:
 		// This shouldn't happen due to validation, but default to replace
 		injectToken = createReplaceInjector()
-	}
-
-	tokenType := cfg.TokenType
-	if tokenType == "" {
-		tokenType = TokenTypeAccessToken
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -212,7 +178,7 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 			// 4. Lookup upstream tokens
 			tokens, err := stor.GetUpstreamTokens(r.Context(), tsid)
 			if err != nil {
-				logger.Debugf("upstreamswap: failed to get upstream tokens: %v", err)
+				logger.Warnf("upstreamswap: failed to get upstream tokens: %v", err)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -223,16 +189,15 @@ func createMiddlewareFunc(cfg *Config, storageGetter StorageGetter) types.Middle
 				// Continue with expired token - backend will reject if needed
 			}
 
-			// 6. Select and inject token
-			token := selectToken(tokens, tokenType)
-			if token == "" {
-				logger.Warnf("upstreamswap: selected token type %s is empty", tokenType)
+			// 6. Inject access token
+			if tokens.AccessToken == "" {
+				logger.Warn("upstreamswap: access token is empty")
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			injectToken(r, token)
-			logger.Debugf("upstreamswap: injected upstream %s token", tokenType)
+			injectToken(r, tokens.AccessToken)
+			logger.Debug("upstreamswap: injected upstream access token")
 
 			next.ServeHTTP(w, r)
 		})

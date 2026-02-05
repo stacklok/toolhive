@@ -266,7 +266,6 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			config: &RunConfig{
 				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
 				UpstreamSwapConfig: &upstreamswap.Config{
-					TokenType:      upstreamswap.TokenTypeIDToken,
 					HeaderStrategy: upstreamswap.HeaderStrategyReplace,
 				},
 			},
@@ -310,7 +309,6 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			if tt.config.UpstreamSwapConfig != nil {
 				// Should use the provided config
 				require.NotNil(t, params.Config)
-				assert.Equal(t, tt.config.UpstreamSwapConfig.TokenType, params.Config.TokenType)
 				assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
 				assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
 			} else {
@@ -349,7 +347,6 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 		name               string
 		config             *RunConfig
 		wantUpstreamSwap   bool
-		wantTokenType      string
 		wantHeaderStrategy string
 	}{
 		{
@@ -367,12 +364,10 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 			config: &RunConfig{
 				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
 				UpstreamSwapConfig: &upstreamswap.Config{
-					TokenType:      upstreamswap.TokenTypeIDToken,
 					HeaderStrategy: upstreamswap.HeaderStrategyReplace,
 				},
 			},
 			wantUpstreamSwap:   true,
-			wantTokenType:      upstreamswap.TokenTypeIDToken,
 			wantHeaderStrategy: upstreamswap.HeaderStrategyReplace,
 		},
 	}
@@ -397,11 +392,10 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 				"upstream-swap middleware presence mismatch")
 
 			// Verify config values if we expect the middleware and have specific expectations
-			if found && tt.wantTokenType != "" {
+			if found && tt.wantHeaderStrategy != "" {
 				var params upstreamswap.MiddlewareParams
 				require.NoError(t, json.Unmarshal(foundConfig.Parameters, &params))
 				require.NotNil(t, params.Config)
-				assert.Equal(t, tt.wantTokenType, params.Config.TokenType)
 				assert.Equal(t, tt.wantHeaderStrategy, params.Config.HeaderStrategy)
 			}
 		})

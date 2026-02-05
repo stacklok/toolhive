@@ -135,14 +135,13 @@ sequenceDiagram
 **Responsibilities**:
 - Extract the token session ID (`tsid`) claim from the ToolHive JWT
 - Look up the stored upstream IdP tokens associated with that session
-- Inject the upstream IdP token into the request (replacing Authorization header or using a custom header)
+- Inject the upstream access token into the request (replacing Authorization header or using a custom header)
 - Gracefully proceed without modification if tokens are unavailable or expired
 
 **Configuration**:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `token_type` | string | `"access_token"` | Which token to inject: `"access_token"` or `"id_token"` |
 | `header_strategy` | string | `"replace"` | How to inject: `"replace"` (overwrite Authorization) or `"custom"` (add to custom header) |
 | `custom_header_name` | string | - | Required when `header_strategy` is `"custom"` |
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -135,30 +137,48 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 	tests := []struct {
 		name         string
 		mcpMethod    string
+		resourceID   string
 		httpMethod   string
 		path         string
 		expectedSpan string
 	}{
 		{
-			name:         "with MCP method",
+			name:         "tools/call with target",
 			mcpMethod:    "tools/call",
+			resourceID:   "github_search",
 			httpMethod:   "POST",
 			path:         "/messages",
-			expectedSpan: "mcp.tools/call",
+			expectedSpan: "tools/call github_search",
 		},
 		{
 			name:         "without MCP method",
 			mcpMethod:    "",
 			httpMethod:   "GET",
 			path:         "/health",
-			expectedSpan: "GET /health",
+			expectedSpan: "",
 		},
 		{
-			name:         "with different MCP method",
+			name:         "resources/read without target in span name",
 			mcpMethod:    "resources/read",
+			resourceID:   "file://test.txt",
 			httpMethod:   "POST",
 			path:         "/api/v1/messages",
-			expectedSpan: "mcp.resources/read",
+			expectedSpan: "resources/read",
+		},
+		{
+			name:         "prompts/get with target",
+			mcpMethod:    "prompts/get",
+			resourceID:   "my_prompt",
+			httpMethod:   "POST",
+			path:         "/messages",
+			expectedSpan: "prompts/get my_prompt",
+		},
+		{
+			name:         "tools/list without target",
+			mcpMethod:    "tools/list",
+			httpMethod:   "POST",
+			path:         "/messages",
+			expectedSpan: "tools/list",
 		},
 	}
 
@@ -166,17 +186,17 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequest(tt.httpMethod, tt.path, nil)
-			ctx := req.Context()
+			ctx := context.Background()
 
 			if tt.mcpMethod != "" {
 				mcpRequest := &mcpparser.ParsedMCPRequest{
-					Method: tt.mcpMethod,
+					Method:     tt.mcpMethod,
+					ResourceID: tt.resourceID,
 				}
 				ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, mcpRequest)
 			}
 
-			spanName := middleware.createSpanName(ctx, req)
+			spanName := middleware.createSpanName(ctx)
 			assert.Equal(t, tt.expectedSpan, spanName)
 		})
 	}
@@ -754,28 +774,92 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	// Verify metrics were recorded
 	assert.NotEmpty(t, rm.ScopeMetrics)
 
-	// Find our metrics
-	var foundCounter, foundHistogram, foundGauge bool
+	// Find our metrics (both legacy and standard)
+	var foundCounter, foundHistogram, foundGauge, foundOperationDuration bool
 	for _, sm := range rm.ScopeMetrics {
-		for _, metric := range sm.Metrics {
-			switch metric.Name {
+		for _, m := range sm.Metrics {
+			switch m.Name {
 			case "toolhive_mcp_requests":
 				foundCounter = true
 			case "toolhive_mcp_request_duration":
 				foundHistogram = true
 			case "toolhive_mcp_active_connections":
 				foundGauge = true
+			case "mcp.server.operation.duration":
+				foundOperationDuration = true
 			}
 		}
 	}
 
-	assert.True(t, foundCounter, "Request counter metric should be recorded")
-	assert.True(t, foundHistogram, "Request duration histogram should be recorded")
+	assert.True(t, foundCounter, "Legacy request counter metric should be recorded")
+	assert.True(t, foundHistogram, "Legacy request duration histogram should be recorded")
 	assert.True(t, foundGauge, "Active connections gauge should be recorded")
+	assert.True(t, foundOperationDuration, "Standard mcp.server.operation.duration metric should be recorded")
 }
 
-func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
+func TestHTTPMiddleware_WithRealMetrics_OperationDurationAttributes(t *testing.T) {
 	t.Parallel()
+
+	// Create a real meter provider for testing metrics
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	config := Config{
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+	}
+	tracerProvider := tracenoop.NewTracerProvider()
+
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "sse")
+
+	// Create test handler
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test"))
+	})
+
+	wrappedHandler := middleware(testHandler)
+
+	// Create MCP request with tools/call
+	mcpRequest := &mcpparser.ParsedMCPRequest{
+		Method:     "tools/call",
+		ID:         "test-1",
+		ResourceID: "my_tool",
+		IsRequest:  true,
+	}
+
+	req := httptest.NewRequest("POST", "/messages", nil)
+	ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(rec, req)
+
+	// Collect metrics
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	// Find the mcp.server.operation.duration metric and verify attributes
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "mcp.server.operation.duration" {
+				histogram, ok := m.Data.(metricdata.Histogram[float64])
+				require.True(t, ok, "Expected Histogram data type")
+				require.NotEmpty(t, histogram.DataPoints)
+
+				dp := histogram.DataPoints[0]
+				// Verify standard attribute names
+				assertHasAttribute(t, dp.Attributes, "mcp.method.name", "tools/call")
+				assertHasAttribute(t, dp.Attributes, "network.transport", "tcp")
+				assertHasAttribute(t, dp.Attributes, "mcp.protocol.version", mcpProtocolVersion)
+				assertHasAttribute(t, dp.Attributes, "gen_ai.tool.name", "my_tool")
+				assertHasAttribute(t, dp.Attributes, "gen_ai.operation.name", "execute_tool")
+			}
+		}
+	}
+}
+
+func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) { //nolint:paralleltest,tparallel // Mutates process-wide env vars via os.Setenv; subtests are parallel with each other but parent is not
 	// Setup test environment variables
 	originalEnv1 := os.Getenv("TEST_ENV_1")
 	originalEnv2 := os.Getenv("TEST_ENV_2")
@@ -861,20 +945,256 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 				"Expected %d attributes, got %d", tt.expectedAttrs, len(mockSpan.attributes))
 
 			// Verify specific attributes for known environment variables
-			if contains(tt.envVars, "TEST_ENV_1") {
+			if slices.Contains(tt.envVars, "TEST_ENV_1") {
 				assert.Equal(t, "value1", mockSpan.attributes["environment.TEST_ENV_1"])
 			}
-			if contains(tt.envVars, "TEST_ENV_2") {
+			if slices.Contains(tt.envVars, "TEST_ENV_2") {
 				assert.Equal(t, "value2", mockSpan.attributes["environment.TEST_ENV_2"])
 			}
-			if contains(tt.envVars, "TEST_ENV_3") {
+			if slices.Contains(tt.envVars, "TEST_ENV_3") {
 				assert.Equal(t, "", mockSpan.attributes["environment.TEST_ENV_3"])
 			}
-			if contains(tt.envVars, "NON_EXISTENT_VAR") {
+			if slices.Contains(tt.envVars, "NON_EXISTENT_VAR") {
 				assert.Equal(t, "", mockSpan.attributes["environment.NON_EXISTENT_VAR"])
 			}
 		})
 	}
+}
+
+func TestMapTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		transport       string
+		wantNetwork     string
+		wantProtocol    string
+		wantProtocolVer string
+	}{
+		{
+			name:            "stdio maps to pipe",
+			transport:       "stdio",
+			wantNetwork:     "pipe",
+			wantProtocol:    "",
+			wantProtocolVer: "",
+		},
+		{
+			name:            "sse maps to tcp with http 1.1",
+			transport:       "sse",
+			wantNetwork:     "tcp",
+			wantProtocol:    "http",
+			wantProtocolVer: "1.1",
+		},
+		{
+			name:            "streamable-http maps to tcp with http 2",
+			transport:       "streamable-http",
+			wantNetwork:     "tcp",
+			wantProtocol:    "http",
+			wantProtocolVer: "2",
+		},
+		{
+			name:            "unknown defaults to tcp",
+			transport:       "unknown",
+			wantNetwork:     "tcp",
+			wantProtocol:    "http",
+			wantProtocolVer: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			network, protocol, version := mapTransport(tt.transport)
+			assert.Equal(t, tt.wantNetwork, network)
+			assert.Equal(t, tt.wantProtocol, protocol)
+			assert.Equal(t, tt.wantProtocolVer, version)
+		})
+	}
+}
+
+func TestParseRemoteAddr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		addr     string
+		wantHost string
+		wantPort int
+	}{
+		{
+			name:     "standard IPv4 with port",
+			addr:     "192.168.1.1:8080",
+			wantHost: "192.168.1.1",
+			wantPort: 8080,
+		},
+		{
+			name:     "loopback with port",
+			addr:     "127.0.0.1:54321",
+			wantHost: "127.0.0.1",
+			wantPort: 54321,
+		},
+		{
+			name:     "empty address",
+			addr:     "",
+			wantHost: "",
+			wantPort: 0,
+		},
+		{
+			name:     "IPv6 with port",
+			addr:     "[::1]:8080",
+			wantHost: "::1",
+			wantPort: 8080,
+		},
+		{
+			name:     "no port",
+			addr:     "192.168.1.1",
+			wantHost: "192.168.1.1",
+			wantPort: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			host, port := parseRemoteAddr(tt.addr)
+			assert.Equal(t, tt.wantHost, host)
+			assert.Equal(t, tt.wantPort, port)
+		})
+	}
+}
+
+func TestHTTPMiddleware_MCP_StandardAttributes(t *testing.T) {
+	t.Parallel()
+
+	middleware := &HTTPMiddleware{
+		serverName: "github",
+		transport:  "streamable-http",
+	}
+
+	// Create a mock span to capture attributes
+	mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+
+	mcpRequest := &mcpparser.ParsedMCPRequest{
+		Method:     "tools/call",
+		ID:         "test-123",
+		ResourceID: "github_search",
+		Arguments: map[string]interface{}{
+			"query": "test",
+		},
+		Meta: map[string]interface{}{
+			"sessionId": "session-abc",
+		},
+		IsRequest: true,
+	}
+
+	req := httptest.NewRequest("POST", "/messages", nil)
+	req.RemoteAddr = "192.168.1.100:54321"
+	ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+	middleware.addMCPAttributes(ctx, mockSpan, req)
+
+	// Verify standard attribute names (renamed from legacy names)
+	assert.Equal(t, "tools/call", mockSpan.attributes["mcp.method.name"])
+	assert.Equal(t, mcpProtocolVersion, mockSpan.attributes["mcp.protocol.version"])
+	assert.Equal(t, "test-123", mockSpan.attributes["jsonrpc.request.id"])
+	assert.Equal(t, "github_search", mockSpan.attributes["mcp.resource.uri"])
+	assert.Equal(t, "github_search", mockSpan.attributes["gen_ai.tool.name"])
+	assert.Equal(t, "execute_tool", mockSpan.attributes["gen_ai.operation.name"])
+	assert.Equal(t, "tcp", mockSpan.attributes["network.transport"])
+	assert.Equal(t, "http", mockSpan.attributes["network.protocol.name"])
+	assert.Equal(t, "2", mockSpan.attributes["network.protocol.version"])
+	assert.Equal(t, "192.168.1.100", mockSpan.attributes["client.address"])
+	assert.Equal(t, int64(54321), mockSpan.attributes["client.port"])
+	assert.Equal(t, "session-abc", mockSpan.attributes["mcp.session.id"])
+
+	// Verify removed attributes are NOT present
+	assert.Nil(t, mockSpan.attributes["rpc.system"])
+	assert.Nil(t, mockSpan.attributes["rpc.service"])
+	assert.Nil(t, mockSpan.attributes["mcp.method"])
+	assert.Nil(t, mockSpan.attributes["mcp.request.id"])
+	assert.Nil(t, mockSpan.attributes["mcp.resource.id"])
+	assert.Nil(t, mockSpan.attributes["mcp.transport"])
+	assert.Nil(t, mockSpan.attributes["mcp.tool.name"])
+	assert.Nil(t, mockSpan.attributes["mcp.tool.arguments"])
+}
+
+func TestHTTPMiddleware_MCP_PromptAttributes(t *testing.T) {
+	t.Parallel()
+
+	middleware := &HTTPMiddleware{
+		serverName: "github",
+		transport:  "sse",
+	}
+
+	mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+
+	mcpRequest := &mcpparser.ParsedMCPRequest{
+		Method:     "prompts/get",
+		ID:         "test-456",
+		ResourceID: "my_prompt",
+		IsRequest:  true,
+	}
+
+	req := httptest.NewRequest("POST", "/messages", nil)
+	ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+	middleware.addMCPAttributes(ctx, mockSpan, req)
+
+	// Verify standard attribute names for prompts
+	assert.Equal(t, "my_prompt", mockSpan.attributes["gen_ai.prompt.name"])
+	assert.Nil(t, mockSpan.attributes["mcp.prompt.name"])
+}
+
+func TestHTTPMiddleware_RecordSessionEnd(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := tracenoop.NewTracerProvider()
+
+	config := Config{
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+	}
+
+	middlewareFn := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "sse")
+
+	// Get the actual middleware struct via the closure
+	// We need to test RecordSessionEnd, so we create the middleware manually
+	meter := meterProvider.Meter(instrumentationName)
+	sessionDuration, _ := meter.Float64Histogram(
+		"mcp.server.session.duration",
+		metric.WithDescription("Duration of MCP server sessions"),
+		metric.WithUnit("s"),
+	)
+
+	mw := &HTTPMiddleware{
+		transport:       "sse",
+		sessions:        make(map[string]time.Time),
+		sessionDuration: sessionDuration,
+	}
+
+	// Record a session start
+	mw.sessionsMu.Lock()
+	mw.sessions["test-session"] = time.Now().Add(-5 * time.Second) // Started 5 seconds ago
+	mw.sessionsMu.Unlock()
+
+	// Record the session end
+	mw.RecordSessionEnd(context.Background(), "test-session")
+
+	// Verify the session was removed
+	mw.sessionsMu.Lock()
+	_, exists := mw.sessions["test-session"]
+	mw.sessionsMu.Unlock()
+	assert.False(t, exists, "Session should be removed after RecordSessionEnd")
+
+	// Verify that RecordSessionEnd for non-existent session is a no-op
+	mw.RecordSessionEnd(context.Background(), "non-existent")
+
+	// Verify middleware function exists
+	assert.NotNil(t, middlewareFn)
 }
 
 // mockSpan implements trace.Span for testing
@@ -898,14 +1218,14 @@ func (*mockSpan) SetStatus(codes.Code, string)            {}
 func (*mockSpan) SetName(string)                          {}
 func (*mockSpan) TracerProvider() trace.TracerProvider    { return tracenoop.NewTracerProvider() }
 
-// contains checks if a slice contains a string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
+// assertHasAttribute checks that an attribute set contains a specific key-value pair
+func assertHasAttribute(t *testing.T, attrs attribute.Set, key, expectedValue string) {
+	t.Helper()
+	val, found := attrs.Value(attribute.Key(key))
+	assert.True(t, found, "Expected attribute %q to be present", key)
+	if found {
+		assert.Equal(t, expectedValue, val.AsString(), "Attribute %q value mismatch", key)
 	}
-	return false
 }
 
 // Factory Middleware Tests

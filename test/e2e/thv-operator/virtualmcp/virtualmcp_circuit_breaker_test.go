@@ -277,16 +277,11 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			return false
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Waiting for circuit breaker to detect failures and open")
-		// Circuit breaker needs cbFailureThreshold consecutive failures
-		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
-		// Circuit opens after 3rd failure at ~12s. Add buffer for pod termination and processing.
-		// Calculation: (threshold-1) × interval + threshold × timeout = 2×5s + 3×2s = 10s + 6s = 16s + 5s buffer = 21s
-		failureDetectionTime := time.Duration(cbFailureThreshold-1)*cbHealthCheckInterval +
-			time.Duration(cbFailureThreshold)*cbHealthCheckTimeout
-		time.Sleep(failureDetectionTime + 5*time.Second)
-
 		By("Verifying circuit breaker opened for unstable backend")
+		// Circuit breaker needs cbFailureThreshold consecutive failures to open.
+		// With cbFailureThreshold=3, cbHealthCheckInterval=5s, cbHealthCheckTimeout=2s:
+		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
+		// Circuit opens after 3rd failure at ~12s. Eventually() polls until condition is met.
 		Eventually(func() error {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{

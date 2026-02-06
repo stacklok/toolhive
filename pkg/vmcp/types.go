@@ -203,6 +203,22 @@ type DiscoveredBackend struct {
 	// Message provides additional information about the backend status
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+	// Empty when circuit breaker is disabled or not configured.
+	// +optional
+	// +kubebuilder:validation:Enum=closed;open;half-open
+	CircuitBreakerState string `json:"circuitBreakerState,omitempty"`
+
+	// CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+	// Empty when circuit breaker is disabled or has never changed state.
+	// +optional
+	CircuitLastChanged metav1.Time `json:"circuitLastChanged,omitempty"`
+
+	// ConsecutiveFailures is the current count of consecutive health check failures.
+	// Resets to 0 when the backend becomes healthy again.
+	// +optional
+	ConsecutiveFailures int `json:"consecutiveFailures,omitempty"`
 }
 
 // DeepCopyInto copies the receiver into out. Required for Kubernetes CRD types.

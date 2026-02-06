@@ -359,18 +359,24 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for the proxy to reach Failed phase due to missing ExternalAuthConfig")
 				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
-				By("verifying the error message indicates the config was not found")
-				status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.Message).To(ContainSubstring("non-existent-auth-config"))
+				By("verifying the AuthConfigured condition indicates invalid auth")
+				statusHelper.WaitForConditionReason(
+					proxy.Name,
+					mcpv1alpha1.ConditionTypeAuthConfigured,
+					mcpv1alpha1.ConditionReasonAuthInvalid,
+					MediumTimeout,
+				)
 
-				By("verifying the AuthConfigured condition is False")
 				condition, err := proxyHelper.GetRemoteProxyCondition(
 					proxy.Name, mcpv1alpha1.ConditionTypeAuthConfigured,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-				Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonAuthInvalid))
+
+				By("verifying the error message indicates the config was not found")
+				status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.Message).To(ContainSubstring("non-existent-auth-config"))
 			})
 
 			It("should successfully reconcile when referenced MCPExternalAuthConfig exists", func() {

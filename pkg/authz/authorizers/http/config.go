@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package http provides authorization using HTTP-based Policy Decision Points (PDPs).
 package http
 
@@ -26,6 +29,12 @@ type ConfigOptions struct {
 	// Context configures what context information is included in the PORC.
 	// By default, no MCP context is included in the PORC.
 	Context *ContextConfig `json:"context,omitempty" yaml:"context,omitempty"`
+
+	// ClaimMapping specifies which claim mapper to use for mapping JWT claims
+	// to principal attributes. This field is required. Valid values: "mpe", "standard".
+	// - "mpe": Uses MPE-specific m-prefixed claims (mroles, mgroups, mclearance, mannotations)
+	// - "standard": Uses standard OIDC claim names (roles, groups)
+	ClaimMapping string `json:"claim_mapping,omitempty" yaml:"claim_mapping,omitempty"`
 }
 
 // ContextConfig configures what context information is included in the PORC.
@@ -76,6 +85,16 @@ func (c *ConfigOptions) Validate() error {
 		return fmt.Errorf("http.url is required")
 	}
 
+	// Validate claim_mapping is specified
+	if c.ClaimMapping == "" {
+		return fmt.Errorf("claim_mapping is required (valid values: mpe, standard)")
+	}
+
+	// Validate claim_mapping value
+	if c.ClaimMapping != "mpe" && c.ClaimMapping != "standard" {
+		return fmt.Errorf("invalid claim_mapping %q (valid values: mpe, standard)", c.ClaimMapping)
+	}
+
 	return nil
 }
 
@@ -85,4 +104,22 @@ func (c *ConfigOptions) GetContextConfig() ContextConfig {
 		return ContextConfig{}
 	}
 	return *c.Context
+}
+
+// GetClaimMapping returns the configured claim mapping type.
+// The claim_mapping field is required and validated, so this will never return an empty string.
+func (c *ConfigOptions) GetClaimMapping() string {
+	return c.ClaimMapping
+}
+
+// CreateClaimMapper creates a ClaimMapper based on the configured claim mapping type.
+func (c *ConfigOptions) CreateClaimMapper() (ClaimMapper, error) {
+	switch c.GetClaimMapping() {
+	case "mpe":
+		return &MPEClaimMapper{}, nil
+	case "standard":
+		return &StandardClaimMapper{}, nil
+	default:
+		return nil, fmt.Errorf("unknown claim mapping type: %s (valid values: mpe, standard)", c.ClaimMapping)
+	}
 }

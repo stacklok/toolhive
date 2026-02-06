@@ -10,8 +10,19 @@
 version: "1.0"
 type: httpv1
 pdp:
-  mode: http
   http:
     url: "http://localhost:9000"
     timeout: 30                    # Request timeout in seconds (default: 30)
     insecure_skip_verify: false    # Skip TLS certificate verification (default: false)
+
+  # Claim mapping controls how JWT claims are mapped to principal attributes (REQUIRED)
+  # Options: "mpe", "standard"
+  # - "mpe": Maps to MPE-specific m-prefixed claims (mroles, mgroups, mclearance, mannotations)
+  # - "standard": Uses standard OIDC claim names (roles, groups)
+  claim_mapping: "mpe"             # Required: Must specify claim mapper type
+
+  # Context configuration controls what MCP-specific information is included
+  # in the PORC context object. By default, no MCP context is included.
+  context:
+    include_args: false            # Include tool/prompt arguments in context.mcp.args
+    include_operation: false       # Include feature, operation, resource_id in context.mcp

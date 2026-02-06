@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
@@ -19,15 +22,18 @@ type Context map[string]interface{}
 // PORCBuilder builds PORC (Principal-Operation-Resource-Context) expressions
 // from MCP authorization parameters for use with HTTP-based PDPs.
 type PORCBuilder struct {
-	serverId      string
+	serverID      string
 	contextConfig ContextConfig
+	claimMapper   ClaimMapper
 }
 
-// NewPORCBuilder creates a new PORC builder with the given server ID and context configuration.
-func NewPORCBuilder(serverId string, contextConfig ContextConfig) *PORCBuilder {
+// NewPORCBuilder creates a new PORC builder with the given server ID, context configuration,
+// and claim mapper.
+func NewPORCBuilder(serverID string, contextConfig ContextConfig, claimMapper ClaimMapper) *PORCBuilder {
 	return &PORCBuilder{
-		serverId:      serverId,
+		serverID:      serverID,
 		contextConfig: contextConfig,
+		claimMapper:   claimMapper,
 	}
 }
 
@@ -61,83 +67,34 @@ func (b *PORCBuilder) Build(
 	return porc
 }
 
-// BuildPORC is a wrapper for PORCBuilder.Build() with all context enabled (for testing).
-func BuildPORC(
+// buildPORC is a test helper that creates a PORC with all context options enabled.
+// This function is only intended for use in tests within this package.
+func buildPORC(
 	feature authorizers.MCPFeature,
 	operation authorizers.MCPOperation,
 	resourceID string,
 	claims map[string]interface{},
 	arguments map[string]interface{},
 ) PORC {
-	// Use a config with all context enabled for backward compatibility in tests
+	// Use a config with all context enabled and MPE claim mapper for testing
 	contextConfig := ContextConfig{
 		IncludeArgs:      true,
 		IncludeOperation: true,
 	}
-	return NewPORCBuilder("test", contextConfig).Build(feature, operation, resourceID, claims, arguments)
+	claimMapper := &MPEClaimMapper{}
+	return NewPORCBuilder("test", contextConfig, claimMapper).Build(feature, operation, resourceID, claims, arguments)
 }
 
-// buildPrincipal constructs the principal object from JWT claims.
-// It maps standard JWT claims to principal attributes:
-//   - sub -> sub (subject identifier)
-//   - roles/mroles -> mroles (roles)
-//   - groups/mgroups -> mgroups (groups)
-//   - scope/scopes -> scopes (access scopes)
-//   - clearance/mclearance -> mclearance (clearance level)
+// buildPrincipal constructs the principal object from JWT claims using the configured ClaimMapper.
+// The claim mapping is delegated to the ClaimMapper, which can be configured to use different
+// conventions (e.g., MPE-specific m-prefixed claims or standard OIDC claims).
 //
-// Note: Returns map[string]interface{} (not Principal type alias) to ensure
-// the PDP can properly unmarshal the PORC structure for identity phase evaluation.
-func (*PORCBuilder) buildPrincipal(claims map[string]interface{}) map[string]interface{} {
-	principal := make(map[string]interface{})
-
-	if claims == nil {
-		return principal
-	}
-
-	// Map standard JWT claims
-	if sub, ok := claims["sub"]; ok {
-		principal["sub"] = sub
-	}
-
-	// Map roles (check both 'roles' and 'mroles')
-	if roles, ok := claims["mroles"]; ok {
-		principal["mroles"] = roles
-	} else if roles, ok := claims["roles"]; ok {
-		principal["mroles"] = roles
-	}
-
-	// Map groups (check both 'groups' and 'mgroups')
-	if groups, ok := claims["mgroups"]; ok {
-		principal["mgroups"] = groups
-	} else if groups, ok := claims["groups"]; ok {
-		principal["mgroups"] = groups
-	}
-
-	// Map scopes (check both 'scope' and 'scopes')
-	if scopes, ok := claims["scopes"]; ok {
-		principal["scopes"] = scopes
-	} else if scope, ok := claims["scope"]; ok {
-		principal["scopes"] = scope
-	}
-
-	// Map clearance level
-	if clearance, ok := claims["mclearance"]; ok {
-		principal["mclearance"] = clearance
-	} else if clearance, ok := claims["clearance"]; ok {
-		principal["mclearance"] = clearance
-	}
-
-	// Map annotations (initialize empty if not present for identity phase)
-	if annotations, ok := claims["mannotations"]; ok {
-		principal["mannotations"] = annotations
-	} else if annotations, ok := claims["annotations"]; ok {
-		principal["mannotations"] = annotations
-	} else {
-		// Some PDPs require mannotations to be present for identity phase evaluation
-		principal["mannotations"] = make(map[string]interface{})
-	}
-
-	return principal
+// Note: Returns map[string]interface{} (the concrete type) rather than the Principal type alias
+// for clarity and to match the ClaimMapper interface. Both types are equivalent for JSON
+// marshaling, but using the concrete type avoids unnecessary type assertions and makes the
+// return value explicit.
+func (b *PORCBuilder) buildPrincipal(claims map[string]interface{}) map[string]interface{} {
+	return b.claimMapper.MapClaims(claims)
 }
 
 // buildOperation constructs the operation string from MCP feature and operation.
@@ -152,18 +109,19 @@ func (*PORCBuilder) buildOperation(feature authorizers.MCPFeature, operation aut
 }
 
 // buildResource constructs the resource identifier.
-// Format: "mrn:mcp:<serverId>:<feature>:<resourceID>"
+// Format: "mrn:mcp:<serverID>:<feature>:<resourceID>"
 // Examples:
 //   - "mrn:mcp:myserver:tool:weather" for the weather tool
 //   - "mrn:mcp:myserver:prompt:greeting" for the greeting prompt
 //   - "mrn:mcp:myserver:resource:file://data.json" for a resource
 func (b *PORCBuilder) buildResource(feature authorizers.MCPFeature, resourceID string) string {
-	return fmt.Sprintf("mrn:mcp:%s:%s:%s", b.serverId, feature, resourceID)
+	return fmt.Sprintf("mrn:mcp:%s:%s:%s", b.serverID, feature, resourceID)
 }
 
 // buildContext constructs the context object with additional metadata.
-// Note: Returns map[string]interface{} (not Context type alias) to ensure
-// the PDP can properly unmarshal the PORC structure.
+// Note: Returns map[string]interface{} (the concrete type) rather than the Context type alias
+// for clarity. Both types are equivalent for JSON marshaling, but using the concrete type
+// makes the return value explicit and avoids unnecessary type assertions.
 //
 // The context may include an "mcp" object with the following fields, depending
 // on the ContextConfig settings:
@@ -171,6 +129,15 @@ func (b *PORCBuilder) buildResource(feature authorizers.MCPFeature, resourceID s
 //   - operation: The MCP operation (call, get, read, list) - if IncludeOperation is true
 //   - resource_id: The resource identifier - if IncludeOperation is true
 //   - args: Tool/prompt arguments (if present) - if IncludeArgs is true
+//
+// Important: The "mcp" object is only included in the context if it would contain
+// at least one field. This means:
+//   - If both IncludeOperation and IncludeArgs are false, returns an empty context {}
+//   - If only IncludeArgs is true but arguments is nil/empty, returns an empty context {}
+//   - If only IncludeOperation is true, returns context with mcp object containing operation fields
+//   - If both are true and arguments exist, returns context with all enabled fields
+//
+// This prevents empty mcp objects from being included in the PORC, keeping it minimal.
 func (b *PORCBuilder) buildContext(
 	feature authorizers.MCPFeature,
 	operation authorizers.MCPOperation,

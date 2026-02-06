@@ -1,12 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-
-	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
@@ -46,6 +46,11 @@ func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, serverName string) (
 		return nil, fmt.Errorf("pdp configuration is required (missing 'pdp' field)")
 	}
 
+	// Validate configuration before creating the authorizer
+	if err := config.Options.Validate(); err != nil {
+		return nil, err
+	}
+
 	return NewAuthorizer(*config.Options, serverName)
 }
 
@@ -63,6 +68,9 @@ type Authorizer struct {
 }
 
 // NewAuthorizer creates a new HTTP PDP authorizer from the provided configuration.
+// Note: This function validates the config as a defensive measure, even though the
+// factory also validates. This protects against direct calls to NewAuthorizer that
+// bypass the factory.
 func NewAuthorizer(config ConfigOptions, serverName string) (*Authorizer, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -74,10 +82,16 @@ func NewAuthorizer(config ConfigOptions, serverName string) (*Authorizer, error)
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
+	// Create the claim mapper based on configuration
+	claimMapper, err := config.CreateClaimMapper()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create claim mapper: %w", err)
+	}
+
 	return &Authorizer{
 		config:      config,
 		pdp:         p,
-		porcBuilder: NewPORCBuilder(serverName, config.GetContextConfig()),
+		porcBuilder: NewPORCBuilder(serverName, config.GetContextConfig(), claimMapper),
 	}, nil
 }
 
@@ -97,11 +111,8 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, fmt.Errorf("missing principal: no identity in context")
 	}
 
-	// Convert identity claims to a map
-	claims := jwt.MapClaims(identity.Claims)
-
-	// Build PORC expression
-	porc := a.porcBuilder.Build(feature, operation, resourceID, claims, arguments)
+	// Build PORC expression using identity claims
+	porc := a.porcBuilder.Build(feature, operation, resourceID, identity.Claims, arguments)
 
 	// Log the authorization request
 	logger.Debugf("HTTP PDP authorization check - Operation: %s, Resource: %s",
@@ -122,9 +133,7 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 // Close releases resources used by the authorizer.
 func (a *Authorizer) Close() error {
 	if a.pdp != nil {
-		if closer, ok := a.pdp.(io.Closer); ok {
-			return closer.Close()
-		}
+		return a.pdp.Close()
 	}
 	return nil
 }

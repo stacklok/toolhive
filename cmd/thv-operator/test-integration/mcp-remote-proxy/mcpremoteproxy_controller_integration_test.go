@@ -469,7 +469,14 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status.Message).To(ContainSubstring("non-existent-auth-config"))
-			Expect(status.Message).To(ContainSubstring("not found"))
+
+			By("verifying the AuthConfigured condition is False")
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeAuthConfigured,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonAuthInvalid))
 		})
 
 		It("should successfully reconcile when referenced MCPExternalAuthConfig exists", func() {
@@ -524,6 +531,15 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status.ExternalAuthConfigHash).NotTo(BeEmpty())
+
+			By("verifying the ExternalAuthConfigValidated condition is True")
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid))
+			Expect(condition.Message).To(ContainSubstring("test-auth-config"))
 
 			By("cleaning up the auth config")
 			Expect(k8sClient.Delete(testCtx, authConfig)).To(Succeed())
@@ -627,12 +643,23 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 			By("waiting for the proxy to reach Failed phase due to missing ToolConfig")
 			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
-			By("verifying the phase is Failed (controller logs the error but doesn't set status.Message)")
-			// Note: The controller currently doesn't set status.Message when ToolConfig validation fails
-			// (only sets phase to Failed). This is tracked in issue #3607.
-			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
+			By("verifying the ToolConfigValidated condition indicates not found")
+			Eventually(func() bool {
+				condition, err := proxyHelper.GetRemoteProxyCondition(
+					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+				)
+				if err != nil {
+					return false
+				}
+				return condition.Status == metav1.ConditionFalse &&
+					condition.Reason == mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigNotFound
+			}, MediumTimeout, DefaultPollingInterval).Should(BeTrue())
+
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(status.Phase).To(Equal(mcpv1alpha1.MCPRemoteProxyPhaseFailed))
+			Expect(condition.Message).To(ContainSubstring("non-existent-tool-config"))
 		})
 
 		It("should successfully reconcile when referenced MCPToolConfig exists", func() {
@@ -680,6 +707,15 @@ var _ = Describe("MCPRemoteProxy Controller Integration with Other Resources", L
 			status, err := proxyHelper.GetRemoteProxyStatus(proxy.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status.ToolConfigHash).NotTo(BeEmpty())
+
+			By("verifying the ToolConfigValidated condition is True")
+			condition, err := proxyHelper.GetRemoteProxyCondition(
+				proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid))
+			Expect(condition.Message).To(ContainSubstring("test-tool-config"))
 
 			By("cleaning up the tool config")
 			Expect(k8sClient.Delete(testCtx, toolConfig)).To(Succeed())

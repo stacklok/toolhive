@@ -108,6 +108,66 @@ func (h *MCPRemoteProxyTestHelper) WaitForRoleBinding(name string, timeout time.
 	return roleBinding
 }
 
+// WaitForExternalAuthConfigHash waits for the proxy to have a non-empty ExternalAuthConfigHash and returns it.
+func (h *MCPRemoteProxyTestHelper) WaitForExternalAuthConfigHash(name string, timeout time.Duration) string {
+	var hash string
+	gomega.Eventually(func() string {
+		p, err := h.GetRemoteProxy(name)
+		if err != nil {
+			return ""
+		}
+		hash = p.Status.ExternalAuthConfigHash
+		return hash
+	}, timeout, DefaultPollingInterval).ShouldNot(gomega.BeEmpty(),
+		"MCPRemoteProxy %s should have ExternalAuthConfigHash set", name)
+	return hash
+}
+
+// WaitForExternalAuthConfigHashChange waits for the proxy's ExternalAuthConfigHash to change from the previous value.
+func (h *MCPRemoteProxyTestHelper) WaitForExternalAuthConfigHashChange(
+	name, previousHash string, timeout time.Duration,
+) {
+	gomega.Eventually(func() bool {
+		p, err := h.GetRemoteProxy(name)
+		if err != nil {
+			return false
+		}
+		return p.Status.ExternalAuthConfigHash != previousHash &&
+			p.Status.ExternalAuthConfigHash != ""
+	}, timeout, DefaultPollingInterval).Should(gomega.BeTrue(),
+		"MCPRemoteProxy %s ExternalAuthConfigHash should change from %s", name, previousHash)
+}
+
+// WaitForToolConfigHash waits for the proxy to have a non-empty ToolConfigHash and returns it.
+func (h *MCPRemoteProxyTestHelper) WaitForToolConfigHash(name string, timeout time.Duration) string {
+	var hash string
+	gomega.Eventually(func() string {
+		p, err := h.GetRemoteProxy(name)
+		if err != nil {
+			return ""
+		}
+		hash = p.Status.ToolConfigHash
+		return hash
+	}, timeout, DefaultPollingInterval).ShouldNot(gomega.BeEmpty(),
+		"MCPRemoteProxy %s should have ToolConfigHash set", name)
+	return hash
+}
+
+// WaitForToolConfigHashChange waits for the proxy's ToolConfigHash to change from the previous value.
+func (h *MCPRemoteProxyTestHelper) WaitForToolConfigHashChange(
+	name, previousHash string, timeout time.Duration,
+) {
+	gomega.Eventually(func() bool {
+		p, err := h.GetRemoteProxy(name)
+		if err != nil {
+			return false
+		}
+		return p.Status.ToolConfigHash != previousHash &&
+			p.Status.ToolConfigHash != ""
+	}, timeout, DefaultPollingInterval).Should(gomega.BeTrue(),
+		"MCPRemoteProxy %s ToolConfigHash should change from %s", name, previousHash)
+}
+
 // verifyRemoteProxyOwnerReference verifies that the owner reference matches the expected MCPRemoteProxy.
 func verifyRemoteProxyOwnerReference(ownerRefs []metav1.OwnerReference, proxy *mcpv1alpha1.MCPRemoteProxy, resourceType string) {
 	gomega.ExpectWithOffset(1, ownerRefs).To(gomega.HaveLen(1),

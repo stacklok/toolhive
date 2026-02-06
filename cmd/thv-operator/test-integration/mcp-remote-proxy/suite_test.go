@@ -103,6 +103,17 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	// Set up field indexing for MCPServer.Spec.GroupRef (required by MCPGroup controller)
+	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
+		mcpServer := obj.(*mcpv1alpha1.MCPServer)
+		if mcpServer.Spec.GroupRef == "" {
+			return nil
+		}
+		return []string{mcpServer.Spec.GroupRef}
+	}); err != nil {
+		Expect(err).ToNot(HaveOccurred())
+	}
+
 	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)

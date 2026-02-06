@@ -434,12 +434,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			healthCheckTimeout = time.Duration(cfg.Operational.FailureHandling.HealthCheckTimeout)
 		}
 
-		// Validate that timeout is less than interval to prevent checks from queuing up
-		if healthCheckTimeout >= checkInterval {
-			return fmt.Errorf("health check timeout (%v) must be less than check interval (%v) to prevent checks from queuing up",
-				healthCheckTimeout, checkInterval)
-		}
-
 		healthMonitorConfig = &health.MonitorConfig{
 			CheckInterval:      checkInterval,
 			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
@@ -450,22 +444,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Wire circuit breaker configuration if present
 		if cfg.Operational.FailureHandling.CircuitBreaker != nil {
 			cbConfig := cfg.Operational.FailureHandling.CircuitBreaker
-
-			// Validate circuit breaker configuration
-			if cbConfig.Enabled {
-				if cbConfig.FailureThreshold < 1 {
-					return fmt.Errorf("circuit breaker failure threshold must be >= 1, got %d",
-						cbConfig.FailureThreshold)
-				}
-				cbTimeout := time.Duration(cbConfig.Timeout)
-				if cbTimeout <= 0 {
-					return fmt.Errorf("circuit breaker timeout must be > 0, got %v", cbTimeout)
-				}
-				if cbTimeout < time.Second {
-					return fmt.Errorf("circuit breaker timeout must be >= 1s to prevent thrashing, got %v",
-						cbTimeout)
-				}
-			}
 
 			healthMonitorConfig.CircuitBreaker = &health.CircuitBreakerConfig{
 				Enabled:          cbConfig.Enabled,

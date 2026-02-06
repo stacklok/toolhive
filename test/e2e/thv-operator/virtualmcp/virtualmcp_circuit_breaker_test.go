@@ -277,16 +277,11 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			return false
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Waiting for circuit breaker to detect failures and open")
-		// Circuit breaker needs cbFailureThreshold consecutive failures
-		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
-		// Circuit opens after 3rd failure at ~12s. Add buffer for pod termination and processing.
-		// Calculation: (threshold-1) × interval + threshold × timeout = 2×5s + 3×2s = 10s + 6s = 16s + 5s buffer = 21s
-		failureDetectionTime := time.Duration(cbFailureThreshold-1)*cbHealthCheckInterval +
-			time.Duration(cbFailureThreshold)*cbHealthCheckTimeout
-		time.Sleep(failureDetectionTime + 5*time.Second)
-
 		By("Verifying circuit breaker opened for unstable backend")
+		// Circuit breaker needs cbFailureThreshold consecutive failures to open.
+		// With cbFailureThreshold=3, cbHealthCheckInterval=5s, cbHealthCheckTimeout=2s:
+		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
+		// Circuit opens after 3rd failure at ~12s. Eventually() polls until condition is met.
 		Eventually(func() error {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
@@ -345,6 +340,27 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
+
+		By("Note: Tools from unhealthy backends excluded by discovery middleware")
+		// NOTE: This e2e test verifies the circuit breaker state changes (above assertions).
+		// The capability filtering itself is thoroughly unit tested in the discovery middleware.
+		//
+		// Full end-to-end verification of tools/list filtering would require:
+		// 1. Making an HTTP request to the vMCP server
+		// 2. Implementing MCP protocol initialize handshake
+		// 3. Calling tools/list and parsing the response
+		//
+		// The filtering logic is implemented in pkg/vmcp/discovery/middleware.go:filterHealthyBackends()
+		// and covered by unit tests in middleware_test.go (TestFilterHealthyBackends,
+		// TestFilterHealthyBackends_WithHealthMonitor).
+		//
+		// How it works:
+		// - When backend circuit breaker opens → health monitor marks backend unhealthy
+		// - Discovery middleware queries health monitor via StatusProvider interface
+		// - handleInitializeRequest filters unhealthy backends before aggregation
+		// - Only healthy/degraded backends' tools appear in tools/list response
+		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/discovery/middleware_test.go\n")
+		GinkgoWriter.Printf("   Circuit breaker state verified above; capability filtering covered by unit tests\n")
 	})
 
 	It("should close circuit breaker when backend recovers", func() {
@@ -459,6 +475,20 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
+
+		By("Note: Tools from recovered backend automatically restored")
+		// NOTE: This e2e test verifies the circuit breaker closes and backend health recovers (above assertions).
+		// The capability restoration is handled automatically by the discovery middleware.
+		//
+		// When the backend recovers and circuit breaker closes:
+		// - Backend health status changes from unhealthy → healthy/degraded
+		// - Next session initialization will include the recovered backend
+		// - Tools from the recovered backend appear in tools/list response
+		//
+		// This is handled by filterHealthyBackends() which only excludes backends with
+		// unhealthy/unknown/unauthenticated status. Covered by unit tests in middleware_test.go.
+		GinkgoWriter.Printf("ℹ️  Backend recovered - capability restoration covered by unit tests\n")
+		GinkgoWriter.Printf("   Circuit breaker closure verified above; filtering logic tested in middleware_test.go\n")
 	})
 
 	It("should track circuit breaker state per backend independently", func() {

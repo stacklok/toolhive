@@ -72,6 +72,19 @@
     "issues"
   ],
   "image": "ghcr.io/github/github-mcp-server:v0.19.1",
+  "permissions": {
+    "network": {
+      "outbound": {
+        "allow_host": [
+          ".github.com",
+          ".githubusercontent.com"
+        ],
+        "allow_port": [
+          443
+        ]
+      }
+    }
+  },
   "env_vars": [
     {
       "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
@@ -100,6 +113,13 @@
       "required": false
     }
   ],
+  "provenance": {
+    "sigstore_url": "tuf-repo-cdn.sigstore.dev",
+    "repository_uri": "https://github.com/github/github-mcp-server",
+    "signer_identity": "/.github/workflows/docker-publish.yml",
+    "runner_environment": "github-hosted",
+    "cert_issuer": "https://token.actions.githubusercontent.com"
+  },
   "docker_tags": ["v0.19.1", "v0.19.0", "latest"],
   "proxy_port": 8080,
   "custom_metadata": {

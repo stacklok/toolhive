@@ -306,12 +306,13 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.p.isRemote {
-		// In case of remote servers, req.Host is set to the proxy host (localhost) which may cause 403 error,
-		// so we need to set it to the target URI host
-		if req.URL.Host != req.Host {
-			req.Host = req.URL.Host
-		}
+	// Always rewrite Host header to match the target URL to avoid "Invalid Host" errors
+	// from backends with strict host validation (e.g., Django ALLOWED_HOSTS, FastAPI TrustedHostMiddleware).
+	// Without this, the backend receives the proxy's Host header (e.g., Kubernetes service DNS name)
+	// instead of its own hostname, causing validation failures.
+	// See: https://github.com/stacklok/stacklok-epics/issues/231
+	if req.URL.Host != req.Host {
+		req.Host = req.URL.Host
 	}
 
 	reqBody := readRequestBody(req)
@@ -671,6 +672,15 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Address returns the address the proxy is listening on.
+// Returns an empty string if the proxy is not running.
+func (p *TransparentProxy) Address() string {
+	if p.listener == nil {
+		return ""
+	}
+	return p.listener.Addr().String()
 }
 
 // IsRunning checks if the proxy is running.

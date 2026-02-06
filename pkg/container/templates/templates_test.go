@@ -128,13 +128,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"if ! echo \"$package\" | grep -q '@'; then",
 				"package=\"${package}@latest\"",
 				"go install \"$package\"",
-				"FROM alpine:",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
-				`FROM alpine:\d+\.\d+`,                   // Match runtime stage
+				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
+				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -154,7 +153,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"if ! echo \"$package\" | grep -q '@'; then",
 				"package=\"${package}@latest\"",
 				"go install \"$package\"",
-				"FROM alpine:",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
@@ -162,8 +160,8 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"update-ca-certificates",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
-				`FROM alpine:\d+\.\d+`,                   // Match runtime stage
+				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
+				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -179,14 +177,13 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM golang:",
 				"COPY . /build/",
 				"go build -o /app/mcp-server ./cmd/server",
-				"FROM alpine:",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"COPY --from=builder --chown=appuser:appgroup /build/ /app/",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
-				`FROM alpine:\d+\.\d+`,                   // Match runtime stage
+				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
+				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -204,13 +201,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM golang:",
 				"COPY . /build/",
 				"go build -o /app/mcp-server .",
-				"FROM alpine:",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
-				`FROM alpine:\d+\.\d+`,                   // Match runtime stage
+				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
+				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -266,12 +262,11 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM golang:",
 				"go install \"$package\"",
-				"FROM alpine:",
 				"ENTRYPOINT [\"/app/mcp-server\", \"serve\", \"--verbose\"]",
 			},
 			wantMatches: []string{
 				`FROM golang:\d+\.\d+-alpine AS builder`,
-				`FROM alpine:\d+\.\d+`,
+				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`,
 			},
 			wantNotContains: nil,
 			wantErr:         false,

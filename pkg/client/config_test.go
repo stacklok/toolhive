@@ -1277,3 +1277,167 @@ func TestBuildMCPServer(t *testing.T) {
 		})
 	}
 }
+
+func TestGetAllClients(t *testing.T) {
+	t.Parallel()
+
+	clients := GetAllClients()
+
+	// Should return all 25 supported clients
+	assert.Len(t, clients, 25, "Expected 25 supported clients")
+
+	// Verify some known clients are in the list
+	expectedClients := []MCPClient{
+		RooCode, Cline, Cursor, VSCode, VSCodeInsider, ClaudeCode,
+		Windsurf, WindsurfJetBrains, AmpCli, LMStudio, Goose,
+		Continue, Zed, Codex, MistralVibe,
+	}
+
+	clientMap := make(map[MCPClient]bool)
+	for _, client := range clients {
+		clientMap[client] = true
+	}
+
+	for _, expected := range expectedClients {
+		assert.True(t, clientMap[expected], "Expected client %s to be in the list", expected)
+	}
+}
+
+func TestIsValidClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		client   string
+		expected bool
+	}{
+		{
+			name:     "Valid client - vscode",
+			client:   "vscode",
+			expected: true,
+		},
+		{
+			name:     "Valid client - claude-code",
+			client:   "claude-code",
+			expected: true,
+		},
+		{
+			name:     "Valid client - cursor",
+			client:   "cursor",
+			expected: true,
+		},
+		{
+			name:     "Valid client - codex",
+			client:   "codex",
+			expected: true,
+		},
+		{
+			name:     "Invalid client - unknown",
+			client:   "unknown",
+			expected: false,
+		},
+		{
+			name:     "Invalid client - empty",
+			client:   "",
+			expected: false,
+		},
+		{
+			name:     "Invalid client - invalid-name",
+			client:   "invalid-client",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := IsValidClient(tt.client)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetClientDescription(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		client      MCPClient
+		expectFound bool
+	}{
+		{
+			name:        "VSCode description",
+			client:      VSCode,
+			expectFound: true,
+		},
+		{
+			name:        "ClaudeCode description",
+			client:      ClaudeCode,
+			expectFound: true,
+		},
+		{
+			name:        "Cursor description",
+			client:      Cursor,
+			expectFound: true,
+		},
+		{
+			name:        "Invalid client",
+			client:      MCPClient("invalid"),
+			expectFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			description := GetClientDescription(tt.client)
+			if tt.expectFound {
+				assert.NotEmpty(t, description, "Expected non-empty description for %s", tt.client)
+			} else {
+				assert.Empty(t, description, "Expected empty description for invalid client")
+			}
+		})
+	}
+}
+
+func TestGetClientListFormatted(t *testing.T) {
+	t.Parallel()
+
+	formatted := GetClientListFormatted()
+
+	// Should not be empty
+	assert.NotEmpty(t, formatted)
+
+	// Should contain all expected clients with descriptions
+	assert.Contains(t, formatted, "vscode:")
+	assert.Contains(t, formatted, "claude-code:")
+	assert.Contains(t, formatted, "cursor:")
+	assert.Contains(t, formatted, "codex:")
+
+	// Should be formatted with bullet points and newlines
+	assert.Contains(t, formatted, "  -")
+	lines := strings.Split(formatted, "\n")
+	assert.Greater(t, len(lines), 20, "Expected more than 20 lines in formatted list")
+}
+
+func TestGetClientListCSV(t *testing.T) {
+	t.Parallel()
+
+	csv := GetClientListCSV()
+
+	// Should not be empty
+	assert.NotEmpty(t, csv)
+
+	// Should contain all expected clients
+	assert.Contains(t, csv, "vscode")
+	assert.Contains(t, csv, "claude-code")
+	assert.Contains(t, csv, "cursor")
+	assert.Contains(t, csv, "codex")
+
+	// Should be comma-separated
+	assert.Contains(t, csv, ", ")
+
+	// Count the number of clients (should be 25)
+	clients := strings.Split(csv, ", ")
+	assert.Len(t, clients, 25, "Expected 25 clients in CSV list")
+}

@@ -710,6 +710,58 @@ var supportedClientIntegrations = []mcpClientConfig{
 	},
 }
 
+// GetAllClients returns a slice of all supported MCP client types.
+// This is the single source of truth for valid client types.
+func GetAllClients() []MCPClient {
+	clients := make([]MCPClient, 0, len(supportedClientIntegrations))
+	for _, config := range supportedClientIntegrations {
+		clients = append(clients, config.ClientType)
+	}
+	return clients
+}
+
+// IsValidClient checks if the provided client type is supported.
+func IsValidClient(clientType string) bool {
+	for _, config := range supportedClientIntegrations {
+		if string(config.ClientType) == clientType {
+			return true
+		}
+	}
+	return false
+}
+
+// GetClientDescription returns the description for a given client type.
+// Returns an empty string if the client type is not found.
+func GetClientDescription(clientType MCPClient) string {
+	for _, config := range supportedClientIntegrations {
+		if config.ClientType == clientType {
+			return config.Description
+		}
+	}
+	return ""
+}
+
+// GetClientListFormatted returns a formatted multi-line string listing all supported clients
+// with their descriptions. This is suitable for use in CLI help text.
+func GetClientListFormatted() string {
+	var sb strings.Builder
+	for _, config := range supportedClientIntegrations {
+		sb.WriteString(fmt.Sprintf("  - %s: %s\n", config.ClientType, config.Description))
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// GetClientListCSV returns a comma-separated list of all supported client types.
+// This is suitable for use in error messages.
+func GetClientListCSV() string {
+	clients := GetAllClients()
+	clientStrs := make([]string, len(clients))
+	for i, client := range clients {
+		clientStrs[i] = string(client)
+	}
+	return strings.Join(clientStrs, ", ")
+}
+
 // ConfigFile represents a client configuration file
 type ConfigFile struct {
 	Path          string

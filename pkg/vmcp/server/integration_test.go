@@ -1254,6 +1254,10 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		assert.Contains(t, metrics, `mcp_method="initialize"`,
 			"Request counter should have mcp_method label for initialize")
 
+		// Resource ID label — for tools/call the mcp_resource_id is the tool name
+		assert.Contains(t, metrics, `mcp_resource_id="search-svc_search"`,
+			"Request counter should have mcp_resource_id label with the called tool name")
+
 		// Request duration histogram
 		assert.Contains(t, metrics, "toolhive_mcp_request_duration",
 			"Should record request duration histogram")

@@ -23,6 +23,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
+const (
+	testToolName         = "github_search"
+	metricRequestCounter = "toolhive_mcp_requests"
+)
+
 func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -200,7 +205,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	mcpRequest := &mcp.ParsedMCPRequest{
 		Method:     "tools/call",
 		ID:         "test-123",
-		ResourceID: "github_search",
+		ResourceID: testToolName,
 		Arguments: map[string]interface{}{
 			"query":   "test query",
 			"api_key": "secret123", // This should be redacted
@@ -237,7 +242,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	}
 
 	assert.Equal(t, "tools/call", attrMap["mcp.method"])
-	assert.Equal(t, "github_search", attrMap["mcp.tool.name"])
+	assert.Equal(t, testToolName, attrMap["mcp.tool.name"])
 	assert.Equal(t, "test-123", attrMap["mcp.request.id"])
 	assert.Equal(t, "POST", attrMap["http.method"])
 	assert.Equal(t, int64(200), attrMap["http.status_code"])
@@ -262,7 +267,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
 			switch metric.Name {
-			case "toolhive_mcp_requests":
+			case metricRequestCounter:
 				foundRequestCounter = true
 				// Verify metric has expected attributes
 				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
@@ -272,6 +277,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 						attrSet := dp.Attributes
 						hasServer := false
 						hasMethod := false
+						hasResourceID := false
 						for _, attr := range attrSet.ToSlice() {
 							if attr.Key == "server" && attr.Value.AsString() == "github" {
 								hasServer = true
@@ -279,9 +285,13 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 							if attr.Key == "mcp_method" && attr.Value.AsString() == "tools/call" {
 								hasMethod = true
 							}
+							if attr.Key == "mcp_resource_id" && attr.Value.AsString() == testToolName {
+								hasResourceID = true
+							}
 						}
 						assert.True(t, hasServer, "Request counter should have server attribute")
 						assert.True(t, hasMethod, "Request counter should have mcp_method attribute")
+						assert.True(t, hasResourceID, "Request counter should have mcp_resource_id attribute with tool name")
 					}
 				}
 			case "toolhive_mcp_request_duration":
@@ -382,7 +392,7 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	mcpRequest := &mcp.ParsedMCPRequest{
 		Method:     "tools/call",
 		ID:         "tool-test",
-		ResourceID: "github_search",
+		ResourceID: testToolName,
 		Arguments: map[string]interface{}{
 			"query": "test",
 		},
@@ -403,11 +413,12 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	err := metricsReader.Collect(context.Background(), &rm)
 	require.NoError(t, err)
 
-	// Look for tool-specific counter
-	var foundToolCounter bool
+	// Look for tool-specific counter and general request counter
+	var foundToolCounter, foundRequestCounter bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
-			if metric.Name == "toolhive_mcp_tool_calls" {
+			switch metric.Name {
+			case "toolhive_mcp_tool_calls":
 				foundToolCounter = true
 				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
 					assert.NotEmpty(t, sum.DataPoints)
@@ -420,7 +431,7 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 							if attr.Key == "server" && attr.Value.AsString() == "github" {
 								hasServer = true
 							}
-							if attr.Key == "tool" && attr.Value.AsString() == "github_search" {
+							if attr.Key == "tool" && attr.Value.AsString() == testToolName {
 								hasTool = true
 							}
 						}
@@ -428,11 +439,27 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 						assert.True(t, hasTool, "Tool counter should have tool attribute")
 					}
 				}
+			case metricRequestCounter:
+				foundRequestCounter = true
+				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
+					assert.NotEmpty(t, sum.DataPoints)
+					for _, dp := range sum.DataPoints {
+						attrSet := dp.Attributes
+						hasResourceID := false
+						for _, attr := range attrSet.ToSlice() {
+							if attr.Key == "mcp_resource_id" && attr.Value.AsString() == testToolName {
+								hasResourceID = true
+							}
+						}
+						assert.True(t, hasResourceID, "Request counter should have mcp_resource_id attribute with tool name")
+					}
+				}
 			}
 		}
 	}
 
 	assert.True(t, foundToolCounter, "Tool-specific counter should be recorded for tools/call")
+	assert.True(t, foundRequestCounter, "General request counter should be recorded")
 
 	// Clean up
 	err = meterProvider.Shutdown(ctx)

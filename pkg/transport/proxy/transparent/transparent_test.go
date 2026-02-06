@@ -972,15 +972,21 @@ func TestSSEMessageEventNotRewritten(t *testing.T) {
 // callbackTracker is a helper to track callback invocations in a thread-safe manner
 type callbackTracker struct {
 	invoked bool
+	done    chan struct{}
 	mu      sync.Mutex
 }
 
 func newCallbackTracker() (*callbackTracker, func()) {
-	tracker := &callbackTracker{}
+	tracker := &callbackTracker{
+		done: make(chan struct{}),
+	}
 	callback := func() {
 		tracker.mu.Lock()
 		defer tracker.mu.Unlock()
-		tracker.invoked = true
+		if !tracker.invoked {
+			tracker.invoked = true
+			close(tracker.done)
+		}
 	}
 	return tracker, callback
 }
@@ -989,6 +995,31 @@ func (ct *callbackTracker) isInvoked() bool {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	return ct.invoked
+}
+
+// waitForShutdown waits for both the callback to be invoked and the proxy to stop,
+// or returns false if the timeout expires.
+func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentProxy, timeout time.Duration) (callbackInvoked, proxyStopped bool) {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Wait for callback
+	select {
+	case <-tracker.done:
+		callbackInvoked = true
+	case <-timer.C:
+		return false, false
+	}
+
+	// Wait for proxy shutdown
+	select {
+	case <-proxy.shutdownCh:
+		proxyStopped = true
+	case <-timer.C:
+	}
+
+	return callbackInvoked, proxyStopped
 }
 
 // setupRemoteProxyTest creates a proxy with health check enabled for remote servers
@@ -1060,12 +1091,10 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 	// - Retry: T=150ms → fails instantly → continue (consecutiveFailures stays 2)
 	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → shutdown
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
-	time.Sleep(400 * time.Millisecond)
+	callbackInvoked, proxyStopped := waitForShutdown(t, tracker, proxy, 2*time.Second)
 
-	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused after 3 consecutive failures")
-
-	running, _ := proxy.IsRunning()
-	assert.False(t, running, "Proxy should stop after connection failure")
+	assert.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
+	assert.True(t, proxyStopped, "Proxy should stop after connection failure")
 }
 
 // TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts
@@ -1111,22 +1140,7 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 
 	proxy.setServerInitialized()
 
-	// Wait for shutdown to complete, using a retry loop to handle timing variations
-	callbackInvoked := false
-	proxyStopped := false
-	for i := 0; i < 10; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if tracker.isInvoked() {
-			callbackInvoked = true
-		}
-		running, _ := proxy.IsRunning()
-		if !running {
-			proxyStopped = true
-		}
-		if callbackInvoked && proxyStopped {
-			break
-		}
-	}
+	callbackInvoked, proxyStopped := waitForShutdown(t, tracker, proxy, 2*time.Second)
 
 	assert.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
 	assert.True(t, proxyStopped, "Proxy should stop after timeout")

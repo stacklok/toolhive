@@ -613,13 +613,16 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 			// m.backends before starting goroutines and ignore results for removed backends.
 			// Keep as defensive fallback.
 			discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
-				Name:            backendID,
-				URL:             "",
-				Status:          state.Status.ToCRDStatus(),
-				AuthConfigRef:   "",
-				AuthType:        "",
-				LastHealthCheck: metav1.NewTime(state.LastCheckTime),
-				Message:         formatBackendMessage(state),
+				Name:                backendID,
+				URL:                 "",
+				Status:              state.Status.ToCRDStatus(),
+				AuthConfigRef:       "",
+				AuthType:            "",
+				LastHealthCheck:     metav1.NewTime(state.LastCheckTime),
+				Message:             formatBackendMessage(state),
+				CircuitBreakerState: string(state.CircuitState),
+				CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
+				ConsecutiveFailures: state.ConsecutiveFailures,
 			})
 			continue
 		}
@@ -627,13 +630,16 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 		authConfigRef, authType := extractAuthInfo(backend)
 
 		discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
-			Name:            backend.Name,
-			URL:             backend.BaseURL,
-			Status:          state.Status.ToCRDStatus(),
-			AuthConfigRef:   authConfigRef,
-			AuthType:        authType,
-			LastHealthCheck: metav1.NewTime(state.LastCheckTime),
-			Message:         formatBackendMessage(state),
+			Name:                backend.Name,
+			URL:                 backend.BaseURL,
+			Status:              state.Status.ToCRDStatus(),
+			AuthConfigRef:       authConfigRef,
+			AuthType:            authType,
+			LastHealthCheck:     metav1.NewTime(state.LastCheckTime),
+			Message:             formatBackendMessage(state),
+			CircuitBreakerState: string(state.CircuitState),
+			CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
+			ConsecutiveFailures: state.ConsecutiveFailures,
 		})
 	}
 

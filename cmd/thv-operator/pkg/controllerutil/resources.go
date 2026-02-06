@@ -6,6 +6,7 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
@@ -70,6 +72,7 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 	homeFound := false
 	toolhiveRuntimeFound := false
 	unstructuredLogsFound := false
+	hasSecrets := false
 
 	for _, envVar := range env {
 		switch envVar.Name {
@@ -81,6 +84,10 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 			toolhiveRuntimeFound = true
 		case "UNSTRUCTURED_LOGS":
 			unstructuredLogsFound = true
+		}
+		// Check if this is a TOOLHIVE_SECRET_* env var (but not TOOLHIVE_SECRETS_PROVIDER itself)
+		if strings.HasPrefix(envVar.Name, secrets.EnvVarPrefix) && envVar.Name != secrets.ProviderEnvVar {
+			hasSecrets = true
 		}
 	}
 
@@ -114,6 +121,21 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 		env = append(env, corev1.EnvVar{
 			Name:  "UNSTRUCTURED_LOGS",
 			Value: "false",
+		})
+	}
+
+	// Set secrets provider to environment if secrets are being used via TOOLHIVE_SECRET_* env vars
+	// This is needed to resolve CLI format secrets (e.g., "secret-name,target=bearer_token")
+	// The environment provider reads from TOOLHIVE_SECRET_* env vars to resolve CLI format secrets
+	//
+	// If TOOLHIVE_SECRETS_PROVIDER is already set to something other than "environment",
+	// we override it because TOOLHIVE_SECRET_* env vars REQUIRE the environment provider.
+	// Other providers (encrypted, 1password) cannot read from TOOLHIVE_SECRET_* env vars.
+	if hasSecrets {
+		ctxLogger.V(1).Info("TOOLHIVE_SECRET_* env vars found, setting TOOLHIVE_SECRETS_PROVIDER to environment")
+		env = append(env, corev1.EnvVar{
+			Name:  secrets.ProviderEnvVar,
+			Value: string(secrets.EnvironmentType),
 		})
 	}
 

@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 {{if .BuildEnv}}
 # Custom build environment variables
@@ -59,7 +59,7 @@ RUN npm install --save {{.MCPPackage}}
 {{end}}
 
 # Final stage - runtime image with pre-installed packages
-FROM node:22-alpine
+FROM node:24-alpine
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime

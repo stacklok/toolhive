@@ -30,6 +30,9 @@ func TestTokens_IsExpired(t *testing.T) {
 		assert.True(t, tokens.IsExpired())
 	})
 
+	// Use a fixed reference time to avoid race conditions in time-based tests
+	now := time.Now()
+
 	tests := []struct {
 		name      string
 		expiresAt time.Time
@@ -37,27 +40,27 @@ func TestTokens_IsExpired(t *testing.T) {
 	}{
 		{
 			name:      "token already expired",
-			expiresAt: time.Now().Add(-1 * time.Hour),
+			expiresAt: now.Add(-1 * time.Hour),
 			want:      true,
 		},
 		{
 			name:      "token expires within buffer period",
-			expiresAt: time.Now().Add(15 * time.Second),
+			expiresAt: now.Add(15 * time.Second),
 			want:      true,
 		},
 		{
 			name:      "token expires exactly at buffer boundary",
-			expiresAt: time.Now().Add(tokenExpirationBuffer),
+			expiresAt: now.Add(tokenExpirationBuffer),
 			want:      true,
 		},
 		{
 			name:      "token expires just after buffer period",
-			expiresAt: time.Now().Add(tokenExpirationBuffer + 1*time.Second),
+			expiresAt: now.Add(tokenExpirationBuffer + 1*time.Second),
 			want:      false,
 		},
 		{
 			name:      "token expires well in the future",
-			expiresAt: time.Now().Add(1 * time.Hour),
+			expiresAt: now.Add(1 * time.Hour),
 			want:      false,
 		},
 	}
@@ -70,7 +73,8 @@ func TestTokens_IsExpired(t *testing.T) {
 				AccessToken: "test-token",
 				ExpiresAt:   tt.expiresAt,
 			}
-			got := tokens.IsExpired()
+			// Use IsExpiredAt with the same reference time to avoid race conditions
+			got := tokens.IsExpiredAt(now)
 			assert.Equal(t, tt.want, got)
 		})
 	}

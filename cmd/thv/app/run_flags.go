@@ -18,6 +18,7 @@ import (
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -128,6 +129,10 @@ type RunFlags struct {
 	// Remote header forwarding
 	RemoteForwardHeaders       []string
 	RemoteForwardHeadersSecret []string
+
+	// Runtime configuration
+	RuntimeImage       string
+	RuntimeAddPackages []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -182,6 +187,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "",
 		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
 	cmd.Flags().StringVar(&config.CACertPath, "ca-cert", "", "Path to a custom CA certificate file to use for container builds")
+	cmd.Flags().StringVar(&config.RuntimeImage, "runtime-image", "",
+		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
+	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
+		"Add additional packages to install in the builder stage (can be repeated)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -522,6 +531,18 @@ func buildRunnerConfig(
 				opts = append(opts, runner.WithHeaderForwardSecrets(secretHeaders))
 			}
 		}
+	}
+
+	// Configure runtime config if specified
+	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
+		runtimeConfig := &templates.RuntimeConfig{}
+		if runFlags.RuntimeImage != "" {
+			runtimeConfig.BuilderImage = runFlags.RuntimeImage
+		}
+		if len(runFlags.RuntimeAddPackages) > 0 {
+			runtimeConfig.AdditionalPackages = runFlags.RuntimeAddPackages
+		}
+		opts = append(opts, runner.WithRuntimeConfig(runtimeConfig))
 	}
 
 	// Configure middleware and additional options

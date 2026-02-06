@@ -138,7 +138,36 @@ func createTemplateData(
 		return templateData, err
 	}
 
+	// Load runtime configuration (base images and packages)
+	runtimeConfig := loadRuntimeConfig(transportType, nil)
+	templateData.RuntimeConfig = runtimeConfig
+
 	return templateData, nil
+}
+
+// loadRuntimeConfig loads the runtime configuration for a given transport type.
+// Priority order:
+// 1. Override provided as parameter
+// 2. User configuration from config file
+// 3. Default configuration for the transport type
+func loadRuntimeConfig(
+	transportType templates.TransportType,
+	override *templates.RuntimeConfig,
+) *templates.RuntimeConfig {
+	// If override is provided, use it
+	if override != nil {
+		return override
+	}
+
+	// Try loading from user config
+	provider := config.NewProvider()
+	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
+		return userConfig
+	}
+
+	// Fall back to defaults
+	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
+	return &defaultConfig
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.

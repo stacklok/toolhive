@@ -1297,6 +1297,9 @@ const docTemplate = `{
                         "description": "RemoteURL is the URL of the remote MCP server (if running remotely)",
                         "type": "string"
                     },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/templates.RuntimeConfig"
+                    },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema",
                         "type": "string"
@@ -1594,6 +1597,24 @@ const docTemplate = `{
                     "tracingEnabled": {
                         "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "templates.RuntimeConfig": {
+                "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
+                "properties": {
+                    "additional_packages": {
+                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "builder_image": {
+                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "type": "string"
                     }
                 },
                 "type": "object"

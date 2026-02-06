@@ -171,6 +171,8 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --remote-forward-headers stringArray          Headers to inject into requests to remote MCP server (format: Name=Value, can be repeated)
       --remote-forward-headers-secret stringArray   Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)
       --resource-url string                         Explicit resource URL for OAuth discovery endpoint (RFC 9728)
+      --runtime-add-package stringArray             Add additional packages to install in the builder stage (can be repeated)
+      --runtime-image string                        Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)
       --secret stringArray                          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                          Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                             Port for the container to expose (only applicable to SSE or Streamable HTTP transport)

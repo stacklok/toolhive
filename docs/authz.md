@@ -391,6 +391,7 @@ pdp:
     url: "http://localhost:9000"
     timeout: 30  # Optional, timeout in seconds (default: 30)
     insecure_skip_verify: false  # Optional, skip TLS verification (default: false)
+  claim_mapping: "mpe"  # Required: claim mapper type (options: "mpe", "standard")
 ```
 
 #### JSON format
@@ -404,7 +405,8 @@ pdp:
       "url": "http://localhost:9000",
       "timeout": 30,
       "insecure_skip_verify": false
-    }
+    },
+    "claim_mapping": "mpe"
   }
 }
 ```
@@ -414,6 +416,17 @@ The configuration fields are:
 - `pdp.http.url`: The base URL of the PDP server (required)
 - `pdp.http.timeout`: HTTP request timeout in seconds (default: 30)
 - `pdp.http.insecure_skip_verify`: Skip TLS certificate verification (default: false)
+- `pdp.claim_mapping`: Claim mapper type (required)
+  - `"mpe"`: Maps to m-prefixed claims (mroles, mgroups, mclearance, mannotations) - compatible with Manetu PolicyEngine and similar systems
+  - `"standard"`: Uses standard OIDC claim names (roles, groups) - compatible with PDPs expecting standard OIDC conventions
+
+> **⚠️ SECURITY WARNING: `insecure_skip_verify`**
+>
+> The `insecure_skip_verify` option disables TLS certificate validation, making the connection vulnerable to man-in-the-middle attacks. An attacker could intercept and modify authorization decisions, potentially granting unauthorized access to your MCP servers.
+>
+> **NEVER use `insecure_skip_verify: true` in production environments.**
+>
+> This option is provided ONLY for local development and testing scenarios where you may be using self-signed certificates. In production, always use valid TLS certificates and keep this option set to `false` (the default).
 
 ### Context configuration
 
@@ -439,10 +452,56 @@ The context configuration fields are:
 - `pdp.context.include_operation`: When `true`, includes MCP operation metadata
   (`feature`, `operation`, `resource_id`) in `context.mcp`. Default is `false`.
 
-**Important**: If your policies reference `input.context.mcp.*` fields (such as
-`input.context.mcp.resource_id` for determining public tools/resources), you must
-enable the corresponding context option. Otherwise, those fields will not be
-present in the PORC and your policies will not work as expected.
+#### Important notes about context configuration
+
+**Policy requirements**: Enable context options based on what your PDP policies require.
+If your policies reference `context.mcp.*` fields (such as `context.mcp.resource_id`
+or `context.mcp.operation`), you must enable the corresponding context option.
+Otherwise, those fields will not be present in the PORC, which may cause:
+
+- Policy evaluation failures
+- Authorization denials
+- Unexpected behavior
+
+Each PDP implementation handles missing context fields differently. Consult your
+PDP's documentation to understand how it treats missing fields in authorization
+decisions.
+
+**Recommendation**: Start with both options disabled (the default) and only enable
+them when your policies explicitly require those fields. This minimizes the data
+sent to the PDP and reduces the risk of misconfiguration.
+
+### Claim mapping
+
+The HTTP PDP authorizer supports different claim mapping conventions through the
+`claim_mapping` configuration option. This allows you to use the authorizer with
+PDPs that expect different claim naming conventions.
+
+#### MPE claim mapping (`claim_mapping: "mpe"`)
+
+The MPE claim mapper uses m-prefixed claims, designed for compatibility with
+Manetu PolicyEngine and similar systems. It accepts both standard OIDC claims
+and m-prefixed claims as input:
+
+| JWT Claim (input) | Principal Field (output) | Notes |
+|-------------------|-------------------------|-------|
+| `sub` | `sub` | Subject identifier |
+| `roles` or `mroles` | `mroles` | Roles (accepts both, outputs `mroles`) |
+| `groups` or `mgroups` | `mgroups` | Groups (accepts both, outputs `mgroups`) |
+| `scope` or `scopes` | `scopes` | Access scopes (normalized to `scopes`) |
+| `clearance` or `mclearance` | `mclearance` | Clearance level (accepts both, outputs `mclearance`) |
+| `annotations` or `mannotations` | `mannotations` | Additional annotations (accepts both, outputs `mannotations`) |
+
+#### Standard OIDC claim mapping (`claim_mapping: "standard"`)
+
+The standard claim mapper uses standard OIDC claim names without modification:
+
+| JWT Claim (input) | Principal Field (output) | Notes |
+|-------------------|-------------------------|-------|
+| `sub` | `sub` | Subject identifier |
+| `roles` | `roles` | Roles (standard name) |
+| `groups` | `groups` | Groups (standard name) |
+| `scope` or `scopes` | `scopes` | Access scopes (normalized to `scopes`) |
 
 ### PORC mapping
 
@@ -453,8 +512,8 @@ PORC:
 | MCP Concept | PORC Field | Format |
 |-------------|------------|--------|
 | Client identity | `principal.sub` | From JWT `sub` claim |
-| Roles | `principal.mroles` | From JWT `roles` or `mroles` claim |
-| Groups | `principal.mgroups` | From JWT `groups` or `mgroups` claim |
+| Roles | `principal.mroles` (MPE) or `principal.roles` (standard) | From JWT `roles` or `mroles` claim (depends on `claim_mapping`) |
+| Groups | `principal.mgroups` (MPE) or `principal.groups` (standard) | From JWT `groups` or `mgroups` claim (depends on `claim_mapping`) |
 | Scopes | `principal.scopes` | From JWT `scope` or `scopes` claim |
 | MCP operation | `operation` | `mcp:<feature>:<operation>` (e.g., `mcp:tool:call`) |
 | MCP resource | `resource` | `mrn:mcp:<server>:<feature>:<id>` (e.g., `mrn:mcp:myserver:tool:weather`) |
@@ -463,11 +522,13 @@ PORC:
 | MCP resource ID | `context.mcp.resource_id` | The resource identifier - requires `include_operation: true` |
 | Tool arguments | `context.mcp.args` | Tool/prompt arguments - requires `include_args: true` |
 
-### Example PORC expression
+### Example PORC expressions
 
-When a client calls the `weather` tool with `location: "New York"`, and both
-`include_operation` and `include_args` are enabled, the resulting PORC expression
-looks like:
+#### With MPE claim mapping
+
+When a client calls the `weather` tool with `location: "New York"`, using MPE
+claim mapping (`claim_mapping: "mpe"`), and both `include_operation`
+and `include_args` are enabled, the resulting PORC expression looks like:
 
 ```json
 {
@@ -475,7 +536,8 @@ looks like:
     "sub": "user@example.com",
     "mroles": ["developer"],
     "mgroups": ["engineering"],
-    "scopes": ["read", "write"]
+    "scopes": ["read", "write"],
+    "mannotations": {}
   },
   "operation": "mcp:tool:call",
   "resource": "mrn:mcp:myserver:tool:weather",
@@ -491,6 +553,36 @@ looks like:
 ```
 
 If no context options are enabled (the default), the `context` object will be empty.
+
+#### With standard OIDC claim mapping
+
+When using standard OIDC claim mapping (`claim_mapping: "standard"`), the same
+request would produce:
+
+```json
+{
+  "principal": {
+    "sub": "user@example.com",
+    "roles": ["developer"],
+    "groups": ["engineering"],
+    "scopes": ["read", "write"]
+  },
+  "operation": "mcp:tool:call",
+  "resource": "mrn:mcp:myserver:tool:weather",
+  "context": {
+    "mcp": {
+      "feature": "tool",
+      "operation": "call",
+      "resource_id": "weather",
+      "args": { "location": "New York" }
+    }
+  }
+}
+```
+
+Note that the principal uses standard claim names (`roles`, `groups`) instead of
+m-prefixed names (`mroles`, `mgroups`), and MPE-specific fields like `mclearance`
+and `mannotations` are not included.
 
 ### PDP API contract
 
@@ -511,12 +603,16 @@ The `allow` field should be `true` to permit the request, or `false` to deny it.
 
 ### Compatible PDP servers
 
-The HTTP PDP authorizer is compatible with any PDP server that implements the
-PORC-based decision endpoint, including:
+The HTTP PDP authorizer is designed to work with any PDP server that implements
+the PORC-based decision endpoint described above. Examples include:
 
 - [Manetu PolicyEngine (MPE)](https://manetu.github.io/policyengine) - A policy
-  engine built on OPA with multi-phase evaluation
-- Custom PDP implementations that follow the API contract above
+  engine built on OPA with multi-phase evaluation (use `claim_mapping: "mpe"`)
+- Custom PDP implementations that follow the PORC API contract
+- Other policy engines adapted to accept PORC-formatted requests
+
+When integrating with a specific PDP, configure the `claim_mapping` option to match
+your PDP's expected claim naming conventions.
 
 ---
 

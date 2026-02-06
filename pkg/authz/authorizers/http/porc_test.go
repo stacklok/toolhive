@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
@@ -77,26 +80,26 @@ func TestBuildPORC(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			porc := BuildPORC(tt.feature, tt.operation, tt.resourceID, tt.claims, tt.arguments)
+			porc := buildPORC(tt.feature, tt.operation, tt.resourceID, tt.claims, tt.arguments)
 
 			// Check operation
 			if op, ok := porc["operation"].(string); !ok || op != tt.wantOp {
-				t.Errorf("BuildPORC() operation = %v, want %v", porc["operation"], tt.wantOp)
+				t.Errorf("buildPORC() operation = %v, want %v", porc["operation"], tt.wantOp)
 			}
 
 			// Check resource
 			if res, ok := porc["resource"].(string); !ok || res != tt.wantRes {
-				t.Errorf("BuildPORC() resource = %v, want %v", porc["resource"], tt.wantRes)
+				t.Errorf("buildPORC() resource = %v, want %v", porc["resource"], tt.wantRes)
 			}
 
 			// Check principal exists (returns map[string]interface{} for PDP compatibility)
 			if _, ok := porc["principal"].(map[string]interface{}); !ok {
-				t.Error("BuildPORC() missing principal")
+				t.Error("buildPORC() missing principal")
 			}
 
 			// Check context exists (returns map[string]interface{} for PDP compatibility)
 			if _, ok := porc["context"].(map[string]interface{}); !ok {
-				t.Error("BuildPORC() missing context")
+				t.Error("buildPORC() missing context")
 			}
 		})
 	}
@@ -108,6 +111,11 @@ func defaultContextConfig() ContextConfig {
 		IncludeArgs:      true,
 		IncludeOperation: true,
 	}
+}
+
+// defaultClaimMapper returns the default MPE claim mapper for tests.
+func defaultClaimMapper() ClaimMapper {
+	return &MPEClaimMapper{}
 }
 
 func TestBuildPrincipal(t *testing.T) {
@@ -213,7 +221,7 @@ func TestBuildPrincipal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			builder := NewPORCBuilder("test", defaultContextConfig())
+			builder := NewPORCBuilder("test", defaultContextConfig(), defaultClaimMapper())
 
 			got := builder.buildPrincipal(tt.claims)
 
@@ -253,7 +261,7 @@ func TestBuildOperation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			t.Parallel()
-			builder := NewPORCBuilder("test", defaultContextConfig())
+			builder := NewPORCBuilder("test", defaultContextConfig(), defaultClaimMapper())
 			if got := builder.buildOperation(tt.feature, tt.operation); got != tt.want {
 				t.Errorf("buildOperation() = %v, want %v", got, tt.want)
 			}
@@ -278,7 +286,7 @@ func TestBuildResource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			t.Parallel()
-			builder := NewPORCBuilder("test", defaultContextConfig())
+			builder := NewPORCBuilder("test", defaultContextConfig(), defaultClaimMapper())
 			if got := builder.buildResource(tt.feature, tt.resourceID); got != tt.want {
 				t.Errorf("buildResource() = %v, want %v", got, tt.want)
 			}
@@ -321,7 +329,7 @@ func TestBuildContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			builder := NewPORCBuilder("test", defaultContextConfig())
+			builder := NewPORCBuilder("test", defaultContextConfig(), defaultClaimMapper())
 			got := builder.buildContext(tt.feature, tt.operation, tt.resourceID, tt.arguments)
 
 			// Check that mcp object exists
@@ -420,7 +428,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			builder := NewPORCBuilder("test", tt.config)
+			builder := NewPORCBuilder("test", tt.config, defaultClaimMapper())
 			got := builder.buildContext(authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", tt.arguments)
 
 			mcpObj, hasMcp := got["mcp"].(map[string]interface{})

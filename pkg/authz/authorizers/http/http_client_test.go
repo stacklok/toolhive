@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
@@ -44,7 +47,7 @@ func TestNewClient(t *testing.T) {
 				URL: "ftp://localhost:9000",
 			},
 			wantErr: true,
-			errMsg:  "URL scheme must be http or https",
+			errMsg:  "URL scheme must be http or https, got: ftp",
 		},
 		{
 			name: "valid HTTP URL",
@@ -263,7 +266,7 @@ func TestHTTPClient_Authorize_PORCValidation(t *testing.T) {
 
 	// Create a test server that validates the PORC structure
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		var porc map[string]interface{}
+		var porc map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&porc); err != nil {
 			t.Errorf("Failed to decode PORC: %v", err)
 			w.WriteHeader(nethttp.StatusBadRequest)
@@ -295,14 +298,14 @@ func TestHTTPClient_Authorize_PORCValidation(t *testing.T) {
 	}
 
 	porc := PORC{
-		"principal": map[string]interface{}{
+		"principal": map[string]any{
 			"sub":    "user@example.com",
 			"mroles": []string{"mrn:iam:role:user"},
 		},
 		"operation": "mcp:tool:call",
 		"resource":  "mrn:mcp:test:tool:weather",
-		"context": map[string]interface{}{
-			"mcp": map[string]interface{}{
+		"context": map[string]any{
+			"mcp": map[string]any{
 				"feature":     "tool",
 				"operation":   "call",
 				"resource_id": "weather",
@@ -354,5 +357,74 @@ func TestHTTPClient_Authorize_Timeout(t *testing.T) {
 	}
 	if !allow {
 		t.Error("Authorize() = false, want true")
+	}
+}
+
+func TestHTTPClient_Authorize_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// Create channels for coordination
+	requestReceived := make(chan struct{})
+	doneChan := make(chan struct{})
+
+	// Create a test server that blocks until the done channel is closed
+	server := httptest.NewServer(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, r *nethttp.Request) {
+		// Signal that request was received
+		close(requestReceived)
+
+		// Block until either the request context is done or the test completes
+		select {
+		case <-r.Context().Done():
+			// Request was cancelled, exit cleanly
+			return
+		case <-doneChan:
+			// Test is done, exit cleanly
+			return
+		}
+	}))
+	defer func() {
+		close(doneChan)
+		server.Close()
+	}()
+
+	client, err := NewClient(&ConnectionConfig{URL: server.URL})
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Create a cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	porc := PORC{
+		"principal": Principal{"sub": "test"},
+		"operation": "mcp:tool:call",
+		"resource":  "mcp:tool:test",
+		"context":   Context{},
+	}
+
+	// Start the authorization request in a goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := client.Authorize(ctx, porc, false)
+		errChan <- err
+	}()
+
+	// Wait for the request to be received by the server
+	<-requestReceived
+
+	// Cancel the context
+	cancel()
+
+	// Wait for the authorization to complete and verify it returns an error
+	err = <-errChan
+	if err == nil {
+		t.Error("Expected error from context cancellation, got nil")
+		return
+	}
+
+	// Verify the error is related to context cancellation
+	if !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "HTTP request failed") {
+		t.Errorf("Expected context cancellation error, got: %v", err)
 	}
 }

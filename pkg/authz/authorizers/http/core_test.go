@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
@@ -31,7 +34,8 @@ func TestFactory_ValidateConfig(t *testing.T) {
 				"pdp": {
 					"http": {
 						"url": "http://localhost:9000"
-					}
+					},
+					"claim_mapping": "mpe"
 				}
 			}`,
 			wantErr: false,
@@ -108,7 +112,8 @@ func TestFactory_CreateAuthorizer(t *testing.T) {
 				"pdp": {
 					"http": {
 						"url": "` + server.URL + `"
-					}
+					},
+					"claim_mapping": "mpe"
 				}
 			}`,
 			wantErr: false,
@@ -248,6 +253,7 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 				HTTP: &ConnectionConfig{
 					URL: server.URL,
 				},
+				ClaimMapping: "mpe",
 			}, "test")
 			if err != nil {
 				t.Fatalf("Failed to create authorizer: %v", err)
@@ -288,6 +294,7 @@ func TestAuthorizer_AuthorizeWithJWTClaims_NoIdentity(t *testing.T) {
 		HTTP: &ConnectionConfig{
 			URL: server.URL,
 		},
+		ClaimMapping: "mpe",
 	}, "test")
 	if err != nil {
 		t.Fatalf("Failed to create authorizer: %v", err)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package http
 
 import (
@@ -52,7 +55,7 @@ func NewClient(config *ConnectionConfig) (*Client, error) {
 	}
 
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return nil, fmt.Errorf("URL scheme must be http or https")
+		return nil, fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
 	}
 
 	// Determine timeout
@@ -61,17 +64,20 @@ func NewClient(config *ConnectionConfig) (*Client, error) {
 		timeout = defaultTimeout
 	}
 
-	// Create HTTP client with optional TLS configuration
-	transport := &nethttp.Transport{}
+	// Create HTTP client
+	httpClient := &nethttp.Client{
+		Timeout: time.Duration(timeout) * time.Second,
+	}
+
+	// Only set custom transport when we need to override TLS settings
+	// Otherwise use http.DefaultTransport which includes proxy support and proper defaults
 	if config.InsecureSkipVerify {
+		// Clone default transport and override TLS config
+		transport := nethttp.DefaultTransport.(*nethttp.Transport).Clone()
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // User explicitly requested insecure mode
 		}
-	}
-
-	httpClient := &nethttp.Client{
-		Timeout:   time.Duration(timeout) * time.Second,
-		Transport: transport,
+		httpClient.Transport = transport
 	}
 
 	return &Client{
@@ -91,10 +97,27 @@ func (c *Client) Authorize(ctx context.Context, porc PORC, probe bool) (bool, er
 
 	// Add probe parameter if specified (for PDPs that support debugging mode)
 	if probe {
-		decisionURL += "?probe=true"
+		u, err := url.Parse(decisionURL)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse decision URL: %w", err)
+		}
+		q := u.Query()
+		q.Set("probe", "true")
+		u.RawQuery = q.Encode()
+		decisionURL = u.String()
 	}
 
-	logger.Debugf("authorizing decision URL: %v with PORC: %v", decisionURL, porc)
+	// Log authorization request without sensitive data
+	// PORC can contain sensitive principal attributes and tool arguments, so we only log
+	// high-level fields: operation and resource (subject if available)
+	logSubject := "unknown"
+	if principal, ok := porc["principal"].(map[string]interface{}); ok {
+		if sub, ok := principal["sub"].(string); ok {
+			logSubject = sub
+		}
+	}
+	logger.Debugf("HTTP PDP authorization - URL: %s, Subject: %s, Operation: %v, Resource: %v",
+		decisionURL, logSubject, porc["operation"], porc["resource"])
 
 	// Marshal PORC to JSON
 	body, err := json.Marshal(porc)

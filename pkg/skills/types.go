@@ -52,6 +52,9 @@ type InstalledSkill struct {
 	Status InstallStatus `json:"status"`
 	// InstalledAt is the timestamp when the skill was installed.
 	InstalledAt time.Time `json:"installed_at"`
+	// Clients is the list of client identifiers the skill is installed for.
+	// TODO: Refactor client.MCPClient to a shared package so it can be used here instead of []string.
+	Clients []string `json:"clients,omitempty"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

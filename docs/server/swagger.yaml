@@ -789,10 +789,43 @@ components:
             For remote servers: sse or streamable-http (stdio not supported)
           type: string
       type: object
+    registry.KubernetesMetadata:
+      description: |-
+        Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.
+        This field is optional and only populated when:
+        - The server is served from ToolHive Registry Server
+        - The server was auto-discovered from a Kubernetes deployment
+        - The Kubernetes resource has the required registry annotations
+      properties:
+        image:
+          description: Image is the container image used by the Kubernetes workload
+            (applicable to MCPServer)
+          type: string
+        kind:
+          description: Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer,
+            MCPRemoteProxy)
+          type: string
+        name:
+          description: Name is the Kubernetes resource name
+          type: string
+        namespace:
+          description: Namespace is the Kubernetes namespace where the resource is
+            deployed
+          type: string
+        transport:
+          description: Transport is the transport type configured for the Kubernetes
+            workload (applicable to MCPServer)
+          type: string
+        uid:
+          description: UID is the Kubernetes resource UID
+          type: string
+      type: object
     registry.Metadata:
       description: Metadata contains additional information about the server such
         as popularity metrics
       properties:
+        kubernetes:
+          $ref: '#/components/schemas/registry.KubernetesMetadata'
         last_updated:
           description: LastUpdated is the timestamp when the server was last updated,
             in RFC3339 format

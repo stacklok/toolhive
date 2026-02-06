@@ -99,13 +99,17 @@ These fields are available for all MCP servers (both container-based and remote)
   - `stars`: Number of repository stars
   - `pulls`: Number of container image pulls or usage count
   - `last_updated`: Timestamp in RFC3339 format
-  - `kubernetes`: Kubernetes-specific metadata (nested object) - only present when served from ToolHive Registry Server
-    - `kind`: Kubernetes resource kind (e.g., "MCPServer", "VirtualMCPServer", "MCPRemoteProxy")
-    - `namespace`: Kubernetes namespace where the resource is deployed
-    - `name`: Kubernetes resource name
-    - `uid`: Kubernetes resource UID
-    - `image`: Container image used by the Kubernetes workload (applicable to MCPServer)
-    - `transport`: Transport type configured for the Kubernetes workload (applicable to MCPServer)
+  - `kubernetes`: Kubernetes-specific metadata (nested object) - **optional**, only populated when:
+    - The server is served from ToolHive Registry Server
+    - The server was auto-discovered from a Kubernetes deployment
+    - The Kubernetes resource has the required registry annotations (e.g., `toolhive.stacklok.com/registry-description`, `toolhive.stacklok.com/registry-url`)
+    - Fields:
+      - `kind`: Kubernetes resource kind (e.g., "MCPServer", "VirtualMCPServer", "MCPRemoteProxy")
+      - `namespace`: Kubernetes namespace where the resource is deployed
+      - `name`: Kubernetes resource name
+      - `uid`: Kubernetes resource UID
+      - `image`: Container image used by the Kubernetes workload (applicable to MCPServer)
+      - `transport`: Transport type configured for the Kubernetes workload (applicable to MCPServer)
 
 - **`custom_metadata`**: Custom user-defined metadata (arbitrary key-value pairs)
 
@@ -187,7 +191,7 @@ These fields are specific to remote MCP servers (keyed by URL):
 
 #### Example: Container Server with Kubernetes Metadata
 
-When an MCP server is deployed in Kubernetes and served via the ToolHive Registry Server, additional Kubernetes-specific metadata is included:
+When an MCP server is deployed in Kubernetes and served via the ToolHive Registry Server's auto-discovery feature, additional Kubernetes-specific metadata is included. This requires the Kubernetes resource to have the required registry annotations:
 
 ```json
 {

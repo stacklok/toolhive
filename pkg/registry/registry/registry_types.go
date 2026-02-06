@@ -205,14 +205,18 @@ type Metadata struct {
 	Pulls int `json:"pulls,omitempty" yaml:"pulls,omitempty"`
 	// LastUpdated is the timestamp when the server was last updated, in RFC3339 format
 	LastUpdated string `json:"last_updated,omitempty" yaml:"last_updated,omitempty"`
-	// Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster
-	// This is populated by the ToolHive Registry Server when serving Kubernetes-deployed servers
+	// Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.
+	// This field is optional and only populated when:
+	// - The server is served from ToolHive Registry Server
+	// - The server was auto-discovered from a Kubernetes deployment
+	// - The Kubernetes resource has the required registry annotations
 	Kubernetes *KubernetesMetadata `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 }
 
-// KubernetesMetadata contains Kubernetes-specific metadata for MCP servers
-// deployed in Kubernetes clusters. This is populated by the ToolHive Registry Server
-// when serving servers from Kubernetes resources.
+// KubernetesMetadata contains Kubernetes-specific metadata for MCP servers deployed in Kubernetes clusters.
+// This metadata is automatically populated by ToolHive Registry Server's auto-discovery feature,
+// which publishes Kubernetes-deployed MCP servers that have the required registry annotations
+// (e.g., toolhive.stacklok.com/registry-description, toolhive.stacklok.com/registry-url).
 type KubernetesMetadata struct {
 	// Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)
 	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`

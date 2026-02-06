@@ -3,7 +3,10 @@
 
 package registry
 
-import "github.com/stacklok/toolhive/pkg/permissions"
+import (
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive/pkg/permissions"
+)
 
 // ServerExtensions represents the ToolHive-specific extensions for an MCP server
 // in the publisher-provided metadata format.
@@ -27,7 +30,11 @@ type ServerExtensions struct {
 	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Tags are categorization labels for search and filtering
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
-	// Metadata contains popularity metrics and Kubernetes-specific metadata
+	// Metadata contains popularity metrics and optional Kubernetes-specific metadata.
+	// The Kubernetes metadata is only populated when:
+	// - The server is served from ToolHive Registry Server
+	// - The server was auto-discovered from a Kubernetes deployment
+	// - The Kubernetes resource has the required registry annotations
 	Metadata *Metadata `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	// CustomMetadata allows for additional user-defined metadata
 	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
@@ -60,7 +67,7 @@ type ServerExtensions struct {
 	// - Registry publishers (to pre-declare available tools)
 	// - Any other source that wants to advertise tool capabilities
 	// The array contains Tool objects as defined in the MCP specification.
-	ToolDefinitions any `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty"`
+	ToolDefinitions []mcp.Tool `json:"tool_definitions,omitempty" yaml:"tool_definitions,omitempty"`
 }
 
 // ToolHivePublisherNamespace is the publisher namespace used by ToolHive in the

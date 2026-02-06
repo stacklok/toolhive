@@ -13,12 +13,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// processBackendTools applies per-backend filtering and overrides to tools.
+// processBackendTools applies per-backend overrides to tools.
 // This is called during capability discovery, before conflict resolution.
 //
 // This function reuses the battle-tested logic from pkg/mcp/tool_filter.go
 // by converting vmcp.Tool to mcp.SimpleTool, applying the middleware logic,
 // and converting back.
+//
+// NOTE: Neither ExcludeAll nor Filter are applied here. Both only affect which
+// tools are advertised to MCP clients, not which tools are available for routing.
+// This allows composite tools to call backend tools that are excluded from
+// direct client access. ExcludeAll and Filter are applied later in MergeCapabilities
+// via the shouldAdvertiseTool check.
 func processBackendTools(
 	_ context.Context,
 	backendID string,
@@ -29,23 +35,20 @@ func processBackendTools(
 		return tools // No configuration for this backend
 	}
 
-	// NOTE: ExcludeAll is NOT applied here. ExcludeAll only affects which tools
-	// are advertised to the LLM, not which tools are available for routing.
-	// This allows composite tools to call backend tools that are excluded from
-	// direct LLM access. ExcludeAll is applied later in MergeCapabilities.
-
-	// If no filter or overrides configured, return tools as-is
-	if len(workloadConfig.Filter) == 0 && len(workloadConfig.Overrides) == 0 {
+	// If no overrides configured, return tools as-is
+	// NOTE: Filter is NOT applied here - it only affects advertising, not routing.
+	// This ensures filtered tools remain in the routing table for composite tools.
+	if len(workloadConfig.Overrides) == 0 {
 		return tools
 	}
 
-	// Build middleware options from workload config
+	// Build middleware options from workload config (only overrides, not filter)
 	var opts []mcp.ToolMiddlewareOption
 
-	// Add filter if configured
-	if len(workloadConfig.Filter) > 0 {
-		opts = append(opts, mcp.WithToolsFilter(workloadConfig.Filter...))
-	}
+	// NOTE: Filter is intentionally NOT applied here. Filter only affects which
+	// tools are advertised to MCP clients (like ExcludeAll), not which tools are
+	// available in the routing table. This allows composite tools to call
+	// filtered backend tools. Filter is checked in shouldAdvertiseTool.
 
 	// Build reverse map: overridden name -> original name (for lookup after processing)
 	reverseOverrideMap := make(map[string]string)

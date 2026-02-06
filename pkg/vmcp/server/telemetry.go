@@ -6,6 +6,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -13,12 +15,27 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
 
 const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+// Standard MCP OpenTelemetry attribute keys.
+var (
+	attrMCPMethodName       = attribute.Key("mcp.method.name")
+	attrMCPProtocolVersion  = attribute.Key("mcp.protocol.version")
+	attrGenAIToolName       = attribute.Key("gen_ai.tool.name")
+	attrGenAIPromptName     = attribute.Key("gen_ai.prompt.name")
+	attrGenAIOperationName  = attribute.Key("gen_ai.operation.name")
+	attrNetworkTransport    = attribute.Key("network.transport")
+	attrNetworkProtocolName = attribute.Key("network.protocol.name")
+	attrServerAddress       = attribute.Key("server.address")
+	attrServerPort          = attribute.Key("server.port")
+	attrErrorType           = attribute.Key("error.type")
 )
 
 // monitorBackends decorates the backend client so it records telemetry on each method call.
@@ -61,13 +78,23 @@ func monitorBackends(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
 	}
+	clientOperationDuration, err := meter.Float64Histogram(
+		"mcp.client.operation.duration",
+		metric.WithDescription("MCP client operation duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.MCPOperationDurationBuckets...),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
+	}
 
 	return telemetryBackendClient{
-		backendClient:    backendClient,
-		tracer:           tracerProvider.Tracer(instrumentationName),
-		requestsTotal:    requestsTotal,
-		errorsTotal:      errorsTotal,
-		requestsDuration: requestsDuration,
+		backendClient:           backendClient,
+		tracer:                  tracerProvider.Tracer(instrumentationName),
+		requestsTotal:           requestsTotal,
+		errorsTotal:             errorsTotal,
+		requestsDuration:        requestsDuration,
+		clientOperationDuration: clientOperationDuration,
 	}, nil
 }
 
@@ -75,78 +102,152 @@ type telemetryBackendClient struct {
 	backendClient vmcp.BackendClient
 	tracer        trace.Tracer
 
-	requestsTotal    metric.Int64Counter
-	errorsTotal      metric.Int64Counter
-	requestsDuration metric.Float64Histogram
+	requestsTotal           metric.Int64Counter
+	errorsTotal             metric.Int64Counter
+	requestsDuration        metric.Float64Histogram
+	clientOperationDuration metric.Float64Histogram
 }
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
 
-// record updates the metrics and creates a span for each method on the BackendClient interface.
+// record updates the metrics and creates a CLIENT span for each method on the BackendClient interface.
+// mcpMethod is the MCP method name (e.g. "tools/call"), spanTarget is the optional target suffix
+// for the span name (e.g. tool name), and extraAttrs are additional method-specific attributes.
 // It returns a function that should be deferred to record the duration, error, and end the span.
 func (t telemetryBackendClient) record(
-	ctx context.Context, target *vmcp.BackendTarget, action string, err *error,
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	mcpMethod string,
+	spanTarget string,
+	extraAttrs []attribute.KeyValue,
+	err *error,
 ) (context.Context, func()) {
-	// Create span attributes
-	commonAttrs := []attribute.KeyValue{
+	// Build span name per MCP OTEL spec: "{mcp.method.name} {target}" or just "{mcp.method.name}"
+	spanName := mcpMethod
+	if spanTarget != "" {
+		spanName = mcpMethod + " " + spanTarget
+	}
+
+	// Resolve network attributes from the target
+	serverAddr, serverPort := resolveServerAddrPort(target)
+
+	// Standard MCP OTEL attributes
+	standardAttrs := []attribute.KeyValue{
+		attrMCPMethodName.String(mcpMethod),
+		attrMCPProtocolVersion.String("2025-06-18"),
+		attrNetworkTransport.String("tcp"),
+		attrNetworkProtocolName.String("http"),
+		attrServerAddress.String(serverAddr),
+		attrServerPort.Int(serverPort),
+	}
+
+	// Custom ToolHive attributes (preserved for backward compatibility)
+	customAttrs := []attribute.KeyValue{
 		attribute.String("target.workload_id", target.WorkloadID),
 		attribute.String("target.workload_name", target.WorkloadName),
 		attribute.String("target.base_url", target.BaseURL),
 		attribute.String("target.transport_type", target.TransportType),
-		attribute.String("action", action),
 	}
 
-	ctx, span := t.tracer.Start(ctx, "telemetryBackendClient."+action,
-		// TODO: Add params and results to the span once we have reusable sanitization functions.
-		trace.WithAttributes(commonAttrs...),
+	allAttrs := make([]attribute.KeyValue, 0, len(standardAttrs)+len(customAttrs)+len(extraAttrs))
+	allAttrs = append(allAttrs, standardAttrs...)
+	allAttrs = append(allAttrs, customAttrs...)
+	allAttrs = append(allAttrs, extraAttrs...)
+
+	ctx, span := t.tracer.Start(ctx, spanName,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(allAttrs...),
 	)
 
-	metricAttrs := metric.WithAttributes(commonAttrs...)
+	metricAttrs := metric.WithAttributes(allAttrs...)
 	start := time.Now()
 	t.requestsTotal.Add(ctx, 1, metricAttrs)
 
 	return ctx, func() {
 		duration := time.Since(start)
 		t.requestsDuration.Record(ctx, duration.Seconds(), metricAttrs)
+		t.clientOperationDuration.Record(ctx, duration.Seconds(), metricAttrs)
 		if err != nil && *err != nil {
 			t.errorsTotal.Add(ctx, 1, metricAttrs)
 			span.RecordError(*err)
+			span.SetAttributes(attrErrorType.String((*err).Error()))
 			span.SetStatus(codes.Error, (*err).Error())
 		}
 		span.End()
 	}
 }
 
+// CallTool records CLIENT span for tools/call with gen_ai.tool.name attribute.
 func (t telemetryBackendClient) CallTool(
 	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
 ) (_ *vmcp.ToolCallResult, retErr error) {
-	ctx, done := t.record(ctx, target, "call_tool", &retErr)
+	extraAttrs := []attribute.KeyValue{
+		attrGenAIToolName.String(toolName),
+		attrGenAIOperationName.String("execute_tool"),
+	}
+	ctx, done := t.record(ctx, target, "tools/call", toolName, extraAttrs, &retErr)
 	defer done()
 	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
 
+// ReadResource records CLIENT span for resources/read.
 func (t telemetryBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (_ *vmcp.ResourceReadResult, retErr error) {
-	ctx, done := t.record(ctx, target, "read_resource", &retErr)
+	ctx, done := t.record(ctx, target, "resources/read", "", nil, &retErr)
 	defer done()
 	return t.backendClient.ReadResource(ctx, target, uri)
 }
 
+// GetPrompt records CLIENT span for prompts/get with gen_ai.prompt.name attribute.
 func (t telemetryBackendClient) GetPrompt(
 	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
 ) (_ *vmcp.PromptGetResult, retErr error) {
-	ctx, done := t.record(ctx, target, "get_prompt", &retErr)
+	extraAttrs := []attribute.KeyValue{
+		attrGenAIPromptName.String(name),
+	}
+	ctx, done := t.record(ctx, target, "prompts/get", name, extraAttrs, &retErr)
 	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }
 
+// ListCapabilities records CLIENT span for initialize (the underlying MCP method).
 func (t telemetryBackendClient) ListCapabilities(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (_ *vmcp.CapabilityList, retErr error) {
-	ctx, done := t.record(ctx, target, "list_capabilities", &retErr)
+	ctx, done := t.record(ctx, target, "initialize", "", nil, &retErr)
 	defer done()
 	return t.backendClient.ListCapabilities(ctx, target)
+}
+
+// resolveServerAddrPort extracts the server address and port from a BackendTarget's BaseURL.
+func resolveServerAddrPort(target *vmcp.BackendTarget) (string, int) {
+	if target.BaseURL == "" {
+		return "", 0
+	}
+
+	parsed, err := url.Parse(target.BaseURL)
+	if err != nil {
+		return target.BaseURL, 0
+	}
+
+	addr := parsed.Hostname()
+	portStr := parsed.Port()
+	if portStr == "" {
+		switch parsed.Scheme {
+		case "https":
+			portStr = "443"
+		default:
+			portStr = "80"
+		}
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return addr, 0
+	}
+
+	return addr, port
 }
 
 // monitorWorkflowExecutors decorates workflow executors with telemetry recording.

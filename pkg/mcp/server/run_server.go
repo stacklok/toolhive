@@ -45,7 +45,7 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 
 	// Use retriever to properly fetch and prepare the MCP server
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "")
+	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "", nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}

@@ -36,8 +36,9 @@ func HandleProtocolScheme(
 	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
+	runtimeOverride *templates.RuntimeConfig,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", nil, false)
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", nil, runtimeOverride, false)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
@@ -53,6 +54,7 @@ func BuildFromProtocolSchemeWithName(
 	caCertPath string,
 	imageName string,
 	buildArgs []string,
+	runtimeOverride *templates.RuntimeConfig,
 	dryRun bool,
 ) (string, error) {
 	transportType, packageName, err := ParseProtocolScheme(serverOrImage)
@@ -60,7 +62,7 @@ func BuildFromProtocolSchemeWithName(
 		return "", err
 	}
 
-	templateData, err := createTemplateData(transportType, packageName, caCertPath, buildArgs)
+	templateData, err := createTemplateData(transportType, packageName, caCertPath, buildArgs, runtimeOverride)
 	if err != nil {
 		return "", err
 	}
@@ -107,6 +109,7 @@ func validateBuildArgs(buildArgs []string) error {
 // createTemplateData creates the template data with optional CA certificate and build arguments.
 func createTemplateData(
 	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
+	runtimeOverride *templates.RuntimeConfig,
 ) (templates.TemplateData, error) {
 	// Validate buildArgs to prevent shell injection in templates that use sh -c
 	if err := validateBuildArgs(buildArgs); err != nil {
@@ -139,7 +142,7 @@ func createTemplateData(
 	}
 
 	// Load runtime configuration (base images and packages)
-	runtimeConfig := loadRuntimeConfig(transportType, nil)
+	runtimeConfig := loadRuntimeConfig(transportType, runtimeOverride)
 	templateData.RuntimeConfig = runtimeConfig
 
 	return templateData, nil

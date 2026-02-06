@@ -402,9 +402,18 @@ func handleImageRetrieval(
 	error,
 ) {
 
+	// Build runtime config override from flags (if any)
+	var runtimeOverride *templates.RuntimeConfig
+	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
+		runtimeOverride = &templates.RuntimeConfig{
+			BuilderImage:       runFlags.RuntimeImage,
+			AdditionalPackages: runFlags.RuntimeAddPackages,
+		}
+	}
+
 	// Try to get server from registry (container or remote) or direct URL
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName, runtimeOverride)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
 	}

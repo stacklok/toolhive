@@ -847,17 +847,11 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
-	// Extract ImagePullSecrets from PodTemplateSpec if present
+	// Extract ImagePullSecrets from ResourceOverrides if present
 	var imagePullSecrets []corev1.LocalObjectReference
-	if mcpServer.Spec.PodTemplateSpec != nil {
-		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Failed to parse PodTemplateSpec for RBAC image pull secrets")
-		} else {
-			if spec := builder.Build(); spec != nil {
-				imagePullSecrets = spec.Spec.ImagePullSecrets
-			}
-		}
+	if mcpServer.Spec.ResourceOverrides != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+		imagePullSecrets = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
 	}
 
 	// Ensure RBAC resources for proxy runner
@@ -907,7 +901,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	var imagePullSecrets []corev1.LocalObjectReference
 	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
@@ -927,7 +920,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			Build()
 		// Add pod template patch if we have one
 		if finalPodTemplateSpec != nil {
-			imagePullSecrets = finalPodTemplateSpec.Spec.ImagePullSecrets
 			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
 			if err != nil {
 				ctxLogger := log.FromContext(ctx)
@@ -1148,6 +1140,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
+
+	// Extract ImagePullSecrets from ResourceOverrides if present
+	var imagePullSecrets []corev1.LocalObjectReference
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
+		imagePullSecrets = m.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

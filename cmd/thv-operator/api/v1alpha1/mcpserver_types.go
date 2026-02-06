@@ -232,6 +232,11 @@ type ProxyDeploymentOverrides struct {
 	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
+
+	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
+	// These are applied to both the Deployment and the ServiceAccount
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource

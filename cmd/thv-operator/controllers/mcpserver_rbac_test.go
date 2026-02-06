@@ -5,7 +5,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -386,22 +385,16 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	t.Parallel()
 	tc := setupTest("test-server-pull-secrets", "default")
 
-	// Create PodTemplateSpec with ImagePullSecrets
-	podTemplate := &corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{
+	// Set ImagePullSecrets via ResourceOverrides
+	tc.mcpServer.Spec.ResourceOverrides = &mcpv1alpha1.ResourceOverrides{
+		ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 			ImagePullSecrets: []corev1.LocalObjectReference{
 				{Name: "my-secret"},
 			},
 		},
 	}
-	podTemplateBytes, err := json.Marshal(podTemplate)
-	require.NoError(t, err)
 
-	tc.mcpServer.Spec.PodTemplateSpec = &runtime.RawExtension{
-		Raw: podTemplateBytes,
-	}
-
-	err = tc.ensureRBACResources()
+	err := tc.ensureRBACResources()
 	require.NoError(t, err)
 
 	tc.assertServiceAccountExists(t)

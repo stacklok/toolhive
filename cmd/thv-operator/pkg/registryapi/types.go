@@ -84,6 +84,10 @@ const (
 	pgpassAppUserMountPath = "/home/appuser/.pgpass"
 	// pgpassFileName is the name of the pgpass file
 	pgpassFileName = ".pgpass"
+
+	// Git auth volume and path constants
+	// gitAuthSecretsBasePath is the base path where git auth secrets are mounted
+	gitAuthSecretsBasePath = "/secrets"
 )
 
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager

@@ -20,14 +20,18 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"go.uber.org/mock/gomock"
 
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
-	testKeyID = "test-key-1"
-	expClaim  = "exp"
-	issuer    = "https://issuer.example.com"
+	testKeyID   = "test-key-1"
+	expClaim    = "exp"
+	issuer      = "https://issuer.example.com"
+	schemeHTTPS = "https"
 )
 
 //nolint:gocyclo // This test function is complex but manageable
@@ -378,7 +382,7 @@ func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
 		// Use the request's host to construct the issuer URL
 		scheme := "http"
 		if r.TLS != nil {
-			scheme = "https"
+			scheme = schemeHTTPS
 		}
 		issuerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 
@@ -470,11 +474,25 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 	// Extract the test server's certificate to a temp CA bundle file
 	caCertPath := writeTestServerCert(t, oidcServer)
 
+	// Build an HTTP client with the test server's CA cert for use in discovery calls
+	buildTestClient := func(t *testing.T, caPath string, allowPrivateIP bool) *http.Client {
+		t.Helper()
+		client, err := networking.NewHttpClientBuilder().
+			WithCABundle(caPath).
+			WithPrivateIPs(allowPrivateIP).
+			Build()
+		if err != nil {
+			t.Fatalf("Failed to build HTTP client: %v", err)
+		}
+		return client
+	}
+
 	ctx := context.Background()
 
 	t.Run("successful discovery", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true, false)
+		client := buildTestClient(t, caCertPath, true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, client, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -491,7 +509,8 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("issuer with trailing slash", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true, false)
+		client := buildTestClient(t, caCertPath, true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", client, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -503,7 +522,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("invalid issuer URL", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false, false)
+		_, err := discoverOIDCConfiguration(ctx, "invalid-url", http.DefaultClient, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -511,28 +530,21 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("non-existent endpoint", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false, false)
+		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", http.DefaultClient, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
 	})
 }
 
-//nolint:tparallel // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
-	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
-	// environment variable, which is process-wide and would cause race conditions with other tests
+	t.Parallel()
 
-	// Ensure OIDC discovery is not skipped for this test
-	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-	t.Cleanup(func() {
-		if hadValue {
-			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
-		} else {
-			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-		}
-	})
-	os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
+	// Mock env reader that returns "" for TOOLHIVE_SKIP_OIDC_DISCOVERY (discovery not skipped)
+	ctrl := gomock.NewController(t)
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+	envOpt := WithEnvReader(mockEnv)
 
 	// Generate a new RSA key pair for signing tokens
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -614,7 +626,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, envOpt)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -623,9 +635,27 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected issuer %s but got %s", oidcServer.URL, validator.issuer)
 		}
 
+		// With lazy discovery, the JWKS URL is initially empty.
+		// Discovery happens on first validation or when ensureOIDCDiscovered is called.
+		if validator.jwksURL != "" {
+			t.Errorf("Expected empty JWKS URL before discovery but got %s", validator.jwksURL)
+		}
+
+		// Lazy discovery should be pending: issuer is set but jwksURL is empty
+		if validator.issuer == "" {
+			t.Error("Expected issuer to be set for lazy discovery")
+		}
+
+		// Trigger lazy OIDC discovery
+		err = validator.ensureOIDCDiscovered(ctx)
+		if err != nil {
+			t.Fatalf("Failed to perform OIDC discovery: %v", err)
+		}
+
+		// After discovery, the JWKS URL should be updated
 		expectedJWKSURL := jwksServer.URL + "/jwks"
 		if validator.jwksURL != expectedJWKSURL {
-			t.Errorf("Expected JWKS URL %s but got %s", expectedJWKSURL, validator.jwksURL)
+			t.Errorf("Expected JWKS URL %s after discovery but got %s", expectedJWKSURL, validator.jwksURL)
 		}
 
 		// Test that the validator can actually validate tokens
@@ -678,7 +708,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, envOpt)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -699,7 +729,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, envOpt)
 		if !errors.Is(err, ErrMissingIssuerAndJWKSURL) {
 			t.Errorf("Expected error %v but got %v", ErrMissingIssuerAndJWKSURL, err)
 		}
@@ -716,39 +746,48 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			Issuer:   "https://non-existent-domain-toolhive-test-12345.com",
 			Audience: "test-audience",
 			ClientID: "test-client",
-			// No CA cert or AllowPrivateIP for this test - it should fail
+			// No CA cert or AllowPrivateIP for this test - discovery should fail
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
-		if err == nil {
-			t.Error("Expected error but got nil")
+		// With lazy discovery, NewTokenValidator succeeds even if OIDC endpoint is unreachable
+		validator, err := NewTokenValidator(ctx, config, envOpt)
+		if err != nil {
+			t.Fatalf("Expected no error from NewTokenValidator (lazy discovery), but got: %v", err)
 		}
-		if validator != nil {
-			t.Error("Expected validator to be nil")
+		if validator == nil {
+			t.Fatal("Expected validator to be non-nil")
+		}
+
+		// Discovery failure should occur when we try to validate a token
+		// or explicitly call ensureOIDCDiscovered
+		err = validator.ensureOIDCDiscovered(ctx)
+		if err == nil {
+			t.Error("Expected error from ensureOIDCDiscovered but got nil")
 		}
 
 		// Check that the error is related to OIDC discovery
 		if !errors.Is(err, ErrFailedToDiscoverOIDC) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
 		}
+
+		// Also verify that ValidateToken returns the discovery error
+		_, tokenErr := validator.ValidateToken(ctx, "dummy-token")
+		if tokenErr == nil {
+			t.Error("Expected error from ValidateToken but got nil")
+		}
+		if !errors.Is(tokenErr, ErrFailedToDiscoverOIDC) {
+			t.Errorf("Expected ValidateToken error to wrap %v but got %v", ErrFailedToDiscoverOIDC, tokenErr)
+		}
 	})
 }
 
-//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) {
-	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
-	// environment variable, which is process-wide and would cause race conditions with other tests
+	t.Parallel()
 
-	// Set and restore environment variable
-	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-	t.Cleanup(func() {
-		if hadValue {
-			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
-		} else {
-			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-		}
-	})
-	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+	ctrl := gomock.NewController(t)
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY").Return("true").AnyTimes()
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
 
 	ctx := context.Background()
 
@@ -760,7 +799,7 @@ func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) 
 		// JWKSURL intentionally omitted
 	}
 
-	_, err := NewTokenValidator(ctx, config)
+	_, err := NewTokenValidator(ctx, config, WithEnvReader(mockEnv))
 	if err == nil {
 		t.Fatal("Expected error when TOOLHIVE_SKIP_OIDC_DISCOVERY=true without JWKSURL")
 	}
@@ -769,21 +808,13 @@ func TestTokenValidator_SkipOIDCDiscovery_RequiresExplicitJWKSURL(t *testing.T) 
 	}
 }
 
-//nolint:paralleltest // Cannot use t.Parallel() - test manipulates process-wide environment variable
 func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T) {
-	// Note: NOT using t.Parallel() because this test manipulates the TOOLHIVE_SKIP_OIDC_DISCOVERY
-	// environment variable, which is process-wide and would cause race conditions with other tests
+	t.Parallel()
 
-	// Set and restore environment variable
-	oldValue, hadValue := os.LookupEnv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-	t.Cleanup(func() {
-		if hadValue {
-			os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", oldValue)
-		} else {
-			os.Unsetenv("TOOLHIVE_SKIP_OIDC_DISCOVERY")
-		}
-	})
-	os.Setenv("TOOLHIVE_SKIP_OIDC_DISCOVERY", "true")
+	ctrl := gomock.NewController(t)
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY").Return("true").AnyTimes()
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
 
 	ctx := context.Background()
 
@@ -796,7 +827,7 @@ func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T)
 		JWKSURL:  explicitJWKSURL,
 	}
 
-	validator, err := NewTokenValidator(ctx, config)
+	validator, err := NewTokenValidator(ctx, config, WithEnvReader(mockEnv))
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -804,6 +835,184 @@ func TestTokenValidator_SkipOIDCDiscovery_WorksWithExplicitJWKSURL(t *testing.T)
 	// Verify that the explicit JWKS URL was used
 	if validator.jwksURL != explicitJWKSURL {
 		t.Errorf("Expected JWKS URL %s but got %s", explicitJWKSURL, validator.jwksURL)
+	}
+}
+
+// TestEnsureOIDCDiscovered_RetryAfterFailure verifies that a failed discovery
+// is retried on the next call (not permanently latched).
+func TestEnsureOIDCDiscovered_RetryAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	oidcServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+
+		callCount++
+		if callCount <= 3 {
+			// First 3 calls fail (all retries within one ensureOIDCDiscovered call)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = schemeHTTPS
+		}
+		issuerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+		doc := oauthproto.OIDCDiscoveryDocument{
+			AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+				Issuer:  issuerURL,
+				JWKSURI: "https://example.com/jwks",
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(oidcServer.Close)
+
+	caCertPath := writeTestServerCert(t, oidcServer)
+	ctx := context.Background()
+
+	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+		Issuer:         oidcServer.URL,
+		Audience:       "test-audience",
+		ClientID:       "test-client",
+		CACertPath:     caCertPath,
+		AllowPrivateIP: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create token validator: %v", err)
+	}
+
+	// First call should fail (all 3 retry attempts get 503)
+	err = validator.ensureOIDCDiscovered(ctx)
+	if !errors.Is(err, ErrFailedToDiscoverOIDC) {
+		t.Fatalf("Expected ErrFailedToDiscoverOIDC, got: %v", err)
+	}
+	if validator.oidcDiscovered {
+		t.Error("Expected oidcDiscovered to be false after failure")
+	}
+
+	// Second call should succeed (server now returns 200)
+	err = validator.ensureOIDCDiscovered(ctx)
+	if err != nil {
+		t.Fatalf("Expected retry to succeed, got: %v", err)
+	}
+	if !validator.oidcDiscovered {
+		t.Error("Expected oidcDiscovered to be true after retry")
+	}
+	if validator.jwksURL != "https://example.com/jwks" {
+		t.Errorf("Expected JWKS URL https://example.com/jwks, got: %s", validator.jwksURL)
+	}
+
+	// Subsequent calls are a no-op
+	err = validator.ensureOIDCDiscovered(ctx)
+	if err != nil {
+		t.Fatalf("Expected no-op call to succeed, got: %v", err)
+	}
+}
+
+func TestValidateToken_TriggersLazyDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key pair: %v", err)
+	}
+
+	key, err := jwk.Import(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create JWK: %v", err)
+	}
+	for _, kv := range []struct {
+		k string
+		v interface{}
+	}{
+		{jwk.KeyIDKey, testKeyID},
+		{jwk.AlgorithmKey, "RS256"},
+		{jwk.KeyUsageKey, "sig"},
+	} {
+		if err := key.Set(kv.k, kv.v); err != nil {
+			t.Fatalf("Failed to set %s: %v", kv.k, err)
+		}
+	}
+	keySet := jwk.NewSet()
+	if err := keySet.AddKey(key); err != nil {
+		t.Fatalf("Failed to add key: %v", err)
+	}
+
+	// JWKS server
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		buf, _ := json.Marshal(keySet)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(buf)
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	// OIDC discovery server
+	oidcServer := createTestOIDCServer(t, jwksServer.URL)
+	t.Cleanup(oidcServer.Close)
+
+	// Combined CA cert for both servers
+	tmpFile, err := os.CreateTemp("", "test-combined-ca-*.crt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+	for _, cert := range [][]byte{oidcServer.Certificate().Raw, jwksServer.Certificate().Raw} {
+		if err := pem.Encode(tmpFile, &pem.Block{Type: "CERTIFICATE", Bytes: cert}); err != nil {
+			t.Fatalf("Failed to write certificate: %v", err)
+		}
+	}
+	tmpFile.Close()
+
+	ctx := context.Background()
+	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+		Issuer:         oidcServer.URL,
+		Audience:       "test-audience",
+		ClientID:       "test-client",
+		CACertPath:     tmpFile.Name(),
+		AllowPrivateIP: true,
+	}, WithEnvReader(mockEnv))
+	if err != nil {
+		t.Fatalf("Failed to create token validator: %v", err)
+	}
+
+	// Verify lazy discovery is pending
+	if validator.oidcDiscovered || validator.jwksURL != "" {
+		t.Fatal("Expected lazy discovery to be pending")
+	}
+
+	// Create and sign a valid token
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": oidcServer.URL,
+		"aud": "test-audience",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"sub": "test-user",
+	})
+	token.Header["kid"] = testKeyID
+	tokenString, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("Failed to sign token: %v", err)
+	}
+
+	// ValidateToken should trigger discovery + JWKS registration + validation
+	validatedClaims, err := validator.ValidateToken(ctx, tokenString)
+	if err != nil {
+		t.Fatalf("ValidateToken should trigger lazy discovery and succeed, got: %v", err)
+	}
+	if validatedClaims["sub"] != "test-user" {
+		t.Errorf("Expected sub=test-user, got: %v", validatedClaims["sub"])
+	}
+	if !validator.oidcDiscovered {
+		t.Error("Expected oidcDiscovered to be true after ValidateToken")
 	}
 }
 
@@ -853,6 +1062,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		client:        http.DefaultClient,
 		issuer:        "opaque-issuer",
 		audience:      "opaque-audience",
+		jwksURL:       "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 		registry:      registry,
 	}
 
@@ -1326,6 +1536,7 @@ func TestMiddleware_WWWAuthenticate_InvalidOpaqueToken_NoIntrospectionConfigured
 
 	tv := &TokenValidator{
 		issuer:   issuer,
+		jwksURL:  "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 		registry: NewRegistry(),
 		// introspectURL intentionally empty to force the error path
 	}
@@ -1432,6 +1643,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 
 			tv := &TokenValidator{
 				issuer:        issuer,
+				jwksURL:       "https://placeholder/jwks", // Set to prevent lazy OIDC discovery
 				introspectURL: introspectTS.URL + "/introspect",
 				clientID:      "cid",
 				clientSecret:  "csecret",

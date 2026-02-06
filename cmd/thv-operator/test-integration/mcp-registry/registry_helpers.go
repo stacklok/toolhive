@@ -97,6 +97,26 @@ func (rb *RegistryBuilder) WithGitSource(repository, branch, path string) *Regis
 	return rb
 }
 
+// WithGitAuth adds authentication configuration to the current Git source.
+// This must be called after WithGitSource.
+func (rb *RegistryBuilder) WithGitAuth(username, secretName, secretKey string) *RegistryBuilder {
+	registryConfig := rb.getCurrentRegistryConfig()
+	if registryConfig.Git == nil {
+		// Git source must be configured first
+		return rb
+	}
+	registryConfig.Git.Auth = &mcpv1alpha1.GitAuthConfig{
+		Username: username,
+		PasswordSecretRef: corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: secretName,
+			},
+			Key: secretKey,
+		},
+	}
+	return rb
+}
+
 // WithAPISource configures the registry with an API source
 func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
 	registryConfig := rb.getCurrentRegistryConfig()

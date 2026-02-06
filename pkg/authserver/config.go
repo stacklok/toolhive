@@ -13,6 +13,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -416,9 +417,7 @@ func (c *Config) applyDefaults() error {
 			"warning", "JWTs will be invalid after restart")
 	}
 	if len(c.ScopesSupported) == 0 {
-		// Default to minimal OIDC scopes per MCP specification best practices.
-		// "openid" is required for OIDC, "offline_access" enables refresh tokens.
-		c.ScopesSupported = []string{"openid", "offline_access"}
+		c.ScopesSupported = registration.DefaultScopes
 		logger.Debugw("applied default scopes_supported", "scopes", c.ScopesSupported)
 	}
 	return nil

@@ -1064,7 +1064,7 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 
 	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused after 3 consecutive failures")
 
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after connection failure")
 }
 
@@ -1119,7 +1119,7 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 		if tracker.isInvoked() {
 			callbackInvoked = true
 		}
-		running, _ := proxy.IsRunning(ctx)
+		running, _ := proxy.IsRunning()
 		if !running {
 			proxyStopped = true
 		}
@@ -1164,7 +1164,7 @@ func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	assert.True(t, tracker.isInvoked(), "Callback should be invoked after server becomes unavailable (3 consecutive failures)")
 
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after server becomes unavailable")
 }
 
@@ -1262,7 +1262,7 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 
 			assert.Equal(t, tc.expectCallback, tracker.isInvoked(), "%s: %s", tc.name, tc.description)
 
-			running, _ := proxy.IsRunning(ctx)
+			running, _ := proxy.IsRunning()
 			assert.Equal(t, tc.expectRunning, running, "%s: Proxy running state should match expectation", tc.name)
 		})
 	}
@@ -1292,7 +1292,7 @@ func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
 	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization")
 
 	// Proxy should still be running
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.True(t, running, "Proxy should continue running when server is not initialized")
 }
 
@@ -1318,7 +1318,7 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 
 	// Proxy should stop even without callback
-	running, _ := proxy.IsRunning(ctx)
+	running, _ := proxy.IsRunning()
 	assert.False(t, running, "Proxy should stop after health check failure even with nil callback")
 }
 

@@ -214,6 +214,62 @@ sequenceDiagram
 
 **Key insight**: If a tool was renamed during conflict resolution (e.g., `github_create_issue`), vMCP translates it back to the original name (`create_issue`) when calling the backend.
 
+## Request Processing Pipeline
+
+vMCP uses a middleware chain to process incoming requests. The chain is configured in `pkg/vmcp/server/server.go`.
+
+### Middleware Execution Order
+
+Middleware is applied by wrapping handlers, so execution order is outer-to-inner:
+
+| Order | Middleware | Required | Purpose |
+|-------|------------|----------|---------|
+| 1 | Recovery | Always | Catches panics, returns HTTP 500 |
+| 2 | Authentication | Optional | Validates incoming JWT tokens (OIDC/Anonymous) |
+| 3 | Authorization | Optional | Evaluates Cedar policies (composed with auth) |
+| 4 | Audit | Optional | Logs request events for compliance |
+| 5 | Discovery | Always | Aggregates backend capabilities per session |
+| 6 | Backend Enrichment | Optional | Adds backend name to audit context |
+| 7 | Telemetry | Optional | OpenTelemetry instrumentation |
+
+### Discovery Middleware
+
+The Discovery middleware (`pkg/vmcp/discovery/middleware.go`) is central to vMCP's multi-tenant design:
+
+- **Initialize requests** (no session ID): Discovers capabilities from all backends in the MCPGroup, stores routing table in session
+- **Subsequent requests** (with session ID): Retrieves cached capabilities from session
+
+This lazy per-session discovery ensures:
+- Deterministic behavior within a session
+- Support for dynamic backends (Kubernetes)
+- No notification spam from redundant capability updates
+
+**Timeouts**: Discovery has a 15-second timeout. Timeout returns HTTP 504, discovery failure returns HTTP 503.
+
+### Backend Enrichment Middleware
+
+When Audit is configured, the Backend Enrichment middleware (`pkg/vmcp/server/backend_enrichment.go`) parses the MCP request to determine which backend will handle it:
+
+| MCP Method | Lookup |
+|------------|--------|
+| `tools/call` | `name` → `RoutingTable.Tools` |
+| `resources/read` | `uri` → `RoutingTable.Resources` |
+| `prompts/get` | `name` → `RoutingTable.Prompts` |
+
+This enriches audit events with the backend name for better observability.
+
+### Authentication Composition
+
+When Authorization is configured, Authentication middleware is composed with MCP Parsing and Authorization:
+
+```
+Authentication → MCP Parsing → Authorization → Next Handler
+```
+
+This composition is created by `pkg/vmcp/auth/factory/incoming.NewIncomingAuthMiddleware()`.
+
+**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+
 ## Health Monitoring
 
 vMCP monitors backend health with configurable intervals. Health status (healthy, degraded, unhealthy, unauthenticated, unknown) affects routing decisions and is reported in VirtualMCPServer status.
@@ -270,3 +326,4 @@ Status reporting enables vMCP runtime to report operational status directly inst
 - [Groups](07-groups.md) - MCPGroup for backend organization
 - [Operator Architecture](09-operator-architecture.md) - CRD details
 - [Transport Architecture](03-transport-architecture.md) - Transport types used by backends
+- [Middleware Architecture](../middleware.md) - Shared middleware system (Authentication, Audit, Telemetry, etc.)

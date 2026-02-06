@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive-core/env"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 

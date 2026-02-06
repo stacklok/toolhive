@@ -14,7 +14,7 @@ import (
 
 	"github.com/adrg/xdg"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive-core/httperr"
 )
 
 const (
@@ -69,7 +69,7 @@ func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, e
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errors.WithCode(fmt.Errorf("state '%s' not found", name), http.StatusNotFound)
+			return nil, httperr.WithCode(fmt.Errorf("state '%s' not found", name), http.StatusNotFound)
 		}
 		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}
@@ -99,7 +99,7 @@ func (s *LocalStore) CreateExclusive(_ context.Context, name string) (io.WriteCl
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if os.IsExist(err) {
-			return nil, errors.WithCode(
+			return nil, httperr.WithCode(
 				fmt.Errorf("state '%s' already exists", name),
 				http.StatusConflict,
 			)

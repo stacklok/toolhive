@@ -94,7 +94,7 @@ func Setup(
 	}
 
 	// Create the container
-	logger.Infof("Deploying workload %s from image %s...", containerName, image)
+	logger.Debugf("Deploying workload %s from image %s...", containerName, image)
 	exposedPort, err := runtime.DeployWorkload(
 		ctx,
 		image,
@@ -110,7 +110,7 @@ func Setup(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
-	logger.Infof("Container created: %s", containerName)
+	logger.Debugf("Container created: %s", containerName)
 
 	result := &SetupResult{
 		ContainerName: containerName,

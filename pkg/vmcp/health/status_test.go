@@ -4,7 +4,9 @@
 package health
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -54,7 +56,7 @@ func TestNewStatusTracker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := newStatusTracker(tt.threshold)
+			tracker := newStatusTracker(tt.threshold, nil)
 			require.NotNil(t, tracker)
 			assert.Equal(t, tt.expectedThreshold, tracker.unhealthyThreshold, tt.description)
 			assert.NotNil(t, tracker.states)
@@ -65,7 +67,7 @@ func TestNewStatusTracker(t *testing.T) {
 func TestStatusTracker_RecordSuccess(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Record success for new backend
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -86,7 +88,7 @@ func TestStatusTracker_RecordSuccess(t *testing.T) {
 func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record multiple failures
@@ -110,7 +112,7 @@ func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
 func TestStatusTracker_RecordFailure_BelowThreshold(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// First failure - should initialize with unknown status (below threshold)
@@ -132,7 +134,7 @@ func TestStatusTracker_RecordFailure_BelowThreshold(t *testing.T) {
 func TestStatusTracker_RecordFailure_ReachThreshold(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record failures up to threshold
@@ -150,7 +152,7 @@ func TestStatusTracker_RecordFailure_ReachThreshold(t *testing.T) {
 func TestStatusTracker_RecordFailure_StatusTransitions(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 
 	// Start with healthy
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -198,7 +200,7 @@ func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := newStatusTracker(2)
+			tracker := newStatusTracker(2, nil)
 			testErr := errors.New("test error")
 
 			// Record failures to reach threshold
@@ -215,7 +217,7 @@ func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
 func TestStatusTracker_GetStatus_NonExistent(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	status, exists := tracker.GetStatus("nonexistent")
 	assert.False(t, exists)
@@ -225,7 +227,7 @@ func TestStatusTracker_GetStatus_NonExistent(t *testing.T) {
 func TestStatusTracker_GetState_NonExistent(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	state, exists := tracker.GetState("nonexistent")
 	assert.False(t, exists)
@@ -235,7 +237,7 @@ func TestStatusTracker_GetState_NonExistent(t *testing.T) {
 func TestStatusTracker_GetAllStates(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Add multiple backends with different states
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -258,7 +260,7 @@ func TestStatusTracker_GetAllStates(t *testing.T) {
 func TestStatusTracker_GetAllStates_Empty(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	allStates := tracker.GetAllStates()
 	assert.NotNil(t, allStates)
@@ -268,7 +270,7 @@ func TestStatusTracker_GetAllStates_Empty(t *testing.T) {
 func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Get states
@@ -286,7 +288,7 @@ func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
 func TestStatusTracker_IsHealthy(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 
 	// Healthy backend
 	tracker.RecordSuccess("backend-healthy", "Healthy Backend", vmcp.BackendHealthy)
@@ -304,7 +306,7 @@ func TestStatusTracker_IsHealthy(t *testing.T) {
 func TestStatusTracker_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	numGoroutines := 10
 	numOperations := 100
 
@@ -360,7 +362,7 @@ func TestStatusTracker_ConcurrentAccess(t *testing.T) {
 func TestStatusTracker_StateTimestamps(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 	testErr := errors.New("test error")
 
 	// Initial success
@@ -394,7 +396,7 @@ func TestStatusTracker_StateTimestamps(t *testing.T) {
 func TestStatusTracker_MultipleBackends(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(2)
+	tracker := newStatusTracker(2, nil)
 
 	// Backend 1: Healthy
 	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
@@ -424,7 +426,7 @@ func TestStatusTracker_MultipleBackends(t *testing.T) {
 func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("health check failed")
 
 	// Record 5 failures (well over threshold)
@@ -453,7 +455,7 @@ func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
 func TestState_Immutability(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(3)
+	tracker := newStatusTracker(3, nil)
 	testErr := errors.New("test error")
 
 	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
@@ -477,7 +479,7 @@ func TestState_Immutability(t *testing.T) {
 func TestStatusTracker_ThresholdOf1(t *testing.T) {
 	t.Parallel()
 
-	tracker := newStatusTracker(1)
+	tracker := newStatusTracker(1, nil)
 	testErr := errors.New("test error")
 
 	// First failure should immediately mark as unhealthy
@@ -488,4 +490,259 @@ func TestStatusTracker_ThresholdOf1(t *testing.T) {
 
 	state, _ := tracker.GetState("backend-1")
 	assert.Equal(t, 1, state.ConsecutiveFailures)
+}
+
+func TestStatusTracker_CircuitBreakerInitialization(t *testing.T) {
+	t.Parallel()
+
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 5,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	// Circuit breaker is initialized inline when state is created
+	// Record a success to create the backend state
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	// Verify circuit breaker exists and is in closed state
+	cbState, exists := tracker.GetCircuitBreakerState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, cbState)
+
+	// Verify CanAttemptHealthCheck returns true initially
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.False(t, tracker.IsCircuitOpen("backend-1"))
+}
+
+func TestStatusTracker_CircuitBreakerRecordSuccess(t *testing.T) {
+	t.Parallel()
+
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	// Record failure to increment circuit breaker count
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitClosed, cbState)
+
+	// Record success - should reset circuit breaker
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, CircuitClosed, state.CircuitState)
+	assert.Equal(t, 0, state.ConsecutiveFailures)
+}
+
+func TestStatusTracker_CircuitBreakerRecordFailure(t *testing.T) {
+	t.Parallel()
+
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	testErr := errors.New("health check failed")
+
+	// Record first failure - should stay closed
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitClosed, cbState)
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Record second failure - should open circuit
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	cbState, _ = tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitOpen, cbState)
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.True(t, tracker.IsCircuitOpen("backend-1"))
+}
+
+func TestStatusTracker_CircuitBreakerStateInSnapshot(t *testing.T) {
+	t.Parallel()
+
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          60 * time.Second,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	// Record initial failure to create circuit breaker
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+
+	// Get initial state snapshot
+	state, exists := tracker.GetState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, state.CircuitState)
+	assert.False(t, state.CircuitLastChanged.IsZero())
+
+	// Open circuit with second failure
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+
+	// Get state snapshot after opening
+	state2, _ := tracker.GetState("backend-1")
+	assert.Equal(t, CircuitOpen, state2.CircuitState)
+	assert.True(t, state2.CircuitLastChanged.After(state.CircuitLastChanged))
+}
+
+func TestStatusTracker_CircuitBreakerDisabled(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3, nil)
+
+	// Circuit breaker is disabled (nil config), so alwaysClosedCircuit is used
+	// CanAttemptHealthCheck should always return true
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Record multiple failures
+	for i := 0; i < 10; i++ {
+		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("test"))
+	}
+
+	// Still should allow health checks (no-op circuit breaker)
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+	assert.False(t, tracker.IsCircuitOpen("backend-1"))
+
+	// Circuit breaker state should exist and be closed (using alwaysClosedCircuit)
+	cbState, exists := tracker.GetCircuitBreakerState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, CircuitClosed, cbState)
+}
+
+func TestStatusTracker_CircuitBreakerHalfOpen(t *testing.T) {
+	t.Parallel()
+
+	cbConfig := &CircuitBreakerConfig{
+		Enabled:          true,
+		FailureThreshold: 2,
+		Timeout:          50 * time.Millisecond,
+	}
+	tracker := newStatusTracker(3, cbConfig)
+
+	testErr := errors.New("health check failed")
+
+	// Open the circuit
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+
+	assert.True(t, tracker.IsCircuitOpen("backend-1"))
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	// Wait for timeout
+	time.Sleep(60 * time.Millisecond)
+
+	// Next attempt should transition to half-open
+	assert.True(t, tracker.CanAttemptHealthCheck("backend-1"))
+
+	cbState, _ := tracker.GetCircuitBreakerState("backend-1")
+	assert.Equal(t, CircuitHalfOpen, cbState)
+
+	// Only one attempt allowed in half-open
+	assert.False(t, tracker.CanAttemptHealthCheck("backend-1"))
+}
+
+func TestState_JSONSerialization(t *testing.T) {
+	t.Parallel()
+
+	// Test that LastError is excluded from JSON and LastErrorCategory is included
+	tracker := newStatusTracker(3, nil)
+
+	// Record a failure with a timeout error that contains sensitive information in the wrapped error
+	sensitiveErr := errors.New("timeout connecting to https://internal-server.example.com:8080/api/health?token=secret123")
+	wrappedErr := fmt.Errorf("%w: %v", vmcp.ErrTimeout, sensitiveErr)
+	tracker.RecordFailure("backend-1", "Test Backend", vmcp.BackendUnhealthy, wrappedErr)
+
+	// Get the state
+	state, exists := tracker.GetState("backend-1")
+	require.True(t, exists)
+	require.NotNil(t, state)
+
+	// Verify internal state has the error
+	assert.NotNil(t, state.LastError)
+	assert.Contains(t, state.LastError.Error(), "secret123", "raw error should contain sensitive data")
+
+	// Verify LastErrorCategory is populated with sanitized value
+	assert.Equal(t, "timeout", state.LastErrorCategory)
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	jsonStr := string(jsonData)
+
+	// Verify sensitive data is NOT in JSON
+	assert.NotContains(t, jsonStr, "secret123", "JSON should not contain sensitive token")
+	assert.NotContains(t, jsonStr, "internal-server.example.com", "JSON should not contain internal hostname")
+	assert.NotContains(t, jsonStr, `"LastError":`, "JSON should not include LastError field")
+
+	// Verify sanitized category IS in JSON
+	assert.Contains(t, jsonStr, "LastErrorCategory", "JSON should include LastErrorCategory field")
+	assert.Contains(t, jsonStr, "timeout", "JSON should contain sanitized error category")
+
+	// Unmarshal and verify structure
+	var unmarshaled State
+	err = json.Unmarshal(jsonData, &unmarshaled)
+	require.NoError(t, err)
+
+	// After unmarshaling, LastError should be nil (not serialized)
+	assert.Nil(t, unmarshaled.LastError, "LastError should not be present after JSON roundtrip")
+	assert.Equal(t, "timeout", unmarshaled.LastErrorCategory, "LastErrorCategory should be preserved")
+}
+
+func TestSanitizeError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: "",
+		},
+		{
+			name:     "authentication error",
+			err:      vmcp.ErrAuthenticationFailed,
+			expected: "authentication_failed",
+		},
+		{
+			name:     "timeout error",
+			err:      vmcp.ErrTimeout,
+			expected: "timeout",
+		},
+		{
+			name:     "cancellation error",
+			err:      vmcp.ErrCancelled,
+			expected: "cancelled",
+		},
+		{
+			name:     "backend unavailable",
+			err:      vmcp.ErrBackendUnavailable,
+			expected: "backend_unavailable",
+		},
+		{
+			name:     "generic error",
+			err:      errors.New("some random error with sensitive data"),
+			expected: "health_check_failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := sanitizeError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

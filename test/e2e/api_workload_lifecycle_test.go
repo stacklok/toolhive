@@ -35,9 +35,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-stop-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when stopping a workload", func() {
 			It("should successfully stop a running workload", func() {
@@ -147,9 +145,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-restart-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when restarting a workload", func() {
 			It("should successfully restart a running workload and keep same URL", func() {
@@ -274,9 +270,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-status-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when getting workload status", func() {
 			It("should return status of a running workload", func() {
@@ -391,9 +385,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-update-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when updating a workload", func() {
 			It("should successfully update workload environment variables", func() {
@@ -490,9 +482,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-logs-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when getting workload logs", func() {
 			It("should return logs for running workload", func() {
@@ -547,9 +537,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-proxy-logs-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when getting proxy logs", func() {
 			It("should return 404 when workload has no proxy", func() {
@@ -602,9 +590,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			workloadName = e2e.GenerateUniqueServerName("api-export-test")
 		})
 
-		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when exporting workload configuration", func() {
 			It("should export workload as RunConfig JSON", func() {
@@ -669,11 +655,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			}
 		})
 
-		AfterEach(func() {
-			for _, name := range workloadNames {
-				deleteWorkload(apiServer, name)
-			}
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when stopping workloads in bulk by names", func() {
 			It("should stop multiple workloads", func() {
@@ -768,9 +750,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			})
 
 			AfterEach(func() {
-				for _, name := range workloadNames {
-					deleteWorkload(apiServer, name)
-				}
+				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 
@@ -900,11 +880,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			}
 		})
 
-		AfterEach(func() {
-			for _, name := range workloadNames {
-				deleteWorkload(apiServer, name)
-			}
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when restarting workloads in bulk", func() {
 			It("should restart multiple workloads", func() {
@@ -998,9 +974,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			})
 
 			AfterEach(func() {
-				for _, name := range workloadNames {
-					deleteWorkload(apiServer, name)
-				}
+				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 
@@ -1219,11 +1193,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			}
 		})
 
-		AfterEach(func() {
-			for _, name := range workloadNames {
-				deleteWorkload(apiServer, name)
-			}
-		})
+		// Note: Workload cleanup handled by suite-level CLI cleanup
 
 		Context("when deleting workloads in bulk", func() {
 			It("should delete multiple workloads", func() {
@@ -1327,10 +1297,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "workloads", "lifecycle"
 			})
 
 			AfterEach(func() {
-				// Cleanup any remaining workloads
-				for _, name := range workloadNames {
-					deleteWorkload(apiServer, name)
-				}
+				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 

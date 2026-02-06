@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -215,4 +217,195 @@ func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {
 		assert.Equal(t, map[string]string{"X-Static": "val"}, cfg.HeaderForward.AddPlaintextHeaders)
 		assert.Equal(t, map[string]string{"X-Secret": "my-secret"}, cfg.HeaderForward.AddHeadersFromSecret)
 	})
+}
+
+func TestAddUpstreamSwapMiddleware(t *testing.T) {
+	t.Parallel()
+
+	// createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
+	createMinimalAuthServerConfig := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "http://localhost:8080",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		config       *RunConfig
+		wantAppended bool
+	}{
+		{
+			name:         "nil EmbeddedAuthServerConfig returns input unchanged",
+			config:       &RunConfig{EmbeddedAuthServerConfig: nil},
+			wantAppended: false,
+		},
+		{
+			name: "EmbeddedAuthServerConfig set with nil UpstreamSwapConfig uses defaults",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+				UpstreamSwapConfig:       nil,
+			},
+			wantAppended: true,
+		},
+		{
+			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+				UpstreamSwapConfig: &upstreamswap.Config{
+					HeaderStrategy: upstreamswap.HeaderStrategyReplace,
+				},
+			},
+			wantAppended: true,
+		},
+		{
+			name: "EmbeddedAuthServerConfig with custom header strategy config",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+				UpstreamSwapConfig: &upstreamswap.Config{
+					HeaderStrategy:   upstreamswap.HeaderStrategyCustom,
+					CustomHeaderName: "X-Upstream-Token",
+				},
+			},
+			wantAppended: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			initial := []types.MiddlewareConfig{{Type: "existing"}}
+			got, err := addUpstreamSwapMiddleware(initial, tt.config)
+			require.NoError(t, err)
+
+			if !tt.wantAppended {
+				assert.Equal(t, initial, got, "middleware slice should be unchanged")
+				return
+			}
+
+			// Should have one additional entry.
+			require.Len(t, got, len(initial)+1)
+			added := got[len(got)-1]
+			assert.Equal(t, upstreamswap.MiddlewareType, added.Type)
+
+			// Verify serialized params contain the expected config.
+			var params upstreamswap.MiddlewareParams
+			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+
+			if tt.config.UpstreamSwapConfig != nil {
+				// Should use the provided config
+				require.NotNil(t, params.Config)
+				assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
+				assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
+			} else {
+				// Should use defaults (empty config is valid)
+				require.NotNil(t, params.Config)
+			}
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
+	t.Parallel()
+
+	// createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
+	createMinimalAuthServerConfig := func() *authserver.RunConfig {
+		return &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        "http://localhost:8080",
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	tests := []struct {
+		name               string
+		config             *RunConfig
+		wantUpstreamSwap   bool
+		wantHeaderStrategy string
+	}{
+		{
+			name:             "EmbeddedAuthServerConfig set includes upstream-swap",
+			config:           &RunConfig{EmbeddedAuthServerConfig: createMinimalAuthServerConfig()},
+			wantUpstreamSwap: true,
+		},
+		{
+			name:             "no EmbeddedAuthServerConfig omits upstream-swap",
+			config:           &RunConfig{EmbeddedAuthServerConfig: nil},
+			wantUpstreamSwap: false,
+		},
+		{
+			name: "explicit UpstreamSwapConfig is used",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+				UpstreamSwapConfig: &upstreamswap.Config{
+					HeaderStrategy: upstreamswap.HeaderStrategyReplace,
+				},
+			},
+			wantUpstreamSwap:   true,
+			wantHeaderStrategy: upstreamswap.HeaderStrategyReplace,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+			require.NoError(t, err)
+
+			var found bool
+			var foundConfig *types.MiddlewareConfig
+			for i, mw := range tt.config.MiddlewareConfigs {
+				if mw.Type == upstreamswap.MiddlewareType {
+					found = true
+					foundConfig = &tt.config.MiddlewareConfigs[i]
+					break
+				}
+			}
+			assert.Equal(t, tt.wantUpstreamSwap, found,
+				"upstream-swap middleware presence mismatch")
+
+			// Verify config values if we expect the middleware and have specific expectations
+			if found && tt.wantHeaderStrategy != "" {
+				var params upstreamswap.MiddlewareParams
+				require.NoError(t, json.Unmarshal(foundConfig.Parameters, &params))
+				require.NotNil(t, params.Config)
+				assert.Equal(t, tt.wantHeaderStrategy, params.Config.HeaderStrategy)
+			}
+		})
+	}
+}
+
+func TestGetSupportedMiddlewareFactories_IncludesUpstreamSwap(t *testing.T) {
+	t.Parallel()
+
+	factories := GetSupportedMiddlewareFactories()
+	_, ok := factories[upstreamswap.MiddlewareType]
+	assert.True(t, ok, "factory map should contain %q", upstreamswap.MiddlewareType)
 }

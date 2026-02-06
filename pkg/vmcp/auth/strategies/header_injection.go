@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/stacklok/toolhive/pkg/validation"
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
@@ -114,12 +114,12 @@ func (*HeaderInjectionStrategy) Validate(strategy *authtypes.BackendAuthStrategy
 	}
 
 	// Validate header name to prevent injection attacks
-	if err := validation.ValidateHTTPHeaderName(headerName); err != nil {
+	if err := httpval.ValidateHeaderName(headerName); err != nil {
 		return fmt.Errorf("invalid header_name: %w", err)
 	}
 
 	// Validate header value to prevent injection attacks
-	if err := validation.ValidateHTTPHeaderValue(headerValue); err != nil {
+	if err := httpval.ValidateHeaderValue(headerValue); err != nil {
 		return fmt.Errorf("invalid header_value: %w", err)
 	}
 

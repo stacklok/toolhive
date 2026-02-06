@@ -36,26 +36,5 @@ type UserInfo struct {
 	Claims map[string]any `json:"-"`
 }
 
-// OIDCEndpoints contains the discovered endpoints for an OIDC provider.
-type OIDCEndpoints struct {
-	// Issuer is the issuer identifier.
-	Issuer string `json:"issuer"`
-
-	// AuthorizationEndpoint is the URL for the authorization endpoint.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-
-	// TokenEndpoint is the URL for the token endpoint.
-	TokenEndpoint string `json:"token_endpoint"`
-
-	// UserInfoEndpoint is the URL for the userinfo endpoint.
-	UserInfoEndpoint string `json:"userinfo_endpoint,omitempty"`
-
-	// JWKSEndpoint is the URL for the JWKS endpoint.
-	JWKSEndpoint string `json:"jwks_uri,omitempty"`
-
-	// CodeChallengeMethodsSupported lists the supported PKCE code challenge methods.
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-}
-
 // ErrIdentityResolutionFailed indicates identity could not be determined.
 var ErrIdentityResolutionFailed = errors.New("failed to resolve user identity")

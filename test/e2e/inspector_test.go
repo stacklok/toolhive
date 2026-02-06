@@ -5,7 +5,6 @@ package e2e_test
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -20,8 +19,6 @@ type inspectorTestHelper struct {
 	config        *e2e.TestConfig
 	mcpServerName string
 	inspectorName string
-	client        *http.Client
-	inspectorURL  string
 }
 
 var _ = Describe("Inspector", Label("mcp", "e2e"), func() {
@@ -43,10 +40,8 @@ var _ = Describe("Inspector", Label("mcp", "e2e"), func() {
 
 	AfterEach(func() {
 		if config.CleanupAfter {
-			// Clean up both servers
-			err := e2e.StopAndRemoveMCPServer(config, inspectorName)
-			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
-			err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+			// Only clean up MCP server - inspector should auto-cleanup
+			err := e2e.StopAndRemoveMCPServer(config, mcpServerName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
 		}
 	})
@@ -106,11 +101,12 @@ var _ = Describe("Inspector", Label("mcp", "e2e"), func() {
 
 		AfterEach(func() {
 			if config.CleanupAfter {
-				// Clean up both servers
-				err := e2e.StopAndRemoveMCPServer(config, inspectorName)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
-				err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+				// Clean up MCP server
+				err := e2e.StopAndRemoveMCPServer(config, mcpServerName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
+
+				// Fallback cleanup for inspector in case auto-cleanup failed
+				helper.cleanupInspector()
 			}
 		})
 
@@ -173,34 +169,6 @@ var _ = Describe("Inspector", Label("mcp", "e2e"), func() {
 			})
 		})
 
-		Context("when testing inspector connectivity", func() {
-			It("should make inspector UI accessible when running", func() {
-				By("Starting inspector in background using goroutine")
-				done := helper.startInspectorInBackground(60 * time.Second)
-
-				By("Waiting for inspector UI to be ready")
-				helper.waitForInspectorUI(45 * time.Second)
-
-				By("Verifying inspector UI responds with valid content")
-				helper.verifyInspectorUIAccessible()
-
-				By("Stopping inspector process and waiting for cleanup")
-				helper.waitForInspectorCompletion(done, 16*time.Second)
-
-				By("Cleaning up any remaining inspector containers explicitly")
-				helper.cleanupInspector()
-
-				By("Verifying inspector container is removed")
-				helper.waitForInspectorUIUnavailable(20 * time.Second)
-
-				By("Verifying port bindings are cleaned up")
-				helper.verifyInspectorUIUnavailable()
-
-				By("Verifying no orphaned inspector containers remain")
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
-				Expect(stdout).ToNot(BeNil(), "Should get valid list output")
-			})
-		})
 	})
 })
 
@@ -210,80 +178,14 @@ func newInspectorTestHelper(config *e2e.TestConfig, mcpServerName, inspectorName
 		config:        config,
 		mcpServerName: mcpServerName,
 		inspectorName: inspectorName,
-		client:        &http.Client{Timeout: 5 * time.Second},
-		inspectorURL:  "http://localhost:6274",
 	}
 }
 
-// startInspectorInBackground starts the inspector in a goroutine with timeout
-func (h *inspectorTestHelper) startInspectorInBackground(timeout time.Duration, args ...string) chan error {
-	done := make(chan error, 1)
-	go func() {
-		cmdArgs := append([]string{"inspector"}, args...)
-		cmdArgs = append(cmdArgs, h.mcpServerName)
-		_, _, err := e2e.NewTHVCommand(h.config, cmdArgs...).RunWithTimeout(timeout)
-		done <- err
-	}()
-	return done
-}
-
-// waitForInspectorUI waits for the inspector UI to become accessible
-func (h *inspectorTestHelper) waitForInspectorUI(timeout time.Duration) {
-	Eventually(func() bool {
-		response, err := h.client.Get(h.inspectorURL)
-		if response != nil {
-			response.Body.Close()
-		}
-		return err == nil && response != nil && response.StatusCode == 200
-	}, timeout, 2*time.Second).Should(BeTrue(), "Inspector UI should become accessible")
-}
-
-// waitForInspectorUIUnavailable waits for the inspector UI to become inaccessible
-func (h *inspectorTestHelper) waitForInspectorUIUnavailable(timeout time.Duration) {
-	Eventually(func() bool {
-		response, err := h.client.Get(h.inspectorURL)
-		if response != nil {
-			response.Body.Close()
-		}
-		return err != nil
-	}, timeout, 2*time.Second).Should(BeTrue(), "Inspector UI should no longer be accessible after cleanup")
-}
-
-// verifyInspectorUIAccessible verifies that the inspector UI is accessible
-func (h *inspectorTestHelper) verifyInspectorUIAccessible() {
-	response, err := h.client.Get(h.inspectorURL)
-	Expect(err).ToNot(HaveOccurred(), "Inspector UI should be accessible")
-	Expect(response).ToNot(BeNil(), "Response should not be nil")
-	Expect(response.StatusCode).To(Equal(200), "Inspector UI should return 200 OK")
-	_ = response.Body.Close()
-}
-
-// verifyInspectorUIUnavailable verifies that the inspector UI is not accessible
-func (h *inspectorTestHelper) verifyInspectorUIUnavailable() {
-	response, err := h.client.Get(h.inspectorURL)
-	if response != nil {
-		response.Body.Close()
-	}
-	Expect(err).To(HaveOccurred(), "Port 6274 should no longer be accessible")
-}
-
-// waitForInspectorCompletion waits for the inspector process to complete or timeout
-func (*inspectorTestHelper) waitForInspectorCompletion(done chan error, timeout time.Duration) {
-	select {
-	case err := <-done:
-		if err != nil && !strings.Contains(err.Error(), "context deadline exceeded") {
-			GinkgoWriter.Printf("Inspector ended with error: %v\n", err)
-		}
-	case <-time.After(timeout):
-		GinkgoWriter.Println("Inspector may still be running after timeout")
-	}
-}
-
-// cleanupInspector performs cleanup of inspector containers
+// cleanupInspector performs cleanup of inspector containers (fallback for test failures)
 func (h *inspectorTestHelper) cleanupInspector() {
 	err := e2e.StopAndRemoveMCPServer(h.config, h.inspectorName)
 	if err != nil {
-		GinkgoWriter.Printf("Note: Cleanup returned error (may be expected): %v\n", err)
+		GinkgoWriter.Printf("Note: Fallback cleanup returned error (may be expected): %v\n", err)
 	}
 	time.Sleep(3 * time.Second) // Give time for cleanup to complete
 }

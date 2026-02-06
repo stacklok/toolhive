@@ -84,7 +84,7 @@ func (m *DefaultGroupMigrator) initManagers(ctx context.Context) error {
 
 // createDefaultGroup creates the default group if it doesn't exist
 func (m *DefaultGroupMigrator) createDefaultGroup(ctx context.Context) error {
-	logger.Infof("Creating default group '%s'", groups.DefaultGroupName)
+	logger.Debugf("Creating default group '%s'", groups.DefaultGroupName)
 	if err := m.groupManager.Create(ctx, groups.DefaultGroupName); err != nil {
 		return fmt.Errorf("failed to create default group: %w", err)
 	}

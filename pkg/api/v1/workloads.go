@@ -11,12 +11,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive-core/httperr"
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -104,8 +104,8 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) e
 
 	// Apply group filtering if specified
 	if groupFilter != "" {
-		if err := validation.ValidateGroupName(groupFilter); err != nil {
-			return thverrors.WithCode(
+		if err := groupval.ValidateName(groupFilter); err != nil {
+			return httperr.WithCode(
 				fmt.Errorf("invalid group name: %w", err),
 				http.StatusBadRequest,
 			)
@@ -146,7 +146,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) err
 	// Load the workload configuration
 	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("workload configuration not found: %w", err),
 			http.StatusNotFound,
 		)
@@ -225,10 +225,11 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 // deleteWorkload
 //
 //	@Summary		Delete a workload
-//	@Description	Delete a workload
+//	@Description	Delete a workload asynchronously. Returns 202 Accepted immediately.
+//	@Description	The deletion happens in the background. Poll the workload list to confirm deletion.
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		202		{string}	string	"Accepted"
+//	@Success		202		{string}	string	"Accepted - deletion started"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
@@ -248,6 +249,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
+
 	w.WriteHeader(http.StatusAccepted)
 	return nil
 }
@@ -268,7 +270,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
@@ -276,7 +278,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Validate that image or URL is provided
 	if req.Image == "" && req.URL == "" {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("either 'image' or 'url' field is required"),
 			http.StatusBadRequest,
 		)
@@ -295,7 +297,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 			return fmt.Errorf("failed to check if workload exists: %w", err)
 		}
 		if exists {
-			return thverrors.WithCode(
+			return httperr.WithCode(
 				fmt.Errorf("workload with name %s already exists", req.Name),
 				http.StatusConflict,
 			)
@@ -341,7 +343,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	// Parse request body
 	var updateReq updateRequest
 	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("invalid JSON: %w", err),
 			http.StatusBadRequest,
 		)
@@ -395,19 +397,19 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
@@ -436,19 +438,19 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
@@ -466,11 +468,12 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 // deleteWorkloadsBulk
 //
 //	@Summary		Delete workloads in bulk
-//	@Description	Delete multiple workloads by name or by group
+//	@Description	Delete multiple workloads by name or by group asynchronously.
+//	@Description	Returns 202 Accepted immediately. Deletion happens in the background.
 //	@Tags			workloads
 //	@Accept			json
 //	@Param			request	body		bulkOperationRequest	true	"Bulk delete request (names or group)"
-//	@Success		202		{string}	string	"Accepted"
+//	@Success		202		{string}	string	"Accepted - deletion started"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
 func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) error {
@@ -478,19 +481,19 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("failed to decode request: %w", err),
 			http.StatusBadRequest,
 		)
 	}
 
 	if err := validateBulkOperationRequest(req); err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
-		return thverrors.WithCode(err, http.StatusBadRequest)
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	// Note that this is an asynchronous operation.
@@ -499,6 +502,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
+
 	w.WriteHeader(http.StatusAccepted)
 	return nil
 }
@@ -557,7 +561,7 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 
 	logs, err := s.workloadManager.GetProxyLogs(ctx, name, maxAPILogLines)
 	if err != nil {
-		return thverrors.WithCode(
+		return httperr.WithCode(
 			fmt.Errorf("proxy logs not found for workload: %w", err),
 			http.StatusNotFound,
 		)

@@ -674,15 +674,6 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Address returns the address the proxy is listening on.
-// Returns an empty string if the proxy is not running.
-func (p *TransparentProxy) Address() string {
-	if p.listener == nil {
-		return ""
-	}
-	return p.listener.Addr().String()
-}
-
 // IsRunning checks if the proxy is running.
 func (p *TransparentProxy) IsRunning() (bool, error) {
 	p.mutex.Lock()

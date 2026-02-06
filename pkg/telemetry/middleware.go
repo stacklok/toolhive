@@ -7,10 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -29,7 +31,29 @@ import (
 const (
 	// instrumentationName is the name of this instrumentation package
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
+
+	// mcpProtocolVersion is the MCP protocol version used by ToolHive
+	mcpProtocolVersion = "2025-06-18"
+
+	// methodPromptsGet is the MCP method for prompts/get requests
+	methodPromptsGet = "prompts/get"
+
+	// networkTransportTCP is the standard network transport value for TCP-based transports
+	networkTransportTCP = "tcp"
+
+	// networkProtocolHTTP is the standard protocol name for HTTP-based transports
+	networkProtocolHTTP = "http"
+
+	// maxSessionAge is the maximum age of a tracked session before it's cleaned up.
+	// This prevents memory leaks from sessions that never explicitly end.
+	maxSessionAge = 24 * time.Hour
 )
+
+// MCPOperationDurationBuckets defines the standard histogram bucket boundaries
+// for MCP operation/session duration metrics per the MCP OTEL specification.
+var MCPOperationDurationBuckets = []float64{
+	0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300,
+}
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
@@ -41,10 +65,18 @@ type HTTPMiddleware struct {
 	serverName     string
 	transport      string
 
-	// Metrics
+	// Legacy metrics (backward-compatible toolhive_mcp_* metrics)
 	requestCounter    metric.Int64Counter
 	requestDuration   metric.Float64Histogram
 	activeConnections metric.Int64UpDownCounter
+
+	// Standard MCP OTEL metrics
+	operationDuration metric.Float64Histogram
+	sessionDuration   metric.Float64Histogram
+
+	// Session tracking for session duration metrics
+	sessions   map[string]time.Time
+	sessionsMu sync.Mutex
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -58,7 +90,7 @@ func NewHTTPMiddleware(
 ) types.MiddlewareFunction {
 	meter := meterProvider.Meter(instrumentationName)
 
-	// Initialize metrics
+	// Initialize legacy metrics (backward-compatible)
 	requestCounter, _ := meter.Int64Counter(
 		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
 		metric.WithDescription("Total number of MCP requests"),
@@ -75,6 +107,21 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
+	// Initialize standard MCP OTEL metrics
+	operationDuration, _ := meter.Float64Histogram(
+		"mcp.server.operation.duration",
+		metric.WithDescription("Duration of MCP server operations"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(MCPOperationDurationBuckets...),
+	)
+
+	sessionDuration, _ := meter.Float64Histogram(
+		"mcp.server.session.duration",
+		metric.WithDescription("Duration of MCP server sessions"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(MCPOperationDurationBuckets...),
+	)
+
 	middleware := &HTTPMiddleware{
 		config:            config,
 		tracerProvider:    tracerProvider,
@@ -86,6 +133,9 @@ func NewHTTPMiddleware(
 		requestCounter:    requestCounter,
 		requestDuration:   requestDuration,
 		activeConnections: activeConnections,
+		operationDuration: operationDuration,
+		sessionDuration:   sessionDuration,
+		sessions:          make(map[string]time.Time),
 	}
 
 	return middleware.Handler
@@ -125,7 +175,10 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		))
 
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
-		spanName := m.createSpanName(ctx, r)
+		spanName := m.createSpanName(ctx)
+		if spanName == "" {
+			spanName = fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+		}
 		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
@@ -145,6 +198,9 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Add environment variables as attributes
 		m.addEnvironmentAttributes(span)
 
+		// Track session initialization
+		m.trackSessionInit(ctx)
+
 		// Record request start time
 		startTime := time.Now()
 
@@ -153,20 +209,57 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 
 		// Record completion metrics and finalize span
 		duration := time.Since(startTime)
-		m.finalizeSpan(span, rw, duration)
+		m.finalizeSpan(ctx, span, rw, duration)
 		m.recordMetrics(ctx, r, rw, duration)
 	})
 }
 
-// createSpanName creates an appropriate span name based on available context.
-func (*HTTPMiddleware) createSpanName(ctx context.Context, r *http.Request) string {
-	// Try to get MCP method from parsed data
-	if mcpMethod := mcpparser.GetMCPMethod(ctx); mcpMethod != "" {
-		return fmt.Sprintf("mcp.%s", mcpMethod)
+// RecordSessionEnd records the duration of a completed MCP session.
+// Call this when a session ends (e.g., connection close, explicit shutdown).
+func (m *HTTPMiddleware) RecordSessionEnd(ctx context.Context, sessionID string) {
+	m.sessionsMu.Lock()
+	startTime, exists := m.sessions[sessionID]
+	if exists {
+		delete(m.sessions, sessionID)
+	}
+	m.sessionsMu.Unlock()
+
+	if !exists {
+		return
 	}
 
-	// Fall back to HTTP method + path
-	return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+	duration := time.Since(startTime)
+	networkTransport, protocolName, _ := mapTransport(m.transport)
+
+	attrs := []attribute.KeyValue{
+		attribute.String("mcp.protocol.version", mcpProtocolVersion),
+		attribute.String("network.transport", networkTransport),
+	}
+	if protocolName != "" {
+		attrs = append(attrs, attribute.String("network.protocol.name", protocolName))
+	}
+
+	m.sessionDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+}
+
+// createSpanName creates an appropriate span name based on available context.
+// Standard format: "{method}" or "{method} {target}" for tool/prompt calls.
+// For non-MCP requests: "{HTTP_METHOD} {path}".
+func (*HTTPMiddleware) createSpanName(ctx context.Context) string {
+	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
+	if parsedMCP == nil || parsedMCP.Method == "" {
+		return ""
+	}
+
+	// For methods with a meaningful target (tool name, prompt name), include it
+	if parsedMCP.ResourceID != "" {
+		switch parsedMCP.Method {
+		case string(mcp.MethodToolsCall), methodPromptsGet:
+			return fmt.Sprintf("%s %s", parsedMCP.Method, parsedMCP.ResourceID)
+		}
+	}
+
+	return parsedMCP.Method
 }
 
 // addHTTPAttributes adds standard HTTP attributes to the span.
@@ -191,6 +284,103 @@ func (*HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
 	}
 }
 
+// addMCPAttributes adds MCP-specific attributes using the parsed MCP data from context.
+func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, r *http.Request) {
+	// Get parsed MCP request from context (set by MCP parsing middleware)
+	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
+	if parsedMCP == nil {
+		// No MCP data available, this might be a non-MCP request (e.g., health check)
+		return
+	}
+
+	// Add standard MCP attributes (renamed from legacy names)
+	span.SetAttributes(
+		attribute.String("mcp.method.name", parsedMCP.Method),
+		attribute.String("mcp.protocol.version", mcpProtocolVersion),
+	)
+
+	// Add request ID if available (renamed: mcp.request.id -> jsonrpc.request.id)
+	if parsedMCP.ID != nil {
+		span.SetAttributes(attribute.String("jsonrpc.request.id", formatRequestID(parsedMCP.ID)))
+	}
+
+	// Add resource ID if available (renamed: mcp.resource.id -> mcp.resource.uri)
+	if parsedMCP.ResourceID != "" {
+		span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
+	}
+
+	// Add method-specific attributes
+	m.addMethodSpecificAttributes(span, parsedMCP)
+
+	// Extract server name from the request, defaulting to the middleware's configured server name
+	serverName := m.extractServerName(r)
+	span.SetAttributes(attribute.String("mcp.server.name", serverName))
+
+	// Determine backend transport type and map to standard values
+	backendTransport := m.extractBackendTransport(r)
+	networkTransport, protocolName, protocolVersion := mapTransport(backendTransport)
+	span.SetAttributes(attribute.String("network.transport", networkTransport))
+	if protocolName != "" {
+		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
+	}
+	if protocolVersion != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
+	}
+
+	// Add client address and port from the request
+	clientAddr, clientPort := parseRemoteAddr(r.RemoteAddr)
+	if clientAddr != "" {
+		span.SetAttributes(attribute.String("client.address", clientAddr))
+	}
+	if clientPort > 0 {
+		span.SetAttributes(attribute.Int("client.port", clientPort))
+	}
+
+	// Add session ID from MCP _meta if available
+	if parsedMCP.Meta != nil {
+		if sessionID, ok := parsedMCP.Meta["sessionId"].(string); ok && sessionID != "" {
+			span.SetAttributes(attribute.String("mcp.session.id", sessionID))
+		}
+	}
+
+	// Add batch indicator
+	if parsedMCP.IsBatch {
+		span.SetAttributes(attribute.Bool("mcp.is_batch", true))
+	}
+}
+
+// addMethodSpecificAttributes adds attributes specific to certain MCP methods.
+func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
+	switch parsedMCP.Method {
+	case string(mcp.MethodToolsCall):
+		// For tool calls, the ResourceID is the tool name
+		if parsedMCP.ResourceID != "" {
+			span.SetAttributes(attribute.String("gen_ai.tool.name", parsedMCP.ResourceID))
+		}
+		// Add sanitized arguments (renamed: mcp.tool.arguments -> gen_ai.tool.call.arguments)
+		if args := m.sanitizeArguments(parsedMCP.Arguments); args != "" {
+			span.SetAttributes(attribute.String("gen_ai.tool.call.arguments", args))
+		}
+		// Add gen_ai.operation.name for tool calls
+		span.SetAttributes(attribute.String("gen_ai.operation.name", "execute_tool"))
+
+	case "resources/read":
+		// Resource URI is already set as mcp.resource.uri in addMCPAttributes
+
+	case methodPromptsGet:
+		// For prompt gets, the ResourceID is the prompt name
+		if parsedMCP.ResourceID != "" {
+			span.SetAttributes(attribute.String("gen_ai.prompt.name", parsedMCP.ResourceID))
+		}
+
+	case "initialize":
+		// For initialize, the ResourceID is the client name
+		if parsedMCP.ResourceID != "" {
+			span.SetAttributes(attribute.String("mcp.client.name", parsedMCP.ResourceID))
+		}
+	}
+}
+
 func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
 	// Include environment variables from host machine as configured
 	// Only environment variables specified in the config will be read and included
@@ -205,85 +395,6 @@ func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
 		span.SetAttributes(
 			attribute.String(fmt.Sprintf("environment.%s", envVar), value),
 		)
-	}
-}
-
-// addMCPAttributes adds MCP-specific attributes using the parsed MCP data from context.
-func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, r *http.Request) {
-	// Get parsed MCP request from context (set by MCP parsing middleware)
-	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
-	if parsedMCP == nil {
-		// No MCP data available, this might be a non-MCP request (e.g., health check)
-		return
-	}
-
-	// Add basic MCP attributes
-	span.SetAttributes(
-		attribute.String("mcp.method", parsedMCP.Method),
-		attribute.String("rpc.system", "jsonrpc"),
-		attribute.String("rpc.service", "mcp"),
-	)
-
-	// Add request ID if available
-	if parsedMCP.ID != nil {
-		span.SetAttributes(attribute.String("mcp.request.id", formatRequestID(parsedMCP.ID)))
-	}
-
-	// Add resource ID if available
-	if parsedMCP.ResourceID != "" {
-		span.SetAttributes(attribute.String("mcp.resource.id", parsedMCP.ResourceID))
-	}
-
-	// Add method-specific attributes
-	m.addMethodSpecificAttributes(span, parsedMCP)
-
-	// Extract server name from the request, defaulting to the middleware's configured server name
-	serverName := m.extractServerName(r)
-	span.SetAttributes(attribute.String("mcp.server.name", serverName))
-
-	// Determine backend transport type
-	// Note: ToolHive supports multiple transport types including stdio, sse, streamable-http
-	// The transport should never be empty as both CLI and API have fallbacks to "streamable-http"
-	// If transport is still empty, it indicates a configuration issue in middleware construction
-	backendTransport := m.extractBackendTransport(r)
-	span.SetAttributes(attribute.String("mcp.transport", backendTransport))
-
-	// Add batch indicator
-	if parsedMCP.IsBatch {
-		span.SetAttributes(attribute.Bool("mcp.is_batch", true))
-	}
-}
-
-// addMethodSpecificAttributes adds attributes specific to certain MCP methods.
-func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
-	switch parsedMCP.Method {
-	case string(mcp.MethodToolsCall):
-		// For tool calls, the ResourceID is the tool name
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.tool.name", parsedMCP.ResourceID))
-		}
-		// Add sanitized arguments
-		if args := m.sanitizeArguments(parsedMCP.Arguments); args != "" {
-			span.SetAttributes(attribute.String("mcp.tool.arguments", args))
-		}
-
-	case "resources/read":
-		// For resource reads, the ResourceID is the URI
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
-		}
-
-	case "prompts/get":
-		// For prompt gets, the ResourceID is the prompt name
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.prompt.name", parsedMCP.ResourceID))
-		}
-
-	case "initialize":
-		// For initialize, the ResourceID is the client name
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.client.name", parsedMCP.ResourceID))
-		}
 	}
 }
 
@@ -319,6 +430,126 @@ func (m *HTTPMiddleware) extractBackendTransport(r *http.Request) string {
 	}
 
 	return m.transport
+}
+
+// finalizeSpan adds response attributes and sets the span status.
+func (*HTTPMiddleware) finalizeSpan(_ context.Context, span trace.Span, rw *responseWriter, duration time.Duration) {
+	// Add response attributes
+	span.SetAttributes(
+		attribute.Int("http.status_code", rw.statusCode),
+		attribute.Int64("http.response_content_length", rw.bytesWritten),
+		attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
+	)
+
+	// Set span status and error.type based on HTTP status code
+	if rw.statusCode >= 400 {
+		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
+		// Add error.type attribute as required by the MCP OTEL spec
+		span.SetAttributes(attribute.String("error.type", strconv.Itoa(rw.statusCode)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+
+}
+
+// recordMetrics records request metrics.
+func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw *responseWriter, duration time.Duration) {
+	// Get MCP method from context if available
+	mcpMethod := mcpparser.GetMCPMethod(ctx)
+	if mcpMethod == "" {
+		mcpMethod = "unknown"
+	}
+
+	// Determine status (success/error)
+	status := "success"
+	if rw.statusCode >= 400 {
+		status = "error"
+	}
+
+	// Common attributes for legacy metrics
+	attrs := metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
+		attribute.String("status", status),
+		attribute.String("mcp_method", mcpMethod),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	)
+
+	// Record legacy request count
+	m.requestCounter.Add(ctx, 1, attrs)
+
+	// Record legacy request duration
+	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
+
+	// Record standard mcp.server.operation.duration metric
+	m.recordStandardOperationDuration(ctx, rw, duration)
+
+	// For tools/call, record tool-specific metrics
+	if mcpMethod == string(mcp.MethodToolsCall) {
+		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
+			toolAttrs := metric.WithAttributes(
+				attribute.String("server", m.serverName),
+				attribute.String("tool", parsedMCP.ResourceID),
+				attribute.String("status", status),
+			)
+
+			// Record tool-specific counter
+			if toolCounter, err := m.meter.Int64Counter(
+				"toolhive_mcp_tool_calls", // The exporter adds the _total suffix automatically
+				metric.WithDescription("Total number of MCP tool calls"),
+			); err == nil {
+				toolCounter.Add(ctx, 1, toolAttrs)
+			}
+		}
+	}
+}
+
+// recordSSEConnection records telemetry for SSE connection establishment.
+// SSE connections are long-lived and don't follow the normal request/response pattern,
+// so we record the connection establishment event immediately.
+func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Request) {
+	// Create a short-lived span for SSE connection establishment
+	spanName := "sse.connection_established"
+	_, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
+
+	// Add HTTP attributes for the connection
+	m.addHTTPAttributes(span, r)
+
+	// Map transport to standard values for SSE-specific attributes
+	networkTransport, _, _ := mapTransport(m.transport)
+
+	// Add SSE-specific attributes using standard names
+	span.SetAttributes(
+		attribute.String("sse.event_type", "connection_established"),
+		attribute.String("mcp.server.name", m.serverName),
+		attribute.String("network.transport", networkTransport),
+	)
+
+	// End the span immediately since this is just the connection establishment
+	span.SetStatus(codes.Ok, "SSE connection established")
+	span.End()
+
+	// Record SSE connection metrics
+	attrs := metric.WithAttributes(
+		attribute.String("method", r.Method),
+		attribute.String("status_code", "200"), // SSE connections start with 200
+		attribute.String("status", "success"),
+		attribute.String("mcp_method", "sse_connection"),
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+	)
+
+	// Record the connection establishment
+	m.requestCounter.Add(ctx, 1, attrs)
+
+	// Increment active SSE connections (these will be decremented when connection closes)
+	sseAttrs := metric.WithAttributes(
+		attribute.String("server", m.serverName),
+		attribute.String("transport", m.transport),
+		attribute.String("connection_type", "sse"),
+	)
+	m.activeConnections.Add(ctx, 1, sseAttrs)
 }
 
 // sanitizeArguments converts arguments to a safe string representation.
@@ -385,21 +616,117 @@ func formatRequestID(id interface{}) string {
 	}
 }
 
-// finalizeSpan adds response attributes and sets the span status.
-func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duration time.Duration) {
-	// Add response attributes
-	span.SetAttributes(
-		attribute.Int("http.status_code", rw.statusCode),
-		attribute.Int64("http.response_content_length", rw.bytesWritten),
-		attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
-	)
-
-	// Set span status based on HTTP status code
-	if rw.statusCode >= 400 {
-		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
-	} else {
-		span.SetStatus(codes.Ok, "")
+// mapTransport maps ToolHive transport types to standard network attribute values.
+// Returns (network.transport, network.protocol.name, network.protocol.version).
+func mapTransport(transport string) (networkTransport, protocolName, protocolVersion string) {
+	switch transport {
+	case "stdio":
+		return "pipe", "", ""
+	case "sse":
+		return networkTransportTCP, networkProtocolHTTP, "1.1"
+	case "streamable-http":
+		return networkTransportTCP, networkProtocolHTTP, "2"
+	default:
+		return networkTransportTCP, networkProtocolHTTP, ""
 	}
+}
+
+// parseRemoteAddr splits an HTTP RemoteAddr into address and port components.
+func parseRemoteAddr(remoteAddr string) (string, int) {
+	if remoteAddr == "" {
+		return "", 0
+	}
+
+	host, portStr, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		// RemoteAddr might not have a port (unlikely for HTTP but handle gracefully)
+		return remoteAddr, 0
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return host, 0
+	}
+
+	return host, port
+}
+
+// trackSessionInit tracks session initialization for session duration metrics.
+// When an "initialize" method is detected with a session ID in _meta, the session
+// start time is recorded. Stale sessions are cleaned up periodically.
+func (m *HTTPMiddleware) trackSessionInit(ctx context.Context) {
+	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
+	if parsedMCP == nil || parsedMCP.Method != "initialize" {
+		return
+	}
+
+	if parsedMCP.Meta == nil {
+		return
+	}
+
+	sessionID, ok := parsedMCP.Meta["sessionId"].(string)
+	if !ok || sessionID == "" {
+		return
+	}
+
+	m.sessionsMu.Lock()
+	m.sessions[sessionID] = time.Now()
+	// Clean up stale sessions to prevent memory leaks
+	m.cleanupStaleSessions()
+	m.sessionsMu.Unlock()
+}
+
+// cleanupStaleSessions removes sessions older than maxSessionAge.
+// Must be called with sessionsMu held.
+func (m *HTTPMiddleware) cleanupStaleSessions() {
+	now := time.Now()
+	for id, startTime := range m.sessions {
+		if now.Sub(startTime) > maxSessionAge {
+			delete(m.sessions, id)
+		}
+	}
+}
+
+// recordStandardOperationDuration records the mcp.server.operation.duration metric
+// with standard attribute names as defined by the MCP OTEL spec.
+func (m *HTTPMiddleware) recordStandardOperationDuration(ctx context.Context, rw *responseWriter, duration time.Duration) {
+	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
+
+	mcpMethod := "unknown"
+	if parsedMCP != nil && parsedMCP.Method != "" {
+		mcpMethod = parsedMCP.Method
+	}
+
+	networkTransport, _, _ := mapTransport(m.transport)
+
+	// Build attributes for the standard operation duration metric
+	attrs := []attribute.KeyValue{
+		attribute.String("mcp.method.name", mcpMethod),
+		attribute.String("network.transport", networkTransport),
+		attribute.String("mcp.protocol.version", mcpProtocolVersion),
+	}
+
+	// Add error.type on failures
+	if rw.statusCode >= 400 {
+		attrs = append(attrs, attribute.String("error.type", strconv.Itoa(rw.statusCode)))
+	}
+
+	// Add conditionally required attributes based on method type
+	if parsedMCP != nil {
+		switch parsedMCP.Method {
+		case string(mcp.MethodToolsCall):
+			if parsedMCP.ResourceID != "" {
+				attrs = append(attrs, attribute.String("gen_ai.tool.name", parsedMCP.ResourceID))
+			}
+			attrs = append(attrs, attribute.String("gen_ai.operation.name", "execute_tool"))
+		case methodPromptsGet:
+			if parsedMCP.ResourceID != "" {
+				attrs = append(attrs, attribute.String("gen_ai.prompt.name", parsedMCP.ResourceID))
+			}
+		}
+	}
+
+	m.operationDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
 }
 
 // responseWriter wraps http.ResponseWriter to capture response details.
@@ -449,100 +776,6 @@ func (rw *responseWriter) Flush() {
 	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
-}
-
-// recordMetrics records request metrics.
-func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw *responseWriter, duration time.Duration) {
-	// Get MCP method from context if available
-	mcpMethod := mcpparser.GetMCPMethod(ctx)
-	if mcpMethod == "" {
-		mcpMethod = "unknown"
-	}
-
-	// Determine status (success/error)
-	status := "success"
-	if rw.statusCode >= 400 {
-		status = "error"
-	}
-
-	// Common attributes for all metrics
-	attrs := metric.WithAttributes(
-		attribute.String("method", r.Method),
-		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
-		attribute.String("status", status),
-		attribute.String("mcp_method", mcpMethod),
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-	)
-
-	// Record request count
-	m.requestCounter.Add(ctx, 1, attrs)
-
-	// Record request duration
-	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
-
-	// For tools/call, record tool-specific metrics
-	if mcpMethod == string(mcp.MethodToolsCall) {
-		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
-			toolAttrs := metric.WithAttributes(
-				attribute.String("server", m.serverName),
-				attribute.String("tool", parsedMCP.ResourceID),
-				attribute.String("status", status),
-			)
-
-			// Record tool-specific counter
-			if toolCounter, err := m.meter.Int64Counter(
-				"toolhive_mcp_tool_calls", // The exporter adds the _total suffix automatically
-				metric.WithDescription("Total number of MCP tool calls"),
-			); err == nil {
-				toolCounter.Add(ctx, 1, toolAttrs)
-			}
-		}
-	}
-}
-
-// recordSSEConnection records telemetry for SSE connection establishment.
-// SSE connections are long-lived and don't follow the normal request/response pattern,
-// so we record the connection establishment event immediately.
-func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Request) {
-	// Create a short-lived span for SSE connection establishment
-	spanName := "sse.connection_established"
-	_, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
-
-	// Add HTTP attributes for the connection
-	m.addHTTPAttributes(span, r)
-
-	// Add SSE-specific attributes
-	span.SetAttributes(
-		attribute.String("sse.event_type", "connection_established"),
-		attribute.String("mcp.server.name", m.serverName),
-		attribute.String("mcp.transport", m.transport),
-	)
-
-	// End the span immediately since this is just the connection establishment
-	span.SetStatus(codes.Ok, "SSE connection established")
-	span.End()
-
-	// Record SSE connection metrics
-	attrs := metric.WithAttributes(
-		attribute.String("method", r.Method),
-		attribute.String("status_code", "200"), // SSE connections start with 200
-		attribute.String("status", "success"),
-		attribute.String("mcp_method", "sse_connection"),
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-	)
-
-	// Record the connection establishment
-	m.requestCounter.Add(ctx, 1, attrs)
-
-	// Increment active SSE connections (these will be decremented when connection closes)
-	sseAttrs := metric.WithAttributes(
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-		attribute.String("connection_type", "sse"),
-	)
-	m.activeConnections.Add(ctx, 1, sseAttrs)
 }
 
 // Factory middleware type constant

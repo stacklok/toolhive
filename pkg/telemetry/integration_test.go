@@ -227,7 +227,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	require.Len(t, spans, 1)
 
 	span := spans[0]
-	assert.Equal(t, "mcp.tools/call", span.Name)
+	assert.Equal(t, "tools/call github_search", span.Name)
 
 	// Verify span attributes
 	attrs := span.Attributes
@@ -236,14 +236,14 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 		attrMap[string(attr.Key)] = attr.Value.AsInterface()
 	}
 
-	assert.Equal(t, "tools/call", attrMap["mcp.method"])
-	assert.Equal(t, "github_search", attrMap["mcp.tool.name"])
-	assert.Equal(t, "test-123", attrMap["mcp.request.id"])
+	assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
+	assert.Equal(t, "github_search", attrMap["gen_ai.tool.name"])
+	assert.Equal(t, "test-123", attrMap["jsonrpc.request.id"])
 	assert.Equal(t, "POST", attrMap["http.method"])
 	assert.Equal(t, int64(200), attrMap["http.status_code"])
 
 	// Verify sensitive data is redacted
-	if toolArgs, exists := attrMap["mcp.tool.arguments"]; exists {
+	if toolArgs, exists := attrMap["gen_ai.tool.call.arguments"]; exists {
 		argsStr := toolArgs.(string)
 		assert.Contains(t, argsStr, "api_key=[REDACTED]")
 		assert.Contains(t, argsStr, "query=test query")

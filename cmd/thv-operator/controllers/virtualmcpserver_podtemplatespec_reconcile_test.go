@@ -9,8 +9,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -300,4 +302,73 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 				"PodTemplateSpec update detection should match expected value")
 		})
 	}
+}
+
+// TestVirtualMCPServerPodTemplateSpecResourceOverride verifies that a user can override
+// the default resource requirements via PodTemplateSpec using strategic merge patch.
+func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	namespace := testPodTemplateNamespace
+	vmcpName := testPodTemplateVmcpName
+	groupName := testPodTemplateGroupName
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      groupName,
+			Namespace: namespace,
+		},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Provide custom resources for the vmcp container via PodTemplateSpec
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpName,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			Config: vmcpconfig.Config{Group: groupName},
+			PodTemplateSpec: &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","resources":{"requests":{"cpu":"200m","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]}}`),
+			},
+		},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcpName),
+			Namespace: namespace,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpGroup, vmcp, configMap).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+
+	require.NotNil(t, dep, "Deployment should not be nil")
+	require.Len(t, dep.Spec.Template.Spec.Containers, 1, "Should have exactly one container")
+
+	container := dep.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "vmcp", container.Name)
+
+	// Verify user-specified resources override the defaults
+	assert.Equal(t, resource.MustParse("200m"), container.Resources.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("1"), container.Resources.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("1Gi"), container.Resources.Limits[corev1.ResourceMemory])
 }

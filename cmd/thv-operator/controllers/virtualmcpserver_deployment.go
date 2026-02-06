@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -50,6 +51,13 @@ const (
 	vmcpReadinessPeriod       = int32(5)  // seconds - check more frequently for quick detection
 	vmcpReadinessTimeout      = int32(3)  // seconds - shorter timeout for faster detection
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
+
+	// Default resource requirements for VirtualMCPServer vmcp container
+	// These provide sensible defaults that can be overridden via PodTemplateSpec
+	vmcpDefaultCPURequest    = "100m"
+	vmcpDefaultMemoryRequest = "128Mi"
+	vmcpDefaultCPULimit      = "500m"
+	vmcpDefaultMemoryLimit   = "512Mi"
 )
 
 // RBAC rules for VirtualMCPServer service account in inline mode
@@ -152,6 +160,16 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 							vmcpReadinessInitialDelay, vmcpReadinessPeriod, vmcpReadinessTimeout, vmcpReadinessFailures,
 						),
 						SecurityContext: containerSecurityContext,
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse(vmcpDefaultCPURequest),
+								corev1.ResourceMemory: resource.MustParse(vmcpDefaultMemoryRequest),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse(vmcpDefaultCPULimit),
+								corev1.ResourceMemory: resource.MustParse(vmcpDefaultMemoryLimit),
+							},
+						},
 					}},
 					Volumes:         volumes,
 					SecurityContext: podSecurityContext,

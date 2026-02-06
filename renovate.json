@@ -74,17 +74,16 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
-    }
-  ],
-  "postUpdateOptions": ["gomodTidy"],
-  "customManagers": [
+    },
     {
       "customType": "regex",
+      "description": "Update Go version in go.mod",
       "fileMatch": ["(^|/)go\\.mod$"],
       "matchStrings": ["go (?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"],
       "depNameTemplate": "golang",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "loose"
     }
-  ]
+  ],
+  "postUpdateOptions": ["gomodTidy"]
 }

@@ -675,6 +675,16 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid configuration with zero health check timeout (no timeout)",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(0),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: false,
+		},
+		{
 			name: "health check timeout >= interval",
 			fh: &FailureHandlingConfig{
 				HealthCheckInterval: Duration(30 * time.Second),
@@ -695,6 +705,17 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "healthCheckTimeout (35s) must be less than healthCheckInterval (30s) to prevent checks from queuing up",
+		},
+		{
+			name: "negative health check timeout",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(-1 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "healthCheckTimeout must be >= 0 (zero means no timeout), got -1s",
 		},
 		{
 			name: "circuit breaker failureThreshold < 1",

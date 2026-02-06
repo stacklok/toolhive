@@ -337,10 +337,17 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		return fmt.Errorf("unhealthyThreshold must be positive")
 	}
 
-	// Validate health check timeout if provided
-	if fh.HealthCheckTimeout > 0 {
+	// Validate health check timeout
+	// Zero means no timeout (not recommended but valid)
+	// Negative values are invalid
+	healthCheckTimeout := time.Duration(fh.HealthCheckTimeout)
+	if healthCheckTimeout < 0 {
+		return fmt.Errorf("healthCheckTimeout must be >= 0 (zero means no timeout), got %v", healthCheckTimeout)
+	}
+
+	// If timeout is configured (non-zero), validate that it's less than interval
+	if healthCheckTimeout > 0 {
 		checkInterval := time.Duration(fh.HealthCheckInterval)
-		healthCheckTimeout := time.Duration(fh.HealthCheckTimeout)
 
 		// Validate that timeout is less than interval to prevent checks from queuing up
 		if healthCheckTimeout >= checkInterval {

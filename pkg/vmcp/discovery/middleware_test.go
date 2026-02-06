@@ -134,7 +134,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 
 	// Wrap handler with middleware
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -204,7 +204,7 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 
 	// Wrap handler with middleware
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, sessionMgr)
+	middleware := Middleware(mockMgr, backendRegistry, sessionMgr, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -245,7 +245,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -286,7 +286,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -387,7 +387,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -452,7 +452,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -505,7 +505,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 	})
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
-	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backendRegistry, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -593,6 +593,16 @@ func TestFilterHealthyBackends(t *testing.T) {
 			expectedBackends: []string{"backend1"},
 		},
 		{
+			name: "include backends with empty/zero-value health status (assume healthy)",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1"}, // No HealthStatus set (zero value = "")
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend3", Name: "Backend 3"}, // No HealthStatus set
+			},
+			expectedCount:    3,
+			expectedBackends: []string{"backend1", "backend2", "backend3"},
+		},
+		{
 			name: "all status types",
 			backends: []vmcp.Backend{
 				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
@@ -610,7 +620,9 @@ func TestFilterHealthyBackends(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := filterHealthyBackends(tt.backends)
+			// Test with nil health status provider (health monitoring disabled)
+			// This tests the fallback to registry-based health status
+			result := filterHealthyBackends(tt.backends, nil)
 
 			assert.Equal(t, tt.expectedCount, len(result), "unexpected number of backends returned")
 
@@ -621,12 +633,60 @@ func TestFilterHealthyBackends(t *testing.T) {
 			}
 			assert.ElementsMatch(t, tt.expectedBackends, resultIDs, "unexpected backends in result")
 
-			// Verify all returned backends have healthy or degraded status
+			// Verify all returned backends have healthy, degraded, or empty (assume healthy) status
 			for _, backend := range result {
 				assert.True(t,
-					backend.HealthStatus == vmcp.BackendHealthy || backend.HealthStatus == vmcp.BackendDegraded,
+					backend.HealthStatus == "" ||
+						backend.HealthStatus == vmcp.BackendHealthy ||
+						backend.HealthStatus == vmcp.BackendDegraded,
 					"backend %s has unexpected status: %s", backend.ID, backend.HealthStatus)
 			}
 		})
 	}
+}
+
+// TestFilterHealthyBackends_WithHealthMonitor verifies that filterHealthyBackends
+// uses the health status provider when available, overriding registry health status.
+func TestFilterHealthyBackends_WithHealthMonitor(t *testing.T) {
+	t.Parallel()
+
+	// Create backends with "healthy" status in registry
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
+	}
+
+	// Create mock health status provider that overrides health status
+	mockHealthProvider := &mockHealthStatusProvider{
+		statuses: map[string]vmcp.BackendHealthStatus{
+			"backend1": vmcp.BackendHealthy,   // Healthy in both registry and monitor
+			"backend2": vmcp.BackendUnhealthy, // Healthy in registry, unhealthy in monitor (circuit breaker OPEN)
+			// backend3 not in monitor - should use registry status (healthy)
+		},
+	}
+
+	// Filter with health monitor
+	result := filterHealthyBackends(backends, mockHealthProvider)
+
+	// Should include backend1 (healthy in monitor) and backend3 (not monitored, falls back to registry)
+	// Should exclude backend2 (unhealthy in monitor, circuit breaker may be OPEN)
+	assert.Equal(t, 2, len(result), "expected 2 backends (backend1 and backend3)")
+
+	resultIDs := make([]string, len(result))
+	for i, backend := range result {
+		resultIDs[i] = backend.ID
+	}
+	assert.ElementsMatch(t, []string{"backend1", "backend3"}, resultIDs,
+		"expected backend1 and backend3 to be included")
+}
+
+// mockHealthStatusProvider is a test helper that implements health.StatusProvider
+type mockHealthStatusProvider struct {
+	statuses map[string]vmcp.BackendHealthStatus
+}
+
+func (m *mockHealthStatusProvider) QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
+	status, exists := m.statuses[backendID]
+	return status, exists
 }

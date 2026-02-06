@@ -21,6 +21,10 @@ import (
 // maxPayloadSize is the maximum request body size (10 MB) for SigV4 signing.
 const maxPayloadSize = 10 * 1024 * 1024
 
+// emptySHA256 is the well-known SHA-256 hash of an empty string, used for
+// SigV4 signing of requests with no body.
+const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 // defaultService is the AWS service name used in SigV4 signing for AWS MCP Server.
 // This value appears in the credential scope of the Authorization header:
 //
@@ -128,8 +132,7 @@ func (s *requestSigner) SignRequest(ctx context.Context, req *http.Request, cred
 func (*requestSigner) hashPayload(req *http.Request) (string, []byte, error) {
 	// Handle empty body
 	if req.Body == nil || req.Body == http.NoBody {
-		// SHA-256 of empty string
-		return "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", nil, nil
+		return emptySHA256, nil, nil
 	}
 
 	// Read the body with a size limit to prevent memory exhaustion

@@ -6,6 +6,8 @@ package awssts
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -17,8 +19,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// emptySHA256 is the SHA-256 hash of an empty string.
-const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+func TestEmptySHA256IsCorrect(t *testing.T) {
+	t.Parallel()
+	h := sha256.Sum256([]byte(""))
+	assert.Equal(t, hex.EncodeToString(h[:]), emptySHA256)
+}
 
 func Test_newRequestSigner(t *testing.T) {
 	t.Parallel()

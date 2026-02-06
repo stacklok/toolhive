@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -710,13 +711,17 @@ var supportedClientIntegrations = []mcpClientConfig{
 	},
 }
 
-// GetAllClients returns a slice of all supported MCP client types.
+// GetAllClients returns a slice of all supported MCP client types, sorted alphabetically.
 // This is the single source of truth for valid client types.
 func GetAllClients() []MCPClient {
 	clients := make([]MCPClient, 0, len(supportedClientIntegrations))
 	for _, config := range supportedClientIntegrations {
 		clients = append(clients, config.ClientType)
 	}
+	// Sort alphabetically
+	sort.Slice(clients, func(i, j int) bool {
+		return clients[i] < clients[j]
+	})
 	return clients
 }
 
@@ -742,19 +747,26 @@ func GetClientDescription(clientType MCPClient) string {
 }
 
 // GetClientListFormatted returns a formatted multi-line string listing all supported clients
-// with their descriptions. This is suitable for use in CLI help text.
+// with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
 func GetClientListFormatted() string {
+	// Create a sorted copy of the configurations
+	configs := make([]mcpClientConfig, len(supportedClientIntegrations))
+	copy(configs, supportedClientIntegrations)
+	sort.Slice(configs, func(i, j int) bool {
+		return configs[i].ClientType < configs[j].ClientType
+	})
+
 	var sb strings.Builder
-	for _, config := range supportedClientIntegrations {
+	for _, config := range configs {
 		sb.WriteString(fmt.Sprintf("  - %s: %s\n", config.ClientType, config.Description))
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-// GetClientListCSV returns a comma-separated list of all supported client types.
+// GetClientListCSV returns a comma-separated list of all supported client types, sorted alphabetically.
 // This is suitable for use in error messages.
 func GetClientListCSV() string {
-	clients := GetAllClients()
+	clients := GetAllClients() // GetAllClients already returns sorted list
 	clientStrs := make([]string, len(clients))
 	for i, client := range clients {
 		clientStrs[i] = string(client)

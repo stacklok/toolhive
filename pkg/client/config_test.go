@@ -1286,6 +1286,13 @@ func TestGetAllClients(t *testing.T) {
 	// Should return all 25 supported clients
 	assert.Len(t, clients, 25, "Expected 25 supported clients")
 
+	// Verify the list is sorted alphabetically
+	for i := 1; i < len(clients); i++ {
+		assert.True(t, clients[i-1] < clients[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clients[i-1], clients[i])
+	}
+
 	// Verify some known clients are in the list
 	expectedClients := []MCPClient{
 		RooCode, Cline, Cursor, VSCode, VSCodeInsider, ClaudeCode,
@@ -1418,6 +1425,24 @@ func TestGetClientListFormatted(t *testing.T) {
 	assert.Contains(t, formatted, "  -")
 	lines := strings.Split(formatted, "\n")
 	assert.Greater(t, len(lines), 20, "Expected more than 20 lines in formatted list")
+
+	// Verify the list is sorted alphabetically
+	// Extract client names from each line (format: "  - clientname: description")
+	var clientNames []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "  -") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				clientName := strings.TrimPrefix(strings.TrimSpace(parts[0]), "- ")
+				clientNames = append(clientNames, clientName)
+			}
+		}
+	}
+	for i := 1; i < len(clientNames); i++ {
+		assert.True(t, clientNames[i-1] < clientNames[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clientNames[i-1], clientNames[i])
+	}
 }
 
 func TestGetClientListCSV(t *testing.T) {
@@ -1436,6 +1461,14 @@ func TestGetClientListCSV(t *testing.T) {
 
 	// Should be comma-separated
 	assert.Contains(t, csv, ", ")
+
+	// Verify the list is sorted alphabetically
+	clientNames := strings.Split(csv, ", ")
+	for i := 1; i < len(clientNames); i++ {
+		assert.True(t, clientNames[i-1] < clientNames[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clientNames[i-1], clientNames[i])
+	}
 
 	// Count the number of clients (should be 25)
 	clients := strings.Split(csv, ", ")

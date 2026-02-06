@@ -5,6 +5,7 @@ package config
 
 import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 )
 
 // Provider defines the interface for configuration operations
@@ -52,6 +53,10 @@ type Provider interface {
 	GetConfiguredBuildAuthFiles() []string
 	UnsetBuildAuthFile(name string) error
 	UnsetAllBuildAuthFiles() error
+
+	// Runtime configuration operations
+	GetRuntimeConfig(transportType string) (*templates.RuntimeConfig, error)
+	SetRuntimeConfig(transportType string, config *templates.RuntimeConfig) error
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -205,6 +210,16 @@ func (d *DefaultProvider) UnsetBuildAuthFile(name string) error {
 // UnsetAllBuildAuthFiles removes all auth file configurations
 func (d *DefaultProvider) UnsetAllBuildAuthFiles() error {
 	return unsetAllBuildAuthFiles(d)
+}
+
+// GetRuntimeConfig returns the runtime configuration for a given transport type
+func (d *DefaultProvider) GetRuntimeConfig(transportType string) (*templates.RuntimeConfig, error) {
+	return getRuntimeConfig(d, transportType)
+}
+
+// SetRuntimeConfig sets the runtime configuration for a given transport type
+func (d *DefaultProvider) SetRuntimeConfig(transportType string, config *templates.RuntimeConfig) error {
+	return setRuntimeConfig(d, transportType, config)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -368,6 +383,16 @@ func (p *PathProvider) UnsetAllBuildAuthFiles() error {
 	return unsetAllBuildAuthFiles(p)
 }
 
+// GetRuntimeConfig returns the runtime configuration for a given transport type
+func (p *PathProvider) GetRuntimeConfig(transportType string) (*templates.RuntimeConfig, error) {
+	return getRuntimeConfig(p, transportType)
+}
+
+// SetRuntimeConfig sets the runtime configuration for a given transport type
+func (p *PathProvider) SetRuntimeConfig(transportType string, config *templates.RuntimeConfig) error {
+	return setRuntimeConfig(p, transportType, config)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -521,6 +546,16 @@ func (*KubernetesProvider) UnsetBuildAuthFile(_ string) error {
 
 // UnsetAllBuildAuthFiles is a no-op for Kubernetes environments
 func (*KubernetesProvider) UnsetAllBuildAuthFiles() error {
+	return nil
+}
+
+// GetRuntimeConfig returns nil for Kubernetes environments (runtime config not supported)
+func (*KubernetesProvider) GetRuntimeConfig(_ string) (*templates.RuntimeConfig, error) {
+	return nil, nil
+}
+
+// SetRuntimeConfig is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetRuntimeConfig(_ string, _ *templates.RuntimeConfig) error {
 	return nil
 }
 

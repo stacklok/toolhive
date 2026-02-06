@@ -39,6 +39,9 @@ type TemplateData struct {
 	// BuildAuthFiles contains auth file contents keyed by file type (npmrc, netrc, etc).
 	// These files are injected into the builder stage only for authentication.
 	BuildAuthFiles map[string]string
+	// RuntimeConfig specifies the base images and packages
+	// If nil, defaults for the transport type are used
+	RuntimeConfig *RuntimeConfig
 }
 
 // TransportType represents the type of transport to use.
@@ -72,6 +75,12 @@ func GetDockerfileTemplate(transportType TransportType, data TemplateData) (stri
 	// Populate MCPPackageClean with version-stripped package name
 	data.MCPPackageClean = stripVersionSuffix(data.MCPPackage)
 
+	// Populate RuntimeConfig with defaults if not provided
+	if data.RuntimeConfig == nil {
+		defaultConfig := GetDefaultRuntimeConfig(transportType)
+		data.RuntimeConfig = &defaultConfig
+	}
+
 	var templateName string
 
 	// Determine the template name based on the transport type
@@ -92,8 +101,24 @@ func GetDockerfileTemplate(transportType TransportType, data TemplateData) (stri
 		return "", fmt.Errorf("failed to read template file: %w", err)
 	}
 
-	// Parse the template
-	tmpl, err := template.New(templateName).Parse(string(tmplContent))
+	// Create template with helper functions
+	funcMap := template.FuncMap{
+		"contains": func(s, substr string) bool {
+			return bytes.Contains([]byte(s), []byte(substr))
+		},
+		"isAlpine": func(image string) bool {
+			return bytes.Contains([]byte(image), []byte("alpine"))
+		},
+		"isDebian": func(image string) bool {
+			img := []byte(image)
+			return bytes.Contains(img, []byte("slim")) ||
+				bytes.Contains(img, []byte("debian")) ||
+				bytes.Contains(img, []byte("ubuntu"))
+		},
+	}
+
+	// Parse the template with helper functions
+	tmpl, err := template.New(templateName).Funcs(funcMap).Parse(string(tmplContent))
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)
 	}

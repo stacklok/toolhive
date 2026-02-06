@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -72,6 +73,14 @@ func WithRuntime(deployer rt.Deployer) RunConfigBuilderOption {
 func WithImage(image string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.Image = image
+		return nil
+	}
+}
+
+// WithRuntimeConfig sets the runtime configuration (base images and packages)
+func WithRuntimeConfig(runtimeConfig *templates.RuntimeConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RuntimeConfig = runtimeConfig
 		return nil
 	}
 }

@@ -362,7 +362,7 @@ func TestBaseOAuth2Provider_AuthorizationURL_NoScopes(t *testing.T) {
 	assert.Empty(t, query.Get("scope"))
 }
 
-func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
+func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -406,7 +406,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.ExchangeCode(ctx, "test-auth-code", "test-verifier")
+		tokens, err := provider.exchangeCodeForTokens(ctx, "test-auth-code", "test-verifier")
 		require.NoError(t, err)
 
 		// Verify request parameters
@@ -457,7 +457,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.ExchangeCode(ctx, "expired-code", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "expired-code", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_grant")
 		assert.Contains(t, err.Error(), "authorization code has expired")
@@ -482,7 +482,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		_, err = provider.ExchangeCode(ctx, "test-code", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "request failed")
 	})
@@ -506,7 +506,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.ExchangeCode(ctx, "", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authorization code is required")
 	})
@@ -549,7 +549,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.ExchangeCode(ctx, "test-code", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.NoError(t, err)
 
 		assert.Empty(t, receivedParams.Get("code_verifier"))
@@ -586,7 +586,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.ExchangeCode(ctx, "test-code", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing access_token")
 	})
@@ -622,7 +622,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.ExchangeCode(ctx, "test-code", "")
+		_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unexpected token_type")
 	})
@@ -658,7 +658,7 @@ func TestBaseOAuth2Provider_ExchangeCode(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.ExchangeCode(ctx, "test-code", "")
+		tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.NoError(t, err)
 
 		// Should default to 1 hour
@@ -838,7 +838,7 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 
 	// Verify the provider works with custom client
 	ctx := context.Background()
-	tokens, err := provider.ExchangeCode(ctx, "test-code", "")
+	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, tokens.AccessToken)
 }
@@ -894,7 +894,7 @@ func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
 			provider, err := NewOAuth2Provider(config)
 			require.NoError(t, err)
 
-			_, err = provider.ExchangeCode(ctx, "test-code", "")
+			_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -930,7 +930,7 @@ func TestBaseOAuth2Provider_NonJSONErrorResponse(t *testing.T) {
 	provider, err := NewOAuth2Provider(config)
 	require.NoError(t, err)
 
-	_, err = provider.ExchangeCode(ctx, "test-code", "")
+	_, err = provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.Error(t, err)
 	// Should contain status code in sanitized error
 	assert.Contains(t, err.Error(), "400")
@@ -972,7 +972,7 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 	provider, err := NewOAuth2Provider(config)
 	require.NoError(t, err)
 
-	tokens, err := provider.ExchangeCode(ctx, "test-code", "")
+	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
 
 	// OAuth2 providers can also return ID tokens if they support hybrid flows
@@ -1028,23 +1028,13 @@ func Test_validateRedirectURI(t *testing.T) {
 	}
 }
 
-func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
+func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 
-	// Helper to create a minimal token server (OAuth endpoints not used for userinfo tests)
-	newTokenServer := func() *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-	}
-
-	t.Run("nil tokens returns ErrIdentityResolutionFailed", func(t *testing.T) {
+	t.Run("successful exchange and identity resolution", func(t *testing.T) {
 		t.Parallel()
-
-		tokenServer := newTokenServer()
-		defer tokenServer.Close()
 
 		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1052,14 +1042,17 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 		}))
 		defer userInfoServer.Close()
 
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
 				ClientID:     "test-client",
 				ClientSecret: "test-secret",
 				RedirectURI:  "http://localhost:8080/callback",
 			},
-			AuthorizationEndpoint: tokenServer.URL + "/authorize",
-			TokenEndpoint:         tokenServer.URL + "/token",
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
 			UserInfo: &UserInfoConfig{
 				EndpointURL: userInfoServer.URL,
 			},
@@ -1068,67 +1061,31 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		subject, err := provider.ResolveIdentity(ctx, nil, "")
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
-		assert.Empty(t, subject)
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "ignored-nonce")
+		require.NoError(t, err)
+		assert.Equal(t, "user-123", result.Subject)
+		assert.NotEmpty(t, result.Tokens.AccessToken)
 	})
 
-	t.Run("successful resolution", func(t *testing.T) {
+	t.Run("userinfo server returns 401", func(t *testing.T) {
 		t.Parallel()
-
-		tokenServer := newTokenServer()
-		defer tokenServer.Close()
-
-		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "user-123"})
-		}))
-		defer userInfoServer.Close()
-
-		config := &OAuth2Config{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-				RedirectURI:  "http://localhost:8080/callback",
-			},
-			AuthorizationEndpoint: tokenServer.URL + "/authorize",
-			TokenEndpoint:         tokenServer.URL + "/token",
-			UserInfo: &UserInfoConfig{
-				EndpointURL: userInfoServer.URL,
-			},
-		}
-
-		provider, err := NewOAuth2Provider(config)
-		require.NoError(t, err)
-
-		tokens := &Tokens{
-			AccessToken: "valid-access-token",
-		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "")
-		require.NoError(t, err)
-		assert.Equal(t, "user-123", subject)
-	})
-
-	t.Run("server returns 401", func(t *testing.T) {
-		t.Parallel()
-
-		tokenServer := newTokenServer()
-		defer tokenServer.Close()
 
 		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer userInfoServer.Close()
 
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
 				ClientID:     "test-client",
 				ClientSecret: "test-secret",
 				RedirectURI:  "http://localhost:8080/callback",
 			},
-			AuthorizationEndpoint: tokenServer.URL + "/authorize",
-			TokenEndpoint:         tokenServer.URL + "/token",
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
 			UserInfo: &UserInfoConfig{
 				EndpointURL: userInfoServer.URL,
 			},
@@ -1137,21 +1094,14 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens := &Tokens{
-			AccessToken: "invalid-access-token",
-		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
 		assert.Contains(t, err.Error(), "401")
-		assert.Empty(t, subject)
 	})
 
-	t.Run("missing subject in response", func(t *testing.T) {
+	t.Run("missing subject in userinfo response", func(t *testing.T) {
 		t.Parallel()
-
-		tokenServer := newTokenServer()
-		defer tokenServer.Close()
 
 		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1159,14 +1109,17 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 		}))
 		defer userInfoServer.Close()
 
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
 				ClientID:     "test-client",
 				ClientSecret: "test-secret",
 				RedirectURI:  "http://localhost:8080/callback",
 			},
-			AuthorizationEndpoint: tokenServer.URL + "/authorize",
-			TokenEndpoint:         tokenServer.URL + "/token",
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
 			UserInfo: &UserInfoConfig{
 				EndpointURL: userInfoServer.URL,
 			},
@@ -1175,26 +1128,28 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens := &Tokens{
-			AccessToken: "valid-access-token",
-		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
-		assert.Empty(t, subject)
 	})
 
-	t.Run("empty subject in response", func(t *testing.T) {
+	t.Run("token exchange failure", func(t *testing.T) {
 		t.Parallel()
 
-		tokenServer := newTokenServer()
-		defer tokenServer.Close()
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
 
-		userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"sub": ""})
-		}))
-		defer userInfoServer.Close()
+			w.WriteHeader(http.StatusBadRequest)
+			resp := testTokenErrorResponse{
+				Error:            "invalid_grant",
+				ErrorDescription: "The authorization code has expired",
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
 
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
@@ -1202,27 +1157,50 @@ func TestBaseOAuth2Provider_ResolveIdentity(t *testing.T) {
 				ClientSecret: "test-secret",
 				RedirectURI:  "http://localhost:8080/callback",
 			},
-			AuthorizationEndpoint: tokenServer.URL + "/authorize",
-			TokenEndpoint:         tokenServer.URL + "/token",
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
 			UserInfo: &UserInfoConfig{
-				EndpointURL: userInfoServer.URL,
+				EndpointURL: "http://localhost/userinfo",
 			},
 		}
 
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens := &Tokens{
-			AccessToken: "valid-access-token",
-		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+		_, err = provider.ExchangeCodeForIdentity(ctx, "expired-code", "", "")
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
-		assert.Empty(t, subject)
+		assert.Contains(t, err.Error(), "invalid_grant")
+	})
+
+	t.Run("empty code returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: "http://localhost/userinfo",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "", "", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "authorization code is required")
 	})
 }
 
-func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
+func TestBaseOAuth2Provider_fetchUserInfo(t *testing.T) {
 	t.Parallel()
 
 	// Helper to create a minimal token server (OAuth endpoints not used for userinfo tests)
@@ -1276,7 +1254,7 @@ func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
 				provider, err := NewOAuth2Provider(config)
 				require.NoError(t, err)
 
-				_, err = provider.FetchUserInfo(context.Background(), tt.accessToken)
+				_, err = provider.fetchUserInfo(context.Background(), tt.accessToken)
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
 			})
@@ -1353,7 +1331,7 @@ func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
 				provider, err := NewOAuth2Provider(config)
 				require.NoError(t, err)
 
-				userInfo, err := provider.FetchUserInfo(context.Background(), "test-access-token")
+				userInfo, err := provider.fetchUserInfo(context.Background(), "test-access-token")
 				if tt.wantErr != "" {
 					require.Error(t, err)
 					assert.Contains(t, err.Error(), tt.wantErr)
@@ -1400,7 +1378,7 @@ func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(context.Background(), "test-access-token")
+		_, err = provider.fetchUserInfo(context.Background(), "test-access-token")
 		require.NoError(t, err)
 
 		assert.Equal(t, "2022-11-28", receivedHeaders.Get("X-GitHub-Api-Version"))
@@ -1408,7 +1386,7 @@ func TestBaseOAuth2Provider_FetchUserInfo(t *testing.T) {
 	})
 }
 
-func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
+func TestBaseOAuth2Provider_fetchUserInfo_FieldMapping(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1451,7 +1429,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		userInfo, err := provider.fetchUserInfo(ctx, "test-access-token")
 		require.NoError(t, err)
 
 		assert.Equal(t, "Bearer test-access-token", receivedAuth)
@@ -1502,7 +1480,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		userInfo, err := provider.fetchUserInfo(ctx, "test-access-token")
 		require.NoError(t, err)
 
 		assert.Equal(t, "12345", userInfo.Subject) // Numeric ID converted to string
@@ -1547,7 +1525,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		_, err = provider.fetchUserInfo(ctx, "test-access-token")
 		require.NoError(t, err)
 
 		assert.Equal(t, "2022-11-28", receivedHeaders.Get("X-GitHub-Api-Version"))
@@ -1588,7 +1566,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		userInfo, err := provider.FetchUserInfo(ctx, "test-access-token")
+		userInfo, err := provider.fetchUserInfo(ctx, "test-access-token")
 		require.NoError(t, err)
 
 		assert.Equal(t, http.MethodPost, receivedMethod)
@@ -1617,7 +1595,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		_, err = provider.fetchUserInfo(ctx, "test-access-token")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "userinfo endpoint not configured")
 	})
@@ -1646,7 +1624,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(ctx, "")
+		_, err = provider.fetchUserInfo(ctx, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "access token is required")
 	})
@@ -1680,7 +1658,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		_, err = provider.fetchUserInfo(ctx, "test-access-token")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "status 401")
 	})
@@ -1719,7 +1697,7 @@ func TestBaseOAuth2Provider_FetchUserInfo_FieldMapping(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.FetchUserInfo(ctx, "test-access-token")
+		_, err = provider.fetchUserInfo(ctx, "test-access-token")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing required subject claim")
 	})

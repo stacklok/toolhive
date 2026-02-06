@@ -21,19 +21,15 @@ import (
 // ProviderType identifies the type of upstream Identity Provider.
 type ProviderType string
 
-// UserInfo contains user information retrieved from the upstream IDP.
-type UserInfo struct {
-	// Subject is the unique identifier for the user (sub claim).
-	Subject string `json:"sub"`
+// Identity holds the identity resolved from an upstream IDP after
+// exchanging an authorization code. It combines the tokens (for storage and
+// refresh) with the subject identifier (for internal user resolution).
+type Identity struct {
+	// Tokens contains the tokens obtained from the upstream IDP.
+	Tokens *Tokens
 
-	// Email is the user's email address.
-	Email string `json:"email,omitempty"`
-
-	// Name is the user's full name.
-	Name string `json:"name,omitempty"`
-
-	// Claims contains all claims returned by the userinfo endpoint.
-	Claims map[string]any `json:"-"`
+	// Subject is the canonical user identifier from the upstream IDP (the "sub" claim).
+	Subject string
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

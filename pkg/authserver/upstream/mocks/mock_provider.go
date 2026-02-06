@@ -61,34 +61,19 @@ func (mr *MockOAuth2ProviderMockRecorder) AuthorizationURL(state, codeChallenge 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AuthorizationURL", reflect.TypeOf((*MockOAuth2Provider)(nil).AuthorizationURL), varargs...)
 }
 
-// ExchangeCode mocks base method.
-func (m *MockOAuth2Provider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*upstream.Tokens, error) {
+// ExchangeCodeForIdentity mocks base method.
+func (m *MockOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, nonce string) (*upstream.Identity, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ExchangeCode", ctx, code, codeVerifier)
-	ret0, _ := ret[0].(*upstream.Tokens)
+	ret := m.ctrl.Call(m, "ExchangeCodeForIdentity", ctx, code, codeVerifier, nonce)
+	ret0, _ := ret[0].(*upstream.Identity)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ExchangeCode indicates an expected call of ExchangeCode.
-func (mr *MockOAuth2ProviderMockRecorder) ExchangeCode(ctx, code, codeVerifier any) *gomock.Call {
+// ExchangeCodeForIdentity indicates an expected call of ExchangeCodeForIdentity.
+func (mr *MockOAuth2ProviderMockRecorder) ExchangeCodeForIdentity(ctx, code, codeVerifier, nonce any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExchangeCode", reflect.TypeOf((*MockOAuth2Provider)(nil).ExchangeCode), ctx, code, codeVerifier)
-}
-
-// FetchUserInfo mocks base method.
-func (m *MockOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken string) (*upstream.UserInfo, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FetchUserInfo", ctx, accessToken)
-	ret0, _ := ret[0].(*upstream.UserInfo)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FetchUserInfo indicates an expected call of FetchUserInfo.
-func (mr *MockOAuth2ProviderMockRecorder) FetchUserInfo(ctx, accessToken any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchUserInfo", reflect.TypeOf((*MockOAuth2Provider)(nil).FetchUserInfo), ctx, accessToken)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExchangeCodeForIdentity", reflect.TypeOf((*MockOAuth2Provider)(nil).ExchangeCodeForIdentity), ctx, code, codeVerifier, nonce)
 }
 
 // RefreshTokens mocks base method.
@@ -104,21 +89,6 @@ func (m *MockOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, ex
 func (mr *MockOAuth2ProviderMockRecorder) RefreshTokens(ctx, refreshToken, expectedSubject any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefreshTokens", reflect.TypeOf((*MockOAuth2Provider)(nil).RefreshTokens), ctx, refreshToken, expectedSubject)
-}
-
-// ResolveIdentity mocks base method.
-func (m *MockOAuth2Provider) ResolveIdentity(ctx context.Context, tokens *upstream.Tokens, nonce string) (string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ResolveIdentity", ctx, tokens, nonce)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ResolveIdentity indicates an expected call of ResolveIdentity.
-func (mr *MockOAuth2ProviderMockRecorder) ResolveIdentity(ctx, tokens, nonce any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveIdentity", reflect.TypeOf((*MockOAuth2Provider)(nil).ResolveIdentity), ctx, tokens, nonce)
 }
 
 // Type mocks base method.

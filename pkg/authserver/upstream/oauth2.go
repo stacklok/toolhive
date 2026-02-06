@@ -77,11 +77,14 @@ type OAuth2Provider interface {
 	ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error)
 
 	// RefreshTokens refreshes the upstream IDP tokens.
-	RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error)
+	// expectedSubject is the original sub claim; OIDC providers validate it per
+	// Section 12.2 when the response includes a new ID token. Pure OAuth2 providers
+	// ignore it.
+	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
 
 	// ResolveIdentity validates tokens and returns the canonical subject.
-	// For OIDC providers with ID tokens, it validates the token and nonce.
-	// For OAuth2 providers or as fallback, it fetches UserInfo.
+	// For OIDC providers, it validates the ID token and nonce (ID token required).
+	// For pure OAuth2 providers, it fetches UserInfo to resolve identity.
 	ResolveIdentity(ctx context.Context, tokens *Tokens, nonce string) (subject string, err error)
 
 	// FetchUserInfo retrieves user information using the provided access token.
@@ -393,7 +396,7 @@ func (p *BaseOAuth2Provider) ExchangeCode(ctx context.Context, code, codeVerifie
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
-func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken string) (*Tokens, error) {
+func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("refresh token is required")
 	}

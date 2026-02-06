@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -104,7 +104,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) e
 
 	// Apply group filtering if specified
 	if groupFilter != "" {
-		if err := validation.ValidateGroupName(groupFilter); err != nil {
+		if err := groupval.ValidateName(groupFilter); err != nil {
 			return httperr.WithCode(
 				fmt.Errorf("invalid group name: %w", err),
 				http.StatusBadRequest,
@@ -225,10 +225,11 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 // deleteWorkload
 //
 //	@Summary		Delete a workload
-//	@Description	Delete a workload
+//	@Description	Delete a workload asynchronously. Returns 202 Accepted immediately.
+//	@Description	The deletion happens in the background. Poll the workload list to confirm deletion.
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		202		{string}	string	"Accepted"
+//	@Success		202		{string}	string	"Accepted - deletion started"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
@@ -248,6 +249,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
+
 	w.WriteHeader(http.StatusAccepted)
 	return nil
 }
@@ -466,11 +468,12 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 // deleteWorkloadsBulk
 //
 //	@Summary		Delete workloads in bulk
-//	@Description	Delete multiple workloads by name or by group
+//	@Description	Delete multiple workloads by name or by group asynchronously.
+//	@Description	Returns 202 Accepted immediately. Deletion happens in the background.
 //	@Tags			workloads
 //	@Accept			json
 //	@Param			request	body		bulkOperationRequest	true	"Bulk delete request (names or group)"
-//	@Success		202		{string}	string	"Accepted"
+//	@Success		202		{string}	string	"Accepted - deletion started"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
 func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) error {
@@ -499,6 +502,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return err // ErrInvalidWorkloadName already has 400 status code
 	}
+
 	w.WriteHeader(http.StatusAccepted)
 	return nil
 }

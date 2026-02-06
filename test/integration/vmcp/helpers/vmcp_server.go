@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"

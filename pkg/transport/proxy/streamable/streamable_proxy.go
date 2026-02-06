@@ -113,8 +113,8 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go p.dispatchResponses()
 
 	go func() {
-		logger.Infof("Streamable HTTP proxy started on port %d", p.port)
-		logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
+		logger.Debugf("Streamable HTTP proxy started on port %d", p.port)
+		logger.Debugf("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
 		if err := p.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("Streamable HTTP server error: %v", err)
 		}
@@ -151,6 +151,16 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 	})
 
 	return err
+}
+
+// IsRunning checks if the proxy is running.
+func (p *HTTPProxy) IsRunning() (bool, error) {
+	select {
+	case <-p.shutdownCh:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // GetMessageChannel returns the message channel for sending JSON-RPC to the container.

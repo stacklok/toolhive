@@ -38,9 +38,9 @@ type AuthorizationServerMetadata struct {
 	// IntrospectionEndpoint is the URL of the token introspection endpoint (OPTIONAL, RFC 7662).
 	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
 
-	// UserinfoEndpoint is the URL of the UserInfo endpoint (OPTIONAL, OIDC specific).
-	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
-	UserinfoEndpoint string `json:"userinfo_endpoint"`
+	// UserinfoEndpoint is the URL of the UserInfo endpoint (RECOMMENDED per OIDC Discovery, not in RFC 8414).
+	// Omitted from JSON when empty to avoid serializing an invalid URL value.
+	UserinfoEndpoint string `json:"userinfo_endpoint,omitempty"`
 
 	// ResponseTypesSupported lists the response types supported (RECOMMENDED).
 	ResponseTypesSupported []string `json:"response_types_supported,omitempty"`

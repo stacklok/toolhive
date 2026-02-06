@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive-core/env/mocks"
 )
 
 // TestUnstructuredLogsCheck tests the unstructuredLogs function

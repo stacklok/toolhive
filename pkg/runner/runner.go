@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -34,6 +35,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
+
+// ErrContainerExitedRestartNeeded is returned when a container exits and needs to be restarted
+var ErrContainerExitedRestartNeeded = errors.New("container exited, restart needed")
 
 // Runner is responsible for running an MCP server with the provided configuration
 type Runner struct {
@@ -119,6 +123,26 @@ func (r *Runner) SetPrometheusHandler(handler http.Handler) {
 // GetConfig returns a config interface for middleware to access runner configuration
 func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
+}
+
+// GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
+// The returned function should be called at request time to get current storage;
+// it returns nil if storage is unavailable (e.g., embedded auth server not configured
+// or during shutdown).
+//
+// This always returns a non-nil function to allow middleware creation before the
+// embedded auth server is initialized. The actual storage availability is checked
+// at request time when the returned function is called.
+func (r *Runner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
+	// Return a closure that provides lazy access to the storage.
+	// This closure is always non-nil, allowing middleware to be created before
+	// the embedded auth server is initialized.
+	return func() storage.UpstreamTokenStorage {
+		if r.embeddedAuthServer == nil {
+			return nil
+		}
+		return r.embeddedAuthServer.IDPTokenStorage()
+	}
 }
 
 // GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
@@ -420,10 +444,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Remove the PID file if it exists
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
 		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
@@ -458,7 +478,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Check if the transport is still running
-			running, err := transportHandler.IsRunning(ctx)
+			running, err := transportHandler.IsRunning()
 			if err != nil {
 				logger.Errorf("Error checking transport status: %v", err)
 				// Don't exit immediately on error, try again after pause
@@ -502,11 +522,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Clean up the PID file and state
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
+		// Remove the old PID from the state file
 		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}
@@ -546,7 +562,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Workload still exists - signal restart needed
 		logger.Debugf("MCP server %s stopped, restart needed", r.Config.ContainerName)
-		return fmt.Errorf("container exited, restart needed")
+		return ErrContainerExitedRestartNeeded
 	}
 
 	return nil

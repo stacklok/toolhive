@@ -56,7 +56,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 
 		AfterEach(func() {
 			// Clean up in reverse order
-			deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 			unregisterClientFromGroup(apiServer, string(testClientName), groupName)
 			deleteGroup(apiServer, groupName)
 		})
@@ -230,7 +230,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 		})
 
 		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 			deleteGroup(apiServer, groupName)
 		})
 
@@ -321,7 +321,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 		})
 
 		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 			// Unregister clients from group
 			for _, name := range testClientNames {
 				unregisterClientFromGroup(apiServer, string(name), groupName)
@@ -430,7 +430,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 		})
 
 		AfterEach(func() {
-			deleteWorkload(apiServer, workloadName)
+			// Note: Workload cleanup handled by suite-level CLI cleanup
 			deleteGroup(apiServer, groupName)
 		})
 

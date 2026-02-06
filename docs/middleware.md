@@ -6,48 +6,59 @@ This document describes the middleware architecture used in ToolHive for process
 
 ToolHive uses a layered middleware architecture to process incoming MCP requests. Each middleware component has a specific responsibility and operates in a well-defined order to ensure proper request handling, security, and observability.
 
+This document primarily covers the middleware system for `thv` and `thv-proxyrunner`. The `vmcp` component has its own request processing pipeline documented in [Virtual MCP Architecture](arch/10-virtual-mcp-architecture.md#request-processing-pipeline).
+
 The middleware chain consists of the following components:
 
 1. **Authentication Middleware**: Validates JWT tokens and extracts client identity
-2. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens (optional)
-3. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
-4. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
-5. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
-6. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-7. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+2. **Upstream Token Swap Middleware**: Exchanges ToolHive JWTs for upstream IdP tokens (automatic with embedded auth server)
+3. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens via OAuth 2.0 Token Exchange (optional)
+4. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
+5. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
+6. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
+7. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
+8. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
+9. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
+11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Architecture Diagram
 
 ```mermaid
 graph TD
-    A[Incoming MCP Request] --> B[Authentication Middleware]
+    A[Incoming MCP Request] --> R[Recovery Middleware]
+    R --> B[Authentication Middleware]
     B --> C[MCP Parsing Middleware]
     C --> D[Authorization Middleware]
     D --> E[Audit Middleware]
     E --> F[MCP Server Handler]
-    
+
+    R --> R1[Catch Panics]
+    R1 --> R2[Log Stack Trace]
+    R2 --> R3[Return 500 on Panic]
+
     B --> B1[JWT Validation]
     B1 --> B2[Extract Claims]
     B2 --> B3[Add to Context]
-    
+
     C --> C1[JSON-RPC Parsing]
     C1 --> C2[Extract Method & Params]
     C2 --> C3[Extract Resource ID & Args]
     C3 --> C4[Store Parsed Data]
-    
+
     D --> D1[Get Parsed MCP Data]
     D1 --> D2[Create Cedar Entities]
     D2 --> D3[Evaluate Policies]
     D3 --> D4{Authorized?}
     D4 -->|Yes| D5[Continue]
     D4 -->|No| D6[403 Forbidden]
-    
+
     E --> E1[Determine Event Type]
     E1 --> E2[Extract Audit Data]
     E2 --> E3[Log Event]
-    
+
     style A fill:#e1f5fe
+    style R fill:#fff3e0
     style F fill:#e8f5e8
     style D6 fill:#ffebee
 ```
@@ -57,28 +68,32 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Recovery as Recovery
     participant Auth as Authentication
     participant Parser as MCP Parser
     participant Authz as Authorization
     participant Audit as Audit
     participant Server as MCP Server
-    
-    Client->>Auth: HTTP Request with JWT
+
+    Client->>Recovery: HTTP Request
+    Note over Recovery: Wraps entire chain to catch panics
+
+    Recovery->>Auth: HTTP Request with JWT
     Auth->>Auth: Validate JWT Token
     Auth->>Auth: Extract Claims
     Note over Auth: Add claims to context
-    
+
     Auth->>Parser: Request + JWT Claims
     Parser->>Parser: Parse JSON-RPC
     Parser->>Parser: Extract MCP Method
     Parser->>Parser: Extract Resource ID & Arguments
     Note over Parser: Add parsed data to context
-    
+
     Parser->>Authz: Request + Parsed MCP Data
     Authz->>Authz: Get Parsed Data from Context
     Authz->>Authz: Create Cedar Entities
     Authz->>Authz: Evaluate Policies
-    
+
     alt Authorized
         Authz->>Audit: Authorized Request
         Audit->>Audit: Extract Event Data
@@ -87,6 +102,9 @@ sequenceDiagram
         Server->>Client: Response
     else Unauthorized
         Authz->>Client: 403 Forbidden
+    else Panic Occurs
+        Recovery->>Recovery: Log stack trace
+        Recovery->>Client: 500 Internal Server Error
     end
 ```
 
@@ -106,7 +124,69 @@ sequenceDiagram
 **Context Data Added**:
 - JWT claims with `claim_` prefix (e.g., `claim_sub`, `claim_name`)
 
-### 2. MCP Parsing Middleware
+### 2. Upstream Token Swap Middleware
+
+**Purpose**: Exchanges ToolHive-issued JWT tokens for the original upstream IdP tokens that were stored during the OAuth flow.
+
+**Location**: `pkg/auth/upstreamswap/middleware.go`
+
+**Availability**: Automatically enabled when using the embedded auth server (`EmbeddedAuthServerConfig`)
+
+**Responsibilities**:
+- Extract the token session ID (`tsid`) claim from the ToolHive JWT
+- Look up the stored upstream IdP tokens associated with that session
+- Inject the upstream access token into the request (replacing Authorization header or using a custom header)
+- Gracefully proceed without modification if tokens are unavailable or expired
+
+**Configuration**:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `header_strategy` | string | `"replace"` | How to inject: `"replace"` (overwrite Authorization) or `"custom"` (add to custom header) |
+| `custom_header_name` | string | - | Required when `header_strategy` is `"custom"` |
+
+**Behavior**:
+- **Automatic activation**: Enabled whenever the embedded auth server is configured, even without explicit `UpstreamSwapConfig`
+- **Expired tokens**: Logs a warning but continues with the expired token (backend will reject if necessary)
+- **Missing tokens**: Proceeds without modification (logs debug message)
+- **Storage unavailable**: Proceeds without modification (logs warning)
+
+**Context Data Used**:
+- Identity from Authentication middleware (specifically the `tsid` claim)
+
+**Note**: This middleware is designed for use with ToolHive's embedded auth server. It reads from the auth server's token storage to retrieve upstream IdP tokens that were captured during the OAuth authorization flow.
+
+---
+
+#### Understanding Auth, Upstream Swap, and Token Exchange Middleware
+
+ToolHive provides three middleware components that handle authentication and token transformation. Understanding their differences and interactions is important for proper configuration:
+
+| Middleware | Purpose | When to Use |
+|------------|---------|-------------|
+| **Authentication** | Validates incoming JWTs and extracts identity | Always required (validates who the client is) |
+| **Upstream Token Swap** | Swaps ToolHive JWTs for stored upstream IdP tokens | When using embedded auth server and MCP backend needs upstream IdP token |
+| **Token Exchange** | Exchanges tokens via OAuth 2.0 Token Exchange (RFC 8693) | When MCP backend requires tokens from an external STS endpoint |
+
+**Execution Order**: Auth → Upstream Swap → Token Exchange
+
+This order is critical because:
+1. **Authentication** must run first to validate the JWT and extract the `tsid` claim
+2. **Upstream Swap** must run before Token Exchange so it can read the `tsid` from the original ToolHive JWT before any modification
+3. **Token Exchange** can optionally further transform the token if additional exchange is needed
+
+**Common Scenarios**:
+
+| Scenario | Middleware Used | Description |
+|----------|----------------|-------------|
+| External OIDC provider | Auth only | Client authenticates with external IdP, JWT is forwarded to MCP backend |
+| Embedded auth server | Auth + Upstream Swap | Client authenticates with ToolHive, upstream IdP token injected for MCP backend |
+| External OIDC + STS | Auth + Token Exchange | Client's JWT is exchanged via external STS for backend-specific token |
+| Embedded auth + STS | Auth + Upstream Swap + Token Exchange | Upstream IdP token is retrieved, then further exchanged via STS |
+
+---
+
+### 3. MCP Parsing Middleware
 
 **Purpose**: Parses JSON-RPC MCP requests and extracts structured information.
 
@@ -134,7 +214,7 @@ sequenceDiagram
 - `notifications/*` - Notification messages
 - `ping`, `logging/setLevel` - System operations
 
-### 3. Authorization Middleware
+### 4. Authorization Middleware
 
 **Purpose**: Evaluates Cedar policies to determine if requests are authorized.
 
@@ -151,7 +231,7 @@ sequenceDiagram
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware
 
-### 4. Tool Mapping Middleware
+### 5. Tool Mapping Middleware
 
 **Purpose**: Provides tool filtering and override capabilities for MCP tools.
 
@@ -178,7 +258,7 @@ Both components must be in place for the features to work correctly, as they ens
 
 **Note**: When either filtering or override is configured, both middleware components are automatically enabled and configured with the same parameters to ensure consistent behavior, however it is an explicit design choice to avoid sharing any state between the two middleware components.
 
-### 5. Usage Metrics Middleware
+### 6. Usage Metrics Middleware
 
 **Purpose**: Tracks tool call counts for usage analytics and usage metrics.
 
@@ -219,7 +299,7 @@ thv config usage-metrics enable
 
 **Note**: This middleware collects anonymous usage metrics for ToolHive development. Failures do not break request processing.
 
-### 6. Telemetry Middleware
+### 7. Telemetry Middleware
 
 **Purpose**: Instruments HTTP requests with OpenTelemetry tracing and metrics.
 
@@ -239,9 +319,9 @@ thv config usage-metrics enable
 - Sampling rate
 - Custom headers
 
-### 7. Token Exchange Middleware
+### 8. Token Exchange Middleware
 
-**Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange.
+**Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange (RFC 8693).
 
 **Location**: `pkg/auth/tokenexchange/middleware.go`
 
@@ -261,9 +341,9 @@ thv config usage-metrics enable
 - Scopes
 - Header injection strategy (replace or custom)
 
-**Note**: This middleware is currently implemented but not registered in the supported middleware factories (`pkg/runner/middleware.go:15`). It can be used directly via the proxy command but is not available through the standard middleware configuration system.
+**Note**: This middleware is registered in `pkg/runner/middleware.go` and can be configured through the standard middleware configuration system or used directly via the proxy command.
 
-### 8. Audit Middleware
+### 9. Audit Middleware
 
 **Purpose**: Logs request events for compliance, monitoring, and debugging.
 
@@ -429,6 +509,71 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
   "includeResponseData": true,
   "maxDataSize": 2048
 }
+```
+
+### 10. Recovery Middleware
+
+**Purpose**: Catches panics in HTTP handlers and returns a clean HTTP 500 error response.
+
+**Location**: `pkg/recovery/recovery.go`
+
+**Availability**: All components (`thv`, `thv-proxyrunner`, `vmcp`)
+
+**Responsibilities**:
+- Recover from panics in downstream handlers and middleware
+- Log the panic message and full stack trace for debugging
+- Return HTTP 500 Internal Server Error to the client
+- Prevent server crashes from unhandled panics
+
+**Behavior**:
+- Always added as the outermost middleware wrapper (added last in chain, executes first)
+- Catches any panic from the entire middleware chain and MCP handlers
+- Logs error with stack trace using `logger.Errorf`
+- Returns generic "Internal Server Error" message (no sensitive details exposed)
+
+**Configuration**: None required. This middleware is always present and has no configurable parameters.
+
+**Note**: Recovery middleware has no cleanup requirements (`Close()` is a no-op).
+
+### 11. Header Forward Middleware
+
+**Purpose**: Injects custom headers into requests before they are forwarded to remote MCP servers.
+
+**Location**: `pkg/transport/middleware/header_forward.go`
+
+**Availability**: `thv` and `thv-proxyrunner` only (not used by `vmcp`)
+
+**Responsibilities**:
+- Inject configured headers into outgoing requests to remote MCP servers
+- Validate headers against a security blocklist
+- Pre-canonicalize header names at creation time for efficiency
+
+**Configuration**:
+- `AddHeaders`: Map of header names to values to inject into requests
+
+**Restricted Headers**:
+
+The following headers cannot be configured for forwarding due to security concerns:
+
+| Category | Headers |
+|----------|---------|
+| Routing manipulation | `Host` |
+| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings` |
+| Proxy headers | `Proxy-Authorization`, `Proxy-Authenticate`, `Proxy-Connection` |
+| Request smuggling vectors | `Transfer-Encoding`, `Content-Length` |
+| Identity spoofing | `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-Ip` |
+
+**Behavior**:
+- Returns a no-op middleware if no headers are configured
+- Logs configured header names at startup (never logs values for security)
+- Warns if `Authorization` header is configured (ensure value is appropriate for target)
+- Returns error if any restricted header is configured
+
+**CLI Usage**:
+
+```bash
+# Add custom headers when proxying to a remote MCP server
+thv proxy my-server --target-uri https://mcp.example.com --remote-forward-headers "X-Custom-Header=value" --remote-forward-headers "X-API-Key=secret"
 ```
 
 ## Data Flow Through Context
@@ -626,16 +771,21 @@ Middleware can interact with the runner through the `MiddlewareRunner` interface
 ```go
 type MiddlewareRunner interface {
     // AddMiddleware adds a middleware instance to the runner's middleware chain
-    AddMiddleware(middleware Middleware)
-    
+    AddMiddleware(name string, middleware Middleware)
+
     // SetAuthInfoHandler sets the authentication info handler (used by auth middleware)
     SetAuthInfoHandler(handler http.Handler)
-    
+
     // SetPrometheusHandler sets the Prometheus metrics handler (used by telemetry middleware)
     SetPrometheusHandler(handler http.Handler)
-    
+
     // GetConfig returns a config interface for middleware to access runner configuration
     GetConfig() RunnerConfig
+
+    // GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
+    // Returns a function that provides storage at request time (supports late initialization).
+    // Used by upstream swap middleware to retrieve stored IdP tokens.
+    GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage
 }
 ```
 
@@ -718,8 +868,8 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
     }
 
     // Add to runner
-    runner.AddMiddleware(middleware)
-    
+    runner.AddMiddleware(MiddlewareType, middleware)
+
     // Set up additional handlers if needed
     // runner.SetPrometheusHandler(someHandler)
     // runner.SetAuthInfoHandler(someHandler)
@@ -730,20 +880,24 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 **Step 3: Register with the System**
 
-Add your middleware to `pkg/runner/middleware.go:15` in the `GetSupportedMiddlewareFactories()` function:
+Add your middleware to `pkg/runner/middleware.go` in the `GetSupportedMiddlewareFactories()` function:
 
 ```go
 func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
     return map[string]types.MiddlewareFactory{
-        auth.MiddlewareType:              auth.CreateMiddleware,
-        mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
-        mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
-        mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
-        telemetry.MiddlewareType:         telemetry.CreateMiddleware,
-        authz.MiddlewareType:             authz.CreateMiddleware,
-        audit.MiddlewareType:             audit.CreateMiddleware,
-        // tokenexchange.MiddlewareType:  tokenexchange.CreateMiddleware, // Not yet registered
-        yourpackage.MiddlewareType:       yourpackage.CreateMiddleware,
+        auth.MiddlewareType:                   auth.CreateMiddleware,
+        tokenexchange.MiddlewareType:          tokenexchange.CreateMiddleware,
+        upstreamswap.MiddlewareType:           upstreamswap.CreateMiddleware,
+        mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
+        mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
+        mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+        usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
+        telemetry.MiddlewareType:              telemetry.CreateMiddleware,
+        authz.MiddlewareType:                  authz.CreateMiddleware,
+        audit.MiddlewareType:                  audit.CreateMiddleware,
+        recovery.MiddlewareType:               recovery.CreateMiddleware,
+        headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+        yourpackage.MiddlewareType:            yourpackage.CreateMiddleware,
     }
 }
 ```
@@ -795,7 +949,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
     }
 
     // Register with runner
-    runner.AddMiddleware(middleware)
+    runner.AddMiddleware(auth.MiddlewareType, middleware)
     runner.SetAuthInfoHandler(middleware.AuthInfoHandler())
 
     return nil
@@ -804,23 +958,29 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 ### Middleware Execution Order
 
-The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go:27`:
+The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go`.
 
 1. **Authentication Middleware** (always present) - Validates JWT tokens and extracts claims
-2. **Token Exchange Middleware** (if enabled) - Exchanges JWT for external service tokens
-3. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
-4. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
-5. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-6. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
-7. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-8. **Audit Middleware** (if enabled) - Request logging
+2. **Upstream Token Swap Middleware** (if embedded auth server configured) - Swaps ToolHive JWT for upstream IdP token
+3. **Token Exchange Middleware** (if enabled) - Exchanges JWT for external service tokens via OAuth 2.0 Token Exchange
+4. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
+5. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
+6. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
+7. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+8. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
+9. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+10. **Audit Middleware** (if enabled) - Request logging
+11. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
+12. **Recovery Middleware** (always present) - Catches panics (outermost wrapper)
 
 **Important Ordering Rules**:
 - Authentication must come first to establish client identity
-- Token Exchange must come after Authentication (requires JWT claims)
+- Upstream Token Swap must come after Authentication (requires `tsid` claim) and before Token Exchange (so it can read the original JWT)
+- Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
-- Audit should be last to capture the complete request lifecycle
+- Header Forward executes close to the backend handler (innermost position)
+- Recovery is always last in config (so it executes first as outermost wrapper)
 
 ### Custom Authorization Policies
 

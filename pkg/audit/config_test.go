@@ -116,15 +116,6 @@ func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
 	assert.False(t, config.ShouldAuditEvent("mcp_resource_read")) // Not in EventTypes
 }
 
-func TestCreateMiddleware(t *testing.T) {
-	t.Parallel()
-	config := &Config{}
-
-	middleware, err := config.CreateMiddlewareWithTransport("sse")
-	assert.NoError(t, err)
-	assert.NotNil(t, middleware)
-}
-
 func TestValidateValidConfig(t *testing.T) {
 	t.Parallel()
 	config := &Config{
@@ -252,14 +243,6 @@ func TestConfigMinimalJSON(t *testing.T) {
 	assert.False(t, config.IncludeRequestData)
 	assert.False(t, config.IncludeResponseData)
 	assert.Equal(t, 0, config.MaxDataSize) // Default zero value
-}
-
-func TestGetMiddlewareFromFileError(t *testing.T) {
-	t.Parallel()
-	// Test with non-existent file
-	_, err := GetMiddlewareFromFile("/non/existent/file.json", "sse")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to load audit config")
 }
 
 func TestLoadFromFilePathCleaning(t *testing.T) {

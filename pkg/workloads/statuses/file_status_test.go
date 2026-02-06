@@ -23,7 +23,6 @@ import (
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/process"
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
@@ -1334,7 +1333,7 @@ func TestFileStatusManager_ReadStatusFile_Validation(t *testing.T) {
 		{
 			name:        "invalid json",
 			fileContent: `{"invalid": json}`,
-			expectError: "status file contains invalid JSON",
+			expectError: "failed to parse status file", // Recovery will be attempted but will fail
 		},
 		{
 			name:        "missing status field",
@@ -1831,8 +1830,8 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Clean up PID files after test completes
-	require.NoError(t, process.RemovePIDFile(workloadMigrate))
-	require.NoError(t, process.RemovePIDFile(workloadNoMigrate))
+	require.NoError(t, removePIDFile(workloadMigrate))
+	require.NoError(t, removePIDFile(workloadNoMigrate))
 
 	// Should have 2 workloads
 	require.Len(t, workloads, 2)
@@ -2013,4 +2012,151 @@ func TestFileStatusManager_IsRemoteWorkload_EdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJSONRecovery_ExtraClosingBrace(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+
+	// Create corrupted JSON with extra closing brace (the actual bug reported)
+	corruptedJSON := `{
+  "status": "unauthenticated",
+  "status_context": "Token retrieval failed: Post \"https://example.com/.auth/idp/oauth/token\": context canceled",
+  "created_at": "2026-01-28T15:53:18.33528-05:00",
+  "updated_at": "2026-01-29T16:53:22.2383-05:00",
+  "process_id": 11735
+}}`
+
+	err := os.WriteFile(statusFilePath, []byte(corruptedJSON), 0o600)
+	require.NoError(t, err)
+
+	// Read should recover the file
+	statusFile, err := manager.readStatusFile(statusFilePath)
+	require.NoError(t, err)
+	assert.NotNil(t, statusFile)
+	assert.Equal(t, rt.WorkloadStatus("unauthenticated"), statusFile.Status)
+	assert.Equal(t, 11735, statusFile.ProcessID)
+	assert.Contains(t, statusFile.StatusContext, "Token retrieval failed")
+
+	// Verify the file was auto-repaired
+	repairedContent, err := os.ReadFile(statusFilePath)
+	require.NoError(t, err)
+
+	// Should now be valid JSON
+	var verifyFile workloadStatusFile
+	err = json.Unmarshal(repairedContent, &verifyFile)
+	assert.NoError(t, err, "repaired file should be valid JSON")
+}
+
+func TestJSONRecovery_MissingClosingBrace(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+
+	// Create corrupted JSON missing closing brace (truncated file)
+	corruptedJSON := `{
+  "status": "running",
+  "status_context": "Running normally",
+  "created_at": "2026-01-28T15:53:18.33528-05:00",
+  "updated_at": "2026-01-29T16:53:22.2383-05:00",
+  "process_id": 12345`
+
+	err := os.WriteFile(statusFilePath, []byte(corruptedJSON), 0o600)
+	require.NoError(t, err)
+
+	// Read should recover the file
+	statusFile, err := manager.readStatusFile(statusFilePath)
+	require.NoError(t, err)
+	assert.NotNil(t, statusFile)
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status)
+	assert.Equal(t, 12345, statusFile.ProcessID)
+
+	// Verify the file was auto-repaired
+	repairedContent, err := os.ReadFile(statusFilePath)
+	require.NoError(t, err)
+
+	var verifyFile workloadStatusFile
+	err = json.Unmarshal(repairedContent, &verifyFile)
+	assert.NoError(t, err, "repaired file should be valid JSON")
+}
+
+func TestJSONRecovery_ControlCharacters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+
+	// Create JSON with control characters (null bytes, etc.)
+	corruptedJSON := "{\x00\n  \"status\": \"running\",\n  \"status_context\": \"test\",\n  \"created_at\": \"2026-01-28T15:53:18.33528-05:00\",\n  \"updated_at\": \"2026-01-29T16:53:22.2383-05:00\",\n  \"process_id\": 12345\n}\x00"
+
+	err := os.WriteFile(statusFilePath, []byte(corruptedJSON), 0o600)
+	require.NoError(t, err)
+
+	// Read should recover the file
+	statusFile, err := manager.readStatusFile(statusFilePath)
+	require.NoError(t, err)
+	assert.NotNil(t, statusFile)
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status)
+	assert.Equal(t, 12345, statusFile.ProcessID)
+}
+
+func TestJSONRecovery_BackupOnFailure(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+	backupPath := statusFilePath + ".corrupted"
+
+	// Create completely broken JSON that can't be recovered
+	corruptedJSON := `{completely broken not json at all}`
+
+	err := os.WriteFile(statusFilePath, []byte(corruptedJSON), 0o600)
+	require.NoError(t, err)
+
+	// Read should fail
+	_, err = manager.readStatusFile(statusFilePath)
+	assert.Error(t, err)
+
+	// Verify backup file was created
+	_, err = os.Stat(backupPath)
+	assert.NoError(t, err, "backup file should exist")
+
+	// Verify backup has the corrupted content
+	backupContent, err := os.ReadFile(backupPath)
+	require.NoError(t, err)
+	assert.Equal(t, corruptedJSON, string(backupContent))
+}
+
+func TestJSONRecovery_MultipleExtraClosingBraces(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+
+	// Create JSON with multiple extra closing braces
+	corruptedJSON := `{
+  "status": "running",
+  "status_context": "test",
+  "created_at": "2026-01-28T15:53:18.33528-05:00",
+  "updated_at": "2026-01-29T16:53:22.2383-05:00",
+  "process_id": 12345
+}}}`
+
+	err := os.WriteFile(statusFilePath, []byte(corruptedJSON), 0o600)
+	require.NoError(t, err)
+
+	// Read should recover the file
+	statusFile, err := manager.readStatusFile(statusFilePath)
+	require.NoError(t, err)
+	assert.NotNil(t, statusFile)
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status)
+	assert.Equal(t, 12345, statusFile.ProcessID)
 }

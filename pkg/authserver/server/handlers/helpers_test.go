@@ -80,7 +80,7 @@ func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, codeVerifier str
 	return m.exchangeTokens, nil
 }
 
-func (m *mockIDPProvider) RefreshTokens(_ context.Context, _ string) (*upstream.Tokens, error) {
+func (m *mockIDPProvider) RefreshTokens(_ context.Context, _, _ string) (*upstream.Tokens, error) {
 	if m.refreshErr != nil {
 		return nil, m.refreshErr
 	}

@@ -231,6 +231,18 @@ type GitConfig struct {
 
 	// Path is the path to the registry file within the repository
 	Path string `yaml:"path,omitempty"`
+
+	// Auth contains optional authentication for private repositories
+	Auth *GitAuthConfig `yaml:"auth,omitempty"`
+}
+
+// GitAuthConfig defines authentication settings for Git repositories
+type GitAuthConfig struct {
+	// Username is the Git username for HTTP Basic authentication
+	Username string `yaml:"username,omitempty"`
+
+	// PasswordFile is the path to a file containing the Git password/token
+	PasswordFile string `yaml:"passwordFile,omitempty"`
 }
 
 // APIConfig defines API source configuration for ToolHive Registry APIs
@@ -495,7 +507,50 @@ func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {
 		return nil, fmt.Errorf("git branch, tag, and commit are mutually exclusive, please provide only one of them")
 	}
 
+	// Build auth config if specified
+	if git.Auth != nil {
+		authConfig, err := buildGitAuthConfig(git.Auth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build git auth configuration: %w", err)
+		}
+		serverGitConfig.Auth = authConfig
+	}
+
 	return &serverGitConfig, nil
+}
+
+// buildGitAuthConfig creates a GitAuthConfig from the CRD spec.
+// It validates that required fields are present and constructs the password file path.
+func buildGitAuthConfig(auth *mcpv1alpha1.GitAuthConfig) (*GitAuthConfig, error) {
+	if auth == nil {
+		return nil, nil
+	}
+
+	if auth.Username == "" {
+		return nil, fmt.Errorf("git auth username is required")
+	}
+
+	if auth.PasswordSecretRef.Name == "" {
+		return nil, fmt.Errorf("git auth password secret reference name is required")
+	}
+
+	if auth.PasswordSecretRef.Key == "" {
+		return nil, fmt.Errorf("git auth password secret reference key is required")
+	}
+
+	return &GitAuthConfig{
+		Username:     auth.Username,
+		PasswordFile: buildGitPasswordFilePath(&auth.PasswordSecretRef),
+	}, nil
+}
+
+// buildGitPasswordFilePath constructs the file path where a git password secret will be mounted.
+// The secretRef must have both Name and Key set (validated by buildGitAuthConfig).
+func buildGitPasswordFilePath(secretRef *corev1.SecretKeySelector) string {
+	if secretRef == nil {
+		return ""
+	}
+	return fmt.Sprintf("/secrets/%s/%s", secretRef.Name, secretRef.Key)
 }
 
 func buildAPISourceConfig(api *mcpv1alpha1.APISource) (*APIConfig, error) {

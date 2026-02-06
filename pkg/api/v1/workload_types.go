@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -14,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
-	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // workloadListResponse represents the response for listing workloads
@@ -335,7 +335,7 @@ func validateHeaderForwardConfig(config *headerForwardConfig) error {
 		}
 		// Validate value for CRLF injection and control characters per RFC 7230
 		if value != "" {
-			if err := validation.ValidateHTTPHeaderValue(value); err != nil {
+			if err := httpval.ValidateHeaderValue(value); err != nil {
 				return fmt.Errorf("invalid header value for %q: %w", name, err)
 			}
 		}
@@ -358,7 +358,7 @@ func validateHeaderName(name string) error {
 	}
 
 	// Validate header name format per RFC 7230
-	if err := validation.ValidateHTTPHeaderName(name); err != nil {
+	if err := httpval.ValidateHeaderName(name); err != nil {
 		return fmt.Errorf("invalid header name %q: %w", name, err)
 	}
 

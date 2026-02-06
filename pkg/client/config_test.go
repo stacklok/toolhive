@@ -26,6 +26,7 @@ import (
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
 const testValidYAML = `extensions: {}`
+const testValidTOML = ``
 
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
@@ -173,6 +174,40 @@ func createMockClientConfigs() []mcpClientConfig {
 			SettingsFile:         "config.yaml",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            YAML,
+		},
+		{
+			ClientType:           GeminiCli,
+			Description:          "Google Gemini CLI (Mock)",
+			RelPath:              []string{"mock_gemini"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           VSCodeServer,
+			Description:          "Microsoft's VS Code Server (Mock)",
+			RelPath:              []string{"mock_vscode_server"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/servers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           MistralVibe,
+			Description:          "Mistral Vibe IDE (Mock)",
+			RelPath:              []string{"mock_mistral_vibe"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeArray,
+		},
+		{
+			ClientType:           Codex,
+			Description:          "OpenAI Codex CLI (Mock)",
+			RelPath:              []string{"mock_codex"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeMap,
 		},
 	}
 }
@@ -361,6 +396,10 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Kiro),
 					string(Antigravity),
 					string(Zed),
+					string(GeminiCli),
+					string(VSCodeServer),
+					string(MistralVibe),
+					string(Codex),
 				},
 			},
 		}
@@ -453,9 +492,12 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity:
+			case LMStudio, Trae, Kiro, Antigravity, GeminiCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
+			case VSCodeServer:
+				assert.Contains(t, string(content), `"servers":`,
+					"VSCodeServer config should contain servers key")
 			case OpenCode:
 				assert.Contains(t, string(content), `"mcp":`,
 					"OpenCode config should contain mcp key")
@@ -470,6 +512,10 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
 				assert.NotNil(t, content, "Continue config should be readable")
+			case MistralVibe, Codex:
+				// TOML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "TOML config should be readable")
 			}
 		}
 	})
@@ -504,7 +550,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+				MistralVibe, Codex:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -525,9 +572,12 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 
 			// Choose the appropriate content based on the file extension
 			var content []byte
-			if cfg.Extension == YAML {
+			switch cfg.Extension {
+			case YAML:
 				content = []byte(testValidYAML)
-			} else {
+			case TOML:
+				content = []byte(testValidTOML)
+			case JSON:
 				content = []byte(testValidJSON)
 			}
 
@@ -769,4 +819,461 @@ func TestCreateClientConfig(t *testing.T) {
 			strings.Contains(err.Error(), "already exists")
 		assert.True(t, hasExpectedError, "Error should mention creation failure or file exists, got: %v", err.Error())
 	})
+}
+
+func TestCreateTOMLClientConfig(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(MistralVibe),
+				string(Codex),
+			},
+		},
+	}
+
+	t.Run("CreateTOMLArrayClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with array storage (MistralVibe)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           MistralVibe,
+				Description:          "Mistral Vibe IDE (Mock)",
+				RelPath:              []string{"mock_mistral_vibe"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeArray,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_mistral_vibe")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(MistralVibe)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateTOMLMapClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with map storage (Codex)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Codex,
+				Description:          "OpenAI Codex CLI (Mock)",
+				RelPath:              []string{"mock_codex"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeMap,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_codex")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(Codex)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+}
+
+func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	// Test that Gemini CLI uses different URL fields based on transport type
+	t.Run("GeminiCli_SSE_UsesUrlField", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+
+		// Create mock client config for Gemini CLI with MCPServersUrlLabelMap
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:                    GeminiCli,
+				Description:                   "Google Gemini CLI (Mock)",
+				RelPath:                       []string{"mock_gemini"},
+				SettingsFile:                  "settings.json",
+				MCPServersPathPrefix:          "/mcpServers",
+				Extension:                     JSON,
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeStdio:          "httpUrl",
+					types.TransportTypeSSE:            "url",
+					types.TransportTypeStreamableHTTP: "httpUrl",
+				},
+			},
+		}
+
+		testConfig := &config.Config{
+			Secrets: config.Secrets{ProviderType: "encrypted"},
+			Clients: config.Clients{RegisteredClients: []string{string(GeminiCli)}},
+		}
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create config file
+		configDir := filepath.Join(tempHome, "mock_gemini")
+		require.NoError(t, os.MkdirAll(configDir, 0755))
+		configPath := filepath.Join(configDir, "settings.json")
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"mcpServers": {}}`), 0644))
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		cf, err := manager.FindClientConfig(GeminiCli)
+		require.NoError(t, err)
+
+		// Upsert with SSE transport - should use "url" field
+		err = manager.Upsert(*cf, "test-server", "http://localhost:8080/sse", types.TransportTypeSSE.String())
+		require.NoError(t, err)
+
+		// Verify the config file uses "url" field (not "httpUrl")
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), `"url":`, "SSE transport should use 'url' field")
+		assert.NotContains(t, string(content), `"httpUrl":`, "SSE transport should NOT use 'httpUrl' field")
+	})
+
+	t.Run("GeminiCli_StreamableHTTP_UsesHttpUrlField", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+
+		// Create mock client config for Gemini CLI with MCPServersUrlLabelMap
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:                    GeminiCli,
+				Description:                   "Google Gemini CLI (Mock)",
+				RelPath:                       []string{"mock_gemini"},
+				SettingsFile:                  "settings.json",
+				MCPServersPathPrefix:          "/mcpServers",
+				Extension:                     JSON,
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeStdio:          "httpUrl",
+					types.TransportTypeSSE:            "url",
+					types.TransportTypeStreamableHTTP: "httpUrl",
+				},
+			},
+		}
+
+		testConfig := &config.Config{
+			Secrets: config.Secrets{ProviderType: "encrypted"},
+			Clients: config.Clients{RegisteredClients: []string{string(GeminiCli)}},
+		}
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create config file
+		configDir := filepath.Join(tempHome, "mock_gemini")
+		require.NoError(t, os.MkdirAll(configDir, 0755))
+		configPath := filepath.Join(configDir, "settings.json")
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"mcpServers": {}}`), 0644))
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		cf, err := manager.FindClientConfig(GeminiCli)
+		require.NoError(t, err)
+
+		// Upsert with Streamable HTTP transport - should use "httpUrl" field
+		err = manager.Upsert(*cf, "test-server", "http://localhost:8080/mcp", types.TransportTypeStreamableHTTP.String())
+		require.NoError(t, err)
+
+		// Verify the config file uses "httpUrl" field (not "url")
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), `"httpUrl":`, "Streamable HTTP transport should use 'httpUrl' field")
+		assert.NotContains(t, string(content), `"url":`, "Streamable HTTP transport should NOT use 'url' field")
+	})
+
+	t.Run("GeminiCli_UnknownTransport_FallsBackToDefaultUrlField", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+
+		// Create mock client config with limited URL label map (no entry for "unknown")
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:                    GeminiCli,
+				Description:                   "Google Gemini CLI (Mock)",
+				RelPath:                       []string{"mock_gemini"},
+				SettingsFile:                  "settings.json",
+				MCPServersPathPrefix:          "/mcpServers",
+				Extension:                     JSON,
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "url",
+				},
+			},
+		}
+
+		testConfig := &config.Config{
+			Secrets: config.Secrets{ProviderType: "encrypted"},
+			Clients: config.Clients{RegisteredClients: []string{string(GeminiCli)}},
+		}
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create config file
+		configDir := filepath.Join(tempHome, "mock_gemini")
+		require.NoError(t, os.MkdirAll(configDir, 0755))
+		configPath := filepath.Join(configDir, "settings.json")
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"mcpServers": {}}`), 0644))
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		cf, err := manager.FindClientConfig(GeminiCli)
+		require.NoError(t, err)
+
+		// Upsert with unknown transport - should fall back to default "url" field
+		err = manager.Upsert(*cf, "test-server", "http://localhost:8080/mcp", "unknown-transport")
+		require.NoError(t, err)
+
+		// Verify the config file uses "url" field (default fallback)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), `"url":`, "Unknown transport should fall back to default url field")
+	})
+
+	t.Run("RegularClient_UsesConsistentUrlField", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+
+		// Create mock client config for Windsurf (uses serverUrl for all transport types)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Windsurf,
+				Description:          "Windsurf IDE (Mock)",
+				RelPath:              []string{"mock_windsurf"},
+				SettingsFile:         "mcp_config.json",
+				MCPServersPathPrefix: "/mcpServers",
+				Extension:            JSON,
+				SupportedTransportTypesMap: map[types.TransportType]string{
+					types.TransportTypeStdio:          "http",
+					types.TransportTypeSSE:            "sse",
+					types.TransportTypeStreamableHTTP: "http",
+				},
+				IsTransportTypeFieldSupported: true,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeStdio:          "serverUrl",
+					types.TransportTypeSSE:            "serverUrl",
+					types.TransportTypeStreamableHTTP: "serverUrl",
+				},
+			},
+		}
+
+		testConfig := &config.Config{
+			Secrets: config.Secrets{ProviderType: "encrypted"},
+			Clients: config.Clients{RegisteredClients: []string{string(Windsurf)}},
+		}
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create config file
+		configDir := filepath.Join(tempHome, "mock_windsurf")
+		require.NoError(t, os.MkdirAll(configDir, 0755))
+		configPath := filepath.Join(configDir, "mcp_config.json")
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"mcpServers": {}}`), 0644))
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		cf, err := manager.FindClientConfig(Windsurf)
+		require.NoError(t, err)
+
+		// Upsert with SSE transport - should still use "serverUrl" field (fixed, not derived)
+		err = manager.Upsert(*cf, "test-server", "http://localhost:8080/sse", types.TransportTypeSSE.String())
+		require.NoError(t, err)
+
+		// Verify the config file uses "serverUrl" field regardless of transport type
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), `"serverUrl":`, "Regular client should use fixed serverUrl field")
+		assert.Contains(t, string(content), `"type":`, "Regular client with IsTransportTypeFieldSupported should have type field")
+	})
+}
+
+func TestBuildMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		url           string
+		transportType string
+		clientCfg     *mcpClientConfig
+		expectUrl     string
+		expectSrvUrl  string
+		expectHttpUrl string
+		expectType    string
+	}{
+		{
+			name:          "url field without type",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeSSE.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "url",
+				},
+			},
+			expectUrl:     "http://localhost:8080",
+			expectSrvUrl:  "",
+			expectHttpUrl: "",
+			expectType:    "",
+		},
+		{
+			name:          "serverUrl field without type",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeSSE.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "serverUrl",
+				},
+			},
+			expectUrl:     "",
+			expectSrvUrl:  "http://localhost:8080",
+			expectHttpUrl: "",
+			expectType:    "",
+		},
+		{
+			name:          "httpUrl field without type",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeStreamableHTTP.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeStreamableHTTP: "httpUrl",
+				},
+			},
+			expectUrl:     "",
+			expectSrvUrl:  "",
+			expectHttpUrl: "http://localhost:8080",
+			expectType:    "",
+		},
+		{
+			name:          "url field with type support",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeSSE.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: true,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "url",
+				},
+				SupportedTransportTypesMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "sse",
+				},
+			},
+			expectUrl:     "http://localhost:8080",
+			expectSrvUrl:  "",
+			expectHttpUrl: "",
+			expectType:    "sse",
+		},
+		{
+			name:          "MCPServersUrlLabelMap uses transport map for URL field",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeStreamableHTTP.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeStreamableHTTP: "httpUrl",
+				},
+			},
+			expectUrl:     "",
+			expectSrvUrl:  "",
+			expectHttpUrl: "http://localhost:8080",
+			expectType:    "",
+		},
+		{
+			name:          "Unknown transport falls back to default url field",
+			url:           "http://localhost:8080",
+			transportType: "unknown-transport",
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE: "httpUrl",
+				},
+			},
+			expectUrl:     "http://localhost:8080", // uses default "url" fallback
+			expectSrvUrl:  "",
+			expectHttpUrl: "",
+			expectType:    "",
+		},
+		{
+			name:          "MCPServersUrlLabelMap with SSE uses url field",
+			url:           "http://localhost:8080",
+			transportType: types.TransportTypeSSE.String(),
+			clientCfg: &mcpClientConfig{
+				IsTransportTypeFieldSupported: false,
+				MCPServersUrlLabelMap: map[types.TransportType]string{
+					types.TransportTypeSSE:            "url",
+					types.TransportTypeStreamableHTTP: "httpUrl",
+				},
+			},
+			expectUrl:     "http://localhost:8080",
+			expectSrvUrl:  "",
+			expectHttpUrl: "",
+			expectType:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := buildMCPServer(tt.url, tt.transportType, tt.clientCfg)
+			assert.Equal(t, tt.expectUrl, server.Url, "Url field mismatch")
+			assert.Equal(t, tt.expectSrvUrl, server.ServerUrl, "ServerUrl field mismatch")
+			assert.Equal(t, tt.expectHttpUrl, server.HttpUrl, "HttpUrl field mismatch")
+			assert.Equal(t, tt.expectType, server.Type, "Type field mismatch")
+		})
+	}
 }

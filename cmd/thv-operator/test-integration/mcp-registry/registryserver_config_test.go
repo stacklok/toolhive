@@ -485,6 +485,192 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 		})
 	})
 
+	Describe("Git Authentication", func() {
+		It("should mount git auth secret for private repository", func() {
+			By("creating a secret for Git authentication")
+			gitSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "git-auth-secret",
+					Namespace: testNamespace,
+				},
+				StringData: map[string]string{
+					"token": "ghp_test_authentication_token",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitSecret)).Should(Succeed())
+
+			By("creating MCPRegistry with Git source and authentication")
+			registry := registryHelper.NewRegistryBuilder("git-auth-test").
+				WithGitSource(
+					"https://github.com/example/private-repo.git",
+					"main",
+					"registry.json",
+				).
+				WithGitAuth("git", "git-auth-secret", "token").
+				WithSyncPolicy("1h").
+				Create(registryHelper)
+
+			By("waiting for deployment to be created")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Namespace: testNamespace,
+				}, deployment)
+			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+			By("verifying git auth volume is mounted")
+			verifyGitAuthVolume(deployment, "git-auth-secret", "token")
+
+			By("verifying registry server config contains auth settings")
+			configMapName := fmt.Sprintf("%s-registry-server-config", registry.Name)
+			serverConfig := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      configMapName,
+					Namespace: testNamespace,
+				}, serverConfig)
+			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
+
+			configYAML := serverConfig.Data["config.yaml"]
+			Expect(configYAML).To(ContainSubstring("auth:"))
+			Expect(configYAML).To(ContainSubstring("username: git"))
+			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-secret/token"))
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitSecret)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry("git-auth-test")
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("should handle multiple git registries with different auth secrets", func() {
+			By("creating secrets for Git authentication")
+			gitSecret1 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "git-auth-1",
+					Namespace: testNamespace,
+				},
+				StringData: map[string]string{
+					"password": "secret1",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitSecret1)).Should(Succeed())
+
+			gitSecret2 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "git-auth-2",
+					Namespace: testNamespace,
+				},
+				StringData: map[string]string{
+					"token": "secret2",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitSecret2)).Should(Succeed())
+
+			By("creating MCPRegistry with multiple Git sources with different auth")
+			registry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-git-auth-test",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "private-repo-1",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							Git: &mcpv1alpha1.GitSource{
+								Repository: "https://github.com/org/repo1.git",
+								Branch:     "main",
+								Path:       "registry.json",
+								Auth: &mcpv1alpha1.GitAuthConfig{
+									Username: "user1",
+									PasswordSecretRef: corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "git-auth-1",
+										},
+										Key: "password",
+									},
+								},
+							},
+							SyncPolicy: &mcpv1alpha1.SyncPolicy{
+								Interval: "30m",
+							},
+						},
+						{
+							Name:   "private-repo-2",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							Git: &mcpv1alpha1.GitSource{
+								Repository: "https://github.com/org/repo2.git",
+								Branch:     "develop",
+								Path:       "servers.json",
+								Auth: &mcpv1alpha1.GitAuthConfig{
+									Username: "user2",
+									PasswordSecretRef: corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "git-auth-2",
+										},
+										Key: "token",
+									},
+								},
+							},
+							SyncPolicy: &mcpv1alpha1.SyncPolicy{
+								Interval: "1h",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			By("waiting for deployment to be created")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Namespace: testNamespace,
+				}, deployment)
+			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+			By("verifying both git auth volumes are mounted")
+			verifyGitAuthVolume(deployment, "git-auth-1", "password")
+			verifyGitAuthVolume(deployment, "git-auth-2", "token")
+
+			By("verifying registry server config contains both auth settings")
+			configMapName := fmt.Sprintf("%s-registry-server-config", registry.Name)
+			serverConfig := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      configMapName,
+					Namespace: testNamespace,
+				}, serverConfig)
+			}, QuickTimeout, DefaultPollingInterval).Should(Succeed())
+
+			configYAML := serverConfig.Data["config.yaml"]
+
+			// Verify first registry auth
+			Expect(configYAML).To(ContainSubstring("name: private-repo-1"))
+			Expect(configYAML).To(ContainSubstring("username: user1"))
+			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-1/password"))
+
+			// Verify second registry auth
+			Expect(configYAML).To(ContainSubstring("name: private-repo-2"))
+			Expect(configYAML).To(ContainSubstring("username: user2"))
+			Expect(configYAML).To(ContainSubstring("passwordFile: /secrets/git-auth-2/token"))
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitSecret1)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitSecret2)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry("multi-git-auth-test")
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+	})
+
 	Describe("PodTemplateSpec Customization", func() {
 		It("should apply custom service account from PodTemplateSpec", func() {
 			By("creating a ConfigMap source")
@@ -873,4 +1059,45 @@ func (h *serverConfigTestHelpers) verifyRegistryFailedWithInvalidPodTemplate(reg
 			strings.Contains(updatedRegistry.Status.Message, "Invalid PodTemplateSpec")
 	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
 		"MCPRegistry should be in Failed phase with Invalid PodTemplateSpec message")
+}
+
+// verifyGitAuthVolume verifies the deployment has the git auth secret volume and mount
+func verifyGitAuthVolume(deployment *appsv1.Deployment, secretName, secretKey string) {
+	expectedVolumeName := fmt.Sprintf("git-auth-%s", secretName)
+	expectedMountPath := fmt.Sprintf("/secrets/%s", secretName)
+
+	// Check volume exists
+	volumeFound := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == expectedVolumeName && volume.Secret != nil {
+			Expect(volume.Secret.SecretName).To(Equal(secretName),
+				"Git auth volume should reference the correct secret")
+			Expect(volume.Secret.Items).To(HaveLen(1),
+				"Git auth volume should have one item")
+			Expect(volume.Secret.Items[0].Key).To(Equal(secretKey),
+				"Git auth volume should use the correct secret key")
+			Expect(volume.Secret.Items[0].Path).To(Equal(secretKey),
+				"Git auth volume should map to the correct path")
+			volumeFound = true
+			break
+		}
+	}
+	Expect(volumeFound).To(BeTrue(),
+		fmt.Sprintf("Deployment should have a git auth volume named %s", expectedVolumeName))
+
+	// Check mount exists
+	container := deployment.Spec.Template.Spec.Containers[0]
+	mountFound := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == expectedVolumeName {
+			Expect(mount.MountPath).To(Equal(expectedMountPath),
+				"Git auth mount should be at the expected path")
+			Expect(mount.ReadOnly).To(BeTrue(),
+				"Git auth mount should be read-only")
+			mountFound = true
+			break
+		}
+	}
+	Expect(mountFound).To(BeTrue(),
+		fmt.Sprintf("Deployment container should have a mount for %s", expectedVolumeName))
 }

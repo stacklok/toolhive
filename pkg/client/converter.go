@@ -5,7 +5,6 @@ package client
 
 import (
 	"fmt"
-	"strings"
 )
 
 // YAMLConverter defines an interface for converting MCPServer data to different YAML config formats
@@ -26,15 +25,12 @@ type GenericYAMLConverter struct {
 
 // NewGenericYAMLConverter creates a converter from mcpClientConfig
 func NewGenericYAMLConverter(cfg *mcpClientConfig) *GenericYAMLConverter {
-	// Extract the servers path from MCPServersPathPrefix (remove leading "/")
-	serversPath := strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
-
 	return &GenericYAMLConverter{
 		storageType:     cfg.YAMLStorageType,
-		serversPath:     serversPath,
+		serversPath:     extractServersKeyFromConfig(cfg),
 		identifierField: cfg.YAMLIdentifierField,
 		defaults:        cfg.YAMLDefaults,
-		urlLabel:        cfg.MCPServersUrlLabel,
+		urlLabel:        extractURLLabelFromConfig(cfg),
 	}
 }
 
@@ -45,18 +41,14 @@ func (g *GenericYAMLConverter) ConvertFromMCPServer(serverName string, server MC
 	// Add name field
 	result["name"] = serverName
 
-	// Handle URL field - use whichever MCPServer field has a value
-	url := server.Url
-	if server.ServerUrl != "" {
-		url = server.ServerUrl
-	}
-
-	if url != "" {
+	// Handle URL field - extract from whichever MCPServer field has a value
+	// and use the configured URL label for the output key.
+	if url := extractURLFromMCPServer(server); url != "" {
 		// Use the configured URL label (e.g., "uri" for Goose, "url" for Continue)
 		if g.urlLabel != "" {
 			result[g.urlLabel] = url
 		} else {
-			result["url"] = url // Default fallback
+			result[defaultURLFieldName] = url // Default fallback
 		}
 	}
 

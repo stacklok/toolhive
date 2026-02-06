@@ -110,8 +110,12 @@ spec:
                             type: array
                         type: object
                       excludeAllTools:
-                        description: ExcludeAllTools excludes all tools from aggregation
-                          when true.
+                        description: |-
+                          ExcludeAllTools hides all backend tools from MCP clients when true.
+                          Hidden tools are NOT advertised in tools/list responses, but they ARE
+                          available in the routing table for composite tools to use.
+                          This enables the use case where you want to hide raw backend tools from
+                          direct client access while exposing curated composite tool workflows.
                         type: boolean
                       tools:
                         description: Tools defines per-workload tool filtering and
@@ -121,12 +125,20 @@ spec:
                             overrides for a specific workload.
                           properties:
                             excludeAll:
-                              description: ExcludeAll excludes all tools from this
-                                workload when true.
+                              description: |-
+                                ExcludeAll hides all tools from this workload from MCP clients when true.
+                                Hidden tools are NOT advertised in tools/list responses, but they ARE
+                                available in the routing table for composite tools to use.
+                                This enables the use case where you want to hide raw backend tools from
+                                direct client access while exposing curated composite tool workflows.
                               type: boolean
                             filter:
                               description: |-
-                                Filter is an inline list of tool names to allow (allow list).
+                                Filter is an allow-list of tool names to advertise to MCP clients.
+                                Tools NOT in this list are hidden from clients (not in tools/list response)
+                                but remain available in the routing table for composite tools to use.
+                                This enables selective exposure of backend tools while allowing composite
+                                workflows to orchestrate all backend capabilities.
                                 Only used if ToolConfigRef is not specified.
                               items:
                                 type: string
@@ -144,7 +156,9 @@ spec:
                                     type: string
                                 type: object
                               description: |-
-                                Overrides is an inline map of tool overrides.
+                                Overrides is an inline map of tool overrides for renaming and description changes.
+                                Overrides are applied to tools before conflict resolution and affect both
+                                advertising and routing (the overridden name is used everywhere).
                                 Only used if ToolConfigRef is not specified.
                               type: object
                             toolConfigRef:
@@ -619,20 +633,33 @@ spec:
                                 type: boolean
                               failureThreshold:
                                 default: 5
-                                description: FailureThreshold is the number of failures
-                                  before opening the circuit.
+                                description: |-
+                                  FailureThreshold is the number of failures before opening the circuit.
+                                  Must be >= 1.
+                                minimum: 1
                                 type: integer
                               timeout:
                                 default: 60s
-                                description: Timeout is the duration to wait before
-                                  attempting to close the circuit.
+                                description: |-
+                                  Timeout is the duration to wait before attempting to close the circuit.
+                                  Must be >= 1s to prevent thrashing.
                                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                                 type: string
+                                x-kubernetes-validations:
+                                - message: timeout must be >= 1s
+                                  rule: self == '' || duration(self) >= duration('1s')
                             type: object
                           healthCheckInterval:
                             default: 30s
                             description: HealthCheckInterval is the interval between
                               health checks.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          healthCheckTimeout:
+                            default: 10s
+                            description: |-
+                              HealthCheckTimeout is the maximum duration for a single health check operation.
+                              Should be less than HealthCheckInterval to prevent checks from queuing up.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           partialFailureMode:
@@ -1425,6 +1452,26 @@ spec:
                     authType:
                       description: AuthType is the type of authentication configured
                       type: string
+                    circuitBreakerState:
+                      description: |-
+                        CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                        Empty when circuit breaker is disabled or not configured.
+                      enum:
+                      - closed
+                      - open
+                      - half-open
+                      type: string
+                    circuitLastChanged:
+                      description: |-
+                        CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                        Empty when circuit breaker is disabled or has never changed state.
+                      format: date-time
+                      type: string
+                    consecutiveFailures:
+                      description: |-
+                        ConsecutiveFailures is the current count of consecutive health check failures.
+                        Resets to 0 when the backend becomes healthy again.
+                      type: integer
                     lastHealthCheck:
                       description: LastHealthCheck is the timestamp of the last health
                         check

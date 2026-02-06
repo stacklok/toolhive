@@ -711,7 +711,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token")
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
 		require.NoError(t, err)
 
 		// Verify request parameters
@@ -756,7 +756,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.RefreshTokens(ctx, "expired-refresh-token")
+		_, err = provider.RefreshTokens(ctx, "expired-refresh-token", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid_grant")
 	})
@@ -780,7 +780,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.RefreshTokens(ctx, "")
+		_, err = provider.RefreshTokens(ctx, "", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "refresh token is required")
 	})
@@ -808,7 +808,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		_, err = provider.RefreshTokens(ctx, "refresh-token")
+		_, err = provider.RefreshTokens(ctx, "refresh-token", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
 	})

@@ -305,7 +305,16 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	return nil
 }
 
-// AggregationConfig defines tool aggregation and conflict resolution strategies.
+// AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
+//
+// Tool Visibility vs Routing:
+//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
+//     advertised to MCP clients (visible in tools/list responses).
+//   - ALL backend tools remain available in the internal routing table, allowing
+//     composite tools to call hidden backend tools.
+//   - This enables curated experiences where raw backend tools are hidden from
+//     MCP clients but accessible through composite tool workflows.
+//
 // +kubebuilder:object:generate=true
 // +gendoc
 type AggregationConfig struct {
@@ -326,7 +335,11 @@ type AggregationConfig struct {
 	// +optional
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
 
-	// ExcludeAllTools excludes all tools from aggregation when true.
+	// ExcludeAllTools hides all backend tools from MCP clients when true.
+	// Hidden tools are NOT advertised in tools/list responses, but they ARE
+	// available in the routing table for composite tools to use.
+	// This enables the use case where you want to hide raw backend tools from
+	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
 }
@@ -360,17 +373,27 @@ type WorkloadToolConfig struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty" yaml:"toolConfigRef,omitempty"`
 
-	// Filter is an inline list of tool names to allow (allow list).
+	// Filter is an allow-list of tool names to advertise to MCP clients.
+	// Tools NOT in this list are hidden from clients (not in tools/list response)
+	// but remain available in the routing table for composite tools to use.
+	// This enables selective exposure of backend tools while allowing composite
+	// workflows to orchestrate all backend capabilities.
 	// Only used if ToolConfigRef is not specified.
 	// +optional
 	Filter []string `json:"filter,omitempty" yaml:"filter,omitempty"`
 
-	// Overrides is an inline map of tool overrides.
+	// Overrides is an inline map of tool overrides for renaming and description changes.
+	// Overrides are applied to tools before conflict resolution and affect both
+	// advertising and routing (the overridden name is used everywhere).
 	// Only used if ToolConfigRef is not specified.
 	// +optional
 	Overrides map[string]*ToolOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
 
-	// ExcludeAll excludes all tools from this workload when true.
+	// ExcludeAll hides all tools from this workload from MCP clients when true.
+	// Hidden tools are NOT advertised in tools/list responses, but they ARE
+	// available in the routing table for composite tools to use.
+	// This enables the use case where you want to hide raw backend tools from
+	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAll bool `json:"excludeAll,omitempty" yaml:"excludeAll,omitempty"`
 }
@@ -447,6 +470,12 @@ type FailureHandlingConfig struct {
 	// +optional
 	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty" yaml:"unhealthyThreshold,omitempty"`
 
+	// HealthCheckTimeout is the maximum duration for a single health check operation.
+	// Should be less than HealthCheckInterval to prevent checks from queuing up.
+	// +kubebuilder:default="10s"
+	// +optional
+	HealthCheckTimeout Duration `json:"healthCheckTimeout,omitempty" yaml:"healthCheckTimeout,omitempty"`
+
 	// StatusReportingInterval is the interval for reporting status updates to Kubernetes.
 	// This controls how often the vMCP runtime reports backend health and phase changes.
 	// Lower values provide faster status updates but increase API server load.
@@ -477,12 +506,16 @@ type CircuitBreakerConfig struct {
 	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// FailureThreshold is the number of failures before opening the circuit.
+	// Must be >= 1.
 	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
 	// +optional
 	FailureThreshold int `json:"failureThreshold,omitempty" yaml:"failureThreshold,omitempty"`
 
 	// Timeout is the duration to wait before attempting to close the circuit.
+	// Must be >= 1s to prevent thrashing.
 	// +kubebuilder:default="60s"
+	// +kubebuilder:validation:XValidation:rule="self == '' || duration(self) >= duration('1s')",message="timeout must be >= 1s"
 	// +optional
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }

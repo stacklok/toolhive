@@ -16,7 +16,7 @@ import (
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -80,14 +80,53 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 
 // GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
 // This method allows for dependency injection of environment variable access for testing.
+//
+// Precedence order:
+//  1. Environment variable (TOOLHIVE_SECRETS_PROVIDER) - takes highest precedence
+//  2. Config file (requires SetupCompleted to be true)
+//
+// Special handling when SetupCompleted is false:
+//   - Only the "environment" provider can be set via env var when SetupCompleted is false
+//   - Other providers (encrypted, 1password) require setup and will return ErrSecretsNotSetup
+//   - This prevents confusing errors later when trying to create providers that need setup
+//
+// Why environment provider bypasses SetupCompleted:
+//   - In Kubernetes environments, pods don't have config files set up
+//   - The operator sets TOOLHIVE_SECRETS_PROVIDER=environment via env vars
+//   - The environment provider doesn't require "setup" - it reads directly from env vars
+//   - This allows the operator to work without requiring users to run 'thv secret setup'
+//
+// For CLI users:
+//   - If they set TOOLHIVE_SECRETS_PROVIDER=environment, it works without setup
+//   - If they set TOOLHIVE_SECRETS_PROVIDER=encrypted/1password without setup, it returns an error
+//   - This prevents confusing errors when providers fail to initialize later
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
-	// First check the environment variable - this allows Kubernetes deployments
+	// First check the environment variable (takes precedence) - this allows Kubernetes deployments
 	// to override the secrets provider without requiring local setup
-	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
-		return validateProviderType(envVar)
+	envVar := envReader.Getenv(secrets.ProviderEnvVar)
+	if envVar != "" {
+		providerType, err := validateProviderType(envVar)
+		if err != nil {
+			return "", err
+		}
+
+		// Special case: Only allow "environment" provider when SetupCompleted is false
+		// Other providers (encrypted, 1password) require setup and will fail later when
+		// trying to create them (keyring, password, 1Password CLI, etc.)
+		if !s.SetupCompleted && providerType != secrets.EnvironmentType {
+			return "", fmt.Errorf(
+				"provider %q requires setup to be completed. "+
+					"Only 'environment' provider can be used without setup. "+
+					"Please run 'thv secret setup' or use TOOLHIVE_SECRETS_PROVIDER=environment",
+				providerType,
+			)
+		}
+
+		return providerType, nil
 	}
 
-	// Check if secrets setup has been completed (only for config file fallback)
+	// Check if secrets setup has been completed (required for config file-based provider)
+	// Only checked when environment variable is not set
 	if !s.SetupCompleted {
 		return "", secrets.ErrSecretsNotSetup
 	}

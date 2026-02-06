@@ -445,9 +445,9 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 
 	// This test verifies that ExcludeAll only affects the advertised tools list,
 	// NOT the routing table. This is important because composite tools need to
-	// route to backend tools that may be excluded from direct LLM access.
+	// route to backend tools that may be excluded from direct client access.
 	//
-	// Use case: A vMCP server may want to hide raw backend tools from the LLM
+	// Use case: A vMCP server may want to hide raw backend tools from MCP clients
 	// (using ExcludeAll) while still allowing curated composite tool workflows
 	// to use those backend tools internally.
 
@@ -487,8 +487,8 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 		require.NoError(t, err)
 		assert.NotNil(t, result)
 
-		// Advertised tools should be empty (excluded from LLM)
-		assert.Empty(t, result.Tools, "ExcludeAll should hide tools from LLM")
+		// Advertised tools should be empty (excluded from MCP clients)
+		assert.Empty(t, result.Tools, "ExcludeAll should hide tools from MCP clients")
 
 		// BUT the routing table should still contain the tools (for composite tools)
 		assert.NotNil(t, result.RoutingTable)
@@ -535,7 +535,7 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 		assert.NotNil(t, result)
 
 		// Advertised tools should be empty
-		assert.Empty(t, result.Tools, "Global ExcludeAllTools should hide all tools from LLM")
+		assert.Empty(t, result.Tools, "Global ExcludeAllTools should hide all tools from MCP clients")
 
 		// BUT routing table should still contain tools for composite tools
 		assert.NotNil(t, result.RoutingTable)
@@ -543,5 +543,225 @@ func TestDefaultAggregator_ExcludeAllPreservesRoutingTableForCompositeTools(t *t
 			"Routing table should contain globally excluded tools for composite tool use")
 		assert.Contains(t, result.RoutingTable.Tools, "list_channels",
 			"Routing table should contain globally excluded tools for composite tool use")
+	})
+}
+
+// TestDefaultAggregator_FilterRemovesToolsFromRoutingTable demonstrates the bug where
+// Filter removes tools from BOTH the advertised list AND the routing table, unlike
+// ExcludeAll which only removes from the advertised list.
+//
+// This is a bug - Filter should behave like ExcludeAll and preserve tools in the
+// routing table so composite tools can still use them.
+// See: https://github.com/stacklok/toolhive/issues/3636
+func TestDefaultAggregator_FilterPreservesRoutingTableForCompositeTools(t *testing.T) {
+	t.Parallel()
+
+	t.Run("filter hides tools from MCP clients but preserves routing table for composite tools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("arxiv", withBackendName("ArXiv")),
+		}
+
+		// Backend has multiple tools
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("search_papers", "arxiv"),
+				newTestTool("download_paper", "arxiv"),
+				newTestTool("read_paper", "arxiv"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Configure Filter to only expose "research_topic" (a composite tool name)
+		// This simulates the user's use case from issue #3636
+		aggregationConfig := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{
+				{
+					Workload: "arxiv",
+					// Filter to only show a composite tool (not the backend tools)
+					// Note: "research_topic" wouldn't match any backend tool
+					Filter: []string{"research_topic"},
+				},
+			},
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Advertised tools should be empty (filtered out) - Filter hides from MCP clients
+		assert.Empty(t, result.Tools, "Filter should hide tools from MCP clients")
+
+		// CORRECT: The routing table DOES contain the tools for composite tool use
+		// (Fix for issue #3636 - Filter now behaves like ExcludeAll for routing)
+		assert.NotNil(t, result.RoutingTable)
+
+		// Filtered tools ARE in the routing table, so composite tools CAN use them
+		assert.Contains(t, result.RoutingTable.Tools, "search_papers",
+			"Filter preserves tools in routing table for composite tools")
+		assert.Contains(t, result.RoutingTable.Tools, "download_paper",
+			"Filter preserves tools in routing table for composite tools")
+		assert.Contains(t, result.RoutingTable.Tools, "read_paper",
+			"Filter preserves tools in routing table for composite tools")
+
+		// Routing table has all tools available for composite workflows
+		assert.Len(t, result.RoutingTable.Tools, 3,
+			"Filter keeps all tools in routing table for composite tools")
+	})
+
+	t.Run("contrast with excludeAll which preserves routing table", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("arxiv", withBackendName("ArXiv")),
+		}
+
+		// Same backend with same tools
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("search_papers", "arxiv"),
+				newTestTool("download_paper", "arxiv"),
+				newTestTool("read_paper", "arxiv"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Use ExcludeAll instead of Filter - this is the workaround
+		aggregationConfig := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{
+				{
+					Workload:   "arxiv",
+					ExcludeAll: true,
+				},
+			},
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Advertised tools should be empty (excluded from MCP clients)
+		assert.Empty(t, result.Tools, "ExcludeAll should hide tools from MCP clients")
+
+		// CORRECT: The routing table DOES contain the tools for composite tool use
+		assert.NotNil(t, result.RoutingTable)
+		assert.Contains(t, result.RoutingTable.Tools, "search_papers",
+			"ExcludeAll preserves tools in routing table for composite tools")
+		assert.Contains(t, result.RoutingTable.Tools, "download_paper",
+			"ExcludeAll preserves tools in routing table for composite tools")
+		assert.Contains(t, result.RoutingTable.Tools, "read_paper",
+			"ExcludeAll preserves tools in routing table for composite tools")
+
+		// Routing table has all tools available for composite workflows
+		assert.Len(t, result.RoutingTable.Tools, 3,
+			"ExcludeAll keeps all tools in routing table for composite tools")
+	})
+
+	t.Run("filter with partial matches advertises only matching tools", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("arxiv", withBackendName("ArXiv")),
+		}
+
+		// Backend has multiple tools
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("search_papers", "arxiv"),
+				newTestTool("download_paper", "arxiv"),
+				newTestTool("read_paper", "arxiv"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Filter to only expose search_papers (partial match)
+		aggregationConfig := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{
+				{
+					Workload: "arxiv",
+					Filter:   []string{"search_papers"},
+				},
+			},
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Only search_papers should be advertised
+		assert.Len(t, result.Tools, 1, "Only matching tool should be advertised")
+		assert.Equal(t, "search_papers", result.Tools[0].Name)
+
+		// ALL tools should still be in routing table for composite tools
+		assert.NotNil(t, result.RoutingTable)
+		assert.Contains(t, result.RoutingTable.Tools, "search_papers")
+		assert.Contains(t, result.RoutingTable.Tools, "download_paper")
+		assert.Contains(t, result.RoutingTable.Tools, "read_paper")
+		assert.Len(t, result.RoutingTable.Tools, 3,
+			"All tools should be in routing table regardless of filter")
+	})
+
+	t.Run("global excludeAllTools takes precedence over per-workload filter", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			newTestBackend("arxiv", withBackendName("ArXiv")),
+		}
+
+		caps := newTestCapabilityList(
+			withTools(
+				newTestTool("search_papers", "arxiv"),
+				newTestTool("download_paper", "arxiv"),
+			),
+		)
+
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps, nil)
+
+		// Global ExcludeAllTools + per-workload Filter
+		// ExcludeAllTools should take precedence
+		aggregationConfig := &config.AggregationConfig{
+			ExcludeAllTools: true, // Global exclusion
+			Tools: []*config.WorkloadToolConfig{
+				{
+					Workload: "arxiv",
+					Filter:   []string{"search_papers"}, // Would allow search_papers
+				},
+			},
+		}
+
+		agg := NewDefaultAggregator(mockClient, nil, aggregationConfig, nil)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// NO tools should be advertised because global ExcludeAllTools takes precedence
+		assert.Empty(t, result.Tools,
+			"Global ExcludeAllTools should take precedence over per-workload Filter")
+
+		// ALL tools should still be in routing table
+		assert.Len(t, result.RoutingTable.Tools, 2)
 	})
 }

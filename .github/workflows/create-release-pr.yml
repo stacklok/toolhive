@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
@@ -42,9 +42,9 @@ jobs:
 
       - name: Create Release PR
         id: release
-        uses: stacklok/releaseo@add86e3cc417a4442ecef272dc79b46c2eb63246 # v0.0.2
+        uses: stacklok/releaseo@b7022753f832cac36a9e07769a679a7c1ca72fe2 # v0.0.3
         with:
-          releaseo_version: v0.0.1
+          releaseo_version: v0.0.3
           bump_type: ${{ inputs.bump_type }}
           token: ${{ secrets.RELEASE_TOKEN }}
           version_files: |
@@ -52,6 +52,7 @@ jobs:
               path: version
             - file: deploy/charts/operator-crds/Chart.yaml
               path: appVersion
+              prefix: v
             - file: deploy/charts/operator/Chart.yaml
               path: version
             - file: deploy/charts/operator/Chart.yaml

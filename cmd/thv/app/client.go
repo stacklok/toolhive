@@ -58,16 +58,20 @@ Valid clients:
   - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
+  - codex: OpenAI Codex CLI
   - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
+  - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
+  - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
+  - vscode-server: VS Code Server (remote development)
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs
   - zed: Zed editor`,
@@ -89,16 +93,20 @@ Valid clients:
   - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
+  - codex: OpenAI Codex CLI
   - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
+  - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
+  - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
+  - vscode-server: VS Code Server (remote development)
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs
   - zed: Zed editor`,
@@ -207,15 +215,15 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "vscode-server", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro", "antigravity", "zed":
+		"continue", "opencode", "kiro", "antigravity", "zed", "gemini-cli", "mistral-vibe", "codex":
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, vscode-server, "+
 				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro, antigravity, zed)",
+				"goose, trae, continue, opencode, kiro, antigravity, zed, gemini-cli, mistral-vibe, codex)",
 			clientType)
 	}
 
@@ -227,15 +235,15 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "vscode-server", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro", "antigravity", "zed":
+		"continue", "opencode", "kiro", "antigravity", "zed", "gemini-cli", "mistral-vibe", "codex":
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, vscode-server, "+
 				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro, antigravity, zed)",
+				"goose, trae, continue, opencode, kiro, antigravity, zed, gemini-cli, mistral-vibe, codex)",
 			clientType)
 	}
 

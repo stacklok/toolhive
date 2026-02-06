@@ -26,16 +26,20 @@ Valid clients:
   - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
+  - codex: OpenAI Codex CLI
   - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
+  - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
+  - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
+  - vscode-server: VS Code Server (remote development)
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs
   - zed: Zed editor

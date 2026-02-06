@@ -200,24 +200,32 @@ type RemoteServerMetadata struct {
 // Metadata represents metadata about an MCP server
 type Metadata struct {
 	// Stars represents the popularity rating or number of stars for the server
-	Stars int `json:"stars" yaml:"stars"`
+	Stars int `json:"stars,omitempty" yaml:"stars,omitempty"`
 	// Pulls indicates how many times the server image has been downloaded
-	Pulls int `json:"pulls" yaml:"pulls"`
+	Pulls int `json:"pulls,omitempty" yaml:"pulls,omitempty"`
 	// LastUpdated is the timestamp when the server was last updated, in RFC3339 format
-	LastUpdated string `json:"last_updated" yaml:"last_updated"`
-	// KubernetesKind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)
-	// This field is populated when the MCP server is running in a Kubernetes cluster
-	KubernetesKind string `json:"kubernetes_kind,omitempty" yaml:"kubernetes_kind,omitempty"`
-	// KubernetesNamespace is the Kubernetes namespace where the resource is deployed
-	KubernetesNamespace string `json:"kubernetes_namespace,omitempty" yaml:"kubernetes_namespace,omitempty"`
-	// KubernetesName is the Kubernetes resource name
-	KubernetesName string `json:"kubernetes_name,omitempty" yaml:"kubernetes_name,omitempty"`
-	// KubernetesUID is the Kubernetes resource UID
-	KubernetesUID string `json:"kubernetes_uid,omitempty" yaml:"kubernetes_uid,omitempty"`
-	// KubernetesImage is the container image used by the Kubernetes workload (applicable to MCPServer)
-	KubernetesImage string `json:"kubernetes_image,omitempty" yaml:"kubernetes_image,omitempty"`
-	// KubernetesTransport is the transport type configured for the Kubernetes workload (applicable to MCPServer)
-	KubernetesTransport string `json:"kubernetes_transport,omitempty" yaml:"kubernetes_transport,omitempty"`
+	LastUpdated string `json:"last_updated,omitempty" yaml:"last_updated,omitempty"`
+	// Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster
+	// This is populated by the ToolHive Registry Server when serving Kubernetes-deployed servers
+	Kubernetes *KubernetesMetadata `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
+}
+
+// KubernetesMetadata contains Kubernetes-specific metadata for MCP servers
+// deployed in Kubernetes clusters. This is populated by the ToolHive Registry Server
+// when serving servers from Kubernetes resources.
+type KubernetesMetadata struct {
+	// Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
+	// Namespace is the Kubernetes namespace where the resource is deployed
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	// Name is the Kubernetes resource name
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// UID is the Kubernetes resource UID
+	UID string `json:"uid,omitempty" yaml:"uid,omitempty"`
+	// Image is the container image used by the Kubernetes workload (applicable to MCPServer)
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// Transport is the transport type configured for the Kubernetes workload (applicable to MCPServer)
+	Transport string `json:"transport,omitempty" yaml:"transport,omitempty"`
 }
 
 // ParsedTime returns the LastUpdated field as a time.Time

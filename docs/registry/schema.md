@@ -99,12 +99,13 @@ These fields are available for all MCP servers (both container-based and remote)
   - `stars`: Number of repository stars
   - `pulls`: Number of container image pulls or usage count
   - `last_updated`: Timestamp in RFC3339 format
-  - `kubernetes_kind`: Kubernetes resource kind (e.g., "MCPServer", "VirtualMCPServer", "MCPRemoteProxy") - only present when served from ToolHive Registry Server
-  - `kubernetes_namespace`: Kubernetes namespace where the resource is deployed
-  - `kubernetes_name`: Kubernetes resource name
-  - `kubernetes_uid`: Kubernetes resource UID
-  - `kubernetes_image`: Container image used by the Kubernetes workload (applicable to MCPServer)
-  - `kubernetes_transport`: Transport type configured for the Kubernetes workload (applicable to MCPServer)
+  - `kubernetes`: Kubernetes-specific metadata (nested object) - only present when served from ToolHive Registry Server
+    - `kind`: Kubernetes resource kind (e.g., "MCPServer", "VirtualMCPServer", "MCPRemoteProxy")
+    - `namespace`: Kubernetes namespace where the resource is deployed
+    - `name`: Kubernetes resource name
+    - `uid`: Kubernetes resource UID
+    - `image`: Container image used by the Kubernetes workload (applicable to MCPServer)
+    - `transport`: Transport type configured for the Kubernetes workload (applicable to MCPServer)
 
 - **`custom_metadata`**: Custom user-defined metadata (arbitrary key-value pairs)
 
@@ -199,12 +200,14 @@ When an MCP server is deployed in Kubernetes and served via the ToolHive Registr
       "stars": 150,
       "pulls": 5000,
       "last_updated": "2025-02-04T10:00:00Z",
-      "kubernetes_kind": "MCPServer",
-      "kubernetes_namespace": "mcp-servers",
-      "kubernetes_name": "filesystem-server",
-      "kubernetes_uid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
-      "kubernetes_image": "ghcr.io/stacklok/mcp-filesystem:v1.0.0",
-      "kubernetes_transport": "streamable-http"
+      "kubernetes": {
+        "kind": "MCPServer",
+        "namespace": "mcp-servers",
+        "name": "filesystem-server",
+        "uid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+        "image": "ghcr.io/stacklok/mcp-filesystem:v1.0.0",
+        "transport": "streamable-http"
+      }
     }
   }
 }

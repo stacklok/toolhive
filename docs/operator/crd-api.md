@@ -125,7 +125,15 @@ _Appears in:_
 
 
 
-AggregationConfig defines tool aggregation and conflict resolution strategies.
+AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
+
+Tool Visibility vs Routing:
+  - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
+    advertised to MCP clients (visible in tools/list responses).
+  - ALL backend tools remain available in the internal routing table, allowing
+    composite tools to call hidden backend tools.
+  - This enables curated experiences where raw backend tools are hidden from
+    MCP clients but accessible through composite tool workflows.
 
 
 
@@ -137,7 +145,7 @@ _Appears in:_
 | `conflictResolution` _[pkg.vmcp.ConflictResolutionStrategy](#pkgvmcpconflictresolutionstrategy)_ | ConflictResolution defines the strategy for resolving tool name conflicts.<br />- prefix: Automatically prefix tool names with workload identifier<br />- priority: First workload in priority order wins<br />- manual: Explicitly define overrides for all conflicts | prefix | Enum: [prefix priority manual] <br />Optional: \{\} <br /> |
 | `conflictResolutionConfig` _[vmcp.config.ConflictResolutionConfig](#vmcpconfigconflictresolutionconfig)_ | ConflictResolutionConfig provides configuration for the chosen strategy. |  | Optional: \{\} <br /> |
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
-| `excludeAllTools` _boolean_ | ExcludeAllTools excludes all tools from aggregation when true. |  | Optional: \{\} <br /> |
+| `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -171,8 +179,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether circuit breaker is enabled. | false | Optional: \{\} <br /> |
-| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit. | 5 | Optional: \{\} <br /> |
-| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the duration to wait before attempting to close the circuit. | 60s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
+| `failureThreshold` _integer_ | FailureThreshold is the number of failures before opening the circuit.<br />Must be >= 1. | 5 | Minimum: 1 <br />Optional: \{\} <br /> |
+| `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the duration to wait before attempting to close the circuit.<br />Must be >= 1s to prevent thrashing. | 60s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.CompositeToolConfig
@@ -300,6 +308,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `healthCheckInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckInterval is the interval between health checks. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `unhealthyThreshold` _integer_ | UnhealthyThreshold is the number of consecutive failures before marking unhealthy. | 3 | Optional: \{\} <br /> |
+| `healthCheckTimeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | HealthCheckTimeout is the maximum duration for a single health check operation.<br />Should be less than HealthCheckInterval to prevent checks from queuing up. | 10s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `statusReportingInterval` _[vmcp.config.Duration](#vmcpconfigduration)_ | StatusReportingInterval is the interval for reporting status updates to Kubernetes.<br />This controls how often the vMCP runtime reports backend health and phase changes.<br />Lower values provide faster status updates but increase API server load. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `partialFailureMode` _string_ | PartialFailureMode defines behavior when some backends are unavailable.<br />- fail: Fail entire request if any backend is unavailable<br />- best_effort: Continue with available backends | fail | Enum: [fail best_effort] <br />Optional: \{\} <br /> |
 | `circuitBreaker` _[vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)_ | CircuitBreaker configures circuit breaker behavior. |  | Optional: \{\} <br /> |
@@ -598,9 +607,9 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `workload` _string_ | Workload is the name of the backend MCPServer workload. |  | Required: \{\} <br /> |
 | `toolConfigRef` _[vmcp.config.ToolConfigRef](#vmcpconfigtoolconfigref)_ | ToolConfigRef references an MCPToolConfig resource for tool filtering and renaming.<br />If specified, Filter and Overrides are ignored.<br />Only used when running in Kubernetes with the operator. |  | Optional: \{\} <br /> |
-| `filter` _string array_ | Filter is an inline list of tool names to allow (allow list).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
-| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
-| `excludeAll` _boolean_ | ExcludeAll excludes all tools from this workload when true. |  | Optional: \{\} <br /> |
+| `filter` _string array_ | Filter is an allow-list of tool names to advertise to MCP clients.<br />Tools NOT in this list are hidden from clients (not in tools/list response)<br />but remain available in the routing table for composite tools to use.<br />This enables selective exposure of backend tools while allowing composite<br />workflows to orchestrate all backend capabilities.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
+| `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides for renaming and description changes.<br />Overrides are applied to tools before conflict resolution and affect both<br />advertising and routing (the overridden name is used everywhere).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
+| `excludeAll` _boolean_ | ExcludeAll hides all tools from this workload from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
 
 
 
@@ -1077,6 +1086,26 @@ _Appears in:_
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 
 
+#### api.v1alpha1.GitAuthConfig
+
+
+
+GitAuthConfig defines authentication settings for private Git repositories.
+Uses HTTP Basic authentication with username and password/token.
+The password is stored in a Kubernetes Secret and mounted as a file
+for the registry server to read.
+
+
+
+_Appears in:_
+- [api.v1alpha1.GitSource](#apiv1alpha1gitsource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `username` _string_ | Username is the Git username for HTTP Basic authentication.<br />For GitHub/GitLab token-based auth, this is typically the literal string "git"<br />or the token itself depending on the provider. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `passwordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PasswordSecretRef references a Kubernetes Secret containing the password or token<br />for Git authentication. The secret value will be mounted as a file and its path<br />passed to the registry server via the git.auth.passwordFile configuration.<br />Example secret:<br />  apiVersion: v1<br />  kind: Secret<br />  metadata:<br />    name: git-credentials<br />  stringData:<br />    token: <github token><br />Then reference it as:<br />  passwordSecretRef:<br />    name: git-credentials<br />    key: token |  | Required: \{\} <br /> |
+
+
 #### api.v1alpha1.GitSource
 
 
@@ -1095,6 +1124,7 @@ _Appears in:_
 | `tag` _string_ | Tag is the Git tag to use (mutually exclusive with Branch and Commit) |  | MinLength: 1 <br />Optional: \{\} <br /> |
 | `commit` _string_ | Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag) |  | MinLength: 1 <br />Optional: \{\} <br /> |
 | `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br />Optional: \{\} <br /> |
+| `auth` _[api.v1alpha1.GitAuthConfig](#apiv1alpha1gitauthconfig)_ | Auth defines optional authentication for private Git repositories.<br />When specified, enables HTTP Basic authentication using the provided<br />username and password/token from a Kubernetes Secret. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.HeaderForwardConfig

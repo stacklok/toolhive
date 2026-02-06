@@ -18,7 +18,7 @@ package factory
 import (
 	"context"
 
-	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"

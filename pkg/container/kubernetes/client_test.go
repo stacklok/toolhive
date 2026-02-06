@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -859,6 +860,25 @@ func TestAttachToWorkloadNoPodFound(t *testing.T) {
 	// Should return error immediately (no pods found)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no pods found")
+}
+
+// TestAttachRetryConstants verifies the retry configuration constants are set
+// to reasonable values for handling pod restarts.
+func TestAttachRetryConstants(t *testing.T) {
+	t.Parallel()
+
+	// The retry timeout should be long enough to accommodate pod restarts
+	// (including image pulls) but not so long that failures take forever to detect
+	assert.Equal(t, 90*time.Second, attachRetryTimeout,
+		"attachRetryTimeout should be 90 seconds to accommodate pod restarts")
+
+	// Initial retry interval should be short for quick recovery from transient errors
+	assert.Equal(t, 1*time.Second, attachInitialRetryInterval,
+		"attachInitialRetryInterval should be 1 second for quick recovery")
+
+	// Max retry interval caps the backoff to prevent excessive delays
+	assert.Equal(t, 15*time.Second, attachMaxRetryInterval,
+		"attachMaxRetryInterval should be 15 seconds to cap backoff")
 }
 
 // TestApplyPodTemplatePatchAnnotations tests that annotations are correctly applied

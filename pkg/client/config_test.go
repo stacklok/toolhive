@@ -26,6 +26,7 @@ import (
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
 const testValidYAML = `extensions: {}`
+const testValidTOML = ``
 
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
@@ -180,6 +181,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			RelPath:              []string{"mock_gemini"},
 			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           VSCodeServer,
+			Description:          "Microsoft's VS Code Server (Mock)",
+			RelPath:              []string{"mock_vscode_server"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/servers",
 			Extension:            JSON,
 		},
 	}
@@ -370,6 +379,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Antigravity),
 					string(Zed),
 					string(GeminiCli),
+					string(VSCodeServer),
 				},
 			},
 		}
@@ -465,6 +475,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case LMStudio, Trae, Kiro, Antigravity, GeminiCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
+			case VSCodeServer:
+				assert.Contains(t, string(content), `"servers":`,
+					"VSCodeServer config should contain servers key")
 			case OpenCode:
 				assert.Contains(t, string(content), `"mcp":`,
 					"OpenCode config should contain mcp key")
@@ -513,7 +526,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -534,9 +547,12 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 
 			// Choose the appropriate content based on the file extension
 			var content []byte
-			if cfg.Extension == YAML {
+			switch cfg.Extension {
+			case YAML:
 				content = []byte(testValidYAML)
-			} else {
+			case TOML:
+				content = []byte(testValidTOML)
+			case JSON:
 				content = []byte(testValidJSON)
 			}
 

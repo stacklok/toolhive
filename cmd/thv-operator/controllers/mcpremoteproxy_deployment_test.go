@@ -880,6 +880,67 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 				assert.True(t, authFound, "Authorization header secret should be referenced")
 			},
 		},
+		{
+			name: "with bearer token",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "bearer-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "bearer-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			clientSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-secret",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"token": []byte("my-bearer-token"),
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				found := false
+				for _, env := range envVars {
+					if env.Name == "TOOLHIVE_SECRET_bearer-secret" {
+						require.NotNil(t, env.ValueFrom)
+						require.NotNil(t, env.ValueFrom.SecretKeyRef)
+						assert.Equal(t, "bearer-secret", env.ValueFrom.SecretKeyRef.Name)
+						assert.Equal(t, "token", env.ValueFrom.SecretKeyRef.Key)
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Bearer token secret should be referenced as TOOLHIVE_SECRET_bearer-secret")
+			},
+		},
 	}
 
 	for _, tt := range tests {

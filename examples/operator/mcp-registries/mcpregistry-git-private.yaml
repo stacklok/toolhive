@@ -1,0 +1,56 @@
+# Example: MCPRegistry with private Git repository authentication
+#
+# This example demonstrates how to configure an MCPRegistry to sync from
+# a private Git repository using HTTP Basic authentication.
+#
+# Prerequisites:
+# 1. Create a Personal Access Token (PAT) with read access to the repository
+#    - GitHub: Create a PAT at https://github.com/settings/tokens with `repo` scope
+#    - GitLab: Create a token at Settings > Access Tokens with `read_repository` scope
+# 2. Create the Secret (see below)
+# 3. Apply this MCPRegistry resource
+
+---
+# Secret containing the Git credentials
+# IMPORTANT: Use stringData for plain text or data for base64-encoded values
+apiVersion: v1
+kind: Secret
+metadata:
+  name: private-registry-credentials
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  # For GitHub PATs, use "ghp_..." token
+  # For GitLab, use the personal access token
+  # For Bitbucket, use an app password
+  password: "ghp_your_personal_access_token_here"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: private-git-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Private Git Registry"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        # HTTPS URL to your private repository
+        repository: "https://github.com/your-org/private-mcp-registry"
+        branch: "main"
+        path: "registry.json"
+        # Authentication configuration
+        auth:
+          # Username depends on Git provider:
+          # - GitHub PAT: use "git"
+          # - GitLab token: use "oauth2"
+          # - Bitbucket app password: use your Bitbucket username
+          username: "git"
+          # Reference to the Secret containing the password/token
+          passwordSecretRef:
+            name: private-registry-credentials
+            key: password
+      syncPolicy:
+        interval: "1h"

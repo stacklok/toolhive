@@ -11,8 +11,6 @@ After modifying the CRDs, the following needs to be run:
     - `task operator-manifests`
     - `task crdref-gen` (it is important to run this command inside `cmd/thv-operator` as the current directory)
 
-When committing a change that changes CRDs, it is important to bump the chart version as described in the [CLAUDE.md](../../deploy/charts/operator-crds/CLAUDE.md#bumping-crd-chart) doc for the CRD Helm Chart.
-
 ## MCPRegistry CRD
 
 The MCPRegistry CRD enables centralized management of MCP server registries.

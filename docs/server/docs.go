@@ -403,7 +403,8 @@ const docTemplate = `{
                     "kiro",
                     "antigravity",
                     "zed",
-                    "gemini-cli"
+                    "gemini-cli",
+                    "vscode-server"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -428,7 +429,8 @@ const docTemplate = `{
                     "Kiro",
                     "Antigravity",
                     "Zed",
-                    "GeminiCli"
+                    "GeminiCli",
+                    "VSCodeServer"
                 ]
             },
             "client.MCPClientStatus": {
@@ -1343,6 +1345,9 @@ const docTemplate = `{
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
                         "type": "boolean"
                     },
+                    "upstream_swap_config": {
+                        "$ref": "#/components/schemas/upstreamswap.Config"
+                    },
                     "volumes": {
                         "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
                         "items": {
@@ -1547,6 +1552,20 @@ const docTemplate = `{
                     "TransportTypeStreamableHTTP",
                     "TransportTypeInspector"
                 ]
+            },
+            "upstreamswap.Config": {
+                "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
+                "properties": {
+                    "custom_header_name": {
+                        "description": "CustomHeaderName is the header name when HeaderStrategy is \"custom\".",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token: \"replace\" (default) or \"custom\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
             },
             "v1.RegistryType": {
                 "description": "Type of registry (file, url, or default)",
@@ -3746,7 +3765,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/delete": {
             "post": {
-                "description": "Delete multiple workloads by name or by group",
+                "description": "Delete multiple workloads by name or by group asynchronously.\nReturns 202 Accepted immediately. Deletion happens in the background.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -3776,7 +3795,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Accepted"
+                        "description": "Accepted - deletion started"
                     },
                     "400": {
                         "content": {
@@ -3899,7 +3918,7 @@ const docTemplate = `{
         },
         "/api/v1beta/workloads/{name}": {
             "delete": {
-                "description": "Delete a workload",
+                "description": "Delete a workload asynchronously. Returns 202 Accepted immediately.\nThe deletion happens in the background. Poll the workload list to confirm deletion.",
                 "parameters": [
                     {
                         "description": "Workload name",
@@ -3920,7 +3939,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Accepted"
+                        "description": "Accepted - deletion started"
                     },
                     "400": {
                         "content": {

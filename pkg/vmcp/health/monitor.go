@@ -104,6 +104,30 @@ type MonitorConfig struct {
 	// Zero means disabled (backends will never be marked degraded based on response time alone).
 	// Recommended: 5s.
 	DegradedThreshold time.Duration
+
+	// CircuitBreaker contains circuit breaker configuration.
+	// nil means circuit breaker is disabled.
+	CircuitBreaker *CircuitBreakerConfig
+}
+
+// CircuitBreakerConfig contains circuit breaker configuration.
+type CircuitBreakerConfig struct {
+	// Enabled controls whether circuit breaker is active.
+	// +kubebuilder:default=false
+	Enabled bool
+
+	// FailureThreshold is the number of failures before opening the circuit.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5
+	// Must be >= 1. Recommended: 5 failures.
+	FailureThreshold int
+
+	// Timeout is the duration to wait in open state before attempting recovery.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+	// +kubebuilder:default="60s"
+	// Recommended: 60s.
+	Timeout time.Duration
 }
 
 // DefaultConfig returns sensible default configuration values.
@@ -137,11 +161,22 @@ func NewMonitor(
 		return nil, fmt.Errorf("unhealthy threshold must be >= 1, got %d", config.UnhealthyThreshold)
 	}
 
+	// Validate circuit breaker configuration if provided
+	if config.CircuitBreaker != nil && config.CircuitBreaker.Enabled {
+		if config.CircuitBreaker.FailureThreshold < 1 {
+			return nil, fmt.Errorf("circuit breaker failure threshold must be >= 1, got %d", config.CircuitBreaker.FailureThreshold)
+		}
+		if config.CircuitBreaker.Timeout <= 0 {
+			return nil, fmt.Errorf("circuit breaker timeout must be > 0, got %v", config.CircuitBreaker.Timeout)
+		}
+	}
+
 	// Create health checker with degraded threshold
 	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
 
-	// Create status tracker
-	statusTracker := newStatusTracker(config.UnhealthyThreshold)
+	// Create status tracker with circuit breaker configuration
+	// The status tracker will lazily initialize circuit breakers as needed
+	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
 	return &Monitor{
 		checker:       checker,
@@ -187,6 +222,7 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.backendsMu.Lock()
 	for i := range m.backends {
 		backend := &m.backends[i] // Capture backend pointer for this iteration
+
 		backendCtx, cancel := context.WithCancel(m.ctx)
 		m.activeChecks[backend.ID] = cancel
 		m.wg.Add(1)
@@ -274,6 +310,9 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 		if _, exists := oldBackends[id]; !exists {
 			logger.Infof("Starting health monitoring for new backend: %s", backend.Name)
 			backendCopy := backend
+
+			// Circuit breaker will be lazily initialized on first health check
+
 			backendCtx, cancel := context.WithCancel(m.ctx)
 			m.activeChecks[id] = cancel
 			m.wg.Add(1)
@@ -338,6 +377,12 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend, isI
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
 	logger.Debugf("Performing health check for backend %s (%s)", backend.Name, backend.BaseURL)
+
+	// Check if circuit breaker allows health check
+	// Status tracker handles circuit breaker logic based on its configuration
+	if !m.statusTracker.ShouldAttemptHealthCheck(backend.ID, backend.Name) {
+		return
+	}
 
 	// Create BackendTarget from Backend
 	target := &vmcp.BackendTarget{
@@ -568,13 +613,16 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 			// m.backends before starting goroutines and ignore results for removed backends.
 			// Keep as defensive fallback.
 			discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
-				Name:            backendID,
-				URL:             "",
-				Status:          state.Status.ToCRDStatus(),
-				AuthConfigRef:   "",
-				AuthType:        "",
-				LastHealthCheck: metav1.NewTime(state.LastCheckTime),
-				Message:         formatBackendMessage(state),
+				Name:                backendID,
+				URL:                 "",
+				Status:              state.Status.ToCRDStatus(),
+				AuthConfigRef:       "",
+				AuthType:            "",
+				LastHealthCheck:     metav1.NewTime(state.LastCheckTime),
+				Message:             formatBackendMessage(state),
+				CircuitBreakerState: string(state.CircuitState),
+				CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
+				ConsecutiveFailures: state.ConsecutiveFailures,
 			})
 			continue
 		}
@@ -582,13 +630,16 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 		authConfigRef, authType := extractAuthInfo(backend)
 
 		discoveredBackends = append(discoveredBackends, vmcp.DiscoveredBackend{
-			Name:            backend.Name,
-			URL:             backend.BaseURL,
-			Status:          state.Status.ToCRDStatus(),
-			AuthConfigRef:   authConfigRef,
-			AuthType:        authType,
-			LastHealthCheck: metav1.NewTime(state.LastCheckTime),
-			Message:         formatBackendMessage(state),
+			Name:                backend.Name,
+			URL:                 backend.BaseURL,
+			Status:              state.Status.ToCRDStatus(),
+			AuthConfigRef:       authConfigRef,
+			AuthType:            authType,
+			LastHealthCheck:     metav1.NewTime(state.LastCheckTime),
+			Message:             formatBackendMessage(state),
+			CircuitBreakerState: string(state.CircuitState),
+			CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
+			ConsecutiveFailures: state.ConsecutiveFailures,
 		})
 	}
 
@@ -611,32 +662,50 @@ func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
 // This returns generic error categories to avoid exposing sensitive error details in status.
 // Detailed errors are logged when they occur (in performHealthCheck) for debugging.
 func formatBackendMessage(state *State) string {
+	// Build base message
+	var baseMsg string
+
 	if state.LastError != nil {
 		// Categorize error using errors.Is() for generic status messages
 		// The detailed error is already logged in performHealthCheck for debugging
 		category := categorizeErrorForMessage(state.LastError)
 		if state.ConsecutiveFailures > 1 {
-			return fmt.Sprintf("%s (failures: %d)", category, state.ConsecutiveFailures)
+			baseMsg = fmt.Sprintf("%s (failures: %d)", category, state.ConsecutiveFailures)
+		} else {
+			baseMsg = category
 		}
-		return category
+	} else {
+		switch state.Status {
+		case vmcp.BackendHealthy:
+			baseMsg = "Healthy"
+		case vmcp.BackendDegraded:
+			if state.ConsecutiveFailures > 0 {
+				baseMsg = fmt.Sprintf("Recovering from %d failures", state.ConsecutiveFailures)
+			} else {
+				baseMsg = "Degraded performance"
+			}
+		case vmcp.BackendUnhealthy:
+			baseMsg = "Unhealthy"
+		case vmcp.BackendUnauthenticated:
+			baseMsg = "Authentication required"
+		case vmcp.BackendUnknown:
+			baseMsg = "Unknown"
+		default:
+			baseMsg = string(state.Status)
+		}
 	}
 
-	switch state.Status {
-	case vmcp.BackendHealthy:
-		return "Healthy"
-	case vmcp.BackendDegraded:
-		if state.ConsecutiveFailures > 0 {
-			return fmt.Sprintf("Recovering from %d failures", state.ConsecutiveFailures)
-		}
-		return "Degraded performance"
-	case vmcp.BackendUnhealthy:
-		return "Unhealthy"
-	case vmcp.BackendUnauthenticated:
-		return "Authentication required"
-	case vmcp.BackendUnknown:
-		return "Unknown"
+	// Prepend circuit breaker state if relevant
+	switch state.CircuitState {
+	case CircuitOpen:
+		return fmt.Sprintf("Circuit breaker OPEN - %s", baseMsg)
+	case CircuitHalfOpen:
+		return fmt.Sprintf("Circuit breaker testing recovery - %s", baseMsg)
+	case CircuitClosed, "":
+		// Circuit closed or circuit breaker disabled - no prefix needed
+		return baseMsg
 	default:
-		return string(state.Status)
+		return baseMsg
 	}
 }
 

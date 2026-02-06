@@ -21,7 +21,7 @@ The platform is designed to be extensible, allowing developers to build on top o
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        Client[MCP Client<br/>Claude Desktop, IDEs, etc.]
+        Client[MCP Client<br/>Claude Desktop, IDEs, VS Code Server, etc.]
     end
 
     subgraph "ToolHive Platform"

@@ -21,11 +21,33 @@ for contributors.
 This can also be used to validate a custom registry file to be used with the
 [`thv config set-registry-url`](../cli/thv_config_set-registry-url.md) command.
 
-## Schema location
+## Schema files
+
+ToolHive uses multiple JSON schemas for different purposes:
+
+### Legacy Registry Schema
 
 - **File**: [`pkg/registry/data/toolhive-legacy-registry.schema.json`](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
-- **Schema ID**:
-  `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json`
+- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json`
+- **Purpose**: Validates the internal ToolHive registry format (`registry.json`)
+
+### Upstream Registry Schema
+
+- **File**: [`pkg/registry/data/upstream-registry.schema.json`](../../pkg/registry/data/upstream-registry.schema.json)
+- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json`
+- **Purpose**: Validates registries using the upstream MCP server format. References the official MCP server schema.
+
+### Publisher-Provided Extensions Schema
+
+- **File**: [`pkg/registry/data/publisher-provided.schema.json`](../../pkg/registry/data/publisher-provided.schema.json)
+- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/publisher-provided.schema.json`
+- **Purpose**: Defines the structure of ToolHive-specific metadata placed under `_meta["io.modelcontextprotocol.registry/publisher-provided"]` in MCP server definitions
+
+The publisher-provided schema defines extensions for both container-based and remote MCP servers, including:
+
+- **Common fields**: `status`, `tier`, `tools`, `tags`, `metadata`, `custom_metadata`
+- **Container server fields**: `permissions`, `args`, `provenance`, `docker_tags`, `proxy_port`
+- **Remote server fields**: `oauth_config`, `env_vars`
 
 ## Usage
 
@@ -43,9 +65,12 @@ and tested in
 **Key tests:**
 
 - `TestEmbeddedRegistrySchemaValidation` - Validates the embedded
-  `registry.json` against the schema
+  `registry.json` against the legacy schema
 - `TestRegistrySchemaValidation` - Comprehensive test suite with valid and
-  invalid registry examples
+  invalid legacy registry examples
+- `TestValidateUpstreamRegistry` - Validates upstream registry format
+- `TestValidatePublisherProvidedExtensions` - Validates publisher-provided
+  extensions structure
 
 **Running the validation:**
 

@@ -401,6 +401,7 @@ An **MCP client** is an application that uses MCP servers (e.g., Claude Desktop,
 - `claude-code` - Claude Code
 - `cursor` - Cursor editor
 - `vscode` - VS Code
+- `code-server` - VS Code Server (VS Code in the browser)
 - `cline` - Cline extension
 - `windsurf` - Windsurf editor
 - Many more...

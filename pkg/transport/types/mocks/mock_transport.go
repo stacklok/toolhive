@@ -14,6 +14,7 @@ import (
 	http "net/http"
 	reflect "reflect"
 
+	storage "github.com/stacklok/toolhive/pkg/authserver/storage"
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
@@ -122,6 +123,20 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
+// GetUpstreamTokenStorage mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUpstreamTokenStorage")
+	ret0, _ := ret[0].(func() storage.UpstreamTokenStorage)
+	return ret0
+}
+
+// GetUpstreamTokenStorage indicates an expected call of GetUpstreamTokenStorage.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenStorage() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenStorage", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenStorage))
+}
+
 // SetAuthInfoHandler mocks base method.
 func (m *MockMiddlewareRunner) SetAuthInfoHandler(handler http.Handler) {
 	m.ctrl.T.Helper()
@@ -223,18 +238,18 @@ func (m *MockTransport) EXPECT() *MockTransportMockRecorder {
 }
 
 // IsRunning mocks base method.
-func (m *MockTransport) IsRunning(ctx context.Context) (bool, error) {
+func (m *MockTransport) IsRunning() (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsRunning", ctx)
+	ret := m.ctrl.Call(m, "IsRunning")
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IsRunning indicates an expected call of IsRunning.
-func (mr *MockTransportMockRecorder) IsRunning(ctx any) *gomock.Call {
+func (mr *MockTransportMockRecorder) IsRunning() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockTransport)(nil).IsRunning), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockTransport)(nil).IsRunning))
 }
 
 // Mode mocks base method.
@@ -391,6 +406,21 @@ func (m *MockProxy) GetMessageChannel() chan jsonrpc2.Message {
 func (mr *MockProxyMockRecorder) GetMessageChannel() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageChannel", reflect.TypeOf((*MockProxy)(nil).GetMessageChannel))
+}
+
+// IsRunning mocks base method.
+func (m *MockProxy) IsRunning() (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsRunning")
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsRunning indicates an expected call of IsRunning.
+func (mr *MockProxyMockRecorder) IsRunning() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRunning", reflect.TypeOf((*MockProxy)(nil).IsRunning))
 }
 
 // SendMessageToDestination mocks base method.

@@ -57,7 +57,7 @@ func WaitForVirtualMCPServerReady(
 		}
 
 		for _, condition := range vmcpServer.Status.Conditions {
-			if condition.Type == "Ready" {
+			if condition.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerReady {
 				if condition.Status == "True" {
 					// Also check that at least one pod is actually running and ready
 					labels := map[string]string{

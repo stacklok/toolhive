@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
@@ -75,6 +76,16 @@ type MiddlewareRunner interface {
 
 	// GetConfig returns a config interface for middleware to access runner configuration
 	GetConfig() RunnerConfig
+
+	// GetUpstreamTokenStorage returns a lazy accessor for upstream token storage.
+	// The returned function should be called at request time to get current storage;
+	// it returns nil if storage becomes unavailable (e.g., during shutdown or if
+	// embedded auth server is not configured).
+	//
+	// This method always returns a non-nil function to support middleware creation
+	// before the embedded auth server is initialized. Storage availability is
+	// determined at request time when the returned function is called.
+	GetUpstreamTokenStorage() func() storage.UpstreamTokenStorage
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration
@@ -104,7 +115,7 @@ type Transport interface {
 	Stop(ctx context.Context) error
 
 	// IsRunning checks if the transport is currently running.
-	IsRunning(ctx context.Context) (bool, error)
+	IsRunning() (bool, error)
 
 	// SetRemoteURL sets the remote URL for the MCP server.
 	// For transports that don't support remote servers (e.g., stdio), this is a no-op.
@@ -170,6 +181,11 @@ type Proxy interface {
 
 	// Stop stops the proxy.
 	Stop(ctx context.Context) error
+
+	// IsRunning checks if the proxy is currently running.
+	// This is used by HTTPTransport to detect when the proxy has stopped
+	// (e.g., due to health check failure) even if the transport itself hasn't been stopped.
+	IsRunning() (bool, error)
 
 	// GetMessageChannel returns the channel for messages to/from the destination.
 	GetMessageChannel() chan jsonrpc2.Message

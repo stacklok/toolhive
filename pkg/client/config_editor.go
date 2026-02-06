@@ -1,6 +1,37 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// config_editor.go provides ConfigUpdater implementations for editing MCP client
+// configuration files in JSON, YAML, and TOML formats.
+//
+// # Error Handling
+//
+// All ConfigUpdater methods (Upsert/Remove) return errors to their callers rather
+// than handling them internally. This design allows callers to decide the appropriate
+// action based on context:
+//
+//   - CLI commands (e.g., "thv client register"): Errors propagate up to Cobra's
+//     RunE function, which prints the error to stderr and exits with code 1.
+//     This is the correct behavior for explicit user commands.
+//
+//   - Background operations (e.g., RemoveServerFromClients during workload cleanup):
+//     Callers log errors as warnings and continue processing other clients.
+//     This allows partial success when some clients fail.
+//
+//   - Migrations: Errors are logged as warnings and the migration continues,
+//     allowing best-effort migration of client configurations.
+//
+// Write failures are logged at WARN level (not ERROR) because:
+//  1. The error is also returned to the caller who decides the severity
+//  2. Many callers (RemoveServerFromClients, migrations) treat these as non-fatal
+//  3. This avoids misleading ERROR logs for expected failure scenarios
+//
+// # File Locking
+//
+// All operations use file-based locking via withFileLock() to ensure safe concurrent
+// access. Each config file has a corresponding ".lock" file that is acquired before
+// any read-modify-write operation.
+
 package client
 
 import (
@@ -11,17 +42,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
+// All methods return errors rather than handling them internally, allowing callers to
+// determine the appropriate response (fatal error, warning, or ignore) based on context.
+// See the package-level documentation for details on error handling patterns.
 type ConfigUpdater interface {
+	// Upsert inserts or updates an MCP server configuration.
+	// Returns an error if the operation fails (file read/write, parsing, marshaling).
 	Upsert(serverName string, data MCPServer) error
+
+	// Remove removes an MCP server configuration.
+	// Returns nil if the server doesn't exist (idempotent).
+	// Returns an error only for actual failures (file read/write, parsing).
 	Remove(serverName string) error
 }
 
@@ -34,6 +76,29 @@ type MCPServer struct {
 	Type      string `json:"type,omitempty"`
 }
 
+// --- Shared helper functions ---
+
+// withFileLock executes the given function while holding a file lock for the specified path.
+// This is used by all config updaters (JSON, YAML, TOML) to ensure safe concurrent access.
+func withFileLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
+
+	return fn()
+}
+
 // JSONConfigUpdater is a ConfigUpdater that is responsible for updating
 // JSON config files.
 type JSONConfigUpdater struct {
@@ -43,120 +108,98 @@ type JSONConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the MCP client config file
 func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	// Create a lock file
-	lockPath := jcu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
+	return withFileLock(jcu.Path, func() error {
+		content, err := os.ReadFile(jcu.Path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file: %w", err)
+		}
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
+		if len(content) == 0 {
+			// If the file is empty, we need to initialize it with an empty JSON object
+			content = []byte("{}")
+		}
 
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
+		content = ensurePathExists(content, jcu.MCPServersPathPrefix)
 
-	content, err := os.ReadFile(jcu.Path)
-	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
-	}
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON: %w", err)
+		}
 
-	if len(content) == 0 {
-		// If the file is empty, we need to initialize it with an empty JSON object
-		content = []byte("{}")
-	}
+		dataJSON, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal MCPServer to JSON: %w", err)
+		}
 
-	content = ensurePathExists(content, jcu.MCPServersPathPrefix)
+		patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
+		if err := v.Patch([]byte(patch)); err != nil {
+			return fmt.Errorf("failed to patch JSON: %w", err)
+		}
 
-	v, _ := hujson.Parse(content)
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("failed to format JSON: %w", err)
+		}
 
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		logger.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
-	}
+		// Write back to the file atomically
+		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
+			logger.Warnf("Failed to write JSON config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
 
-	patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
-	err = v.Patch([]byte(patch))
-	if err != nil {
-		logger.Errorf("Failed to patch file: %v", err)
-	}
-
-	formatted, _ := hujson.Format(v.Pack())
-	if err != nil {
-		logger.Errorf("Failed to format the patched file: %v", err)
-	}
-
-	// Write back to the file
-	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
-	}
-
-	logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
-
-	return nil
+		logger.Debugf("Successfully updated the client config file for MCPServer %s", serverName)
+		return nil
+	})
 }
 
 // Remove removes an MCP server from the MCP client config file
 func (jcu *JSONConfigUpdater) Remove(serverName string) error {
-	// Create a lock file
-	lockPath := jcu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
+	return withFileLock(jcu.Path, func() error {
+		content, err := os.ReadFile(jcu.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// File doesn't exist, nothing to remove
+				return nil
+			}
+			return fmt.Errorf("failed to read file: %w", err)
+		}
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	content, err := os.ReadFile(jcu.Path)
-	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
-	}
-
-	if len(content) == 0 {
-		// If the file is empty, there is nothing to remove.
-		return nil
-	}
-
-	v, _ := hujson.Parse(content)
-
-	// Check if the server exists by attempting the patch and handling the error gracefully
-	patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
-	err = v.Patch([]byte(patch))
-	if err != nil {
-		// If the patch fails because the path doesn't exist, that's fine - nothing to remove
-		if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
-			logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
+		if len(content) == 0 {
+			// If the file is empty, there is nothing to remove.
 			return nil
 		}
-		// For other errors, return the error
-		logger.Errorf("Failed to patch file: %v", err)
-		return err
-	}
 
-	formatted, _ := hujson.Format(v.Pack())
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON: %w", err)
+		}
 
-	// Write back to the file
-	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
-	}
+		// Check if the server exists by attempting the patch and handling the error gracefully
+		patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
+		if err := v.Patch([]byte(patch)); err != nil {
+			// If the patch fails because the path doesn't exist, that's fine - nothing to remove
+			if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
+				logger.Debugf("MCPServer %s not found in client config file, nothing to remove", serverName)
+				return nil
+			}
+			// For other errors, return the error
+			return fmt.Errorf("failed to patch JSON: %w", err)
+		}
 
-	logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("failed to format JSON: %w", err)
+		}
 
-	return nil
+		// Write back to the file atomically
+		if err := fileutils.AtomicWriteFile(jcu.Path, formatted, 0600); err != nil {
+			logger.Warnf("Failed to write JSON config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully removed the MCPServer %s from the client config file", serverName)
+		return nil
+	})
 }
 
 // YAMLConfigUpdater is a ConfigUpdater that is responsible for updating
@@ -168,128 +211,393 @@ type YAMLConfigUpdater struct {
 
 // Upsert inserts or updates an MCP server in the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
-	// Create a lock file
-	lockPath := ycu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	content, err := os.ReadFile(ycu.Path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Use a generic map to preserve all existing fields, not just extensions
-	var config map[string]interface{}
-
-	// If file exists and is not empty, unmarshal existing config into generic map
-	if len(content) > 0 {
-		err = yaml.Unmarshal(content, &config)
-		if err != nil {
-			return fmt.Errorf("failed to parse existing YAML config: %w", err)
+	return withFileLock(ycu.Path, func() error {
+		content, err := os.ReadFile(ycu.Path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read file: %w", err)
 		}
-	} else {
-		// Initialize empty map if file doesn't exist or is empty
-		config = make(map[string]interface{})
-	}
 
-	// Convert MCPServer using the converter
-	entry, err := ycu.Converter.ConvertFromMCPServer(serverName, data)
-	if err != nil {
-		return fmt.Errorf("failed to convert MCPServer: %w", err)
-	}
+		// Use a generic map to preserve all existing fields, not just extensions
+		var config map[string]any
 
-	// Upsert the entry using the converter
-	err = ycu.Converter.UpsertEntry(config, serverName, entry)
-	if err != nil {
-		return fmt.Errorf("failed to upsert entry: %w", err)
-	}
+		// If file exists and is not empty, unmarshal existing config into generic map
+		if len(content) > 0 {
+			if err := yaml.Unmarshal(content, &config); err != nil {
+				return fmt.Errorf("failed to parse existing YAML config: %w", err)
+			}
+		} else {
+			// Initialize empty map if file doesn't exist or is empty
+			config = make(map[string]any)
+		}
 
-	// Marshal back to YAML
-	updatedContent, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal YAML: %w", err)
-	}
+		// Convert MCPServer using the converter
+		entry, err := ycu.Converter.ConvertFromMCPServer(serverName, data)
+		if err != nil {
+			return fmt.Errorf("failed to convert MCPServer: %w", err)
+		}
 
-	// Write back to file
-	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
+		// Upsert the entry using the converter
+		if err := ycu.Converter.UpsertEntry(config, serverName, entry); err != nil {
+			return fmt.Errorf("failed to upsert entry: %w", err)
+		}
 
-	logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
-	return nil
+		// Marshal back to YAML
+		updatedContent, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+
+		// Write back to file atomically
+		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
+			logger.Warnf("Failed to write YAML config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully updated YAML client config file for server %s", serverName)
+		return nil
+	})
 }
 
 // Remove removes an entry from the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
-	// Create a lock file
-	lockPath := ycu.Path + ".lock"
-	fileLock := lockfile.NewTrackedLock(lockPath)
+	return withFileLock(ycu.Path, func() error {
+		// Read existing config
+		content, err := os.ReadFile(ycu.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// File doesn't exist, nothing to remove
+				return nil
+			}
+			return fmt.Errorf("failed to read file: %w", err)
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
-
-	// Read existing config
-	content, err := os.ReadFile(ycu.Path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist, nothing to remove
+		if len(content) == 0 {
+			// File is empty, nothing to remove
 			return nil
 		}
-		return fmt.Errorf("failed to read file: %w", err)
+
+		// Use a generic map to preserve all existing fields, not just extensions
+		var config map[string]any
+		if err := yaml.Unmarshal(content, &config); err != nil {
+			return fmt.Errorf("failed to parse YAML: %w", err)
+		}
+
+		if err := ycu.Converter.RemoveEntry(config, serverName); err != nil {
+			return fmt.Errorf("failed to remove entry: %w", err)
+		}
+
+		updatedContent, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+
+		// Write back to file atomically
+		if err := fileutils.AtomicWriteFile(ycu.Path, updatedContent, 0600); err != nil {
+			logger.Warnf("Failed to write YAML config file: %v", err)
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		logger.Debugf("Successfully removed server %s from YAML config file", serverName)
+		return nil
+	})
+}
+
+// --- Shared TOML helper functions ---
+
+// readTOMLConfig reads and parses a TOML config file from the specified path.
+func readTOMLConfig(path string) (map[string]any, error) {
+	// #nosec G304 -- path is controlled by internal code (TOMLConfigUpdater/TOMLMapConfigUpdater structs)
+	content, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
 	if len(content) == 0 {
-		// File is empty, nothing to remove
-		return nil
+		return make(map[string]any), nil
 	}
 
-	// Use a generic map to preserve all existing fields, not just extensions
-	var config map[string]interface{}
-	err = yaml.Unmarshal(content, &config)
+	var config map[string]any
+	if err := toml.Unmarshal(content, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse existing TOML config: %w", err)
+	}
+	return config, nil
+}
+
+// writeTOMLConfig marshals and writes the config to the specified TOML file path atomically.
+func writeTOMLConfig(path string, config map[string]any) error {
+	updatedContent, err := toml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to parse YAML: %w", err)
+		return fmt.Errorf("failed to marshal TOML: %w", err)
 	}
-
-	err = ycu.Converter.RemoveEntry(config, serverName)
-	if err != nil {
-		return fmt.Errorf("failed to remove entry: %w", err)
-	}
-
-	updatedContent, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal YAML: %w", err)
-	}
-
-	// Write back to file
-	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
+	if err := fileutils.AtomicWriteFile(path, updatedContent, 0600); err != nil {
+		logger.Warnf("Failed to write TOML config file: %v", err)
 		return fmt.Errorf("failed to write file: %w", err)
 	}
-
-	logger.Debugf("Successfully removed server %s from YAML config file", serverName)
 	return nil
+}
+
+// extractURLFromMCPServer extracts the URL value from an MCPServer struct,
+// checking fields in priority order based on client specificity:
+// Uri (Goose) → ServerUrl (Windsurf) → HttpUrl (Gemini) → Url (default/most common).
+func extractURLFromMCPServer(data MCPServer) string {
+	switch {
+	case data.Uri != "":
+		return data.Uri
+	case data.ServerUrl != "":
+		return data.ServerUrl
+	case data.HttpUrl != "":
+		return data.HttpUrl
+	case data.Url != "":
+		return data.Url
+	default:
+		return ""
+	}
+}
+
+// convertToAnySlice converts various slice types to []any.
+func convertToAnySlice(v any) []any {
+	switch s := v.(type) {
+	case []any:
+		return s
+	case []map[string]any:
+		result := make([]any, len(s))
+		for i, item := range s {
+			result[i] = item
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// --- TOMLConfigUpdater (array-of-tables format) ---
+
+// TOMLConfigUpdater is a ConfigUpdater that is responsible for updating
+// TOML config files with array-of-tables format (used by Mistral Vibe).
+type TOMLConfigUpdater struct {
+	Path            string
+	ServersKey      string // The TOML array key (e.g., "mcp_servers")
+	IdentifierField string // The field name used to identify servers (e.g., "name")
+	URLField        string // The field name for URL (e.g., "url")
+}
+
+// Upsert inserts or updates an MCP server in the TOML config file
+func (tcu *TOMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return withFileLock(tcu.Path, func() error {
+		config, err := readTOMLConfig(tcu.Path)
+		if err != nil {
+			return err
+		}
+
+		servers := tcu.getServersArray(config)
+		newEntry := tcu.buildServerEntry(serverName, data)
+		servers = tcu.upsertServerEntry(servers, serverName, newEntry)
+		config[tcu.ServersKey] = servers
+
+		if err := writeTOMLConfig(tcu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an MCP server from the TOML config file
+func (tcu *TOMLConfigUpdater) Remove(serverName string) error {
+	return withFileLock(tcu.Path, func() error {
+		config, err := readTOMLConfig(tcu.Path)
+		if err != nil {
+			return err
+		}
+
+		// If config is empty (file didn't exist or was empty), nothing to remove
+		if len(config) == 0 {
+			return nil
+		}
+
+		existingServers, ok := config[tcu.ServersKey]
+		if !ok {
+			return nil // No servers section, nothing to remove
+		}
+
+		servers := convertToAnySlice(existingServers)
+		if servers == nil {
+			return nil // Unknown format, nothing to remove
+		}
+
+		config[tcu.ServersKey] = tcu.filterOutServer(servers, serverName)
+
+		if err := writeTOMLConfig(tcu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		return nil
+	})
+}
+
+// getServersArray extracts or initializes the servers array from config
+func (tcu *TOMLConfigUpdater) getServersArray(config map[string]any) []any {
+	existingServers, ok := config[tcu.ServersKey]
+	if !ok {
+		return []any{}
+	}
+	servers := convertToAnySlice(existingServers)
+	if servers == nil {
+		return []any{}
+	}
+	return servers
+}
+
+// upsertServerEntry updates an existing server or appends a new one
+func (tcu *TOMLConfigUpdater) upsertServerEntry(servers []any, serverName string, newEntry map[string]any) []any {
+	for i, s := range servers {
+		if serverEntry, ok := s.(map[string]any); ok {
+			if name, exists := serverEntry[tcu.IdentifierField]; exists && name == serverName {
+				servers[i] = newEntry
+				return servers
+			}
+		}
+	}
+	return append(servers, newEntry)
+}
+
+// filterOutServer removes the server with the given name from the slice
+func (tcu *TOMLConfigUpdater) filterOutServer(servers []any, serverName string) []any {
+	filtered := make([]any, 0, len(servers))
+	for _, s := range servers {
+		serverEntry, ok := s.(map[string]any)
+		if !ok {
+			filtered = append(filtered, s)
+			continue
+		}
+		name, exists := serverEntry[tcu.IdentifierField]
+		if !exists || name != serverName {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// buildServerEntry creates a server entry map from MCPServer data
+func (tcu *TOMLConfigUpdater) buildServerEntry(serverName string, data MCPServer) map[string]any {
+	entry := map[string]any{
+		tcu.IdentifierField: serverName,
+	}
+
+	if url := extractURLFromMCPServer(data); url != "" {
+		entry[tcu.URLField] = url
+	}
+
+	// Add transport type if specified
+	if data.Type != "" {
+		entry["transport"] = data.Type
+	}
+
+	return entry
+}
+
+// --- TOMLMapConfigUpdater (nested tables format) ---
+
+// TOMLMapConfigUpdater is a ConfigUpdater that is responsible for updating
+// TOML config files with nested tables format [section.servername] (used by Codex).
+type TOMLMapConfigUpdater struct {
+	Path       string
+	ServersKey string // The TOML section key (e.g., "mcp_servers")
+	URLField   string // The field name for URL (e.g., "url")
+}
+
+// Upsert inserts or updates an MCP server in the TOML config file using map format
+func (tmu *TOMLMapConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	return withFileLock(tmu.Path, func() error {
+		config, err := readTOMLConfig(tmu.Path)
+		if err != nil {
+			return err
+		}
+
+		// Get or create the servers map
+		serversMap := tmu.getServersMap(config)
+
+		// Build the server entry (without the name field since it's the key)
+		serverEntry := tmu.buildServerEntry(data)
+
+		// Set the server entry
+		serversMap[serverName] = serverEntry
+		config[tmu.ServersKey] = serversMap
+
+		if err := writeTOMLConfig(tmu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully updated TOML client config file for server %s", serverName)
+		return nil
+	})
+}
+
+// Remove removes an MCP server from the TOML config file
+func (tmu *TOMLMapConfigUpdater) Remove(serverName string) error {
+	return withFileLock(tmu.Path, func() error {
+		config, err := readTOMLConfig(tmu.Path)
+		if err != nil {
+			return err
+		}
+
+		// If config is empty (file didn't exist or was empty), nothing to remove
+		if len(config) == 0 {
+			return nil
+		}
+
+		serversSection, ok := config[tmu.ServersKey]
+		if !ok {
+			return nil // No servers section, nothing to remove
+		}
+
+		serversMap, ok := serversSection.(map[string]any)
+		if !ok {
+			return nil // Unknown format, nothing to remove
+		}
+
+		// Remove the server if it exists
+		delete(serversMap, serverName)
+		config[tmu.ServersKey] = serversMap
+
+		if err := writeTOMLConfig(tmu.Path, config); err != nil {
+			return err
+		}
+
+		logger.Debugf("Successfully removed server %s from TOML config file", serverName)
+		return nil
+	})
+}
+
+// getServersMap extracts or initializes the servers map from config
+func (tmu *TOMLMapConfigUpdater) getServersMap(config map[string]any) map[string]any {
+	existingServers, ok := config[tmu.ServersKey]
+	if !ok {
+		return make(map[string]any)
+	}
+	serversMap, ok := existingServers.(map[string]any)
+	if !ok {
+		return make(map[string]any)
+	}
+	return serversMap
+}
+
+// buildServerEntry creates a server entry map from MCPServer data
+func (tmu *TOMLMapConfigUpdater) buildServerEntry(data MCPServer) map[string]any {
+	entry := make(map[string]any)
+
+	if url := extractURLFromMCPServer(data); url != "" {
+		entry[tmu.URLField] = url
+	}
+
+	// Add transport type if specified
+	if data.Type != "" {
+		entry["transport"] = data.Type
+	}
+
+	return entry
 }
 
 // ensurePathExists ensures that the path exists in the JSON content

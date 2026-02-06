@@ -550,6 +550,26 @@ source:
 - Automatic sync from Git repository
 - Branch or tag tracking
 - Shallow clones for efficiency
+- Private repository authentication via HTTP Basic Auth
+
+**Private Repository Authentication:**
+
+```yaml
+registries:
+  - name: default
+    format: toolhive
+    git:
+      repository: https://github.com/org/private-registry
+      branch: main
+      path: registry.json
+      auth:
+        username: "git"  # Use "git" for GitHub PATs
+        passwordSecretRef:
+          name: git-credentials
+          key: password
+```
+
+The password is stored in a Kubernetes Secret and mounted securely in the registry-api pod.
 
 **Implementation**: `cmd/thv-operator/pkg/sources/git.go`
 

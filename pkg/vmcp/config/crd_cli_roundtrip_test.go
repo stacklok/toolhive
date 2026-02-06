@@ -11,7 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive-core/env/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )

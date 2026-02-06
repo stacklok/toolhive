@@ -92,18 +92,18 @@ func (mr *MockOAuth2ProviderMockRecorder) FetchUserInfo(ctx, accessToken any) *g
 }
 
 // RefreshTokens mocks base method.
-func (m *MockOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken string) (*upstream.Tokens, error) {
+func (m *MockOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*upstream.Tokens, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RefreshTokens", ctx, refreshToken)
+	ret := m.ctrl.Call(m, "RefreshTokens", ctx, refreshToken, expectedSubject)
 	ret0, _ := ret[0].(*upstream.Tokens)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RefreshTokens indicates an expected call of RefreshTokens.
-func (mr *MockOAuth2ProviderMockRecorder) RefreshTokens(ctx, refreshToken any) *gomock.Call {
+func (mr *MockOAuth2ProviderMockRecorder) RefreshTokens(ctx, refreshToken, expectedSubject any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefreshTokens", reflect.TypeOf((*MockOAuth2Provider)(nil).RefreshTokens), ctx, refreshToken)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefreshTokens", reflect.TypeOf((*MockOAuth2Provider)(nil).RefreshTokens), ctx, refreshToken, expectedSubject)
 }
 
 // ResolveIdentity mocks base method.

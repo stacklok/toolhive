@@ -10,11 +10,8 @@ import (
 	"strings"
 
 	"github.com/xeipuuv/gojsonschema"
-)
 
-const (
-	// PublisherProvidedKey is the key used in _meta for publisher-provided extensions
-	PublisherProvidedKey = "io.modelcontextprotocol.registry/publisher-provided"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 //go:embed data/toolhive-legacy-registry.schema.json data/upstream-registry.schema.json data/publisher-provided.schema.json
@@ -167,12 +164,12 @@ func ValidateUpstreamRegistry(registryData []byte) error {
 
 // validateRegistryExtensions parses the registry and validates publisher-provided extensions in all servers
 func validateRegistryExtensions(registryData []byte) error {
-	var registry map[string]any
-	if err := json.Unmarshal(registryData, &registry); err != nil {
+	var registryMap map[string]any
+	if err := json.Unmarshal(registryData, &registryMap); err != nil {
 		return fmt.Errorf("failed to parse registry JSON: %w", err)
 	}
 
-	data, ok := registry["data"].(map[string]any)
+	data, ok := registryMap["data"].(map[string]any)
 	if !ok {
 		return nil // No data section
 	}
@@ -272,7 +269,7 @@ func validateServerExtensions(server map[string]any, serverName string) error {
 		return nil // No _meta field, nothing to validate
 	}
 
-	publisherProvided, ok := meta[PublisherProvidedKey].(map[string]any)
+	publisherProvided, ok := meta[registry.PublisherProvidedKey].(map[string]any)
 	if !ok {
 		return nil // No publisher-provided extensions
 	}

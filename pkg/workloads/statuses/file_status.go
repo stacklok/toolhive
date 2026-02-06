@@ -551,9 +551,9 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 	// Remove any slashes from the workload name to avoid problems.
 	workloadName = strings.ReplaceAll(workloadName, "/", "-")
 
-	// Validate workload name
-	if strings.Contains(workloadName, "..") {
-		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
+	// Validate workload name for safe path construction
+	if err := fileutils.ValidateWorkloadNameForPath(workloadName); err != nil {
+		return fmt.Errorf("invalid workload name '%s': %w", workloadName, err)
 	}
 	if err := f.ensureBaseDir(); err != nil {
 		return fmt.Errorf("failed to create base directory: %w", err)
@@ -587,9 +587,9 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 	// Remove any slashes from the workload name to avoid problems.
 	workloadName = strings.ReplaceAll(workloadName, "/", "-")
 
-	// Validate workload name
-	if strings.Contains(workloadName, "..") {
-		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
+	// Validate workload name for safe path construction
+	if err := fileutils.ValidateWorkloadNameForPath(workloadName); err != nil {
+		return fmt.Errorf("invalid workload name '%s': %w", workloadName, err)
 	}
 	if err := f.ensureBaseDir(); err != nil {
 		return fmt.Errorf("failed to create base directory: %w", err)

@@ -44,7 +44,14 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
+	// Deprecated: Use ProxyPort instead
 	Port int32 `json:"port,omitempty"`
+
+	// ProxyPort is the port to expose the MCP proxy on
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8080
+	ProxyPort int32 `json:"proxyPort,omitempty"`
 
 	// Transport is the transport method for the remote proxy (sse or streamable-http)
 	// +kubebuilder:validation:Enum=sse;streamable-http
@@ -184,6 +191,12 @@ const (
 
 	// ConditionTypeMCPRemoteProxyGroupRefValidated indicates whether the GroupRef is valid
 	ConditionTypeMCPRemoteProxyGroupRefValidated = "GroupRefValidated"
+
+	// ConditionTypeMCPRemoteProxyToolConfigValidated indicates whether the ToolConfigRef is valid
+	ConditionTypeMCPRemoteProxyToolConfigValidated = "ToolConfigValidated"
+
+	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
+	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
 )
 
 // Condition reasons for MCPRemoteProxy
@@ -217,6 +230,24 @@ const (
 
 	// ConditionReasonMCPRemoteProxyGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
 	ConditionReasonMCPRemoteProxyGroupRefNotReady = "GroupRefNotReady"
+
+	// ConditionReasonMCPRemoteProxyToolConfigValid indicates the ToolConfigRef is valid
+	ConditionReasonMCPRemoteProxyToolConfigValid = "ToolConfigValid"
+
+	// ConditionReasonMCPRemoteProxyToolConfigNotFound indicates the referenced MCPToolConfig was not found
+	ConditionReasonMCPRemoteProxyToolConfigNotFound = "ToolConfigNotFound"
+
+	// ConditionReasonMCPRemoteProxyToolConfigFetchError indicates an error occurred fetching the MCPToolConfig
+	ConditionReasonMCPRemoteProxyToolConfigFetchError = "ToolConfigFetchError"
+
+	// ConditionReasonMCPRemoteProxyExternalAuthConfigValid indicates the ExternalAuthConfigRef is valid
+	ConditionReasonMCPRemoteProxyExternalAuthConfigValid = "ExternalAuthConfigValid"
+
+	// ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound indicates the referenced MCPExternalAuthConfig was not found
+	ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound = "ExternalAuthConfigNotFound"
+
+	// ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError indicates an error occurred fetching the MCPExternalAuthConfig
+	ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError = "ExternalAuthConfigFetchError"
 )
 
 //+kubebuilder:object:root=true
@@ -266,10 +297,25 @@ func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetProxyPort() int32 {
+	const defaultProxyPort int32 = 8080
+
+	// If the legacy Port is set and ProxyPort is only the default,
+	// prefer Port to preserve backward compatibility when ProxyPort
+	// was defaulted by the API server.
+	if m.Spec.Port > 0 && m.Spec.ProxyPort == defaultProxyPort {
+		return m.Spec.Port
+	}
+
+	if m.Spec.ProxyPort > 0 {
+		return m.Spec.ProxyPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
 	if m.Spec.Port > 0 {
 		return m.Spec.Port
 	}
 
 	// default to 8080 if no port is specified
-	return 8080
+	return defaultProxyPort
 }

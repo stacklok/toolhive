@@ -439,8 +439,7 @@ var _ = Describe("Groups API", Label("api", "groups", "e2e"), func() {
 				}, 10*time.Second, 1*time.Second).Should(BeTrue(),
 					"Workload should still exist after group deletion")
 
-				By("Cleaning up workload")
-				deleteWorkload(apiServer, workloadName)
+				// Note: Workload cleanup handled by suite-level CLI cleanup
 			})
 
 			It("should return 404 when deleting non-existent group", func() {

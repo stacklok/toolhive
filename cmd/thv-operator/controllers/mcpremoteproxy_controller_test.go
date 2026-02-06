@@ -24,12 +24,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -54,7 +56,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -74,7 +76,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					Port: 8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -98,7 +100,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -156,7 +158,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.salesforce.com",
-			Port:      8080,
+			ProxyPort: 8080,
 			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
 				Type: mcpv1alpha1.OIDCConfigTypeInline,
 				Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -278,11 +280,15 @@ func TestHandleToolConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		proxy       *mcpv1alpha1.MCPRemoteProxy
-		toolConfig  *mcpv1alpha1.MCPToolConfig
-		expectError bool
-		errContains string
+		name               string
+		proxy              *mcpv1alpha1.MCPRemoteProxy
+		toolConfig         *mcpv1alpha1.MCPToolConfig
+		interceptorFuncs   *interceptor.Funcs
+		expectError        bool
+		errContains        string
+		expectCondition    bool
+		expectedCondStatus metav1.ConditionStatus
+		expectedCondReason string
 	}{
 		{
 			name: "no tool config reference",
@@ -295,7 +301,8 @@ func TestHandleToolConfig(t *testing.T) {
 					RemoteURL: "https://mcp.example.com",
 				},
 			},
-			expectError: false,
+			expectError:     false,
+			expectCondition: false, // Condition should be removed when no reference
 		},
 		{
 			name: "valid tool config reference",
@@ -323,7 +330,10 @@ func TestHandleToolConfig(t *testing.T) {
 					ConfigHash: "abc123",
 				},
 			},
-			expectError: false,
+			expectError:        false,
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid,
 		},
 		{
 			name: "tool config hash update",
@@ -354,7 +364,10 @@ func TestHandleToolConfig(t *testing.T) {
 					ConfigHash: "new-hash",
 				},
 			},
-			expectError: false,
+			expectError:        false,
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid,
 		},
 		{
 			name: "tool config reference removed",
@@ -370,7 +383,8 @@ func TestHandleToolConfig(t *testing.T) {
 					ToolConfigHash: "old-hash",
 				},
 			},
-			expectError: false,
+			expectError:     false,
+			expectCondition: false, // Condition should be removed when reference is removed
 		},
 		{
 			name: "tool config not found",
@@ -386,8 +400,39 @@ func TestHandleToolConfig(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errContains: "failed to get MCPToolConfig",
+			expectError:        true,
+			errContains:        "not found in namespace",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
+		},
+		{
+			name: "tool config fetch error",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "error-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+						Name: "tool-config",
+					},
+				},
+			},
+			interceptorFuncs: &interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*mcpv1alpha1.MCPToolConfig); ok {
+						return fmt.Errorf("simulated API server error")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			},
+			expectError:        true,
+			errContains:        "failed to fetch MCPToolConfig",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigFetchError,
 		},
 	}
 
@@ -401,11 +446,14 @@ func TestHandleToolConfig(t *testing.T) {
 				objects = append(objects, tt.toolConfig)
 			}
 
-			fakeClient := fake.NewClientBuilder().
+			builder := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
-				Build()
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{})
+			if tt.interceptorFuncs != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptorFuncs)
+			}
+			fakeClient := builder.Build()
 
 			reconciler := &MCPRemoteProxyReconciler{
 				Client: fakeClient,
@@ -418,6 +466,19 @@ func TestHandleToolConfig(t *testing.T) {
 				assert.Error(t, err)
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
+				}
+
+				// Verify condition on in-memory object for error cases
+				if tt.expectCondition {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated)
+					assert.NotNil(t, cond, "ToolConfigValidated condition should be set")
+					if cond != nil {
+						assert.Equal(t, tt.expectedCondStatus, cond.Status,
+							"Condition status should match expected")
+						assert.Equal(t, tt.expectedCondReason, cond.Reason,
+							"Condition reason should match expected")
+					}
 				}
 			} else {
 				assert.NoError(t, err)
@@ -439,6 +500,23 @@ func TestHandleToolConfig(t *testing.T) {
 					assert.Empty(t, updatedProxy.Status.ToolConfigHash,
 						"Status hash should be cleared when reference is removed")
 				}
+
+				// Verify condition (check in-memory object since conditions are set there)
+				if tt.expectCondition {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated)
+					assert.NotNil(t, cond, "ToolConfigValidated condition should be set")
+					if cond != nil {
+						assert.Equal(t, tt.expectedCondStatus, cond.Status,
+							"Condition status should match expected")
+						assert.Equal(t, tt.expectedCondReason, cond.Reason,
+							"Condition reason should match expected")
+					}
+				} else {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated)
+					assert.Nil(t, cond, "ToolConfigValidated condition should not be set when no reference")
+				}
 			}
 		})
 	}
@@ -449,11 +527,15 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		proxy        *mcpv1alpha1.MCPRemoteProxy
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
-		expectError  bool
-		errContains  string
+		name               string
+		proxy              *mcpv1alpha1.MCPRemoteProxy
+		externalAuth       *mcpv1alpha1.MCPExternalAuthConfig
+		interceptorFuncs   *interceptor.Funcs
+		expectError        bool
+		errContains        string
+		expectCondition    bool
+		expectedCondStatus metav1.ConditionStatus
+		expectedCondReason string
 	}{
 		{
 			name: "no external auth reference",
@@ -466,7 +548,8 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					RemoteURL: "https://mcp.example.com",
 				},
 			},
-			expectError: false,
+			expectError:     false,
+			expectCondition: false, // Condition should be removed when no reference
 		},
 		{
 			name: "valid external auth reference",
@@ -503,7 +586,10 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					ConfigHash: "xyz789",
 				},
 			},
-			expectError: false,
+			expectError:        false,
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		},
 		{
 			name: "external auth config hash update",
@@ -543,7 +629,10 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					ConfigHash: "new-hash",
 				},
 			},
-			expectError: false,
+			expectError:        false,
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		},
 		{
 			name: "external auth config reference removed",
@@ -559,7 +648,8 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					ExternalAuthConfigHash: "old-hash",
 				},
 			},
-			expectError: false,
+			expectError:     false,
+			expectCondition: false, // Condition should be removed when reference is removed
 		},
 		{
 			name: "external auth config not found",
@@ -575,8 +665,39 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errContains: "failed to get MCPExternalAuthConfig",
+			expectError:        true,
+			errContains:        "not found in namespace",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+		},
+		{
+			name: "external auth config fetch error",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "error-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "auth-config",
+					},
+				},
+			},
+			interceptorFuncs: &interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig); ok {
+						return fmt.Errorf("simulated API server error")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			},
+			expectError:        true,
+			errContains:        "failed to fetch MCPExternalAuthConfig",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
 	}
 
@@ -590,11 +711,14 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				objects = append(objects, tt.externalAuth)
 			}
 
-			fakeClient := fake.NewClientBuilder().
+			builder := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
-				Build()
+				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{})
+			if tt.interceptorFuncs != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptorFuncs)
+			}
+			fakeClient := builder.Build()
 
 			reconciler := &MCPRemoteProxyReconciler{
 				Client: fakeClient,
@@ -607,6 +731,19 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				assert.Error(t, err)
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
+				}
+
+				// Verify condition on in-memory object for error cases
+				if tt.expectCondition {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+					assert.NotNil(t, cond, "ExternalAuthConfigValidated condition should be set")
+					if cond != nil {
+						assert.Equal(t, tt.expectedCondStatus, cond.Status,
+							"Condition status should match expected")
+						assert.Equal(t, tt.expectedCondReason, cond.Reason,
+							"Condition reason should match expected")
+					}
 				}
 			} else {
 				assert.NoError(t, err)
@@ -627,6 +764,23 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					// Hash should be cleared when reference is removed
 					assert.Empty(t, updatedProxy.Status.ExternalAuthConfigHash,
 						"Status hash should be cleared when reference is removed")
+				}
+
+				// Verify condition (check in-memory object since conditions are set there)
+				if tt.expectCondition {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+					assert.NotNil(t, cond, "ExternalAuthConfigValidated condition should be set")
+					if cond != nil {
+						assert.Equal(t, tt.expectedCondStatus, cond.Status,
+							"Condition status should match expected")
+						assert.Equal(t, tt.expectedCondReason, cond.Reason,
+							"Condition reason should match expected")
+					}
+				} else {
+					cond := meta.FindStatusCondition(tt.proxy.Status.Conditions,
+						mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+					assert.Nil(t, cond, "ExternalAuthConfigValidated condition should not be set when no reference")
 				}
 			}
 		})

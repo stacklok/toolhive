@@ -418,6 +418,138 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assert.Contains(t, err.Error(), "conflict error")
 		assert.Equal(t, "unchanged", string(result))
 	})
+
+	t.Run("preserves existing Secrets and ImagePullSecrets when not specified (OpenShift compatibility)", func(t *testing.T) {
+		// This test verifies the fix for https://github.com/stacklok/toolhive/issues/3622
+		// On OpenShift, the openshift-controller-manager automatically manages Secrets and
+		// ImagePullSecrets fields on ServiceAccounts. If we overwrite these with nil during
+		// reconciliation, OpenShift creates new secrets while old ones become orphaned.
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := createTestOwner("owner-cm", "test-uid-openshift")
+
+		// Simulate an existing ServiceAccount with OpenShift-managed secrets
+		existingSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "openshift-sa",
+				Namespace: "default",
+				Labels: map[string]string{
+					"original": "label",
+				},
+			},
+			// These would be managed by OpenShift's controller-manager
+			Secrets: []corev1.ObjectReference{
+				{Name: "openshift-sa-token-abc123"},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "openshift-sa-dockercfg-xyz789"},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(owner, existingSA).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		// Update the SA without specifying Secrets or ImagePullSecrets
+		// This simulates what EnsureRBACResources does
+		updatedSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "openshift-sa",
+				Namespace: "default",
+				Labels: map[string]string{
+					"updated": "label",
+				},
+			},
+			// Secrets and ImagePullSecrets are nil - they should be preserved
+		}
+
+		result, err := client.UpsertServiceAccountWithOwnerReference(ctx, updatedSA, owner)
+
+		require.NoError(t, err)
+		assert.Equal(t, "updated", string(result))
+
+		// Verify the service account was updated but preserved existing secrets
+		retrieved, err := client.GetServiceAccount(ctx, "openshift-sa", "default")
+		require.NoError(t, err)
+
+		// Labels should be updated
+		assert.Equal(t, "label", retrieved.Labels["updated"])
+
+		// Secrets should be preserved (not overwritten with nil)
+		require.Len(t, retrieved.Secrets, 1, "Secrets should be preserved")
+		assert.Equal(t, "openshift-sa-token-abc123", retrieved.Secrets[0].Name)
+
+		// ImagePullSecrets should be preserved (not overwritten with nil)
+		require.Len(t, retrieved.ImagePullSecrets, 1, "ImagePullSecrets should be preserved")
+		assert.Equal(t, "openshift-sa-dockercfg-xyz789", retrieved.ImagePullSecrets[0].Name)
+
+		// Owner reference should be set
+		assertOwnerReference(t, retrieved.OwnerReferences, owner)
+	})
+
+	t.Run("overwrites Secrets and ImagePullSecrets when explicitly specified", func(t *testing.T) {
+		// Verify that when Secrets/ImagePullSecrets ARE specified, they get applied
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := createTestOwner("owner-cm", "test-uid-explicit")
+
+		existingSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "explicit-sa",
+				Namespace: "default",
+			},
+			Secrets: []corev1.ObjectReference{
+				{Name: "old-token"},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "old-dockercfg"},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(owner, existingSA).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		// Update with explicit new secrets
+		updatedSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "explicit-sa",
+				Namespace: "default",
+			},
+			Secrets: []corev1.ObjectReference{
+				{Name: "new-token"},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "new-dockercfg"},
+			},
+		}
+
+		result, err := client.UpsertServiceAccountWithOwnerReference(ctx, updatedSA, owner)
+
+		require.NoError(t, err)
+		assert.Equal(t, "updated", string(result))
+
+		retrieved, err := client.GetServiceAccount(ctx, "explicit-sa", "default")
+		require.NoError(t, err)
+
+		// Secrets should be overwritten with the new values
+		require.Len(t, retrieved.Secrets, 1)
+		assert.Equal(t, "new-token", retrieved.Secrets[0].Name)
+
+		// ImagePullSecrets should be overwritten with the new values
+		require.Len(t, retrieved.ImagePullSecrets, 1)
+		assert.Equal(t, "new-dockercfg", retrieved.ImagePullSecrets[0].Name)
+	})
 }
 
 func TestGetRole(t *testing.T) {

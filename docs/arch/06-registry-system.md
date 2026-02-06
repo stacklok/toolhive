@@ -788,17 +788,55 @@ thv run weather-server --image-verification enabled
 4. **Check repository**: Review source code
 5. **Monitor updates**: Track registry updates
 
-## Future: Upstream MCP Registry Format
+## Upstream MCP Registry Format
 
-ToolHive will support the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry):
+ToolHive supports the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry) alongside the legacy ToolHive format.
 
-**Migration plan:**
-1. **Read both formats**: ToolHive format + upstream format
-2. **Deprecation period**: Support both formats
+**Key features:**
+1. **Dual format support**: Both ToolHive-native and upstream MCP formats
+2. **Publisher-provided extensions**: ToolHive-specific metadata via `_meta["io.modelcontextprotocol.registry/publisher-provided"]`
+3. **Backward compatibility**: Legacy format continues to work
 
-**Timeline**: Planned for future release
+### Publisher-Provided Extensions
 
-**Implementation**: `pkg/registry/` (converter to be added)
+ToolHive uses the `io.modelcontextprotocol.registry/publisher-provided` extension mechanism to add custom metadata to MCP server definitions in the upstream format. This allows ToolHive to provide:
+
+- **Security permissions** for container-based servers
+- **OAuth/OIDC configuration** for remote servers
+- **Categorization metadata** (tags, tier, tools)
+- **Supply chain provenance** information
+- **Popularity metrics** (stars, pulls, last_updated)
+
+**Extension structure:**
+```json
+{
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "io.github.stacklok": {
+        "ghcr.io/stacklok/mcp-server-example:latest": {
+          "status": "active",
+          "tier": "Official",
+          "tools": ["example-tool"],
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": ["api.example.com"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+For the complete schema definition, see:
+- **Schema file**: `pkg/registry/data/publisher-provided.schema.json`
+- **Documentation**: `docs/registry/schema.md`
+- **Validation**: `pkg/registry/schema_validation.go`
+
+**Implementation**: `pkg/registry/` (supports both formats)
 
 ## Registry Operations
 

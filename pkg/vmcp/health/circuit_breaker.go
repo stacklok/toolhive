@@ -19,7 +19,7 @@ const (
 	// CircuitOpen indicates failing state - requests fail immediately
 	CircuitOpen CircuitState = "open"
 	// CircuitHalfOpen indicates recovery testing - limited requests allowed
-	CircuitHalfOpen CircuitState = "half_open"
+	CircuitHalfOpen CircuitState = "half-open"
 )
 
 // CircuitBreaker defines the interface for circuit breaker implementations.

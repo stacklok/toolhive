@@ -183,6 +183,32 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           VSCodeServer,
+			Description:          "Microsoft's VS Code Server (Mock)",
+			RelPath:              []string{"mock_vscode_server"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/servers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           MistralVibe,
+			Description:          "Mistral Vibe IDE (Mock)",
+			RelPath:              []string{"mock_mistral_vibe"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeArray,
+		},
+		{
+			ClientType:           Codex,
+			Description:          "OpenAI Codex CLI (Mock)",
+			RelPath:              []string{"mock_codex"},
+			SettingsFile:         "config.toml",
+			MCPServersPathPrefix: "/mcp_servers",
+			Extension:            TOML,
+			TOMLStorageType:      TOMLStorageTypeMap,
+		},
 	}
 }
 
@@ -371,6 +397,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Antigravity),
 					string(Zed),
 					string(GeminiCli),
+					string(VSCodeServer),
+					string(MistralVibe),
+					string(Codex),
 				},
 			},
 		}
@@ -466,6 +495,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case LMStudio, Trae, Kiro, Antigravity, GeminiCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
+			case VSCodeServer:
+				assert.Contains(t, string(content), `"servers":`,
+					"VSCodeServer config should contain servers key")
 			case OpenCode:
 				assert.Contains(t, string(content), `"mcp":`,
 					"OpenCode config should contain mcp key")
@@ -480,6 +512,10 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
 				assert.NotNil(t, content, "Continue config should be readable")
+			case MistralVibe, Codex:
+				// TOML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "TOML config should be readable")
 			}
 		}
 	})
@@ -514,7 +550,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+				MistralVibe, Codex:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -781,6 +818,119 @@ func TestCreateClientConfig(t *testing.T) {
 		hasExpectedError := strings.Contains(err.Error(), "failed to create client config file") ||
 			strings.Contains(err.Error(), "already exists")
 		assert.True(t, hasExpectedError, "Error should mention creation failure or file exists, got: %v", err.Error())
+	})
+}
+
+func TestCreateTOMLClientConfig(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(MistralVibe),
+				string(Codex),
+			},
+		},
+	}
+
+	t.Run("CreateTOMLArrayClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with array storage (MistralVibe)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           MistralVibe,
+				Description:          "Mistral Vibe IDE (Mock)",
+				RelPath:              []string{"mock_mistral_vibe"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeArray,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_mistral_vibe")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(MistralVibe)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateTOMLMapClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for TOML client with map storage (Codex)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Codex,
+				Description:          "OpenAI Codex CLI (Mock)",
+				RelPath:              []string{"mock_codex"},
+				SettingsFile:         "config.toml",
+				MCPServersPathPrefix: "/mcp_servers",
+				Extension:            TOML,
+				TOMLStorageType:      TOMLStorageTypeMap,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_codex")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new TOML file
+		cf, err := manager.CreateClientConfig(Codex)
+		require.NoError(t, err, "Should successfully create new TOML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (TOML files start empty like YAML)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "TOML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
 	})
 }
 
@@ -1126,4 +1276,201 @@ func TestBuildMCPServer(t *testing.T) {
 			assert.Equal(t, tt.expectType, server.Type, "Type field mismatch")
 		})
 	}
+}
+
+func TestGetAllClients(t *testing.T) {
+	t.Parallel()
+
+	clients := GetAllClients()
+
+	// Should return all 25 supported clients
+	assert.Len(t, clients, 25, "Expected 25 supported clients")
+
+	// Verify the list is sorted alphabetically
+	for i := 1; i < len(clients); i++ {
+		assert.True(t, clients[i-1] < clients[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clients[i-1], clients[i])
+	}
+
+	// Verify some known clients are in the list
+	expectedClients := []MCPClient{
+		RooCode, Cline, Cursor, VSCode, VSCodeInsider, ClaudeCode,
+		Windsurf, WindsurfJetBrains, AmpCli, LMStudio, Goose,
+		Continue, Zed, Codex, MistralVibe,
+	}
+
+	clientMap := make(map[MCPClient]bool)
+	for _, client := range clients {
+		clientMap[client] = true
+	}
+
+	for _, expected := range expectedClients {
+		assert.True(t, clientMap[expected], "Expected client %s to be in the list", expected)
+	}
+}
+
+func TestIsValidClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		client   string
+		expected bool
+	}{
+		{
+			name:     "Valid client - vscode",
+			client:   "vscode",
+			expected: true,
+		},
+		{
+			name:     "Valid client - claude-code",
+			client:   "claude-code",
+			expected: true,
+		},
+		{
+			name:     "Valid client - cursor",
+			client:   "cursor",
+			expected: true,
+		},
+		{
+			name:     "Valid client - codex",
+			client:   "codex",
+			expected: true,
+		},
+		{
+			name:     "Invalid client - unknown",
+			client:   "unknown",
+			expected: false,
+		},
+		{
+			name:     "Invalid client - empty",
+			client:   "",
+			expected: false,
+		},
+		{
+			name:     "Invalid client - invalid-name",
+			client:   "invalid-client",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := IsValidClient(tt.client)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetClientDescription(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		client      MCPClient
+		expectFound bool
+	}{
+		{
+			name:        "VSCode description",
+			client:      VSCode,
+			expectFound: true,
+		},
+		{
+			name:        "ClaudeCode description",
+			client:      ClaudeCode,
+			expectFound: true,
+		},
+		{
+			name:        "Cursor description",
+			client:      Cursor,
+			expectFound: true,
+		},
+		{
+			name:        "Invalid client",
+			client:      MCPClient("invalid"),
+			expectFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			description := GetClientDescription(tt.client)
+			if tt.expectFound {
+				assert.NotEmpty(t, description, "Expected non-empty description for %s", tt.client)
+			} else {
+				assert.Empty(t, description, "Expected empty description for invalid client")
+			}
+		})
+	}
+}
+
+func TestGetClientListFormatted(t *testing.T) {
+	t.Parallel()
+
+	formatted := GetClientListFormatted()
+
+	// Should not be empty
+	assert.NotEmpty(t, formatted)
+
+	// Should contain all expected clients with descriptions
+	assert.Contains(t, formatted, "vscode:")
+	assert.Contains(t, formatted, "claude-code:")
+	assert.Contains(t, formatted, "cursor:")
+	assert.Contains(t, formatted, "codex:")
+
+	// Should be formatted with bullet points and newlines
+	assert.Contains(t, formatted, "  -")
+	lines := strings.Split(formatted, "\n")
+	assert.Greater(t, len(lines), 20, "Expected more than 20 lines in formatted list")
+
+	// Verify the list is sorted alphabetically
+	// Extract client names from each line (format: "  - clientname: description")
+	var clientNames []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "  -") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				clientName := strings.TrimPrefix(strings.TrimSpace(parts[0]), "- ")
+				clientNames = append(clientNames, clientName)
+			}
+		}
+	}
+	for i := 1; i < len(clientNames); i++ {
+		assert.True(t, clientNames[i-1] < clientNames[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clientNames[i-1], clientNames[i])
+	}
+}
+
+func TestGetClientListCSV(t *testing.T) {
+	t.Parallel()
+
+	csv := GetClientListCSV()
+
+	// Should not be empty
+	assert.NotEmpty(t, csv)
+
+	// Should contain all expected clients
+	assert.Contains(t, csv, "vscode")
+	assert.Contains(t, csv, "claude-code")
+	assert.Contains(t, csv, "cursor")
+	assert.Contains(t, csv, "codex")
+
+	// Should be comma-separated
+	assert.Contains(t, csv, ", ")
+
+	// Verify the list is sorted alphabetically
+	clientNames := strings.Split(csv, ", ")
+	for i := 1; i < len(clientNames); i++ {
+		assert.True(t, clientNames[i-1] < clientNames[i],
+			"Clients should be sorted alphabetically, but %s comes after %s",
+			clientNames[i-1], clientNames[i])
+	}
+
+	// Count the number of clients (should be 25)
+	clients := strings.Split(csv, ", ")
+	assert.Len(t, clients, 25, "Expected 25 clients in CSV list")
 }

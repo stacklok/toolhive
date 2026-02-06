@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -109,6 +110,11 @@ type RunConfig struct {
 
 	// TokenExchangeConfig contains token exchange configuration for external authentication
 	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
+
+	// UpstreamSwapConfig contains configuration for upstream token swap middleware.
+	// When set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs
+	// for upstream IdP tokens before forwarding requests to the MCP server.
+	UpstreamSwapConfig *upstreamswap.Config `json:"upstream_swap_config,omitempty" yaml:"upstream_swap_config,omitempty"`
 
 	// DEPRECATED: Middleware configuration.
 	// AuthzConfig contains the authorization configuration

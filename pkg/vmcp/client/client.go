@@ -23,6 +23,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -563,16 +564,25 @@ func (h *httpBackendClient) CallTool(
 		logger.Debugf("Translating tool name: %s (client-facing) → %s (backend)", toolName, backendToolName)
 	}
 
+	// Inject W3C Trace Context into meta for distributed tracing.
+	// The meta map represents the contents of _meta, so we inject traceparent/tracestate
+	// directly as keys using InjectMetaTraceContext.
+	enrichedMeta := make(map[string]any)
+	for k, v := range meta {
+		enrichedMeta[k] = v
+	}
+	telemetry.InjectMetaTraceContext(ctx, enrichedMeta)
+
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(enrichedMeta),
 		},
 	})
 	if err != nil {
 		// Network/connection errors are operational errors
-		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %v", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
 	// Extract _meta field from backend response

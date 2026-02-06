@@ -77,6 +77,14 @@ func (c *Client) UpsertServiceAccount(ctx context.Context, serviceAccount *corev
 // If owner is provided, sets a controller reference to establish ownership.
 // This ensures the service account is garbage collected when the owner is deleted.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
+//
+// IMPORTANT: This function preserves existing Secrets and ImagePullSecrets fields
+// when the desired values are nil. This is critical for OpenShift compatibility,
+// where the openshift-controller-manager automatically manages these fields by
+// creating kubernetes.io/service-account-token and kubernetes.io/dockercfg secrets.
+// Overwriting these fields with nil causes OpenShift to create new secrets on each
+// reconciliation, leading to unbounded secret accumulation.
+// See: https://github.com/operator-framework/operator-sdk/issues/6494
 func (c *Client) upsertServiceAccount(
 	ctx context.Context,
 	serviceAccount *corev1.ServiceAccount,
@@ -104,8 +112,18 @@ func (c *Client) upsertServiceAccount(
 		existing.Labels = desiredLabels
 		existing.Annotations = desiredAnnotations
 		existing.AutomountServiceAccountToken = desiredAutomountServiceAccountToken
-		existing.ImagePullSecrets = desiredImagePullSecrets
-		existing.Secrets = desiredSecrets
+
+		// Preserve existing Secrets and ImagePullSecrets if not explicitly set.
+		// On OpenShift, the openshift-controller-manager automatically manages these
+		// fields by creating token and dockercfg secrets. If we overwrite them with
+		// nil/empty values, OpenShift will detect the SA as "missing dockercfg" and
+		// create new secrets, while the old ones become orphaned.
+		if desiredImagePullSecrets != nil {
+			existing.ImagePullSecrets = desiredImagePullSecrets
+		}
+		if desiredSecrets != nil {
+			existing.Secrets = desiredSecrets
+		}
 
 		// Set owner reference if provided
 		if owner != nil {

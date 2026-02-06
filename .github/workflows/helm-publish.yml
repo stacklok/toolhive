@@ -102,9 +102,9 @@ jobs:
       - name: Push to GHCR
         id: push
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           OUTPUT=$(helm push ${{ matrix.chart.name }}-${{ steps.version.outputs.version }}.tgz \
-            oci://${{ env.REGISTRY }}/${OWNER} 2>&1)
+            oci://${{ env.REGISTRY }}/${REPO} 2>&1)
           echo "$OUTPUT"
 
           # Extract digest from helm push output (e.g., "Digest: sha256:abc123...")
@@ -114,12 +114,12 @@ jobs:
             echo "Captured digest: $DIGEST"
           fi
 
-          echo "Pushed chart to: oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }}"
+          echo "Pushed chart to: oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }}"
 
       - name: Sign Helm chart with Cosign
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          CHART_REF="${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}"
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          CHART_REF="${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}"
           DIGEST="${{ steps.push.outputs.digest }}"
 
           if [ -n "$DIGEST" ]; then
@@ -133,32 +133,32 @@ jobs:
 
       - name: Verify published chart
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          helm show chart oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }} \
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          helm show chart oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }} \
             --version ${{ steps.version.outputs.version }}
 
       - name: Summary
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "## Helm Chart Published: ${{ matrix.chart.name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Chart | \`${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Registry | \`oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Signed | ✅ Yes (Cosign keyless) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Installation" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "helm install my-release oci://${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }} --version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "helm install my-release oci://${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }} --version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Verify Signature" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "cosign verify ${{ env.REGISTRY }}/${OWNER}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }} \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "cosign verify ${{ env.REGISTRY }}/${REPO}/${{ matrix.chart.name }}:${{ steps.version.outputs.version }} \\\\" >> $GITHUB_STEP_SUMMARY
           echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> $GITHUB_STEP_SUMMARY
           echo "  --certificate-identity-regexp https://github.com/${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

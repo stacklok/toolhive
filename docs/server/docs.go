@@ -404,7 +404,9 @@ const docTemplate = `{
                     "antigravity",
                     "zed",
                     "gemini-cli",
-                    "vscode-server"
+                    "vscode-server",
+                    "mistral-vibe",
+                    "codex"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -430,7 +432,9 @@ const docTemplate = `{
                     "Antigravity",
                     "Zed",
                     "GeminiCli",
-                    "VSCodeServer"
+                    "VSCodeServer",
+                    "MistralVibe",
+                    "Codex"
                 ]
             },
             "client.MCPClientStatus": {
@@ -829,9 +833,42 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "registry.KubernetesMetadata": {
+                "description": "Kubernetes contains Kubernetes-specific metadata when the MCP server is deployed in a cluster.\nThis field is optional and only populated when:\n- The server is served from ToolHive Registry Server\n- The server was auto-discovered from a Kubernetes deployment\n- The Kubernetes resource has the required registry annotations",
+                "properties": {
+                    "image": {
+                        "description": "Image is the container image used by the Kubernetes workload (applicable to MCPServer)",
+                        "type": "string"
+                    },
+                    "kind": {
+                        "description": "Kind is the Kubernetes resource kind (e.g., MCPServer, VirtualMCPServer, MCPRemoteProxy)",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the Kubernetes resource name",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the Kubernetes namespace where the resource is deployed",
+                        "type": "string"
+                    },
+                    "transport": {
+                        "description": "Transport is the transport type configured for the Kubernetes workload (applicable to MCPServer)",
+                        "type": "string"
+                    },
+                    "uid": {
+                        "description": "UID is the Kubernetes resource UID",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "registry.Metadata": {
                 "description": "Metadata contains additional information about the server such as popularity metrics",
                 "properties": {
+                    "kubernetes": {
+                        "$ref": "#/components/schemas/registry.KubernetesMetadata"
+                    },
                     "last_updated": {
                         "description": "LastUpdated is the timestamp when the server was last updated, in RFC3339 format",
                         "type": "string"
@@ -1410,6 +1447,130 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "skills.BuildResult": {
+                "properties": {
+                    "reference": {
+                        "description": "Reference is the OCI reference of the built skill artifact.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "skills.InstallStatus": {
+                "description": "Status is the current installation status.",
+                "enum": [
+                    "installed",
+                    "pending",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "InstallStatusInstalled",
+                    "InstallStatusPending",
+                    "InstallStatusFailed"
+                ]
+            },
+            "skills.InstalledSkill": {
+                "description": "InstalledSkill is set if the skill is installed.",
+                "properties": {
+                    "clients": {
+                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.MCPClient to a shared package so it can be used here instead of []string.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "installed_at": {
+                        "description": "InstalledAt is the timestamp when the skill was installed.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/skills.SkillMetadata"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/skills.Scope"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/skills.InstallStatus"
+                    }
+                },
+                "type": "object"
+            },
+            "skills.Scope": {
+                "description": "Scope from which to uninstall",
+                "enum": [
+                    "user",
+                    "system"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ScopeUser",
+                    "ScopeSystem"
+                ]
+            },
+            "skills.SkillInfo": {
+                "properties": {
+                    "installed": {
+                        "description": "Installed indicates whether the skill is currently installed.",
+                        "type": "boolean"
+                    },
+                    "installed_skill": {
+                        "$ref": "#/components/schemas/skills.InstalledSkill"
+                    },
+                    "metadata": {
+                        "$ref": "#/components/schemas/skills.SkillMetadata"
+                    }
+                },
+                "type": "object"
+            },
+            "skills.SkillMetadata": {
+                "description": "Metadata contains the skill's metadata.",
+                "properties": {
+                    "author": {
+                        "description": "Author is the skill author or maintainer.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is a human-readable description of the skill.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the unique name of the skill.",
+                        "type": "string"
+                    },
+                    "tags": {
+                        "description": "Tags is a list of tags for categorization.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "version": {
+                        "description": "Version is the semantic version of the skill.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "skills.ValidationResult": {
+                "properties": {
+                    "errors": {
+                        "description": "Errors is a list of validation errors, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "valid": {
+                        "description": "Valid indicates whether the skill definition is valid.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "telemetry.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
@@ -1610,6 +1771,20 @@ const docTemplate = `{
                 "properties": {
                     "type": {
                         "description": "Registry type after update",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v1.buildSkillRequest": {
+                "description": "Request to build a skill from a local directory",
+                "properties": {
+                    "path": {
+                        "description": "Path to the skill definition directory",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "OCI tag for the built artifact",
                         "type": "string"
                     }
                 },
@@ -1974,6 +2149,32 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "v1.installSkillRequest": {
+                "description": "Request to install a skill",
+                "properties": {
+                    "name": {
+                        "description": "Name or OCI reference of the skill to install",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/skills.Scope"
+                    },
+                    "version": {
+                        "description": "Version to install (empty means latest)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v1.installSkillResponse": {
+                "description": "Response after successfully installing a skill",
+                "properties": {
+                    "skill": {
+                        "$ref": "#/components/schemas/skills.InstalledSkill"
+                    }
+                },
+                "type": "object"
+            },
             "v1.listSecretsResponse": {
                 "description": "Response containing a list of secret keys",
                 "properties": {
@@ -2070,6 +2271,16 @@ const docTemplate = `{
                     "can_write": {
                         "description": "Whether the provider can write secrets",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "v1.pushSkillRequest": {
+                "description": "Request to push a built skill artifact",
+                "properties": {
+                    "reference": {
+                        "description": "OCI reference to push",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -2218,6 +2429,20 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "v1.skillListResponse": {
+                "description": "Response containing a list of installed skills",
+                "properties": {
+                    "skills": {
+                        "description": "List of installed skills",
+                        "items": {
+                            "$ref": "#/components/schemas/skills.InstalledSkill"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "v1.toolOverride": {
                 "description": "Tool override",
                 "properties": {
@@ -2228,6 +2453,19 @@ const docTemplate = `{
                     "name": {
                         "description": "Name of the tool",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v1.uninstallSkillRequest": {
+                "description": "Request to uninstall a skill",
+                "properties": {
+                    "name": {
+                        "description": "Name of the skill to uninstall",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/skills.Scope"
                     }
                 },
                 "type": "object"
@@ -2366,6 +2604,16 @@ const docTemplate = `{
                     },
                     "message": {
                         "description": "Success message",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v1.validateSkillRequest": {
+                "description": "Request to validate a skill definition",
+                "properties": {
+                    "path": {
+                        "description": "Path to the skill definition directory",
                         "type": "string"
                     }
                 },
@@ -3631,6 +3879,334 @@ const docTemplate = `{
                 "summary": "Update a secret",
                 "tags": [
                     "secrets"
+                ]
+            }
+        },
+        "/api/v1beta/skills": {
+            "get": {
+                "description": "Get a list of all installed skills",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/v1.skillListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "List all installed skills",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/build": {
+            "post": {
+                "description": "Build a skill from a local directory",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.buildSkillRequest",
+                                        "summary": "request",
+                                        "description": "Build request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Build request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/skills.BuildResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Build a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/install": {
+            "post": {
+                "description": "Install a skill from a remote source",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.installSkillRequest",
+                                        "summary": "request",
+                                        "description": "Install request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Install request",
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/v1.installSkillResponse"
+                                }
+                            }
+                        },
+                        "description": "Created"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Install a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/push": {
+            "post": {
+                "description": "Push a built skill artifact to a remote registry",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.pushSkillRequest",
+                                        "summary": "request",
+                                        "description": "Push request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Push request",
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Push a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/uninstall": {
+            "post": {
+                "description": "Remove an installed skill",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.uninstallSkillRequest",
+                                        "summary": "request",
+                                        "description": "Uninstall request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Uninstall request",
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Uninstall a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/validate": {
+            "post": {
+                "description": "Validate a skill definition",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.validateSkillRequest",
+                                        "summary": "request",
+                                        "description": "Validate request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Validate request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/skills.ValidationResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Validate a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/{name}": {
+            "get": {
+                "description": "Get detailed information about a specific skill",
+                "parameters": [
+                    {
+                        "description": "Skill name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/skills.SkillInfo"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Get skill details",
+                "tags": [
+                    "skills"
                 ]
             }
         },

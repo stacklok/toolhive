@@ -34,7 +34,10 @@ func TestProcessBackendTools(t *testing.T) {
 			wantNames:      []string{"create_pr", "merge_pr"},
 		},
 		{
-			name:      "filter only specific tools",
+			// NOTE: processBackendTools does NOT apply Filter - it's applied
+			// later in MergeCapabilities (via shouldAdvertiseTool). This allows
+			// the routing table to contain all tools for composite tools.
+			name:      "filter is ignored by processBackendTools (applied in MergeCapabilities)",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
@@ -45,8 +48,8 @@ func TestProcessBackendTools(t *testing.T) {
 				Workload: "github",
 				Filter:   []string{"create_pr", "merge_pr"},
 			},
-			wantCount: 2,
-			wantNames: []string{"create_pr", "merge_pr"},
+			wantCount: 3, // All tools pass through - Filter is applied later in MergeCapabilities
+			wantNames: []string{"create_pr", "merge_pr", "list_prs"},
 		},
 		{
 			name:      "override tool names",
@@ -65,7 +68,9 @@ func TestProcessBackendTools(t *testing.T) {
 			wantNames: []string{"gh_create_issue", "list_repos"},
 		},
 		{
-			name:      "filter and override combined",
+			// Filter is not applied here, but override is
+			// All tools pass through with overrides applied
+			name:      "filter ignored but override applied",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
@@ -74,14 +79,14 @@ func TestProcessBackendTools(t *testing.T) {
 			},
 			workloadConfig: &config.WorkloadToolConfig{
 				Workload: "github",
-				// Filter uses user-facing names (after override)
+				// Filter is ignored in processBackendTools (applied later)
 				Filter: []string{"gh_create_pr", "merge_pr"},
 				Overrides: map[string]*config.ToolOverride{
 					"create_pr": {Name: "gh_create_pr"},
 				},
 			},
-			wantCount: 2,
-			wantNames: []string{"gh_create_pr", "merge_pr"},
+			wantCount: 3, // All tools pass through - Filter is applied later
+			wantNames: []string{"gh_create_pr", "merge_pr", "delete_pr"},
 		},
 		{
 			name:      "description override only",
@@ -136,8 +141,8 @@ func TestProcessBackendTools(t *testing.T) {
 			wantNames: []string{"create_pr", "merge_pr"},
 		},
 		{
-			// ExcludeAll is ignored here; filter is still applied
-			name:      "excludeAll is ignored but filter still applies",
+			// Both ExcludeAll and Filter are ignored here; applied in MergeCapabilities
+			name:      "both excludeAll and filter are ignored by processBackendTools",
 			backendID: "github",
 			tools: []vmcp.Tool{
 				{Name: "create_pr", Description: "Create PR", BackendID: "github"},
@@ -148,8 +153,8 @@ func TestProcessBackendTools(t *testing.T) {
 				ExcludeAll: true,
 				Filter:     []string{"create_pr"},
 			},
-			wantCount: 1, // Filter is applied, ExcludeAll is not
-			wantNames: []string{"create_pr"},
+			wantCount: 2, // All tools pass through - both ExcludeAll and Filter applied later
+			wantNames: []string{"create_pr", "merge_pr"},
 		},
 		{
 			// ExcludeAll is ignored here; overrides are still applied

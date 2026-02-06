@@ -50,7 +50,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
@@ -174,6 +174,43 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				assert.Contains(t, container.Args, "--foreground=true")
 				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
 				assert.Len(t, container.Args, 3, "Args should only contain base arguments")
+			},
+		},
+		{
+			name: "deprecated port field",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "legacy-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      9090,
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				assert.Equal(t, int32(9090), container.Ports[0].ContainerPort)
+			},
+		},
+		{
+			name: "proxyPort takes precedence over port",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "precedence-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8081,
+					Port:      9091,
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				assert.Equal(t, int32(8081), container.Ports[0].ContainerPort)
 			},
 		},
 	}
@@ -841,6 +878,67 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 				assert.True(t, secretsProviderFound, "TOOLHIVE_SECRETS_PROVIDER should be set to 'environment'")
 				assert.True(t, apiKeyFound, "X-API-Key header secret should be referenced")
 				assert.True(t, authFound, "Authorization header secret should be referenced")
+			},
+		},
+		{
+			name: "with bearer token",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "mcp-proxy",
+						},
+					},
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "bearer-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "bearer-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+			clientSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bearer-secret",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"token": []byte("my-bearer-token"),
+				},
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				found := false
+				for _, env := range envVars {
+					if env.Name == "TOOLHIVE_SECRET_bearer-secret" {
+						require.NotNil(t, env.ValueFrom)
+						require.NotNil(t, env.ValueFrom.SecretKeyRef)
+						assert.Equal(t, "bearer-secret", env.ValueFrom.SecretKeyRef.Name)
+						assert.Equal(t, "token", env.ValueFrom.SecretKeyRef.Key)
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Bearer token secret should be referenced as TOOLHIVE_SECRET_bearer-secret")
 			},
 		},
 	}

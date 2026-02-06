@@ -97,11 +97,11 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		return nil, fmt.Errorf("%w: %s: %w", ErrBackendQueryFailed, backend.ID, err)
 	}
 
-	// Apply per-backend tool filtering and overrides (before conflict resolution)
-	// NOTE: ExcludeAll (both global and per-workload) is NOT applied here.
-	// This is intentional - we need all tools in the routing table so composite
-	// tools can call backend tools. ExcludeAll is applied in MergeCapabilities
-	// to control which tools are advertised to the LLM.
+	// Apply per-backend tool overrides (before conflict resolution)
+	// NOTE: ExcludeAll and Filter are NOT applied here. This is intentional -
+	// we need all tools in the routing table so composite tools can call backend
+	// tools. ExcludeAll and Filter are applied in MergeCapabilities (via
+	// shouldAdvertiseTool) to control which tools are advertised to MCP clients.
 	processedTools := processBackendTools(ctx, backend.ID, capabilities.Tools, a.toolConfigMap[backend.ID])
 
 	// Convert to BackendCapabilities
@@ -312,12 +312,12 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Convert resolved tools to final vmcp.Tool format
 	// The routing table gets ALL tools (for composite tool routing)
-	// The advertised tools list only gets non-excluded tools (for LLM)
+	// The advertised tools list only gets non-excluded/non-filtered tools (for MCP clients)
 	tools := make([]vmcp.Tool, 0, len(resolved.Tools))
 	for _, resolvedTool := range resolved.Tools {
 		// Check if this tool should be excluded from the advertised list
-		// ExcludeAll only affects advertising, not routing
-		shouldAdvertise := a.shouldAdvertiseTool(resolvedTool.BackendID)
+		// ExcludeAll and Filter only affect advertising, not routing
+		shouldAdvertise := a.shouldAdvertiseTool(resolvedTool.BackendID, resolvedTool.OriginalName)
 
 		if shouldAdvertise {
 			tools = append(tools, vmcp.Tool{
@@ -488,25 +488,49 @@ func (a *defaultAggregator) AggregateCapabilities(
 }
 
 // shouldAdvertiseTool returns true if a tool from the given backend should be
-// advertised to the LLM (included in tools/list response).
+// advertised to MCP clients (included in tools/list response).
 //
-// ExcludeAll settings control advertising, not routing:
-// - Tools excluded via ExcludeAll are NOT advertised to the LLM
+// ExcludeAll, Filter, and per-workload settings control advertising, not routing:
+// - Tools excluded via ExcludeAll are NOT advertised to MCP clients
+// - Tools not matching Filter are NOT advertised to MCP clients
 // - BUT they ARE available in the routing table for composite tools to use
 //
 // This enables the use case where you want to hide raw backend tools from
-// direct LLM access while still allowing curated composite workflows to use them.
-func (a *defaultAggregator) shouldAdvertiseTool(backendID string) bool {
+// direct client access while still allowing curated composite workflows to use them.
+//
+// Parameters:
+//   - backendID: The ID of the backend that owns the tool
+//   - originalToolName: The original tool name (before overrides) for filter matching
+func (a *defaultAggregator) shouldAdvertiseTool(backendID, originalToolName string) bool {
 	// Global ExcludeAllTools takes precedence - excludes all tools from all backends
 	if a.excludeAllTools {
 		return false
 	}
 
+	// Check per-workload settings
+	wlConfig, exists := a.toolConfigMap[backendID]
+	if !exists {
+		// No config for this backend, advertise the tool
+		return true
+	}
+
 	// Check per-workload ExcludeAll setting
-	if wlConfig, exists := a.toolConfigMap[backendID]; exists && wlConfig.ExcludeAll {
+	if wlConfig.ExcludeAll {
 		return false
 	}
 
-	// Tool should be advertised
+	// Check per-workload Filter setting
+	// Filter is a positive list - if non-empty, only tools matching the filter are advertised
+	if len(wlConfig.Filter) > 0 {
+		for _, allowedTool := range wlConfig.Filter {
+			if allowedTool == originalToolName {
+				return true // Tool matches filter, advertise it
+			}
+		}
+		// Tool doesn't match any filter entry, don't advertise
+		return false
+	}
+
+	// No filter configured, advertise the tool
 	return true
 }

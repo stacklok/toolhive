@@ -352,6 +352,8 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.ToolConfigRef == nil {
+		// Remove condition if ToolConfigRef is not set
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated)
 		if proxy.Status.ToolConfigHash != "" {
 			proxy.Status.ToolConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -363,12 +365,36 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 
 	toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 	if err != nil {
-		return err
+		if errors.IsNotFound(err) {
+			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
+				Message: fmt.Sprintf("MCPToolConfig '%s' not found in namespace '%s'",
+					proxy.Spec.ToolConfigRef.Name, proxy.Namespace),
+				ObservedGeneration: proxy.Generation,
+			})
+			return fmt.Errorf("MCPToolConfig '%s' not found in namespace '%s'",
+				proxy.Spec.ToolConfigRef.Name, proxy.Namespace)
+		}
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigFetchError,
+			Message:            "Failed to fetch MCPToolConfig",
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("failed to fetch MCPToolConfig: %w", err)
 	}
 
-	if toolConfig == nil {
-		return fmt.Errorf("MCPToolConfig %s not found", proxy.Spec.ToolConfigRef.Name)
-	}
+	// ToolConfig found and valid
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid,
+		Message:            fmt.Sprintf("MCPToolConfig '%s' is valid", toolConfig.Name),
+		ObservedGeneration: proxy.Generation,
+	})
 
 	if proxy.Status.ToolConfigHash != toolConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPToolConfig has changed, updating MCPRemoteProxy",
@@ -390,6 +416,8 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.ExternalAuthConfigRef == nil {
+		// Remove condition if ExternalAuthConfigRef is not set
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
 		if proxy.Status.ExternalAuthConfigHash != "" {
 			proxy.Status.ExternalAuthConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -401,12 +429,36 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 
 	externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 	if err != nil {
-		return err
+		if errors.IsNotFound(err) {
+			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+					proxy.Spec.ExternalAuthConfigRef.Name, proxy.Namespace),
+				ObservedGeneration: proxy.Generation,
+			})
+			return fmt.Errorf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+				proxy.Spec.ExternalAuthConfigRef.Name, proxy.Namespace)
+		}
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
+			Message:            "Failed to fetch MCPExternalAuthConfig",
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
-	if externalAuthConfig == nil {
-		return fmt.Errorf("MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name)
-	}
+	// ExternalAuthConfig found and valid
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", externalAuthConfig.Name),
+		ObservedGeneration: proxy.Generation,
+	})
 
 	if proxy.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
 		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPRemoteProxy",

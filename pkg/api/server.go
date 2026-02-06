@@ -38,6 +38,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -63,6 +64,7 @@ type ServerBuilder struct {
 	clientManager    client.Manager
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
+	skillManager     skills.SkillService
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -136,6 +138,12 @@ func (b *ServerBuilder) WithWorkloadManager(manager workloads.Manager) *ServerBu
 // WithGroupManager sets the group manager
 func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder {
 	b.groupManager = manager
+	return b
+}
+
+// WithSkillManager sets the skill service manager
+func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
+	b.skillManager = manager
 	return b
 }
 
@@ -237,6 +245,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
+		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
 	}
 
 	// Only mount docs router if enabled

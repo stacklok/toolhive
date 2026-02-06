@@ -18,31 +18,31 @@ Remove a client from MCP server configuration
 Remove a client from MCP server configuration.
 
 Valid clients:
-  - amp-cli: Sourcegraph Amp CLI
-  - amp-cursor: Sourcegraph Amp extension for Cursor
-  - amp-vscode: Sourcegraph Amp extension for VS Code
-  - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
-  - amp-windsurf: Sourcegraph Amp extension for Windsurf
-  - antigravity: Google Antigravity IDE
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - codex: OpenAI Codex CLI
-  - continue: Continue.dev extensions for VS Code and JetBrains
+  - roo-code: VS Code Roo Code extension
+  - cline: VS Code Cline extension
+  - vscode-insider: Visual Studio Code Insiders
+  - vscode: Visual Studio Code
   - cursor: Cursor editor
-  - gemini-cli: Google Gemini CLI
-  - goose: Goose AI agent
-  - kiro: Kiro AI IDE
-  - lm-studio: LM Studio application
-  - mistral-vibe: Mistral Vibe IDE
-  - opencode: OpenCode editor
-  - roo-code: Roo Code extension for VS Code
-  - trae: Trae IDE
-  - vscode: Visual Studio Code (GitHub Copilot)
-  - vscode-insider: Visual Studio Code Insiders edition
-  - vscode-server: VS Code Server (remote development)
+  - claude-code: Claude Code CLI
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs
+  - windsurf-jetbrains: Windsurf plugin for JetBrains IDEs
+  - amp-cli: Sourcegraph Amp CLI
+  - amp-vscode: VS Code Sourcegraph Amp extension
+  - amp-vscode-insider: VS Code Insiders Sourcegraph Amp extension
+  - amp-cursor: Cursor Sourcegraph Amp extension
+  - amp-windsurf: Windsurf Sourcegraph Amp extension
+  - lm-studio: LM Studio application
+  - goose: Goose AI agent
+  - trae: Trae IDE
+  - continue: Continue.dev IDE plugins
+  - opencode: OpenCode editor
+  - kiro: Kiro AI IDE
+  - antigravity: Google Antigravity IDE
   - zed: Zed editor
+  - gemini-cli: Google Gemini CLI
+  - vscode-server: Microsoft's VS Code Server (remote development)
+  - mistral-vibe: Mistral Vibe IDE
+  - codex: OpenAI Codex CLI
 
 ```
 thv client remove [client] [flags]

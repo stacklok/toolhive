@@ -107,8 +107,12 @@ spec:
                             type: array
                         type: object
                       excludeAllTools:
-                        description: ExcludeAllTools excludes all tools from aggregation
-                          when true.
+                        description: |-
+                          ExcludeAllTools hides all backend tools from MCP clients when true.
+                          Hidden tools are NOT advertised in tools/list responses, but they ARE
+                          available in the routing table for composite tools to use.
+                          This enables the use case where you want to hide raw backend tools from
+                          direct client access while exposing curated composite tool workflows.
                         type: boolean
                       tools:
                         description: Tools defines per-workload tool filtering and
@@ -118,12 +122,20 @@ spec:
                             overrides for a specific workload.
                           properties:
                             excludeAll:
-                              description: ExcludeAll excludes all tools from this
-                                workload when true.
+                              description: |-
+                                ExcludeAll hides all tools from this workload from MCP clients when true.
+                                Hidden tools are NOT advertised in tools/list responses, but they ARE
+                                available in the routing table for composite tools to use.
+                                This enables the use case where you want to hide raw backend tools from
+                                direct client access while exposing curated composite tool workflows.
                               type: boolean
                             filter:
                               description: |-
-                                Filter is an inline list of tool names to allow (allow list).
+                                Filter is an allow-list of tool names to advertise to MCP clients.
+                                Tools NOT in this list are hidden from clients (not in tools/list response)
+                                but remain available in the routing table for composite tools to use.
+                                This enables selective exposure of backend tools while allowing composite
+                                workflows to orchestrate all backend capabilities.
                                 Only used if ToolConfigRef is not specified.
                               items:
                                 type: string
@@ -141,7 +153,9 @@ spec:
                                     type: string
                                 type: object
                               description: |-
-                                Overrides is an inline map of tool overrides.
+                                Overrides is an inline map of tool overrides for renaming and description changes.
+                                Overrides are applied to tools before conflict resolution and affect both
+                                advertising and routing (the overridden name is used everywhere).
                                 Only used if ToolConfigRef is not specified.
                               type: object
                             toolConfigRef:

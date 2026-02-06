@@ -19,15 +19,15 @@ Remove a client from MCP server configuration.
 
 Valid clients:
   - amp-cli: Sourcegraph Amp CLI
-  - amp-cursor: Sourcegraph Amp extension for Cursor
-  - amp-vscode: Sourcegraph Amp extension for VS Code
-  - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
-  - amp-windsurf: Sourcegraph Amp extension for Windsurf
+  - amp-cursor: Cursor Sourcegraph Amp extension
+  - amp-vscode: VS Code Sourcegraph Amp extension
+  - amp-vscode-insider: VS Code Insiders Sourcegraph Amp extension
+  - amp-windsurf: Windsurf Sourcegraph Amp extension
   - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
+  - cline: VS Code Cline extension
   - codex: OpenAI Codex CLI
-  - continue: Continue.dev extensions for VS Code and JetBrains
+  - continue: Continue.dev IDE plugins
   - cursor: Cursor editor
   - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
@@ -35,13 +35,13 @@ Valid clients:
   - lm-studio: LM Studio application
   - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
-  - roo-code: Roo Code extension for VS Code
+  - roo-code: VS Code Roo Code extension
   - trae: Trae IDE
-  - vscode: Visual Studio Code (GitHub Copilot)
-  - vscode-insider: Visual Studio Code Insiders edition
-  - vscode-server: VS Code Server (remote development)
+  - vscode: Visual Studio Code
+  - vscode-insider: Visual Studio Code Insiders
+  - vscode-server: Microsoft's VS Code Server (remote development)
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs
+  - windsurf-jetbrains: Windsurf plugin for JetBrains IDEs
   - zed: Zed editor
 
 ```

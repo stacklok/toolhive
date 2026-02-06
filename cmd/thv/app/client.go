@@ -47,34 +47,10 @@ var clientSetupCmd = &cobra.Command{
 var clientRegisterCmd = &cobra.Command{
 	Use:   "register [client]",
 	Short: "Register a client for MCP server configuration",
-	Long: `Register a client for MCP server configuration.
+	Long: fmt.Sprintf(`Register a client for MCP server configuration.
 
 Valid clients:
-  - amp-cli: Sourcegraph Amp CLI
-  - amp-cursor: Sourcegraph Amp extension for Cursor
-  - amp-vscode: Sourcegraph Amp extension for VS Code
-  - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
-  - amp-windsurf: Sourcegraph Amp extension for Windsurf
-  - antigravity: Google Antigravity IDE
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - codex: OpenAI Codex CLI
-  - continue: Continue.dev extensions for VS Code and JetBrains
-  - cursor: Cursor editor
-  - gemini-cli: Google Gemini CLI
-  - goose: Goose AI agent
-  - kiro: Kiro AI IDE
-  - lm-studio: LM Studio application
-  - mistral-vibe: Mistral Vibe IDE
-  - opencode: OpenCode editor
-  - roo-code: Roo Code extension for VS Code
-  - trae: Trae IDE
-  - vscode: Visual Studio Code (GitHub Copilot)
-  - vscode-insider: Visual Studio Code Insiders edition
-  - vscode-server: VS Code Server (remote development)
-  - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs
-  - zed: Zed editor`,
+%s`, client.GetClientListFormatted()),
 	Args: cobra.ExactArgs(1),
 	RunE: clientRegisterCmdFunc,
 }
@@ -82,34 +58,10 @@ Valid clients:
 var clientRemoveCmd = &cobra.Command{
 	Use:   "remove [client]",
 	Short: "Remove a client from MCP server configuration",
-	Long: `Remove a client from MCP server configuration.
+	Long: fmt.Sprintf(`Remove a client from MCP server configuration.
 
 Valid clients:
-  - amp-cli: Sourcegraph Amp CLI
-  - amp-cursor: Sourcegraph Amp extension for Cursor
-  - amp-vscode: Sourcegraph Amp extension for VS Code
-  - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
-  - amp-windsurf: Sourcegraph Amp extension for Windsurf
-  - antigravity: Google Antigravity IDE
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - codex: OpenAI Codex CLI
-  - continue: Continue.dev extensions for VS Code and JetBrains
-  - cursor: Cursor editor
-  - gemini-cli: Google Gemini CLI
-  - goose: Goose AI agent
-  - kiro: Kiro AI IDE
-  - lm-studio: LM Studio application
-  - mistral-vibe: Mistral Vibe IDE
-  - opencode: OpenCode editor
-  - roo-code: Roo Code extension for VS Code
-  - trae: Trae IDE
-  - vscode: Visual Studio Code (GitHub Copilot)
-  - vscode-insider: Visual Studio Code Insiders edition
-  - vscode-server: VS Code Server (remote development)
-  - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs
-  - zed: Zed editor`,
+%s`, client.GetClientListFormatted()),
 	Args: cobra.ExactArgs(1),
 	RunE: clientRemoveCmdFunc,
 }
@@ -214,17 +166,8 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 	clientType := args[0]
 
 	// Validate the client type
-	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "vscode-server", "windsurf", "windsurf-jetbrains",
-		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro", "antigravity", "zed", "gemini-cli", "mistral-vibe", "codex":
-		// Valid client type
-	default:
-		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, vscode-server, "+
-				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro, antigravity, zed, gemini-cli, mistral-vibe, codex)",
-			clientType)
+	if !client.IsValidClient(clientType) {
+		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
 	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupAddNames)
@@ -234,17 +177,8 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	clientType := args[0]
 
 	// Validate the client type
-	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "vscode-server", "windsurf", "windsurf-jetbrains",
-		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro", "antigravity", "zed", "gemini-cli", "mistral-vibe", "codex":
-		// Valid client type
-	default:
-		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, vscode-server, "+
-				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro, antigravity, zed, gemini-cli, mistral-vibe, codex)",
-			clientType)
+	if !client.IsValidClient(clientType) {
+		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
 	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupRmNames)

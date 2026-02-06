@@ -43,11 +43,212 @@ ToolHive uses multiple JSON schemas for different purposes:
 - **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/publisher-provided.schema.json`
 - **Purpose**: Defines the structure of ToolHive-specific metadata placed under `_meta["io.modelcontextprotocol.registry/publisher-provided"]` in MCP server definitions
 
-The publisher-provided schema defines extensions for both container-based and remote MCP servers, including:
+The publisher-provided extensions schema allows ToolHive and other publishers to add custom metadata to MCP server definitions in the upstream registry format. This metadata is stored in the `_meta` object under the key `io.modelcontextprotocol.registry/publisher-provided`.
 
-- **Common fields**: `status`, `tier`, `tools`, `tags`, `metadata`, `custom_metadata`
-- **Container server fields**: `permissions`, `args`, `provenance`, `docker_tags`, `proxy_port`
-- **Remote server fields**: `oauth_config`, `env_vars`
+#### Schema Structure
+
+The extensions are organized by publisher namespace. ToolHive uses the `io.github.stacklok` namespace, with server-specific extensions keyed by their identifier:
+
+- **Container servers**: Keyed by OCI image reference (e.g., `ghcr.io/stacklok/mcp-server-example:latest`)
+- **Remote servers**: Keyed by URL (e.g., `https://api.example.com/mcp`)
+
+```json
+{
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "io.github.stacklok": {
+        "ghcr.io/stacklok/mcp-server-example:latest": {
+          "status": "active",
+          "tier": "Official",
+          "tools": ["example-tool"],
+          "tags": ["example", "demo"],
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": ["api.example.com"],
+                "allow_port": [443]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Common Fields
+
+These fields are available for all MCP servers (both container-based and remote):
+
+- **`status`** (required): Current status of the server
+  - Values: `"active"`, `"deprecated"`, `"Active"`, `"Deprecated"`
+  - Default: `"active"`
+
+- **`tier`**: Tier classification of the server
+  - Values: `"Official"`, `"Community"`
+
+- **`tools`**: Array of tool names provided by this MCP server
+  - Example: `["filesystem_read", "filesystem_write"]`
+
+- **`tags`**: Categorization tags for search and filtering
+  - Pattern: `^[a-z0-9][a-z0-9_-]*[a-z0-9]$`
+  - Example: `["filesystem", "productivity", "development"]`
+
+- **`metadata`**: Popularity, activity metrics, and Kubernetes-specific metadata
+  - `stars`: Number of repository stars
+  - `pulls`: Number of container image pulls or usage count
+  - `last_updated`: Timestamp in RFC3339 format
+  - `kubernetes`: Kubernetes-specific metadata (nested object) - **optional**, only populated when:
+    - The server is served from ToolHive Registry Server
+    - The server was auto-discovered from a Kubernetes deployment
+    - The Kubernetes resource has the required registry annotations (e.g., `toolhive.stacklok.com/registry-description`, `toolhive.stacklok.com/registry-url`)
+    - Fields:
+      - `kind`: Kubernetes resource kind (e.g., "MCPServer", "VirtualMCPServer", "MCPRemoteProxy")
+      - `namespace`: Kubernetes namespace where the resource is deployed
+      - `name`: Kubernetes resource name
+      - `uid`: Kubernetes resource UID
+      - `image`: Container image used by the Kubernetes workload (applicable to MCPServer)
+      - `transport`: Transport type configured for the Kubernetes workload (applicable to MCPServer)
+
+- **`custom_metadata`**: Custom user-defined metadata (arbitrary key-value pairs)
+
+#### Container Server Fields
+
+These fields are specific to container-based MCP servers (keyed by OCI image reference):
+
+- **`permissions`**: Security permissions for the container
+  - `name`: Permission profile name
+  - `network.outbound`: Outbound network access
+    - `allow_host`: Array of allowed hostnames or domain patterns
+    - `allow_port`: Array of allowed port numbers
+    - `insecure_allow_all`: Allow all outbound connections (use with caution)
+  - `read`: Array of host filesystem paths for read-only access
+  - `write`: Array of host filesystem paths for write access
+  - `privileged`: Whether to run in privileged mode
+
+- **`args`**: Default command-line arguments for the container
+
+- **`provenance`**: Software supply chain provenance information
+  - `sigstore_url`: Sigstore TUF repository host
+  - `repository_uri`: Repository URI for verification
+  - `repository_ref`: Repository reference for verification
+  - `signer_identity`: Identity of the signer
+  - `runner_environment`: Build environment (e.g., `"github-hosted"`)
+  - `cert_issuer`: Certificate issuer URI
+  - `attestation`: Verified attestation with predicate type and data
+
+- **`docker_tags`**: Available Docker tags for the container image
+
+- **`proxy_port`**: HTTP proxy port for the container (1-65535)
+
+#### Remote Server Fields
+
+These fields are specific to remote MCP servers (keyed by URL):
+
+- **`oauth_config`**: OAuth/OIDC configuration for authentication
+  - `issuer`: OAuth/OIDC issuer URL (for OIDC discovery)
+  - `authorize_url`: OAuth authorization endpoint (for non-OIDC OAuth)
+  - `token_url`: OAuth token endpoint (for non-OIDC OAuth)
+  - `client_id`: OAuth client ID
+  - `scopes`: Array of OAuth scopes to request
+  - `use_pkce`: Whether to use PKCE (default: `true`)
+  - `oauth_params`: Additional OAuth parameters
+  - `callback_port`: Specific port for OAuth callback server
+  - `resource`: OAuth 2.0 resource indicator (RFC 8707)
+
+- **`env_vars`**: Environment variable definitions for client configuration
+  - `name`: Environment variable name (pattern: `^[A-Za-z_][A-Za-z0-9_]*$`)
+  - `description`: Human-readable explanation
+  - `required`: Whether the variable is required
+  - `secret`: Whether the variable contains sensitive information
+  - `default`: Default value if not provided
+
+#### Example: Container Server
+
+```json
+{
+  "ghcr.io/stacklok/mcp-filesystem:v1.0.0": {
+    "status": "active",
+    "tier": "Official",
+    "tools": ["read_file", "write_file", "list_directory"],
+    "tags": ["filesystem", "productivity"],
+    "permissions": {
+      "name": "filesystem-access",
+      "read": ["/home/user/documents"],
+      "write": ["/home/user/documents/output"]
+    },
+    "args": ["--log-level", "info"],
+    "docker_tags": ["v1.0.0", "v1.0", "v1", "latest"],
+    "metadata": {
+      "stars": 150,
+      "pulls": 5000,
+      "last_updated": "2025-02-04T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Example: Container Server with Kubernetes Metadata
+
+When an MCP server is deployed in Kubernetes and served via the ToolHive Registry Server's auto-discovery feature, additional Kubernetes-specific metadata is included. This requires the Kubernetes resource to have the required registry annotations:
+
+```json
+{
+  "https://mcp-server.example.com": {
+    "status": "active",
+    "tier": "Official",
+    "tools": ["read_file", "write_file", "list_directory"],
+    "tags": ["filesystem", "productivity"],
+    "metadata": {
+      "stars": 150,
+      "pulls": 5000,
+      "last_updated": "2025-02-04T10:00:00Z",
+      "kubernetes": {
+        "kind": "MCPServer",
+        "namespace": "mcp-servers",
+        "name": "filesystem-server",
+        "uid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+        "image": "ghcr.io/stacklok/mcp-filesystem:v1.0.0",
+        "transport": "streamable-http"
+      }
+    }
+  }
+}
+```
+
+#### Example: Remote Server
+
+```json
+{
+  "https://api.example.com/mcp": {
+    "status": "active",
+    "tier": "Community",
+    "tools": ["query_api", "update_resource"],
+    "tags": ["api", "integration"],
+    "oauth_config": {
+      "issuer": "https://auth.example.com",
+      "client_id": "mcp-client",
+      "scopes": ["read", "write"],
+      "use_pkce": true
+    },
+    "env_vars": [
+      {
+        "name": "API_KEY",
+        "description": "API authentication key",
+        "required": true,
+        "secret": true
+      },
+      {
+        "name": "API_ENDPOINT",
+        "description": "API endpoint URL",
+        "required": false,
+        "default": "https://api.example.com"
+      }
+    ]
+  }
+}
+```
 
 ## Usage
 

@@ -42,8 +42,17 @@ type Tokens struct {
 // IsExpired returns true if the access token has expired or will expire within the buffer period.
 // Returns true for nil receivers (treating nil tokens as expired).
 func (t *Tokens) IsExpired() bool {
+	return t.IsExpiredAt(time.Now())
+}
+
+// IsExpiredAt returns true if the access token has expired or will expire within the buffer period
+// at the given time. This method is primarily for testing to avoid time-based race conditions.
+// Returns true for nil receivers (treating nil tokens as expired).
+func (t *Tokens) IsExpiredAt(now time.Time) bool {
 	if t == nil {
 		return true
 	}
-	return time.Now().Add(tokenExpirationBuffer).After(t.ExpiresAt)
+	// Token is expired if it expires at or before (now + buffer)
+	// Using !After to include the equality case (expires exactly at boundary)
+	return !t.ExpiresAt.After(now.Add(tokenExpirationBuffer))
 }

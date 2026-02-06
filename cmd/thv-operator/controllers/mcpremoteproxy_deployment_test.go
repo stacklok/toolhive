@@ -50,7 +50,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
@@ -174,6 +174,43 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				assert.Contains(t, container.Args, "--foreground=true")
 				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
 				assert.Len(t, container.Args, 3, "Args should only contain base arguments")
+			},
+		},
+		{
+			name: "deprecated port field",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "legacy-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					Port:      9090,
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				assert.Equal(t, int32(9090), container.Ports[0].ContainerPort)
+			},
+		},
+		{
+			name: "proxyPort takes precedence over port",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "precedence-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8081,
+					Port:      9091,
+				},
+			},
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				assert.Equal(t, int32(8081), container.Ports[0].ContainerPort)
 			},
 		},
 	}

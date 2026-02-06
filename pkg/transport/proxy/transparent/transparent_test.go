@@ -1060,12 +1060,25 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 	// - Retry: T=150ms → fails instantly → continue (consecutiveFailures stays 2)
 	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → shutdown
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
-	time.Sleep(400 * time.Millisecond)
+	// Wait for shutdown to complete, using a retry loop to handle timing variations
+	callbackInvoked := false
+	proxyStopped := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if tracker.isInvoked() {
+			callbackInvoked = true
+		}
+		running, _ := proxy.IsRunning()
+		if !running {
+			proxyStopped = true
+		}
+		if callbackInvoked && proxyStopped {
+			break
+		}
+	}
 
-	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused after 3 consecutive failures")
-
-	running, _ := proxy.IsRunning()
-	assert.False(t, running, "Proxy should stop after connection failure")
+	assert.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
+	assert.True(t, proxyStopped, "Proxy should stop after connection failure")
 }
 
 // TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts

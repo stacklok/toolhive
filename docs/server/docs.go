@@ -1440,6 +1440,14 @@ const docTemplate = `{
             "skills.InstalledSkill": {
                 "description": "InstalledSkill is set if the skill is installed.",
                 "properties": {
+                    "clients": {
+                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.MCPClient to a shared package so it can be used here instead of []string.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the skill was installed.",
                         "type": "string"

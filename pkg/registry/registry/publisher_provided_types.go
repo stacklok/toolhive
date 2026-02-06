@@ -5,6 +5,7 @@ package registry
 
 import (
 	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 

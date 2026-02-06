@@ -230,7 +230,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 	mockMgr := mocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
-		{ID: "backend1", Name: "Backend 1"},
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
 	// Simulate timeout by returning context.DeadlineExceeded
@@ -270,7 +270,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 	mockMgr := mocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
-		{ID: "backend1", Name: "Backend 1"},
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
 	// Simulate non-timeout error
@@ -311,8 +311,8 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 	mockMgr := mocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
-		{ID: "backend1", Name: "Backend 1"},
-		{ID: "backend2", Name: "Backend 2"},
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
 	}
 
 	expectedCaps := &aggregator.AggregatedCapabilities{
@@ -408,7 +408,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 	mockMgr := mocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
-		{ID: "backend1", Name: "Backend 1"},
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
 	expectedCaps := &aggregator.AggregatedCapabilities{
@@ -476,7 +476,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 	mockMgr := mocks.NewMockManager(ctrl)
 
 	backends := []vmcp.Backend{
-		{ID: "backend1", Name: "Backend 1"},
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 	}
 
 	// Simulate slow discovery that takes longer than timeout
@@ -516,4 +516,117 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 
 	// Verify timeout response (should be 504 Gateway Timeout)
 	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+}
+
+func TestFilterHealthyBackends(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		backends         []vmcp.Backend
+		expectedCount    int
+		expectedBackends []string // backend IDs that should be included
+	}{
+		{
+			name:             "empty backends list",
+			backends:         []vmcp.Backend{},
+			expectedCount:    0,
+			expectedBackends: []string{},
+		},
+		{
+			name: "all healthy backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
+			},
+			expectedCount:    3,
+			expectedBackends: []string{"backend1", "backend2", "backend3"},
+		},
+		{
+			name: "all unhealthy backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendUnhealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnhealthy},
+			},
+			expectedCount:    0,
+			expectedBackends: []string{},
+		},
+		{
+			name: "mixed healthy and unhealthy backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnhealthy},
+				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend4", Name: "Backend 4", HealthStatus: vmcp.BackendUnhealthy},
+			},
+			expectedCount:    2,
+			expectedBackends: []string{"backend1", "backend3"},
+		},
+		{
+			name: "include degraded backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendDegraded},
+				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendUnhealthy},
+			},
+			expectedCount:    2,
+			expectedBackends: []string{"backend1", "backend2"},
+		},
+		{
+			name: "exclude unknown status backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnknown},
+				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
+			},
+			expectedCount:    2,
+			expectedBackends: []string{"backend1", "backend3"},
+		},
+		{
+			name: "exclude unauthenticated backends",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnauthenticated},
+			},
+			expectedCount:    1,
+			expectedBackends: []string{"backend1"},
+		},
+		{
+			name: "all status types",
+			backends: []vmcp.Backend{
+				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendDegraded},
+				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendUnhealthy},
+				{ID: "backend4", Name: "Backend 4", HealthStatus: vmcp.BackendUnknown},
+				{ID: "backend5", Name: "Backend 5", HealthStatus: vmcp.BackendUnauthenticated},
+			},
+			expectedCount:    2,
+			expectedBackends: []string{"backend1", "backend2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := filterHealthyBackends(tt.backends)
+
+			assert.Equal(t, tt.expectedCount, len(result), "unexpected number of backends returned")
+
+			// Verify only expected backends are included
+			resultIDs := make([]string, len(result))
+			for i, backend := range result {
+				resultIDs[i] = backend.ID
+			}
+			assert.ElementsMatch(t, tt.expectedBackends, resultIDs, "unexpected backends in result")
+
+			// Verify all returned backends have healthy or degraded status
+			for _, backend := range result {
+				assert.True(t,
+					backend.HealthStatus == vmcp.BackendHealthy || backend.HealthStatus == vmcp.BackendDegraded,
+					"backend %s has unexpected status: %s", backend.ID, backend.HealthStatus)
+			}
+		})
+	}
 }

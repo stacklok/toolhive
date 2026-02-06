@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -336,6 +337,18 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		return fmt.Errorf("unhealthyThreshold must be positive")
 	}
 
+	// Validate health check timeout if provided
+	if fh.HealthCheckTimeout > 0 {
+		checkInterval := time.Duration(fh.HealthCheckInterval)
+		healthCheckTimeout := time.Duration(fh.HealthCheckTimeout)
+
+		// Validate that timeout is less than interval to prevent checks from queuing up
+		if healthCheckTimeout >= checkInterval {
+			return fmt.Errorf("healthCheckTimeout (%v) must be less than healthCheckInterval (%v) to prevent checks from queuing up",
+				healthCheckTimeout, checkInterval)
+		}
+	}
+
 	validModes := []string{"fail", "bestEffort"}
 	if !contains(validModes, fh.PartialFailureMode) {
 		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
@@ -343,11 +356,19 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 
 	// Validate circuit breaker
 	if fh.CircuitBreaker != nil && fh.CircuitBreaker.Enabled {
-		if fh.CircuitBreaker.FailureThreshold <= 0 {
-			return fmt.Errorf("circuitBreaker.failureThreshold must be positive")
+		if fh.CircuitBreaker.FailureThreshold < 1 {
+			return fmt.Errorf("circuitBreaker.failureThreshold must be >= 1, got %d",
+				fh.CircuitBreaker.FailureThreshold)
 		}
-		if fh.CircuitBreaker.Timeout <= 0 {
-			return fmt.Errorf("circuitBreaker.timeout must be positive")
+
+		cbTimeout := time.Duration(fh.CircuitBreaker.Timeout)
+		if cbTimeout <= 0 {
+			return fmt.Errorf("circuitBreaker.timeout must be > 0, got %v", cbTimeout)
+		}
+
+		if cbTimeout < time.Second {
+			return fmt.Errorf("circuitBreaker.timeout must be >= 1s to prevent thrashing, got %v",
+				cbTimeout)
 		}
 	}
 

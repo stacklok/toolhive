@@ -628,3 +628,167 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 		})
 	}
 }
+
+func TestValidator_ValidateFailureHandling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		fh      *FailureHandlingConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid configuration without circuit breaker",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(10 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid configuration with circuit breaker",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(10 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 5,
+					Timeout:          Duration(60 * time.Second),
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid configuration with circuit breaker disabled",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "bestEffort",
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled: false,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "health check timeout >= interval",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "healthCheckTimeout (30s) must be less than healthCheckInterval (30s) to prevent checks from queuing up",
+		},
+		{
+			name: "health check timeout > interval",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(35 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "healthCheckTimeout (35s) must be less than healthCheckInterval (30s) to prevent checks from queuing up",
+		},
+		{
+			name: "circuit breaker failureThreshold < 1",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 0,
+					Timeout:          Duration(60 * time.Second),
+				},
+			},
+			wantErr: true,
+			errMsg:  "circuitBreaker.failureThreshold must be >= 1, got 0",
+		},
+		{
+			name: "circuit breaker timeout <= 0",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 5,
+					Timeout:          Duration(0),
+				},
+			},
+			wantErr: true,
+			errMsg:  "circuitBreaker.timeout must be > 0, got 0s",
+		},
+		{
+			name: "circuit breaker timeout < 1s",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 5,
+					Timeout:          Duration(500 * time.Millisecond),
+				},
+			},
+			wantErr: true,
+			errMsg:  "circuitBreaker.timeout must be >= 1s to prevent thrashing, got 500ms",
+		},
+		{
+			name: "invalid partial failure mode",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "invalid",
+			},
+			wantErr: true,
+			errMsg:  "partialFailureMode must be one of: fail, bestEffort",
+		},
+		{
+			name: "negative health check interval",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(-1 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "healthCheckInterval must be positive",
+		},
+		{
+			name: "negative unhealthy threshold",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				UnhealthyThreshold:  -1,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "unhealthyThreshold must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := NewValidator()
+			err := v.validateFailureHandling(tt.fh)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateFailureHandling() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateFailureHandling() error message = %v, want to contain %v", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}

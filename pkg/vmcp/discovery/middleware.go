@@ -74,6 +74,48 @@ func Middleware(
 	}
 }
 
+// filterHealthyBackends filters backends to only include those that are healthy
+// or degraded. Backends that are unhealthy, unknown, or unauthenticated are excluded
+// from capability aggregation to prevent exposing tools from unavailable backends.
+//
+// Health status filtering:
+//   - healthy: included (fully operational)
+//   - degraded: included (slow but working)
+//   - unhealthy: excluded (not responding, circuit breaker may be open)
+//   - unknown: excluded (status not yet determined)
+//   - unauthenticated: excluded (authentication failed)
+func filterHealthyBackends(backends []vmcp.Backend) []vmcp.Backend {
+	if len(backends) == 0 {
+		return backends
+	}
+
+	healthy := make([]vmcp.Backend, 0, len(backends))
+	excluded := 0
+
+	for i := range backends {
+		backend := &backends[i]
+		// Include healthy and degraded backends, exclude all others
+		if backend.HealthStatus == vmcp.BackendHealthy || backend.HealthStatus == vmcp.BackendDegraded {
+			healthy = append(healthy, *backend)
+		} else {
+			excluded++
+			logger.Debugw("excluding backend from capability aggregation due to health status",
+				"backend_name", backend.Name,
+				"backend_id", backend.ID,
+				"health_status", backend.HealthStatus)
+		}
+	}
+
+	if excluded > 0 {
+		logger.Infow("filtered backends for capability aggregation",
+			"total_backends", len(backends),
+			"healthy_backends", len(healthy),
+			"excluded_backends", excluded)
+	}
+
+	return healthy
+}
+
 // handleInitializeRequest performs capability discovery for initialize requests.
 // Returns updated context with discovered capabilities or an error.
 //
@@ -89,12 +131,16 @@ func handleInitializeRequest(
 	defer cancel()
 
 	// Get current backend list from registry (supports dynamic backend changes)
-	backends := registry.List(discoveryCtx)
+	allBackends := registry.List(discoveryCtx)
+
+	// Filter to only include healthy/degraded backends for capability aggregation
+	backends := filterHealthyBackends(allBackends)
 
 	logger.Debugw("starting capability discovery for initialize request",
 		"method", r.Method,
 		"path", r.URL.Path,
-		"backend_count", len(backends))
+		"total_backend_count", len(allBackends),
+		"healthy_backend_count", len(backends))
 
 	capabilities, err := manager.Discover(discoveryCtx, backends)
 	if err != nil {

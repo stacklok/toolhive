@@ -46,6 +46,9 @@ const (
 	// defaultReadTimeout is the maximum duration for reading the entire request, including body.
 	defaultReadTimeout = 30 * time.Second
 
+	// defaultWriteTimeout is the maximum duration before timing out writes of the response.
+	defaultWriteTimeout = 30 * time.Second
+
 	// defaultIdleTimeout is the maximum amount of time to wait for the next request when keep-alive's are enabled.
 	defaultIdleTimeout = 120 * time.Second
 
@@ -432,7 +435,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// MCP endpoint - apply middleware chain.
-	// Execution order: accept-check → recovery → auth → audit → discovery → backend enrichment → telemetry → handler
+	// Execution order: recovery → accept-check → auth → audit → discovery → backend enrichment → telemetry → handler
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {
@@ -476,13 +479,12 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("Authentication middleware enabled for MCP endpoints")
 	}
 
-	// Apply recovery middleware (catches panics from all inner middleware)
+	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
+	mcpHandler = headerValidatingMiddleware(mcpHandler)
+
+	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)
 	logger.Info("Recovery middleware enabled for MCP endpoints")
-
-	// Apply Accept header validation as outermost middleware.
-	// Rejects GET requests without Accept: text/event-stream before any other processing.
-	mcpHandler = headerValidatingMiddleware(mcpHandler)
 
 	mux.Handle("/", mcpHandler)
 
@@ -493,11 +495,9 @@ func (s *Server) Start(ctx context.Context) error {
 		Handler:           mux,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
-		// WriteTimeout is intentionally omitted. SSE connections are long-lived
-		// streams; Go's HTTP/1.1 WriteTimeout applies to the entire response
-		// duration, which would kill SSE connections after the timeout.
-		IdleTimeout:    defaultIdleTimeout,
-		MaxHeaderBytes: defaultMaxHeaderBytes,
+		WriteTimeout:      defaultWriteTimeout,
+		IdleTimeout:       defaultIdleTimeout,
+		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
 	// Create listener (allows port 0 to bind to random available port)

@@ -12,6 +12,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+// contextKey is a private type for context keys to avoid collisions.
+type contextKey string
+
+// SessionIDContextKey is the context key for storing session IDs.
+const SessionIDContextKey = contextKey("session-id")
+
 // Session interface defines the contract for all session types
 type Session interface {
 	ID() string

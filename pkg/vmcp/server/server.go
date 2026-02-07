@@ -28,6 +28,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -333,6 +334,12 @@ func New(
 	// Create session manager with VMCPSession factory
 	// This enables type-safe access to routing tables while maintaining session lifecycle management
 	sessionManager := transportsession.NewManager(cfg.SessionTTL, vmcpsession.VMCPSessionFactory())
+
+	// Wrap backend client with pooling to enable session persistence
+	// This allows multiple tool calls within the same session to reuse backend connections,
+	// preserving stateful backend contexts (e.g., Playwright browser, DB transactions)
+	backendClient = client.WrapWithPooling(backendClient, sessionManager)
+	logger.Info("Backend client pooling enabled for session persistence")
 
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)

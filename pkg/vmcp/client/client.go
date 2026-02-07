@@ -526,35 +526,18 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	return capabilities, nil
 }
 
-// CallTool invokes a tool on the backend MCP server.
-// Returns the complete tool result including _meta field.
+// callToolWithClient calls a tool using an already-initialized MCP client.
+// This helper is used by both CallTool (ephemeral client) and pooled client (reused client).
 //
 //nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
-func (h *httpBackendClient) CallTool(
+func (*httpBackendClient) callToolWithClient(
 	ctx context.Context,
+	c *client.Client,
 	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
-
-	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
-	if err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "create client")
-	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			logger.Debugf("Failed to close client: %v", err)
-		}
-	}()
-
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
-	}
-
 	// Call the tool using the original capability name from the backend's perspective.
 	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
 	// we must use the original backend name when forwarding requests.
@@ -637,12 +620,16 @@ func (h *httpBackendClient) CallTool(
 	}, nil
 }
 
-// ReadResource retrieves a resource from the backend MCP server.
-// Returns the complete resource result including _meta field.
-func (h *httpBackendClient) ReadResource(
-	ctx context.Context, target *vmcp.BackendTarget, uri string,
-) (*vmcp.ResourceReadResult, error) {
-	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
+// CallTool invokes a tool on the backend MCP server.
+// Returns the complete tool result including _meta field.
+func (h *httpBackendClient) CallTool(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	toolName string,
+	arguments map[string]any,
+	meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
+	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -660,6 +647,17 @@ func (h *httpBackendClient) ReadResource(
 		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
+	return h.callToolWithClient(ctx, c, target, toolName, arguments, meta)
+}
+
+// readResourceWithClient reads a resource using an already-initialized MCP client.
+// This helper is used by both ReadResource (ephemeral client) and pooled client (reused client).
+func (*httpBackendClient) readResourceWithClient(
+	ctx context.Context,
+	c *client.Client,
+	target *vmcp.BackendTarget,
+	uri string,
+) (*vmcp.ResourceReadResult, error) {
 	// Read the resource using the original URI from the backend's perspective.
 	// When conflict resolution renames resources, we must use the original backend URI.
 	backendURI := target.GetBackendCapabilityName(uri)
@@ -716,15 +714,12 @@ func (h *httpBackendClient) ReadResource(
 	}, nil
 }
 
-// GetPrompt retrieves a prompt from the backend MCP server.
-// Returns the complete prompt result including _meta field.
-func (h *httpBackendClient) GetPrompt(
-	ctx context.Context,
-	target *vmcp.BackendTarget,
-	name string,
-	arguments map[string]any,
-) (*vmcp.PromptGetResult, error) {
-	logger.Debugf("Getting prompt %s from backend %s", name, target.WorkloadName)
+// ReadResource retrieves a resource from the backend MCP server.
+// Returns the complete resource result including _meta field.
+func (h *httpBackendClient) ReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
+	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
 
 	// Create a client for this backend
 	c, err := h.clientFactory(ctx, target)
@@ -742,6 +737,18 @@ func (h *httpBackendClient) GetPrompt(
 		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
 	}
 
+	return h.readResourceWithClient(ctx, c, target, uri)
+}
+
+// getPromptWithClient retrieves a prompt using an already-initialized MCP client.
+// This helper is used by both GetPrompt (ephemeral client) and pooled client (reused client).
+func (*httpBackendClient) getPromptWithClient(
+	ctx context.Context,
+	c *client.Client,
+	target *vmcp.BackendTarget,
+	name string,
+	arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
 	// Get the prompt using the original prompt name from the backend's perspective.
 	// When conflict resolution renames prompts, we must use the original backend name.
 	backendPromptName := target.GetBackendCapabilityName(name)
@@ -787,4 +794,33 @@ func (h *httpBackendClient) GetPrompt(
 		Description: result.Description,
 		Meta:        meta,
 	}, nil
+}
+
+// GetPrompt retrieves a prompt from the backend MCP server.
+// Returns the complete prompt result including _meta field.
+func (h *httpBackendClient) GetPrompt(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	name string,
+	arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
+	logger.Debugf("Getting prompt %s from backend %s", name, target.WorkloadName)
+
+	// Create a client for this backend
+	c, err := h.clientFactory(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			logger.Debugf("Failed to close client: %v", err)
+		}
+	}()
+
+	// Initialize the client
+	if _, err := initializeClient(ctx, c); err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	}
+
+	return h.getPromptWithClient(ctx, c, target, name, arguments)
 }

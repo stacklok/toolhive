@@ -847,12 +847,20 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
+	// Extract ImagePullSecrets from ResourceOverrides if present
+	var imagePullSecrets []corev1.LocalObjectReference
+	if mcpServer.Spec.ResourceOverrides != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+		imagePullSecrets = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
+
 	// Ensure RBAC resources for proxy runner
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: mcpServer.Namespace,
-		Rules:     defaultRBACRules,
-		Owner:     mcpServer,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        mcpServer.Namespace,
+		Rules:            defaultRBACRules,
+		Owner:            mcpServer,
+		ImagePullSecrets: imagePullSecrets,
 	}); err != nil {
 		return err
 	}
@@ -869,6 +877,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 			Name:      mcpServerSAName,
 			Namespace: mcpServer.Namespace,
 		},
+		ImagePullSecrets: imagePullSecrets,
 	}
 	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, mcpServerSA, mcpServer)
 	return err
@@ -1132,6 +1141,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
+	// Extract ImagePullSecrets from ResourceOverrides if present
+	var imagePullSecrets []corev1.LocalObjectReference
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
+		imagePullSecrets = m.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        m.Name,
@@ -1151,6 +1166,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
+					ImagePullSecrets:   imagePullSecrets,
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",

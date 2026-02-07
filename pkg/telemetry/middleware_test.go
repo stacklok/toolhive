@@ -759,7 +759,7 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
 			switch metric.Name {
-			case "toolhive_mcp_requests":
+			case metricRequestCounter:
 				foundCounter = true
 			case "toolhive_mcp_request_duration":
 				foundHistogram = true

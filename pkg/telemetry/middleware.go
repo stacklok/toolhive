@@ -465,12 +465,21 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		status = "error"
 	}
 
+	// Get the resource ID from the parsed MCP request if available.
+	// For tools/call this is the tool name, for resources/read the URI,
+	// and for prompts/get the prompt name.
+	mcpResourceID := ""
+	if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil {
+		mcpResourceID = parsedMCP.ResourceID
+	}
+
 	// Common attributes for all metrics
 	attrs := metric.WithAttributes(
 		attribute.String("method", r.Method),
 		attribute.String("status_code", strconv.Itoa(rw.statusCode)),
 		attribute.String("status", status),
 		attribute.String("mcp_method", mcpMethod),
+		attribute.String("mcp_resource_id", mcpResourceID),
 		attribute.String("server", m.serverName),
 		attribute.String("transport", m.transport),
 	)

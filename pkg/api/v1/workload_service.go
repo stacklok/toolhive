@@ -180,7 +180,8 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
 			retriever.VerifyImageWarn,
-			"", // TODO Add support for registry groups lookups for APi
+			"",  // TODO Add support for registry groups lookups for API
+			nil, // No runtime override from API (yet)
 		)
 		if err != nil {
 			// Check if the error is due to context timeout

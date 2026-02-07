@@ -32,6 +32,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 - **Tool filtering**: `toolsFilter`, `toolsOverride` - Tool control
 - **Storage**: `volumes`, `secrets` - Data and credentials
 - **Grouping**: `group` - Logical organization
+- **Runtime configuration**: `runtimeConfig` - Base image and package customization for protocol schemes
 - **Platform-specific**: `k8sPodTemplatePatch`, `containerLabels` - Runtime-specific options
 
 ### Field Category Details
@@ -70,6 +71,50 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 ```
 
 **Implementation**: `pkg/runner/config.go-49`
+
+#### Runtime Configuration
+
+**Purpose**: Customize base images and build packages for protocol scheme workloads (`uvx://`, `npx://`, `go://`)
+
+**When used**: Only applies when using protocol schemes that auto-generate container images
+
+**Structure:**
+```json
+{
+  "runtime_config": {
+    "builder_image": "golang:1.24-alpine",
+    "additional_packages": ["gcc", "musl-dev"]
+  }
+}
+```
+
+**Fields:**
+- `builder_image`: Override the default base image for the builder stage
+  - Go: Default `golang:1.25-alpine`
+  - Node: Default `node:22-alpine`
+  - Python: Default `python:3.13-slim`
+- `additional_packages`: Extra packages to install during build (e.g., build tools, libraries)
+
+**CLI usage:**
+```bash
+# Override Go version
+thv run go://github.com/example/server --runtime-image golang:1.23-alpine
+
+# Add build dependencies
+thv run uvx://mcp-server \
+  --runtime-image python:3.11-slim \
+  --runtime-add-package gcc \
+  --runtime-add-package musl-dev
+```
+
+**Configuration priority** (highest to lowest):
+1. Per-workload override in `RunConfig.RuntimeConfig`
+2. User config file (`~/.toolhive/config.yaml` `runtimeConfigs` map)
+3. Built-in defaults
+
+**Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.22` for simplicity and security.
+
+**Implementation**: `pkg/runner/config.go-198`, `pkg/container/templates/runtime_config.go`
 
 #### Transport Configuration
 

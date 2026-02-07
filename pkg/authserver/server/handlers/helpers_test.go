@@ -31,21 +31,18 @@ const (
 
 // mockIDPProvider implements upstream.OAuth2Provider for testing.
 type mockIDPProvider struct {
-	providerType           upstream.ProviderType
-	authorizationURL       string
-	authURLErr             error
-	exchangeTokens         *upstream.Tokens
-	exchangeErr            error
-	userInfo               *upstream.UserInfo
-	userInfoErr            error
-	refreshTokens          *upstream.Tokens
-	refreshErr             error
-	resolveIdentitySubject string
-	resolveIdentityErr     error
-	capturedState          string
-	capturedCode           string
-	capturedCodeChallenge  string
-	capturedCodeVerifier   string
+	providerType          upstream.ProviderType
+	authorizationURL      string
+	authURLErr            error
+	exchangeResult        *upstream.Identity
+	exchangeErr           error
+	refreshTokens         *upstream.Tokens
+	refreshErr            error
+	capturedState         string
+	capturedCode          string
+	capturedCodeChallenge string
+	capturedCodeVerifier  string
+	capturedNonce         string
 }
 
 // Compile-time interface check.
@@ -61,23 +58,20 @@ func (m *mockIDPProvider) Type() upstream.ProviderType {
 func (m *mockIDPProvider) AuthorizationURL(state, codeChallenge string, _ ...upstream.AuthorizationOption) (string, error) {
 	m.capturedState = state
 	m.capturedCodeChallenge = codeChallenge
-	// Note: We can't easily extract nonce from options since the internal type is private.
-	// The tests that need to verify nonce will set it directly via the mock setup.
-	// For the authorize handler test, we capture nonce separately by having the handler
-	// pass it via WithAdditionalParams and we verify it's non-empty via pending auth storage.
 	if m.authURLErr != nil {
 		return "", m.authURLErr
 	}
 	return m.authorizationURL + "?state=" + state, nil
 }
 
-func (m *mockIDPProvider) ExchangeCode(_ context.Context, code, codeVerifier string) (*upstream.Tokens, error) {
+func (m *mockIDPProvider) ExchangeCodeForIdentity(_ context.Context, code, codeVerifier, nonce string) (*upstream.Identity, error) {
 	m.capturedCode = code
 	m.capturedCodeVerifier = codeVerifier
+	m.capturedNonce = nonce
 	if m.exchangeErr != nil {
 		return nil, m.exchangeErr
 	}
-	return m.exchangeTokens, nil
+	return m.exchangeResult, nil
 }
 
 func (m *mockIDPProvider) RefreshTokens(_ context.Context, _, _ string) (*upstream.Tokens, error) {
@@ -85,29 +79,6 @@ func (m *mockIDPProvider) RefreshTokens(_ context.Context, _, _ string) (*upstre
 		return nil, m.refreshErr
 	}
 	return m.refreshTokens, nil
-}
-
-func (m *mockIDPProvider) FetchUserInfo(_ context.Context, _ string) (*upstream.UserInfo, error) {
-	if m.userInfoErr != nil {
-		return nil, m.userInfoErr
-	}
-	return m.userInfo, nil
-}
-
-func (m *mockIDPProvider) ResolveIdentity(_ context.Context, _ *upstream.Tokens, _ string) (string, error) {
-	if m.resolveIdentityErr != nil {
-		return "", m.resolveIdentityErr
-	}
-	// Return explicitly set subject if provided
-	if m.resolveIdentitySubject != "" {
-		return m.resolveIdentitySubject, nil
-	}
-	// Fallback: return userInfo subject if available
-	if m.userInfo != nil && m.userInfo.Subject != "" {
-		return m.userInfo.Subject, nil
-	}
-	// Default for tests
-	return "user-123", nil
 }
 
 // testStorageState holds the in-memory state for testing.
@@ -353,16 +324,14 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 	mockUpstream := &mockIDPProvider{
 		providerType:     upstream.ProviderTypeOAuth2,
 		authorizationURL: "https://idp.example.com/authorize",
-		exchangeTokens: &upstream.Tokens{
-			AccessToken:  "upstream-access-token",
-			RefreshToken: "upstream-refresh-token",
-			IDToken:      "upstream-id-token",
-			ExpiresAt:    time.Now().Add(time.Hour),
-		},
-		userInfo: &upstream.UserInfo{
+		exchangeResult: &upstream.Identity{
+			Tokens: &upstream.Tokens{
+				AccessToken:  "upstream-access-token",
+				RefreshToken: "upstream-refresh-token",
+				IDToken:      "upstream-id-token",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			},
 			Subject: "user-123",
-			Email:   "user@example.com",
-			Name:    "Test User",
 		},
 	}
 

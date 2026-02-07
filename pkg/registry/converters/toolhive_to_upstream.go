@@ -14,6 +14,7 @@
 package converters
 
 import (
+	"encoding/json"
 	"fmt"
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
@@ -187,144 +188,78 @@ func createRemotesFromRemoteMetadata(remoteMetadata *registry.RemoteServerMetada
 }
 
 // createImageExtensions creates publisher extensions map from ImageMetadata
+// using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]interface{} {
-	extensions := make(map[string]interface{})
-
-	// Always include status
-	extensions["status"] = imageMetadata.Status
-	if extensions["status"] == "" {
-		extensions["status"] = "active"
+	ext := registry.ServerExtensions{
+		Status:         imageMetadata.Status,
+		Tier:           imageMetadata.Tier,
+		Tools:          imageMetadata.Tools,
+		Tags:           imageMetadata.Tags,
+		Metadata:       imageMetadata.Metadata,
+		CustomMetadata: imageMetadata.CustomMetadata,
+		Permissions:    imageMetadata.Permissions,
+		Args:           imageMetadata.Args,
+		Provenance:     imageMetadata.Provenance,
+		DockerTags:     imageMetadata.DockerTags,
+		ProxyPort:      imageMetadata.ProxyPort,
 	}
 
-	// Add tools
-	if len(imageMetadata.Tools) > 0 {
-		tools := make([]interface{}, len(imageMetadata.Tools))
-		for i, tool := range imageMetadata.Tools {
-			tools[i] = tool
-		}
-		extensions["tools"] = tools
+	// Default status to "active" if empty
+	if ext.Status == "" {
+		ext.Status = "active"
 	}
 
-	// Add tier
-	if imageMetadata.Tier != "" {
-		extensions["tier"] = imageMetadata.Tier
-	}
-
-	// Add tags
-	if len(imageMetadata.Tags) > 0 {
-		tags := make([]interface{}, len(imageMetadata.Tags))
-		for i, tag := range imageMetadata.Tags {
-			tags[i] = tag
-		}
-		extensions["tags"] = tags
-	}
-
-	// Add metadata
-	if imageMetadata.Metadata != nil {
-		extensions["metadata"] = map[string]interface{}{
-			"stars":        float64(imageMetadata.Metadata.Stars),
-			"pulls":        float64(imageMetadata.Metadata.Pulls),
-			"last_updated": imageMetadata.Metadata.LastUpdated,
-		}
-	}
-
-	// Add permissions
-	if imageMetadata.Permissions != nil {
-		extensions["permissions"] = imageMetadata.Permissions
-	}
-
-	// Add args (static container arguments)
-	if len(imageMetadata.Args) > 0 {
-		extensions["args"] = imageMetadata.Args
-	}
-
-	// Add provenance
-	if imageMetadata.Provenance != nil {
-		extensions["provenance"] = imageMetadata.Provenance
-	}
-
-	// Add docker_tags
-	if len(imageMetadata.DockerTags) > 0 {
-		extensions["docker_tags"] = imageMetadata.DockerTags
-	}
-
-	// Add proxy_port (host-side port configuration)
-	if imageMetadata.ProxyPort > 0 {
-		extensions["proxy_port"] = imageMetadata.ProxyPort
-	}
-
-	// Add custom_metadata
-	if len(imageMetadata.CustomMetadata) > 0 {
-		extensions["custom_metadata"] = imageMetadata.CustomMetadata
-	}
+	extensionsMap := serverExtensionsToMap(ext)
 
 	return map[string]interface{}{
-		"io.github.stacklok": map[string]interface{}{
-			imageMetadata.Image: extensions,
+		registry.ToolHivePublisherNamespace: map[string]interface{}{
+			imageMetadata.Image: extensionsMap,
 		},
 	}
 }
 
 // createRemoteExtensions creates publisher extensions map from RemoteServerMetadata
+// using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[string]interface{} {
-	extensions := make(map[string]interface{})
-
-	// Always include status
-	extensions["status"] = remoteMetadata.Status
-	if extensions["status"] == "" {
-		extensions["status"] = "active"
+	ext := registry.ServerExtensions{
+		Status:         remoteMetadata.Status,
+		Tier:           remoteMetadata.Tier,
+		Tools:          remoteMetadata.Tools,
+		Tags:           remoteMetadata.Tags,
+		Metadata:       remoteMetadata.Metadata,
+		CustomMetadata: remoteMetadata.CustomMetadata,
+		OAuthConfig:    remoteMetadata.OAuthConfig,
+		EnvVars:        remoteMetadata.EnvVars,
 	}
 
-	// Add tools
-	if len(remoteMetadata.Tools) > 0 {
-		tools := make([]interface{}, len(remoteMetadata.Tools))
-		for i, tool := range remoteMetadata.Tools {
-			tools[i] = tool
-		}
-		extensions["tools"] = tools
+	// Default status to "active" if empty
+	if ext.Status == "" {
+		ext.Status = "active"
 	}
 
-	// Add tier
-	if remoteMetadata.Tier != "" {
-		extensions["tier"] = remoteMetadata.Tier
-	}
-
-	// Add tags
-	if len(remoteMetadata.Tags) > 0 {
-		tags := make([]interface{}, len(remoteMetadata.Tags))
-		for i, tag := range remoteMetadata.Tags {
-			tags[i] = tag
-		}
-		extensions["tags"] = tags
-	}
-
-	// Add metadata
-	if remoteMetadata.Metadata != nil {
-		extensions["metadata"] = map[string]interface{}{
-			"stars":        float64(remoteMetadata.Metadata.Stars),
-			"pulls":        float64(remoteMetadata.Metadata.Pulls),
-			"last_updated": remoteMetadata.Metadata.LastUpdated,
-		}
-	}
-
-	// Add OAuth config
-	if remoteMetadata.OAuthConfig != nil {
-		extensions["oauth_config"] = remoteMetadata.OAuthConfig
-	}
-
-	// Add env_vars
-	if len(remoteMetadata.EnvVars) > 0 {
-		extensions["env_vars"] = remoteMetadata.EnvVars
-	}
-
-	// Add custom_metadata
-	if len(remoteMetadata.CustomMetadata) > 0 {
-		extensions["custom_metadata"] = remoteMetadata.CustomMetadata
-	}
+	extensionsMap := serverExtensionsToMap(ext)
 
 	return map[string]interface{}{
-		"io.github.stacklok": map[string]interface{}{
-			remoteMetadata.URL: extensions,
+		registry.ToolHivePublisherNamespace: map[string]interface{}{
+			remoteMetadata.URL: extensionsMap,
 		},
 	}
+}
+
+// serverExtensionsToMap converts a ServerExtensions struct to a map[string]interface{}
+// by marshaling to JSON and unmarshaling back. This ensures the map keys match
+// the struct's json tags exactly.
+func serverExtensionsToMap(ext registry.ServerExtensions) map[string]interface{} {
+	data, err := json.Marshal(ext)
+	if err != nil {
+		// Fallback: return a minimal map with just the status
+		return map[string]interface{}{"status": ext.Status}
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return map[string]interface{}{"status": ext.Status}
+	}
+
+	return result
 }

@@ -791,7 +791,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Validate the signing method
-	if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+	switch token.Method.(type) {
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+		// Supported RSA signing methods
+	default:
 		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 	}
 

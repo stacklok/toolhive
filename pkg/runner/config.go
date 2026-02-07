@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
@@ -193,6 +194,10 @@ type RunConfig struct {
 	// EndpointPrefix is an explicit prefix to prepend to SSE endpoint URLs.
 	// This is used to handle path-based ingress routing scenarios.
 	EndpointPrefix string `json:"endpoint_prefix,omitempty" yaml:"endpoint_prefix,omitempty"`
+
+	// RuntimeConfig allows overriding the default runtime configuration
+	// for this specific workload (base images and packages)
+	RuntimeConfig *templates.RuntimeConfig `json:"runtime_config,omitempty" yaml:"runtime_config,omitempty"`
 
 	// HeaderForward contains configuration for injecting headers into requests to remote servers.
 	HeaderForward *HeaderForwardConfig `json:"header_forward,omitempty" yaml:"header_forward,omitempty"`

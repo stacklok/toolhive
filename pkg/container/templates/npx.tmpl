@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM {{.RuntimeConfig.BuilderImage}} AS builder
 
 {{if .BuildEnv}}
 # Custom build environment variables
@@ -13,8 +13,8 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
     rm /tmp/custom-ca.crt
 {{end}}
 
-# Install git for package installation support
-RUN apk add --no-cache git ca-certificates
+# Install build dependencies
+RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}
 
 {{if .CACertContent}}
 # Properly install the custom CA certificate using standard tools
@@ -59,7 +59,7 @@ RUN npm install --save {{.MCPPackage}}
 {{end}}
 
 # Final stage - runtime image with pre-installed packages
-FROM node:22-alpine
+FROM {{.RuntimeConfig.BuilderImage}}
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime

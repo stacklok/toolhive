@@ -13,6 +13,7 @@ import (
 	reflect "reflect"
 
 	config "github.com/stacklok/toolhive/pkg/config"
+	templates "github.com/stacklok/toolhive/pkg/container/templates"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -187,6 +188,21 @@ func (mr *MockProviderMockRecorder) GetRegistryConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryConfig", reflect.TypeOf((*MockProvider)(nil).GetRegistryConfig))
 }
 
+// GetRuntimeConfig mocks base method.
+func (m *MockProvider) GetRuntimeConfig(transportType string) (*templates.RuntimeConfig, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRuntimeConfig", transportType)
+	ret0, _ := ret[0].(*templates.RuntimeConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetRuntimeConfig indicates an expected call of GetRuntimeConfig.
+func (mr *MockProviderMockRecorder) GetRuntimeConfig(transportType any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRuntimeConfig", reflect.TypeOf((*MockProvider)(nil).GetRuntimeConfig), transportType)
+}
+
 // IsBuildAuthFileConfigured mocks base method.
 func (m *MockProvider) IsBuildAuthFileConfigured(name string) bool {
 	m.ctrl.T.Helper()
@@ -326,6 +342,20 @@ func (m *MockProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp
 func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegistryIp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
+}
+
+// SetRuntimeConfig mocks base method.
+func (m *MockProvider) SetRuntimeConfig(transportType string, arg1 *templates.RuntimeConfig) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetRuntimeConfig", transportType, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetRuntimeConfig indicates an expected call of SetRuntimeConfig.
+func (mr *MockProviderMockRecorder) SetRuntimeConfig(transportType, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRuntimeConfig", reflect.TypeOf((*MockProvider)(nil).SetRuntimeConfig), transportType, arg1)
 }
 
 // UnsetAllBuildAuthFiles mocks base method.

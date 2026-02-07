@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS builder
+FROM {{.RuntimeConfig.BuilderImage}} AS builder
 
 {{if .BuildEnv}}
 # Custom build environment variables
@@ -14,12 +14,23 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
 {{end}}
 
 # Install build dependencies and uv package manager
+{{if isDebian .RuntimeConfig.BuilderImage}}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    git \
+    {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
     && pip install --no-cache-dir uv \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+{{else if isAlpine .RuntimeConfig.BuilderImage}}
+RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
+    && pip install --no-cache-dir uv
+{{else}}
+# Default to Debian-based package manager
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
+    && pip install --no-cache-dir uv \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+{{end}}
 
 {{if .CACertContent}}
 # Properly install the custom CA certificate using standard tools
@@ -70,7 +81,7 @@ RUN package="{{.MCPPackage}}"; \
 {{end}}
 
 # Final stage - runtime image with pre-installed packages
-FROM python:3.13-slim
+FROM {{.RuntimeConfig.BuilderImage}}
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime
@@ -80,9 +91,18 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
 {{end}}
 
 # Install only runtime dependencies
+{{if isDebian .RuntimeConfig.BuilderImage}}
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+{{else if isAlpine .RuntimeConfig.BuilderImage}}
+RUN apk add --no-cache ca-certificates
+{{else}}
+# Default to Debian-based package manager
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+{{end}}
 
 # Set working directory
 WORKDIR /app

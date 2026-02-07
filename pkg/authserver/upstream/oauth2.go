@@ -73,23 +73,19 @@ type OAuth2Provider interface {
 	// opts: optional configuration such as nonce or additional parameters
 	AuthorizationURL(state, codeChallenge string, opts ...AuthorizationOption) (string, error)
 
-	// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
-	ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error)
+	// ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
+	// the user's identity in a single atomic operation. This ensures that OIDC nonce
+	// validation (replay protection) cannot be accidentally skipped.
+	// For OIDC providers, the nonce is validated against the ID token.
+	// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint
+	// and the nonce parameter is ignored.
+	ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, nonce string) (*Identity, error)
 
 	// RefreshTokens refreshes the upstream IDP tokens.
 	// expectedSubject is the original sub claim; OIDC providers validate it per
 	// Section 12.2 when the response includes a new ID token. Pure OAuth2 providers
 	// ignore it.
 	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
-
-	// ResolveIdentity validates tokens and returns the canonical subject.
-	// For OIDC providers, it validates the ID token and nonce (ID token required).
-	// For pure OAuth2 providers, it fetches UserInfo to resolve identity.
-	ResolveIdentity(ctx context.Context, tokens *Tokens, nonce string) (subject string, err error)
-
-	// FetchUserInfo retrieves user information using the provided access token.
-	// Returns an error if the provider is not configured for UserInfo fetching.
-	FetchUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
 }
 
 // defaultTokenExpiration is the default token lifetime when expires_in is not specified.
@@ -357,8 +353,32 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	return p.oauth2Config.AuthCodeURL(state, oauth2Opts...), nil
 }
 
-// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
-func (p *BaseOAuth2Provider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
+// ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
+// the user's identity in a single atomic operation.
+// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint.
+// The nonce parameter is ignored for pure OAuth2 providers (no ID token validation).
+func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
+	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
+	if err != nil {
+		return nil, err
+	}
+
+	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+	}
+	if userInfo == nil || userInfo.Subject == "" {
+		return nil, ErrIdentityResolutionFailed
+	}
+
+	return &Identity{
+		Tokens:  tokens,
+		Subject: userInfo.Subject,
+	}, nil
+}
+
+// exchangeCodeForTokens exchanges an authorization code for tokens with the upstream IDP.
+func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
 	if code == "" {
 		return nil, errors.New("authorization code is required")
 	}
@@ -434,11 +454,26 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	return tokens, nil
 }
 
-// FetchUserInfo fetches user information from the configured UserInfo endpoint.
+// userInfo contains user information retrieved from the upstream IDP.
+type userInfo struct {
+	// Subject is the unique identifier for the user (sub claim).
+	Subject string `json:"sub"`
+
+	// Email is the user's email address.
+	Email string `json:"email,omitempty"`
+
+	// Name is the user's full name.
+	Name string `json:"name,omitempty"`
+
+	// Claims contains all claims returned by the userinfo endpoint.
+	Claims map[string]any `json:"-"`
+}
+
+// fetchUserInfo fetches user information from the configured UserInfo endpoint.
 // Returns an error if no UserInfo endpoint is configured.
 // The field mapping from UserInfoConfig.FieldMapping is used to extract claims
 // from non-standard provider responses.
-func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
+func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken string) (*userInfo, error) {
 	if p.config.UserInfo == nil {
 		return nil, errors.New("userinfo endpoint not configured")
 	}
@@ -507,7 +542,7 @@ func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken stri
 		return nil, fmt.Errorf("userinfo response missing required subject claim: %w", err)
 	}
 
-	userInfo := &UserInfo{
+	userInfo := &userInfo{
 		Subject: sub,
 		Name:    mapping.ResolveName(claims),
 		Email:   mapping.ResolveEmail(claims),
@@ -520,26 +555,6 @@ func (p *BaseOAuth2Provider) FetchUserInfo(ctx context.Context, accessToken stri
 	)
 
 	return userInfo, nil
-}
-
-// ResolveIdentity resolves the user's identity by fetching UserInfo.
-// For pure OAuth2 providers, this fetches user information from the configured endpoint.
-// OIDC-specific validation (ID token nonce, subject matching) will be added when
-// OIDCProvider is implemented.
-func (p *BaseOAuth2Provider) ResolveIdentity(ctx context.Context, tokens *Tokens, _ string) (string, error) {
-	if tokens == nil {
-		return "", ErrIdentityResolutionFailed
-	}
-
-	userInfo, err := p.FetchUserInfo(ctx, tokens.AccessToken)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
-	}
-	if userInfo == nil || userInfo.Subject == "" {
-		return "", ErrIdentityResolutionFailed
-	}
-
-	return userInfo.Subject, nil
 }
 
 // formatOAuth2Error extracts error details from oauth2.RetrieveError for better error messages.

@@ -49,6 +49,26 @@
             "pulls": 5000,
             "stars": 23700
           },
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          },
+          "provenance": {
+            "cert_issuer": "https://token.actions.githubusercontent.com",
+            "repository_uri": "https://github.com/github/github-mcp-server",
+            "runner_environment": "github-hosted",
+            "signer_identity": "/.github/workflows/docker-publish.yml",
+            "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+          },
           "status": "Active",
           "tags": [
             "api",

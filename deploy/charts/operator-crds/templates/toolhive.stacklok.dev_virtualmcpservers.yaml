@@ -633,20 +633,33 @@ spec:
                                 type: boolean
                               failureThreshold:
                                 default: 5
-                                description: FailureThreshold is the number of failures
-                                  before opening the circuit.
+                                description: |-
+                                  FailureThreshold is the number of failures before opening the circuit.
+                                  Must be >= 1.
+                                minimum: 1
                                 type: integer
                               timeout:
                                 default: 60s
-                                description: Timeout is the duration to wait before
-                                  attempting to close the circuit.
+                                description: |-
+                                  Timeout is the duration to wait before attempting to close the circuit.
+                                  Must be >= 1s to prevent thrashing.
                                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                                 type: string
+                                x-kubernetes-validations:
+                                - message: timeout must be >= 1s
+                                  rule: self == '' || duration(self) >= duration('1s')
                             type: object
                           healthCheckInterval:
                             default: 30s
                             description: HealthCheckInterval is the interval between
                               health checks.
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          healthCheckTimeout:
+                            default: 10s
+                            description: |-
+                              HealthCheckTimeout is the maximum duration for a single health check operation.
+                              Should be less than HealthCheckInterval to prevent checks from queuing up.
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           partialFailureMode:
@@ -1439,6 +1452,26 @@ spec:
                     authType:
                       description: AuthType is the type of authentication configured
                       type: string
+                    circuitBreakerState:
+                      description: |-
+                        CircuitBreakerState is the current circuit breaker state (closed, open, half-open).
+                        Empty when circuit breaker is disabled or not configured.
+                      enum:
+                      - closed
+                      - open
+                      - half-open
+                      type: string
+                    circuitLastChanged:
+                      description: |-
+                        CircuitLastChanged is the timestamp when the circuit breaker state last changed.
+                        Empty when circuit breaker is disabled or has never changed state.
+                      format: date-time
+                      type: string
+                    consecutiveFailures:
+                      description: |-
+                        ConsecutiveFailures is the current count of consecutive health check failures.
+                        Resets to 0 when the backend becomes healthy again.
+                      type: integer
                     lastHealthCheck:
                       description: LastHealthCheck is the timestamp of the last health
                         check

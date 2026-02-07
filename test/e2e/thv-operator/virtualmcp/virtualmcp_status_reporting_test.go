@@ -22,6 +22,7 @@ import (
 const (
 	// Test configuration constants for fast failure detection in E2E tests
 	testHealthCheckInterval     = 5 * time.Second
+	testHealthCheckTimeout      = 3 * time.Second // Must be < interval to prevent queuing
 	testStatusReportingInterval = 5 * time.Second
 	testUnhealthyThreshold      = 1
 )
@@ -126,6 +127,7 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 					Operational: &vmcpconfig.OperationalConfig{
 						FailureHandling: &vmcpconfig.FailureHandlingConfig{
 							HealthCheckInterval:     vmcpconfig.Duration(testHealthCheckInterval),
+							HealthCheckTimeout:      vmcpconfig.Duration(testHealthCheckTimeout),
 							StatusReportingInterval: vmcpconfig.Duration(testStatusReportingInterval),
 							UnhealthyThreshold:      testUnhealthyThreshold,
 						},
@@ -153,7 +155,7 @@ var _ = Describe("VirtualMCPServer Status Reporting", Ordered, func() {
 			// Check Ready condition
 			readyCondition := false
 			for _, cond := range server.Status.Conditions {
-				if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+				if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerReady && cond.Status == metav1.ConditionTrue {
 					readyCondition = true
 					break
 				}

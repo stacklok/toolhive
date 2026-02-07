@@ -413,7 +413,16 @@ spec:
                 type: object
               port:
                 default: 8080
-                description: Port is the port to expose the MCP proxy on
+                description: |-
+                  Port is the port to expose the MCP proxy on
+                  Deprecated: Use ProxyPort instead
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              proxyPort:
+                default: 8080
+                description: ProxyPort is the port to expose the MCP proxy on
                 format: int32
                 maximum: 65535
                 minimum: 1

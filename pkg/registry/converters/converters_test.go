@@ -444,6 +444,46 @@ func TestImageMetadataToServerJSON_WithPublisherExtensions(t *testing.T) {
 	assert.Equal(t, "Official", imageData["tier"])
 }
 
+func TestImageMetadataToServerJSON_EmptyStatusDefaultsToActive(t *testing.T) {
+	t.Parallel()
+
+	imageMetadata := createTestImageMetadata()
+	imageMetadata.Status = "" // Empty status should default to "active"
+
+	serverJSON, err := ImageMetadataToServerJSON("test", imageMetadata)
+
+	require.NoError(t, err)
+	require.NotNil(t, serverJSON)
+
+	stacklokData, ok := serverJSON.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+	require.True(t, ok)
+
+	imageData, ok := stacklokData["ghcr.io/test/server:latest"].(map[string]interface{})
+	require.True(t, ok)
+
+	assert.Equal(t, "active", imageData["status"])
+}
+
+func TestRemoteServerMetadataToServerJSON_EmptyStatusDefaultsToActive(t *testing.T) {
+	t.Parallel()
+
+	remoteMetadata := createTestRemoteServerMetadata()
+	remoteMetadata.Status = "" // Empty status should default to "active"
+
+	serverJSON, err := RemoteServerMetadataToServerJSON("test-remote", remoteMetadata)
+
+	require.NoError(t, err)
+	require.NotNil(t, serverJSON)
+
+	stacklokData, ok := serverJSON.Meta.PublisherProvided["io.github.stacklok"].(map[string]interface{})
+	require.True(t, ok)
+
+	remoteData, ok := stacklokData["https://api.example.com/mcp"].(map[string]interface{})
+	require.True(t, ok)
+
+	assert.Equal(t, "active", remoteData["status"])
+}
+
 func TestImageMetadataToServerJSON_ReverseDNSName(t *testing.T) {
 	t.Parallel()
 
@@ -1216,10 +1256,8 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
 	assert.NotNil(t, extensions["tools"])
 	assert.NotNil(t, extensions["tags"])
 	assert.NotNil(t, extensions["metadata"])
-	// NOTE: Permissions and provenance would need to be added to the converter functions
-	// Uncomment once converters.go is updated to include them in publisher extensions:
-	// assert.NotNil(t, extensions["permissions"])
-	// assert.NotNil(t, extensions["provenance"])
+	assert.NotNil(t, extensions["permissions"])
+	assert.NotNil(t, extensions["provenance"])
 
 	// Test round-trip: Convert back to ImageMetadata
 	roundTripImageMetadata, err := ServerJSONToImageMetadata(serverJSON)
@@ -1258,12 +1296,7 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
 	assert.Equal(t, 23700, roundTripImageMetadata.Metadata.Stars)
 	assert.Equal(t, 5000, roundTripImageMetadata.Metadata.Pulls)
 
-	// NOTE: Permissions and provenance are currently stored in publisher extensions
-	// but not extracted back during conversion. This is expected behavior for now.
-	// They are preserved in the ServerJSON._meta but would need extraction logic
-	// added to converters.go:extractImageExtensions() to be round-tripped.
-	//
-	// Uncomment these assertions once extraction logic is added:
-	// assert.NotNil(t, roundTripImageMetadata.Permissions)
-	// assert.NotNil(t, roundTripImageMetadata.Provenance)
+	// Verify permissions and provenance are preserved through the round-trip
+	assert.NotNil(t, roundTripImageMetadata.Permissions)
+	assert.NotNil(t, roundTripImageMetadata.Provenance)
 }

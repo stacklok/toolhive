@@ -8,17 +8,6 @@ import (
 	"strings"
 )
 
-// interfaceSliceToStringSlice converts []interface{} to []string
-func interfaceSliceToStringSlice(input []interface{}) []string {
-	result := make([]string, 0, len(input))
-	for _, item := range input {
-		if str, ok := item.(string); ok {
-			result = append(result, str)
-		}
-	}
-	return result
-}
-
 // ExtractServerName extracts the simple server name from a reverse-DNS format name
 // Example: "io.github.stacklok/fetch" -> "fetch"
 func ExtractServerName(reverseDNSName string) string {

@@ -296,7 +296,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 
 			// Call BuildFromProtocolSchemeWithName with dry-run=true
 			dockerfileContent, err := BuildFromProtocolSchemeWithName(
-				ctx, nil, tt.serverOrImage, tt.caCertPath, "", tt.buildArgs, true)
+				ctx, nil, tt.serverOrImage, tt.caCertPath, "", tt.buildArgs, nil, true)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildFromProtocolSchemeWithName() error = %v, wantErr %v", err, tt.wantErr)
@@ -417,7 +417,7 @@ func TestCreateTemplateData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := createTemplateData(tt.transportType, tt.packageName, tt.caCertPath, tt.buildArgs)
+			result, err := createTemplateData(tt.transportType, tt.packageName, tt.caCertPath, tt.buildArgs, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("createTemplateData() error = %v, wantErr %v", err, tt.wantErr)

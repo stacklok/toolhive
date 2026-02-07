@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -597,7 +598,7 @@ func makeMockRetriever(
 ) retriever.Retriever {
 	t.Helper()
 
-	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string) (string, regtypes.ServerMetadata, error) {
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, _ *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
 		return returnedImage, returnedServerMetadata, returnedError

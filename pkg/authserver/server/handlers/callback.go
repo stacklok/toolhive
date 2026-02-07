@@ -80,23 +80,19 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Exchange code with upstream IDP using the stored PKCE verifier
-	idpTokens, err := h.upstream.ExchangeCode(ctx, code, pending.UpstreamPKCEVerifier)
+	// Exchange code and resolve identity in a single atomic operation.
+	// This ensures OIDC nonce validation cannot be accidentally skipped.
+	result, err := h.upstream.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
 	if err != nil {
-		logger.Errorw("failed to exchange code with upstream IDP",
+		logger.Errorw("failed to exchange code or resolve identity",
 			"error", err,
 		)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to exchange authorization code"))
 		return
 	}
 
-	// Resolve identity from upstream provider
-	providerSubject, err := h.upstream.ResolveIdentity(ctx, idpTokens, pending.UpstreamNonce)
-	if err != nil {
-		logger.Errorw("failed to resolve user identity", "error", err)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to verify user identity"))
-		return
-	}
+	idpTokens := result.Tokens
+	providerSubject := result.Subject
 
 	// Get provider ID
 	providerID := string(h.upstream.Type())

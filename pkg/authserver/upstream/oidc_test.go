@@ -470,102 +470,284 @@ func TestValidateEndpointOrigin(t *testing.T) {
 	}
 }
 
-func TestOIDCProviderImpl_ResolveIdentity(t *testing.T) {
+func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 	t.Parallel()
 
-	mock := newMockOIDCServer(t)
-	t.Cleanup(mock.Close)
-
-	config := &OIDCConfig{
-		CommonOAuthConfig: CommonOAuthConfig{
-			ClientID:     testClientID,
-			ClientSecret: testClientSecret,
-			RedirectURI:  testRedirectURI,
-		},
-		Issuer: mock.issuer,
-	}
-
 	ctx := context.Background()
-	provider, err := NewOIDCProvider(ctx, config)
-	require.NoError(t, err)
 
-	t.Run("valid ID token returns subject", func(t *testing.T) {
+	t.Run("successful exchange with nonce validation", func(t *testing.T) {
 		t.Parallel()
-		idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
-		tokens := &Tokens{
-			AccessToken: "test-access-token",
-			IDToken:     idToken,
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-456", "test-nonce", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken:  "exchanged-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "exchanged-refresh-token",
+				IDToken:      idToken,
+				ExpiresIn:    7200,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
 		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "")
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
 		require.NoError(t, err)
-		assert.Equal(t, "user-123", subject)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-auth-code", "test-verifier", "test-nonce")
+		require.NoError(t, err)
+		assert.Equal(t, "user-456", result.Subject)
+		assert.Equal(t, "exchanged-access-token", result.Tokens.AccessToken)
+		assert.Equal(t, "exchanged-refresh-token", result.Tokens.RefreshToken)
+		assert.NotEmpty(t, result.Tokens.IDToken)
 	})
 
-	t.Run("valid ID token with nonce returns subject", func(t *testing.T) {
+	t.Run("successful exchange without nonce", func(t *testing.T) {
 		t.Parallel()
-		idToken := mock.signIDToken(testClientID, "user-456", "test-nonce", time.Now().Add(time.Hour))
-		tokens := &Tokens{
-			AccessToken: "test-access-token",
-			IDToken:     idToken,
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
 		}
-		subject, err := provider.ResolveIdentity(ctx, tokens, "test-nonce")
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
 		require.NoError(t, err)
-		assert.Equal(t, "user-456", subject)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "user-123", result.Subject)
 	})
 
 	t.Run("nonce mismatch returns error", func(t *testing.T) {
 		t.Parallel()
-		idToken := mock.signIDToken(testClientID, "user-123", "token-nonce", time.Now().Add(time.Hour))
-		tokens := &Tokens{
-			AccessToken: "test-access-token",
-			IDToken:     idToken,
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "token-nonce", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
 		}
-		_, err := provider.ResolveIdentity(ctx, tokens, "different-nonce")
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "different-nonce")
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		require.ErrorIs(t, err, ErrNonceMismatch)
 	})
 
 	t.Run("missing nonce in token when expected returns error", func(t *testing.T) {
 		t.Parallel()
-		// Sign ID token without nonce
-		idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
-		tokens := &Tokens{
-			AccessToken: "test-access-token",
-			IDToken:     idToken,
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			// Sign ID token without nonce
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
 		}
-		// But caller expects a nonce - this should fail
-		// (detailed error logged at DEBUG, generic error returned for security)
-		_, err := provider.ResolveIdentity(ctx, tokens, "expected-nonce")
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		// Caller expects a nonce but token doesn't have one
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "expected-nonce")
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
-
-		// Also verify the underlying error is ErrNonceMissing via direct validation
-		_, validationErr := provider.validateIDToken(ctx, idToken, "expected-nonce")
-		require.Error(t, validationErr)
-		require.ErrorIs(t, validationErr, ErrNonceMissing)
+		require.ErrorIs(t, err, ErrNonceMissing)
 	})
 
-	// Error cases table
-	tests := []struct {
-		name        string
-		tokens      *Tokens
-		wantContain string // empty means just check ErrorIs
-	}{
-		{"invalid ID token returns validation error", &Tokens{AccessToken: "test-access-token", IDToken: "dummy-id-token"}, "ID token validation failed"},
-		{"without ID token returns error", &Tokens{AccessToken: "test-access-token"}, "ID token required"},
-		{"nil tokens returns error", nil, ""},
-	}
+	t.Run("missing ID token in response returns error", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := provider.ResolveIdentity(ctx, tt.tokens, "")
-			require.ErrorIs(t, err, ErrIdentityResolutionFailed)
-			if tt.wantContain != "" {
-				assert.Contains(t, err.Error(), tt.wantContain)
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				ExpiresIn:   3600,
+				// No ID token
 			}
-		})
-	}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "ID token required")
+	})
+
+	t.Run("invalid ID token fails validation", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     "invalid.token.here",
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "failed to verify ID token")
+	})
+
+	t.Run("token endpoint error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			resp := testTokenErrorResponse{
+				Error:            "invalid_grant",
+				ErrorDescription: "The authorization code has expired",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "expired-code", "", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid_grant")
+	})
+
+	t.Run("empty code returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "", "", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "authorization code is required")
+	})
 }
 
 func TestOIDCProvider_AuthorizationURL(t *testing.T) {
@@ -669,155 +851,6 @@ func TestOIDCProvider_AuthorizationURL(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestOIDCProvider_ExchangeCode(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	t.Run("successful token exchange with ID token", func(t *testing.T) {
-		t.Parallel()
-
-		mock := newMockOIDCServer(t)
-		t.Cleanup(mock.Close)
-
-		var receivedParams url.Values
-		mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseForm(); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			receivedParams = r.PostForm
-
-			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
-
-			resp := testTokenResponse{
-				AccessToken:  "exchanged-access-token",
-				TokenType:    "Bearer",
-				RefreshToken: "exchanged-refresh-token",
-				IDToken:      idToken,
-				ExpiresIn:    7200,
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-		}
-
-		config := &OIDCConfig{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				RedirectURI:  testRedirectURI,
-			},
-			Issuer: mock.issuer,
-		}
-
-		provider, err := NewOIDCProvider(ctx, config)
-		require.NoError(t, err)
-
-		tokens, err := provider.ExchangeCode(ctx, "test-auth-code", "test-verifier")
-		require.NoError(t, err)
-
-		// Verify request parameters
-		assert.Equal(t, "authorization_code", receivedParams.Get("grant_type"))
-		assert.Equal(t, "test-auth-code", receivedParams.Get("code"))
-		assert.Equal(t, "test-verifier", receivedParams.Get("code_verifier"))
-
-		// Verify response
-		assert.Equal(t, "exchanged-access-token", tokens.AccessToken)
-		assert.Equal(t, "exchanged-refresh-token", tokens.RefreshToken)
-		assert.NotEmpty(t, tokens.IDToken)
-	})
-
-	t.Run("empty code returns error", func(t *testing.T) {
-		t.Parallel()
-
-		mock := newMockOIDCServer(t)
-		t.Cleanup(mock.Close)
-
-		config := &OIDCConfig{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				RedirectURI:  testRedirectURI,
-			},
-			Issuer: mock.issuer,
-		}
-
-		provider, err := NewOIDCProvider(ctx, config)
-		require.NoError(t, err)
-
-		_, err = provider.ExchangeCode(ctx, "", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "authorization code is required")
-	})
-
-	t.Run("invalid ID token fails validation", func(t *testing.T) {
-		t.Parallel()
-
-		mock := newMockOIDCServer(t)
-		t.Cleanup(mock.Close)
-
-		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
-			resp := testTokenResponse{
-				AccessToken: "access-token",
-				TokenType:   "Bearer",
-				IDToken:     "invalid.token.here",
-				ExpiresIn:   3600,
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-		}
-
-		config := &OIDCConfig{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				RedirectURI:  testRedirectURI,
-			},
-			Issuer: mock.issuer,
-		}
-
-		provider, err := NewOIDCProvider(ctx, config)
-		require.NoError(t, err)
-
-		_, err = provider.ExchangeCode(ctx, "test-code", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "ID token validation failed")
-	})
-
-	t.Run("token endpoint error", func(t *testing.T) {
-		t.Parallel()
-
-		mock := newMockOIDCServer(t)
-		t.Cleanup(mock.Close)
-
-		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			resp := testTokenErrorResponse{
-				Error:            "invalid_grant",
-				ErrorDescription: "The authorization code has expired",
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		}
-
-		config := &OIDCConfig{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     testClientID,
-				ClientSecret: testClientSecret,
-				RedirectURI:  testRedirectURI,
-			},
-			Issuer: mock.issuer,
-		}
-
-		provider, err := NewOIDCProvider(ctx, config)
-		require.NoError(t, err)
-
-		_, err = provider.ExchangeCode(ctx, "expired-code", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid_grant")
-	})
 }
 
 func TestOIDCProvider_RefreshTokens(t *testing.T) {

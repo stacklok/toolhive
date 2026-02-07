@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM {{.RuntimeConfig.BuilderImage}} AS builder
 
 {{if .BuildEnv}}
 # Custom build environment variables
@@ -13,8 +13,8 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
     rm /tmp/custom-ca.crt
 {{end}}
 
-# Install CA certificates and git (needed for go modules)
-RUN apk add --no-cache ca-certificates git
+# Install build dependencies
+RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}
 
 {{if .CACertContent}}
 # Properly install the custom CA certificate using standard tools
@@ -72,7 +72,7 @@ RUN package="{{.MCPPackage}}"; \
 {{end}}
 
 # Final stage - minimal runtime image
-FROM alpine:3.22
+FROM index.docker.io/library/alpine:3.23@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime

@@ -36,8 +36,9 @@ func HandleProtocolScheme(
 	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
+	runtimeOverride *templates.RuntimeConfig,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", nil, false)
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", nil, runtimeOverride, false)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
@@ -53,6 +54,7 @@ func BuildFromProtocolSchemeWithName(
 	caCertPath string,
 	imageName string,
 	buildArgs []string,
+	runtimeOverride *templates.RuntimeConfig,
 	dryRun bool,
 ) (string, error) {
 	transportType, packageName, err := ParseProtocolScheme(serverOrImage)
@@ -60,7 +62,7 @@ func BuildFromProtocolSchemeWithName(
 		return "", err
 	}
 
-	templateData, err := createTemplateData(transportType, packageName, caCertPath, buildArgs)
+	templateData, err := createTemplateData(transportType, packageName, caCertPath, buildArgs, runtimeOverride)
 	if err != nil {
 		return "", err
 	}
@@ -107,6 +109,7 @@ func validateBuildArgs(buildArgs []string) error {
 // createTemplateData creates the template data with optional CA certificate and build arguments.
 func createTemplateData(
 	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
+	runtimeOverride *templates.RuntimeConfig,
 ) (templates.TemplateData, error) {
 	// Validate buildArgs to prevent shell injection in templates that use sh -c
 	if err := validateBuildArgs(buildArgs); err != nil {
@@ -138,7 +141,36 @@ func createTemplateData(
 		return templateData, err
 	}
 
+	// Load runtime configuration (base images and packages)
+	runtimeConfig := loadRuntimeConfig(transportType, runtimeOverride)
+	templateData.RuntimeConfig = runtimeConfig
+
 	return templateData, nil
+}
+
+// loadRuntimeConfig loads the runtime configuration for a given transport type.
+// Priority order:
+// 1. Override provided as parameter
+// 2. User configuration from config file
+// 3. Default configuration for the transport type
+func loadRuntimeConfig(
+	transportType templates.TransportType,
+	override *templates.RuntimeConfig,
+) *templates.RuntimeConfig {
+	// If override is provided, use it
+	if override != nil {
+		return override
+	}
+
+	// Try loading from user config
+	provider := config.NewProvider()
+	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
+		return userConfig
+	}
+
+	// Fall back to defaults
+	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
+	return &defaultConfig
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.

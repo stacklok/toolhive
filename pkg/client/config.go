@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -79,6 +80,10 @@ const (
 	GeminiCli MCPClient = "gemini-cli"
 	// VSCodeServer represents Microsoft's VS Code Server (remote development).
 	VSCodeServer MCPClient = "vscode-server"
+	// MistralVibe represents the Mistral Vibe IDE.
+	MistralVibe MCPClient = "mistral-vibe"
+	// Codex represents the OpenAI Codex CLI.
+	Codex MCPClient = "codex"
 )
 
 // Extension is extension of the client config file.
@@ -665,13 +670,108 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
+	},
+	{
+		ClientType:           MistralVibe,
+		Description:          "Mistral Vibe IDE",
+		SettingsFile:         "config.toml",
+		MCPServersPathPrefix: "/mcp_servers",
+		RelPath:              []string{".vibe"},
+		Extension:            TOML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "streamable-http",
+			types.TransportTypeSSE:            "http",
+			types.TransportTypeStreamableHTTP: "streamable-http",
+		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabelMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "url",
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		// TOML configuration: uses array-of-tables format [[mcp_servers]]
+		TOMLStorageType: TOMLStorageTypeArray,
 	},
+	{
+		ClientType:           Codex,
+		Description:          "OpenAI Codex CLI",
+		SettingsFile:         "config.toml",
+		MCPServersPathPrefix: "/mcp_servers",
+		RelPath:              []string{".codex"},
+		Extension:            TOML,
+		// Codex doesn't support a transport type field - it auto-detects
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		// TOML configuration: uses nested tables format [mcp_servers.servername]
+		TOMLStorageType: TOMLStorageTypeMap,
+	},
+}
+
+// GetAllClients returns a slice of all supported MCP client types, sorted alphabetically.
+// This is the single source of truth for valid client types.
+func GetAllClients() []MCPClient {
+	clients := make([]MCPClient, 0, len(supportedClientIntegrations))
+	for _, config := range supportedClientIntegrations {
+		clients = append(clients, config.ClientType)
+	}
+	// Sort alphabetically
+	sort.Slice(clients, func(i, j int) bool {
+		return clients[i] < clients[j]
+	})
+	return clients
+}
+
+// IsValidClient checks if the provided client type is supported.
+func IsValidClient(clientType string) bool {
+	for _, config := range supportedClientIntegrations {
+		if string(config.ClientType) == clientType {
+			return true
+		}
+	}
+	return false
+}
+
+// GetClientDescription returns the description for a given client type.
+// Returns an empty string if the client type is not found.
+func GetClientDescription(clientType MCPClient) string {
+	for _, config := range supportedClientIntegrations {
+		if config.ClientType == clientType {
+			return config.Description
+		}
+	}
+	return ""
+}
+
+// GetClientListFormatted returns a formatted multi-line string listing all supported clients
+// with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
+func GetClientListFormatted() string {
+	// Create a sorted copy of the configurations
+	configs := make([]mcpClientConfig, len(supportedClientIntegrations))
+	copy(configs, supportedClientIntegrations)
+	sort.Slice(configs, func(i, j int) bool {
+		return configs[i].ClientType < configs[j].ClientType
+	})
+
+	var sb strings.Builder
+	for _, config := range configs {
+		sb.WriteString(fmt.Sprintf("  - %s: %s\n", config.ClientType, config.Description))
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// GetClientListCSV returns a comma-separated list of all supported client types, sorted alphabetically.
+// This is suitable for use in error messages.
+func GetClientListCSV() string {
+	clients := GetAllClients() // GetAllClients already returns sorted list
+	clientStrs := make([]string, len(clients))
+	for i, client := range clients {
+		clientStrs[i] = string(client)
+	}
+	return strings.Join(clientStrs, ", ")
 }
 
 // ConfigFile represents a client configuration file

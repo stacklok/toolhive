@@ -18,6 +18,7 @@ import (
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -128,6 +129,10 @@ type RunFlags struct {
 	// Remote header forwarding
 	RemoteForwardHeaders       []string
 	RemoteForwardHeadersSecret []string
+
+	// Runtime configuration
+	RuntimeImage       string
+	RuntimeAddPackages []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -182,6 +187,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "",
 		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
 	cmd.Flags().StringVar(&config.CACertPath, "ca-cert", "", "Path to a custom CA certificate file to use for container builds")
+	cmd.Flags().StringVar(&config.RuntimeImage, "runtime-image", "",
+		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
+	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
+		"Add additional packages to install in the builder stage (can be repeated)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -393,9 +402,18 @@ func handleImageRetrieval(
 	error,
 ) {
 
+	// Build runtime config override from flags (if any)
+	var runtimeOverride *templates.RuntimeConfig
+	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
+		runtimeOverride = &templates.RuntimeConfig{
+			BuilderImage:       runFlags.RuntimeImage,
+			AdditionalPackages: runFlags.RuntimeAddPackages,
+		}
+	}
+
 	// Try to get server from registry (container or remote) or direct URL
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName, runtimeOverride)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
 	}
@@ -431,6 +449,82 @@ func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	return nil
 }
 
+// resolveTransportType selects the appropriate transport type based on flags and metadata
+func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) string {
+	if runFlags.Transport != "" {
+		return runFlags.Transport
+	}
+	if serverMetadata != nil {
+		return serverMetadata.GetTransport()
+	}
+	return defaultTransportType
+}
+
+// resolveServerName resolves the server name for telemetry from flags or metadata
+func resolveServerName(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) string {
+	if runFlags.Name != "" {
+		return runFlags.Name
+	}
+	if imageMetadata, ok := serverMetadata.(*regtypes.ImageMetadata); ok && imageMetadata != nil {
+		return imageMetadata.Name
+	}
+	return ""
+}
+
+// loadToolsOverrideConfig loads and parses the tools override configuration file
+func loadToolsOverrideConfig(toolsOverridePath string) (map[string]runner.ToolOverride, error) {
+	if toolsOverridePath == "" {
+		return nil, nil
+	}
+	loadedToolsOverride, err := cli.LoadToolsOverride(toolsOverridePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load tools override: %w", err)
+	}
+	return *loadedToolsOverride, nil
+}
+
+// configureRemoteHeaderOptions configures header forwarding options for remote servers
+func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
+	var opts []runner.RunConfigBuilderOption
+
+	if runFlags.RemoteURL == "" {
+		return opts, nil
+	}
+
+	addHeaders, err := parseHeaderForwardFlags(runFlags.RemoteForwardHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse header forward flags: %w", err)
+	}
+	if len(addHeaders) > 0 {
+		opts = append(opts, runner.WithHeaderForward(addHeaders))
+	}
+
+	if len(runFlags.RemoteForwardHeadersSecret) > 0 {
+		secretHeaders, err := parseHeaderSecretFlags(runFlags.RemoteForwardHeadersSecret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse header secret flags: %w", err)
+		}
+		if len(secretHeaders) > 0 {
+			opts = append(opts, runner.WithHeaderForwardSecrets(secretHeaders))
+		}
+	}
+
+	return opts, nil
+}
+
+// configureRuntimeOptions configures runtime image and package options
+func configureRuntimeOptions(runFlags *RunFlags) []runner.RunConfigBuilderOption {
+	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 {
+		return nil
+	}
+
+	runtimeConfig := &templates.RuntimeConfig{
+		BuilderImage:       runFlags.RuntimeImage,
+		AdditionalPackages: runFlags.RuntimeAddPackages,
+	}
+	return []runner.RunConfigBuilderOption{runner.WithRuntimeConfig(runtimeConfig)}
+}
+
 // buildRunnerConfig creates the final RunnerConfig using the builder pattern
 func buildRunnerConfig(
 	ctx context.Context,
@@ -446,23 +540,11 @@ func buildRunnerConfig(
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
 ) (*runner.RunConfig, error) {
-	// Determine transport type
-	transportType := defaultTransportType
-	if runFlags.Transport != "" {
-		transportType = runFlags.Transport
-	} else if serverMetadata != nil {
-		transportType = serverMetadata.GetTransport()
-	}
-
-	// Determine server name for telemetry (similar to validateConfig logic)
-	// This ensures telemetry middleware gets the correct server name
+	transportType := resolveTransportType(runFlags, serverMetadata)
+	serverName := resolveServerName(runFlags, serverMetadata)
 	imageMetadata, _ := serverMetadata.(*regtypes.ImageMetadata)
-	serverName := runFlags.Name
-	if serverName == "" && imageMetadata != nil {
-		serverName = imageMetadata.Name
-	}
 
-	// set default options
+	// Build default options
 	opts := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(rt),
 		runner.WithCmdArgs(cmdArgs),
@@ -493,36 +575,22 @@ func buildRunnerConfig(
 		}),
 	}
 
-	var toolsOverride map[string]runner.ToolOverride
-	if runFlags.ToolsOverride != "" {
-		loadedToolsOverride, err := cli.LoadToolsOverride(runFlags.ToolsOverride)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load tools override: %w", err)
-		}
-		toolsOverride = *loadedToolsOverride
+	// Load tools override configuration
+	toolsOverride, err := loadToolsOverrideConfig(runFlags.ToolsOverride)
+	if err != nil {
+		return nil, err
 	}
 
-	// Configure header forwarding for remote servers
-	if runFlags.RemoteURL != "" {
-		addHeaders, err := parseHeaderForwardFlags(runFlags.RemoteForwardHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse header forward flags: %w", err)
-		}
-		if len(addHeaders) > 0 {
-			opts = append(opts, runner.WithHeaderForward(addHeaders))
-		}
-
-		// Parse secret header references (stored in RunConfig, resolved at runtime by WithSecrets)
-		if len(runFlags.RemoteForwardHeadersSecret) > 0 {
-			secretHeaders, err := parseHeaderSecretFlags(runFlags.RemoteForwardHeadersSecret)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse header secret flags: %w", err)
-			}
-			if len(secretHeaders) > 0 {
-				opts = append(opts, runner.WithHeaderForwardSecrets(secretHeaders))
-			}
-		}
+	// Configure remote header forwarding options
+	remoteHeaderOpts, err := configureRemoteHeaderOptions(runFlags)
+	if err != nil {
+		return nil, err
 	}
+	opts = append(opts, remoteHeaderOpts...)
+
+	// Configure runtime options
+	runtimeOpts := configureRuntimeOptions(runFlags)
+	opts = append(opts, runtimeOpts...)
 
 	// Configure middleware and additional options
 	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,

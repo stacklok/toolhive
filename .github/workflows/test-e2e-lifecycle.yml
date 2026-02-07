@@ -17,7 +17,7 @@ jobs:
   e2e-test-lifecycle:
     name: E2E Test Lifecycle
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
     defaults:

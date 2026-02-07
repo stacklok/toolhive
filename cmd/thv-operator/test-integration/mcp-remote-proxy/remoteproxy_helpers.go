@@ -18,6 +18,24 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+// ServiceName returns the expected Service name for an MCPRemoteProxy,
+// mirroring the controller's naming convention.
+func ServiceName(proxyName string) string {
+	return fmt.Sprintf("mcp-%s-remote-proxy", proxyName)
+}
+
+// ConfigMapName returns the expected RunConfig ConfigMap name for an MCPRemoteProxy,
+// mirroring the controller's naming convention.
+func ConfigMapName(proxyName string) string {
+	return fmt.Sprintf("%s-runconfig", proxyName)
+}
+
+// ServiceAccountName returns the expected ServiceAccount name for an MCPRemoteProxy,
+// mirroring the controller's naming convention.
+func ServiceAccountName(proxyName string) string {
+	return fmt.Sprintf("%s-remote-proxy-runner", proxyName)
+}
+
 // Common timeout values for different types of operations
 const (
 	// MediumTimeout for operations that may take some time (e.g., controller reconciliation)

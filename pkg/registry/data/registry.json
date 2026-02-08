@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-02-06T00:21:32Z",
+  "last_updated": "2026-02-08T00:29:02Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -3157,7 +3157,7 @@
       "metadata": {
         "stars": 18,
         "pulls": 0,
-        "last_updated": "2026-01-25T13:38:12Z"
+        "last_updated": "2026-02-07T02:54:31Z"
       },
       "repository_url": "https://github.com/launchdarkly/mcp-server",
       "tags": [
@@ -6331,7 +6331,7 @@
       "metadata": {
         "stars": 8,
         "pulls": 0,
-        "last_updated": "2026-01-25T13:38:12Z"
+        "last_updated": "2026-02-07T02:54:31Z"
       },
       "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
       "tags": [
@@ -6534,7 +6534,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2026-01-25T13:38:12Z"
+        "last_updated": "2026-02-07T02:54:31Z"
       },
       "tags": [
         "remote",
@@ -6637,7 +6637,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2026-01-25T13:38:12Z"
+        "last_updated": "2026-02-07T02:54:31Z"
       },
       "tags": [
         "remote",
@@ -6691,7 +6691,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2026-01-25T13:38:12Z"
+        "last_updated": "2026-02-07T02:54:31Z"
       },
       "tags": [
         "remote",

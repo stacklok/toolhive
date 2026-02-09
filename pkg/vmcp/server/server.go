@@ -449,7 +449,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager)(mcpHandler)
+	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	var healthStatusProvider health.StatusProvider
+	if s.healthMonitor != nil {
+		healthStatusProvider = s.healthMonitor
+	}
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)

@@ -524,13 +524,11 @@ func TestFilterHealthyBackends(t *testing.T) {
 	tests := []struct {
 		name             string
 		backends         []vmcp.Backend
-		expectedCount    int
 		expectedBackends []string // backend IDs that should be included
 	}{
 		{
 			name:             "empty backends list",
 			backends:         []vmcp.Backend{},
-			expectedCount:    0,
 			expectedBackends: []string{},
 		},
 		{
@@ -540,7 +538,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
 				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
 			},
-			expectedCount:    3,
 			expectedBackends: []string{"backend1", "backend2", "backend3"},
 		},
 		{
@@ -549,7 +546,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendUnhealthy},
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnhealthy},
 			},
-			expectedCount:    0,
 			expectedBackends: []string{},
 		},
 		{
@@ -560,7 +556,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
 				{ID: "backend4", Name: "Backend 4", HealthStatus: vmcp.BackendUnhealthy},
 			},
-			expectedCount:    2,
 			expectedBackends: []string{"backend1", "backend3"},
 		},
 		{
@@ -570,7 +565,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendDegraded},
 				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendUnhealthy},
 			},
-			expectedCount:    2,
 			expectedBackends: []string{"backend1", "backend2"},
 		},
 		{
@@ -580,7 +574,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnknown},
 				{ID: "backend3", Name: "Backend 3", HealthStatus: vmcp.BackendHealthy},
 			},
-			expectedCount:    2,
 			expectedBackends: []string{"backend1", "backend3"},
 		},
 		{
@@ -589,7 +582,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnauthenticated},
 			},
-			expectedCount:    1,
 			expectedBackends: []string{"backend1"},
 		},
 		{
@@ -599,7 +591,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendHealthy},
 				{ID: "backend3", Name: "Backend 3"}, // No HealthStatus set
 			},
-			expectedCount:    3,
 			expectedBackends: []string{"backend1", "backend2", "backend3"},
 		},
 		{
@@ -611,7 +602,6 @@ func TestFilterHealthyBackends(t *testing.T) {
 				{ID: "backend4", Name: "Backend 4", HealthStatus: vmcp.BackendUnknown},
 				{ID: "backend5", Name: "Backend 5", HealthStatus: vmcp.BackendUnauthenticated},
 			},
-			expectedCount:    2,
 			expectedBackends: []string{"backend1", "backend2"},
 		},
 	}
@@ -624,7 +614,7 @@ func TestFilterHealthyBackends(t *testing.T) {
 			// This tests the fallback to registry-based health status
 			result := filterHealthyBackends(tt.backends, nil)
 
-			assert.Equal(t, tt.expectedCount, len(result), "unexpected number of backends returned")
+			assert.Equal(t, len(tt.expectedBackends), len(result), "unexpected number of backends returned")
 
 			// Verify only expected backends are included
 			resultIDs := make([]string, len(result))

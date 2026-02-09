@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -73,6 +74,14 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	// Verify checksum annotation using standard annotation key
 	assert.Equal(t, "test-checksum",
 		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation])
+
+	// Verify default resource requirements
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, resource.MustParse("100m"), container.Resources.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("500m"), container.Resources.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("512Mi"), container.Resources.Limits[corev1.ResourceMemory])
 }
 
 // TestBuildContainerArgsForVmcp tests container argument generation

@@ -206,6 +206,16 @@ This skill does things.
 			wantWarnings: []string{"SKILL.md has"},
 		},
 		{
+			name: "warning - comma-delimited allowed-tools",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return makeSkillDir(t, "comma-warn",
+					"---\nname: comma-warn\ndescription: test\nallowed-tools: Read, Glob, Grep\n---\n")
+			},
+			wantValid:    true,
+			wantWarnings: []string{"comma-delimited format"},
+		},
+		{
 			name: "valid two-char name",
 			setup: func(t *testing.T) string {
 				t.Helper()

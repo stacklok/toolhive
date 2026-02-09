@@ -61,27 +61,36 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 		}, nil
 	}
 
-	// Validate name
+	// Validate parsed fields
+	errs = append(errs, validateFields(result, filepath.Base(filepath.Clean(path)))...)
+
+	// Collect warnings
+	warnings = append(warnings, collectWarnings(result, content)...)
+
+	return &ValidationResult{
+		Valid:    len(errs) == 0,
+		Errors:   errs,
+		Warnings: warnings,
+	}, nil
+}
+
+// validateFields checks parsed frontmatter fields against spec constraints.
+func validateFields(result *ParseResult, dirName string) []string {
+	var errs []string
+
 	if err := validateName(result.Name); err != nil {
 		errs = append(errs, err.Error())
 	}
-
-	// Validate name matches directory
-	dirName := filepath.Base(filepath.Clean(path))
 	if result.Name != "" && result.Name != dirName {
 		errs = append(errs,
 			fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
 	}
-
-	// Validate required fields
 	if result.Name == "" {
 		errs = append(errs, "name is required")
 	}
 	if result.Description == "" {
 		errs = append(errs, "description is required")
 	}
-
-	// Validate field constraints
 	if len(result.Description) > MaxDescriptionLength {
 		errs = append(errs,
 			fmt.Sprintf("description exceeds maximum length of %d characters", MaxDescriptionLength))
@@ -91,18 +100,26 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 			fmt.Sprintf("compatibility field exceeds maximum length of %d characters", MaxCompatibilityLength))
 	}
 
-	// Warnings (non-blocking)
+	return errs
+}
+
+// collectWarnings generates non-blocking warnings for spec compliance.
+func collectWarnings(result *ParseResult, content []byte) []string {
+	var warnings []string
+
+	if len(result.AllowedTools) > 0 && bytes.Contains(content, []byte(",")) &&
+		bytes.Contains(content, []byte("allowed-tools:")) {
+		warnings = append(warnings,
+			"allowed-tools uses comma-delimited format, which is a ToolHive extension; "+
+				"the Agent Skills spec defines space-delimited as the canonical format")
+	}
 	lineCount := bytes.Count(content, []byte("\n")) + 1
 	if lineCount > RecommendedMaxSkillMDLines {
 		warnings = append(warnings,
 			fmt.Sprintf("SKILL.md has %d lines (recommended max: %d)", lineCount, RecommendedMaxSkillMDLines))
 	}
 
-	return &ValidationResult{
-		Valid:    len(errs) == 0,
-		Errors:   errs,
-		Warnings: warnings,
-	}, nil
+	return warnings
 }
 
 // validateName checks that a skill name matches the required pattern.

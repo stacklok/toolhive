@@ -7,16 +7,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // frontmatterDelimiter is the YAML frontmatter delimiter.
 var frontmatterDelimiter = []byte("---")
-
-// skilletRequiresKey is the metadata key for external OCI dependencies.
-const skilletRequiresKey = "skillet.requires"
 
 // MaxFrontmatterSize is the maximum size of frontmatter content in bytes.
 // This prevents YAML parsing attacks (e.g., billion laughs).
@@ -36,9 +32,9 @@ func ParseSkillMD(content []byte) (*ParseResult, error) {
 		return nil, err
 	}
 
-	requires, err := parseRequires(fm.Metadata)
+	requires, err := toDependencies(fm.Requires)
 	if err != nil {
-		return nil, fmt.Errorf("parsing skillet.requires: %w", err)
+		return nil, fmt.Errorf("parsing requires: %w", err)
 	}
 
 	return &ParseResult{
@@ -97,27 +93,20 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	return &fm, body, nil
 }
 
-// parseRequires extracts the skillet.requires field from metadata and converts
-// the newline-separated OCI references to Dependencies.
-func parseRequires(metadata map[string]string) ([]Dependency, error) {
-	requiresStr, ok := metadata[skilletRequiresKey]
-	if !ok || requiresStr == "" {
+// toDependencies converts a list of OCI reference strings to Dependencies.
+func toDependencies(refs []string) ([]Dependency, error) {
+	if len(refs) == 0 {
 		return nil, nil
 	}
 
-	lines := strings.Split(requiresStr, "\n")
+	if len(refs) > MaxDependencies {
+		return nil, fmt.Errorf("too many dependencies: %d (max %d)", len(refs), MaxDependencies)
+	}
 
-	deps := make([]Dependency, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		deps = append(deps, Dependency{Reference: line})
-
-		if len(deps) > MaxDependencies {
-			return nil, fmt.Errorf("too many dependencies: more than %d", MaxDependencies)
+	deps := make([]Dependency, 0, len(refs))
+	for _, ref := range refs {
+		if ref != "" {
+			deps = append(deps, Dependency{Reference: ref})
 		}
 	}
 

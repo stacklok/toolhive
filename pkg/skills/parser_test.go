@@ -130,22 +130,18 @@ allowed-tools: ""
 			},
 		},
 		{
-			name: "dependencies from metadata",
+			name: "dependencies as yaml array",
 			content: `---
 name: with-deps
 description: test
-metadata:
-  skillet.requires: |
-    ghcr.io/org/skill-a:v1.0.0
-    ghcr.io/org/skill-b:latest
+toolhive.requires:
+  - ghcr.io/org/skill-a:v1.0.0
+  - ghcr.io/org/skill-b:latest
 ---
 `,
 			wantResult: &ParseResult{
 				Name:        "with-deps",
 				Description: "test",
-				Metadata: map[string]string{
-					"skillet.requires": "ghcr.io/org/skill-a:v1.0.0\nghcr.io/org/skill-b:latest\n",
-				},
 				Requires: []Dependency{
 					{Reference: "ghcr.io/org/skill-a:v1.0.0"},
 					{Reference: "ghcr.io/org/skill-b:latest"},
@@ -154,23 +150,18 @@ metadata:
 			},
 		},
 		{
-			name: "dependencies with blank lines",
+			name: "dependencies as newline-delimited string",
 			content: `---
-name: deps-blanks
+name: deps-string
 description: test
-metadata:
-  skillet.requires: |
-    ghcr.io/org/skill-a:v1.0.0
-
-    ghcr.io/org/skill-b:latest
+toolhive.requires: |
+  ghcr.io/org/skill-a:v1.0.0
+  ghcr.io/org/skill-b:latest
 ---
 `,
 			wantResult: &ParseResult{
-				Name:        "deps-blanks",
+				Name:        "deps-string",
 				Description: "test",
-				Metadata: map[string]string{
-					"skillet.requires": "ghcr.io/org/skill-a:v1.0.0\n\nghcr.io/org/skill-b:latest\n",
-				},
 				Requires: []Dependency{
 					{Reference: "ghcr.io/org/skill-a:v1.0.0"},
 					{Reference: "ghcr.io/org/skill-b:latest"},
@@ -302,19 +293,17 @@ func TestParseSkillMD_DependencyLimit(t *testing.T) {
 	t.Run("exceeds maximum dependencies", func(t *testing.T) {
 		t.Parallel()
 
-		// Create more than MaxDependencies references
 		var refs []string
 		for i := range MaxDependencies + 1 {
-			refs = append(refs, fmt.Sprintf("ghcr.io/org/skill-%d:v1.0.0", i))
+			refs = append(refs, fmt.Sprintf("  - ghcr.io/org/skill-%d:v1.0.0", i))
 		}
-		requiresValue := strings.Join(refs, "\n")
 
-		content := fmt.Sprintf("---\nname: too-many-deps\ndescription: test\nmetadata:\n  skillet.requires: |\n    %s\n---\n",
-			strings.ReplaceAll(requiresValue, "\n", "\n    "))
+		content := fmt.Sprintf("---\nname: too-many-deps\ndescription: test\ntoolhive.requires:\n%s\n---\n",
+			strings.Join(refs, "\n"))
 
 		_, err := ParseSkillMD([]byte(content))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "too many dependencies: more than")
+		assert.Contains(t, err.Error(), "too many dependencies")
 	})
 
 	t.Run("at maximum dependencies", func(t *testing.T) {
@@ -322,12 +311,11 @@ func TestParseSkillMD_DependencyLimit(t *testing.T) {
 
 		var refs []string
 		for i := range MaxDependencies {
-			refs = append(refs, fmt.Sprintf("ghcr.io/org/skill-%d:v1.0.0", i))
+			refs = append(refs, fmt.Sprintf("  - ghcr.io/org/skill-%d:v1.0.0", i))
 		}
-		requiresValue := strings.Join(refs, "\n")
 
-		content := fmt.Sprintf("---\nname: max-deps\ndescription: test\nmetadata:\n  skillet.requires: |\n    %s\n---\n",
-			strings.ReplaceAll(requiresValue, "\n", "\n    "))
+		content := fmt.Sprintf("---\nname: max-deps\ndescription: test\ntoolhive.requires:\n%s\n---\n",
+			strings.Join(refs, "\n"))
 
 		result, err := ParseSkillMD([]byte(content))
 		require.NoError(t, err)

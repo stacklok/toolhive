@@ -80,6 +80,7 @@ func TestResourceTokenSource_Token_ValidToken(t *testing.T) {
 	ts := newResourceTokenSource(config, validToken, "https://api.example.com")
 
 	t.Run("returns cached token when still valid", func(t *testing.T) {
+		t.Parallel()
 		token, err := ts.Token()
 		require.NoError(t, err)
 		assert.Equal(t, "access-token", token.AccessToken)
@@ -194,7 +195,7 @@ func TestResourceTokenSource_Token_ExpiredToken(t *testing.T) {
 	t.Run("updates internal token after successful refresh", func(t *testing.T) {
 		t.Parallel()
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			response := map[string]interface{}{
 				"access_token":  "updated-token",
 				"refresh_token": "updated-refresh",
@@ -247,9 +248,9 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		}
 
 		tokenWithoutRefresh := &oauth2.Token{
-			AccessToken: "access",
+			AccessToken:  "access",
 			RefreshToken: "", // No refresh token
-			Expiry:      time.Now().Add(-1 * time.Hour),
+			Expiry:       time.Now().Add(-1 * time.Hour),
 		}
 
 		ts := newResourceTokenSource(config, tokenWithoutRefresh, "https://api.example.com")
@@ -261,7 +262,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 	t.Run("returns error on HTTP failure", func(t *testing.T) {
 		t.Parallel()
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 		defer server.Close()
@@ -288,7 +289,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 	t.Run("returns error on invalid JSON response", func(t *testing.T) {
 		t.Parallel()
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte("invalid json {"))
 		}))
@@ -351,7 +352,8 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Parallel()
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(tc.statusCode)
 				}))
 				defer server.Close()
@@ -385,7 +387,7 @@ func TestResourceTokenSource_HTTPClientReuse(t *testing.T) {
 		t.Parallel()
 
 		callCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			callCount++
 			response := map[string]interface{}{
 				"access_token":  "new-token",
@@ -509,6 +511,7 @@ func TestResourceTokenSource_RFC8707Compliance(t *testing.T) {
 
 		for _, resourceURI := range testCases {
 			t.Run(resourceURI, func(t *testing.T) {
+				t.Parallel()
 				var capturedResource string
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					err := r.ParseForm()

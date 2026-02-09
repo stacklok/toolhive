@@ -1127,7 +1127,7 @@ func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
 				t.Parallel()
 
 				callCount := 0
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					callCount++
 					response := map[string]interface{}{
 						"access_token":  "token",

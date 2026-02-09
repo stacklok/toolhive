@@ -94,7 +94,9 @@ func (r *resourceTokenSource) refreshWithResource(ctx context.Context) (*oauth2.
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close() // Ignore error on close during cleanup
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("token refresh failed with status %d", resp.StatusCode)

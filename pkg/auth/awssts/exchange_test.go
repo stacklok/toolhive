@@ -5,6 +5,7 @@ package awssts
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func TestExchanger_ExchangeToken(t *testing.T) {
 			roleArn:     "arn:aws:iam::123456789012:role/TestRole",
 			sessionName: "test-session",
 			duration:    3600,
-			wantAnyErr:  true,
+			wantErr:     ErrMissingToken,
 		},
 		{
 			name:        "empty role ARN",
@@ -78,13 +79,29 @@ func TestExchanger_ExchangeToken(t *testing.T) {
 			wantErr:     ErrInvalidRoleArn,
 		},
 		{
+			name:        "session name too short",
+			token:       "valid-token",
+			roleArn:     "arn:aws:iam::123456789012:role/TestRole",
+			sessionName: "x",
+			duration:    3600,
+			wantErr:     ErrInvalidSessionName,
+		},
+		{
+			name:        "session name with invalid characters",
+			token:       "valid-token",
+			roleArn:     "arn:aws:iam::123456789012:role/TestRole",
+			sessionName: "auth0|user123",
+			duration:    3600,
+			wantErr:     ErrInvalidSessionName,
+		},
+		{
 			name:        "STS returns nil credentials",
 			token:       "valid-token",
 			roleArn:     "arn:aws:iam::123456789012:role/TestRole",
 			sessionName: "test-session",
 			duration:    3600,
 			mockResp:    &sts.AssumeRoleWithWebIdentityOutput{},
-			wantAnyErr:  true,
+			wantErr:     ErrSTSNilCredentials,
 		},
 	}
 
@@ -114,6 +131,40 @@ func TestExchanger_ExchangeToken(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, creds)
 			assert.Equal(t, "AKIATEST", creds.AccessKeyID)
+		})
+	}
+}
+
+func TestValidateSessionName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "valid simple", input: "test-session", wantErr: false},
+		{name: "valid with allowed specials", input: "user@domain_+=,.@-", wantErr: false},
+		{name: "valid minimum length", input: "ab", wantErr: false},
+		{name: "valid 64 chars", input: strings.Repeat("a", 64), wantErr: false},
+		{name: "too short", input: "x", wantErr: true},
+		{name: "empty", input: "", wantErr: true},
+		{name: "too long", input: strings.Repeat("a", 65), wantErr: true},
+		{name: "pipe char", input: "auth0|user", wantErr: true},
+		{name: "space", input: "has space", wantErr: true},
+		{name: "slash", input: "path/name", wantErr: true},
+		{name: "colon", input: "a:b", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateSessionName(tt.input)
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrInvalidSessionName)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

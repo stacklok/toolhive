@@ -46,6 +46,7 @@ func TestMetaCarrier_GetSetKeys(t *testing.T) {
 
 	for _, tt := range getTests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := carrier.Get(tt.key); got != tt.want {
 				t.Errorf("Get(%q) = %q, want %q", tt.key, got, tt.want)
 			}

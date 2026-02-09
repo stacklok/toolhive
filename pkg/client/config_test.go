@@ -29,8 +29,8 @@ const testValidYAML = `extensions: {}`
 const testValidTOML = ``
 
 // createMockClientConfigs creates a set of mock client configurations for testing
-func createMockClientConfigs() []mcpClientConfig {
-	return []mcpClientConfig{
+func createMockClientConfigs() []clientAppConfig {
+	return []clientAppConfig{
 		{
 			ClientType:           VSCode,
 			Description:          "Visual Studio Code (Mock)",
@@ -261,7 +261,7 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 
 		// Create fake test client integrations with Cursor pointing to invalid JSON
 		// This tests the JSON validation error path
-		testClientIntegrations := []mcpClientConfig{
+		testClientIntegrations := []clientAppConfig{
 			{
 				ClientType:   VSCode,
 				Description:  "VS Code (Test)",
@@ -356,7 +356,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	logger.Initialize()
 
 	// Helper function to create isolated test setup for each subtest
-	setupSubtest := func(t *testing.T) (string, []mcpClientConfig, config.Provider) {
+	setupSubtest := func(t *testing.T) (string, []clientAppConfig, config.Provider) {
 		t.Helper()
 
 		// Create isolated temporary home directory for this subtest
@@ -560,7 +560,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 }
 
 // Helper function to create test config files for specific client configurations
-func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfigs []mcpClientConfig) {
+func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfigs []clientAppConfig) {
 	t.Helper()
 	// Create test config files for each provided client configuration
 	for _, cfg := range clientConfigs {
@@ -612,7 +612,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config for JSON client (VSCode)
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           VSCode,
 				Description:          "Visual Studio Code (Mock)",
@@ -659,7 +659,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config for YAML client (Goose)
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           Goose,
 				Description:          "Goose AI agent (Mock)",
@@ -706,7 +706,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           VSCode,
 				Description:          "Visual Studio Code (Mock)",
@@ -743,7 +743,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create empty mock client configs (no supported clients)
-		mockClientConfigs := []mcpClientConfig{}
+		mockClientConfigs := []clientAppConfig{}
 
 		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
 
@@ -763,7 +763,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create empty mock client configs (no supported clients)
-		mockClientConfigs := []mcpClientConfig{}
+		mockClientConfigs := []clientAppConfig{}
 
 		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
 
@@ -786,7 +786,7 @@ func TestCreateClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config with a path that will cause write error
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           VSCode,
 				Description:          "Visual Studio Code (Mock)",
@@ -846,7 +846,7 @@ func TestCreateTOMLClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config for TOML client with array storage (MistralVibe)
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           MistralVibe,
 				Description:          "Mistral Vibe IDE (Mock)",
@@ -894,7 +894,7 @@ func TestCreateTOMLClientConfig(t *testing.T) {
 		defer cleanup()
 
 		// Create mock client config for TOML client with map storage (Codex)
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           Codex,
 				Description:          "OpenAI Codex CLI (Mock)",
@@ -944,7 +944,7 @@ func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
 		tempHome := t.TempDir()
 
 		// Create mock client config for Gemini CLI with MCPServersUrlLabelMap
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:                    GeminiCli,
 				Description:                   "Google Gemini CLI (Mock)",
@@ -994,7 +994,7 @@ func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
 		tempHome := t.TempDir()
 
 		// Create mock client config for Gemini CLI with MCPServersUrlLabelMap
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:                    GeminiCli,
 				Description:                   "Google Gemini CLI (Mock)",
@@ -1044,7 +1044,7 @@ func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
 		tempHome := t.TempDir()
 
 		// Create mock client config with limited URL label map (no entry for "unknown")
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:                    GeminiCli,
 				Description:                   "Google Gemini CLI (Mock)",
@@ -1091,7 +1091,7 @@ func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
 		tempHome := t.TempDir()
 
 		// Create mock client config for Windsurf (uses serverUrl for all transport types)
-		mockClientConfigs := []mcpClientConfig{
+		mockClientConfigs := []clientAppConfig{
 			{
 				ClientType:           Windsurf,
 				Description:          "Windsurf IDE (Mock)",
@@ -1149,7 +1149,7 @@ func TestBuildMCPServer(t *testing.T) {
 		name          string
 		url           string
 		transportType string
-		clientCfg     *mcpClientConfig
+		clientCfg     *clientAppConfig
 		expectUrl     string
 		expectSrvUrl  string
 		expectHttpUrl string
@@ -1159,7 +1159,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "url field without type",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeSSE.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeSSE: "url",
@@ -1174,7 +1174,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "serverUrl field without type",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeSSE.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeSSE: "serverUrl",
@@ -1189,7 +1189,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "httpUrl field without type",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeStreamableHTTP.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeStreamableHTTP: "httpUrl",
@@ -1204,7 +1204,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "url field with type support",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeSSE.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: true,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeSSE: "url",
@@ -1222,7 +1222,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "MCPServersUrlLabelMap uses transport map for URL field",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeStreamableHTTP.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeStreamableHTTP: "httpUrl",
@@ -1237,7 +1237,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "Unknown transport falls back to default url field",
 			url:           "http://localhost:8080",
 			transportType: "unknown-transport",
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeSSE: "httpUrl",
@@ -1252,7 +1252,7 @@ func TestBuildMCPServer(t *testing.T) {
 			name:          "MCPServersUrlLabelMap with SSE uses url field",
 			url:           "http://localhost:8080",
 			transportType: types.TransportTypeSSE.String(),
-			clientCfg: &mcpClientConfig{
+			clientCfg: &clientAppConfig{
 				IsTransportTypeFieldSupported: false,
 				MCPServersUrlLabelMap: map[types.TransportType]string{
 					types.TransportTypeSSE:            "url",

@@ -65,5 +65,7 @@ type RoleMapping struct {
 
 	// Priority determines selection order (lower number = higher priority).
 	// When multiple mappings match, the one with the lowest priority is selected.
-	Priority int `json:"priority" yaml:"priority"`
+	// When nil (omitted), the mapping has the lowest possible priority, and
+	// configuration order acts as tie-breaker via stable sort.
+	Priority *int `json:"priority,omitempty" yaml:"priority,omitempty"`
 }

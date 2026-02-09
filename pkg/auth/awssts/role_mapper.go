@@ -6,6 +6,7 @@ package awssts
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -136,7 +137,7 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 		if mapping.Claim != "" {
 			rm.mappings = append(rm.mappings, compiledMapping{
 				roleArn:    mapping.RoleArn,
-				priority:   mapping.Priority,
+				priority:   effectivePriority(mapping.Priority),
 				expr:       claimExpr,
 				claimValue: mapping.Claim,
 			})
@@ -149,7 +150,7 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 		}
 		rm.mappings = append(rm.mappings, compiledMapping{
 			roleArn:  mapping.RoleArn,
-			priority: mapping.Priority,
+			priority: effectivePriority(mapping.Priority),
 			expr:     expr,
 		})
 	}
@@ -280,4 +281,14 @@ func validateRoleMapping(index int, mapping RoleMapping) error {
 	}
 
 	return nil
+}
+
+// effectivePriority returns the priority value from the pointer, or math.MaxInt
+// if nil. This makes omitted priority act as lowest-possible priority so that
+// config order (via stable sort) is the natural tie-breaker.
+func effectivePriority(p *int) int {
+	if p != nil {
+		return *p
+	}
+	return math.MaxInt
 }

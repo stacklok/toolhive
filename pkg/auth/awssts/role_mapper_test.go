@@ -13,6 +13,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 )
 
+func intPtr(v int) *int { return &v }
+
 func TestValidateRoleArn(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +109,7 @@ func TestNewRoleMapper(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -120,7 +122,7 @@ func TestNewRoleMapper(t *testing.T) {
 					{
 						Matcher:  `invalid syntax here`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -165,8 +167,8 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
-					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: 2},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: intPtr(2)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"users", "admins"}},
@@ -179,8 +181,8 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
-					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: 2},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: intPtr(2)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"admins", "developers"}},
@@ -193,7 +195,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"users"}},
@@ -206,7 +208,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123"},
@@ -218,7 +220,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				Region:    "us-east-1",
 				RoleClaim: "groups",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:  map[string]any{"sub": "user123", "groups": []any{"users"}},
@@ -241,12 +243,51 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				Region:    "us-east-1",
 				RoleClaim: "groups",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA", Priority: 1},
-					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB", Priority: 1},
+					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA", Priority: intPtr(1)},
+					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"groups": []any{"group-a", "group-b"}},
 			expected: "arn:aws:iam::123456789012:role/RoleA",
+		},
+		// Nil priority behavior
+		{
+			name: "nil priority sorts after explicit priorities",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/LowPriRole"},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/HighPriRole", Priority: intPtr(1)},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"admins"}},
+			expected: "arn:aws:iam::123456789012:role/HighPriRole",
+		},
+		{
+			name: "all nil priorities preserves config order",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA"},
+					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB"},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"group-a", "group-b"}},
+			expected: "arn:aws:iam::123456789012:role/RoleA",
+		},
+		{
+			name: "single mapping without priority works",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole"},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"admins"}},
+			expected: "arn:aws:iam::123456789012:role/AdminRole",
 		},
 	}
 
@@ -278,17 +319,17 @@ func TestRoleMapper_SelectRole_CELMatcher(t *testing.T) {
 			{
 				Matcher:  `"admins" in claims["groups"] && !("act" in claims)`,
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminDirectRole",
-				Priority: 1,
+				Priority: intPtr(1),
 			},
 			{
 				Matcher:  `"admins" in claims["groups"]`,
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-				Priority: 2,
+				Priority: intPtr(2),
 			},
 			{
 				Matcher:  `claims["sub"].startsWith("service-")`,
 				RoleArn:  "arn:aws:iam::123456789012:role/ServiceRole",
-				Priority: 3,
+				Priority: intPtr(3),
 			},
 		},
 	}
@@ -363,7 +404,7 @@ func TestRoleMapper_SelectRole_InjectionAttemptIsSafe(t *testing.T) {
 			{
 				Claim:    `") || true || ("`,
 				RoleArn:  "arn:aws:iam::123456789012:role/InjectedRole",
-				Priority: 1,
+				Priority: intPtr(1),
 			},
 		},
 	}
@@ -435,7 +476,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -449,7 +490,7 @@ func TestValidateConfig(t *testing.T) {
 						Claim:    "admins",
 						Matcher:  `"admins" in claims["groups"]`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -463,7 +504,7 @@ func TestValidateConfig(t *testing.T) {
 				RoleMappings: []awssts.RoleMapping{
 					{
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -478,7 +519,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -492,7 +533,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "invalid-arn",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -525,7 +566,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    `") || true || ("`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -536,7 +577,7 @@ func TestValidateConfig(t *testing.T) {
 				Region:    "us-east-1",
 				RoleClaim: `groups"])||true`,
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 		},
@@ -569,12 +610,12 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 			{
 				Claim:    "admins",
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-				Priority: 1,
+				Priority: intPtr(1),
 			},
 			{
 				Claim:    "developers",
 				RoleArn:  "arn:aws:iam::123456789012:role/DevRole",
-				Priority: 2,
+				Priority: intPtr(2),
 			},
 		},
 	}

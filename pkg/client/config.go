@@ -782,11 +782,6 @@ type ConfigFile struct {
 	Extension     Extension
 }
 
-// MCPServerConfig represents an MCP server configuration in a client config file
-type MCPServerConfig struct {
-	URL string `json:"url,omitempty"`
-}
-
 // FindClientConfig returns the client configuration file for a given client type.
 func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	manager, err := NewClientManager()

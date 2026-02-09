@@ -6,6 +6,7 @@ package skills
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,13 +46,8 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 		return nil, fmt.Errorf("reading SKILL.md: %w", err)
 	}
 
-	// Check for symlinks
-	if err := checkSymlinks(path); err != nil {
-		errs = append(errs, err.Error())
-	}
-
-	// Check for path traversal
-	if err := checkPathTraversal(path); err != nil {
+	// Check for symlinks and path traversal in a single walk
+	if err := checkFilesystem(path); err != nil {
 		errs = append(errs, err.Error())
 	}
 
@@ -124,31 +120,11 @@ func validateName(name string) error {
 	return nil
 }
 
-// checkSymlinks walks the directory and checks for symbolic links.
-func checkSymlinks(path string) error {
-	return filepath.Walk(path, func(p string, _ os.FileInfo, err error) error {
+// checkFilesystem walks the directory once, checking for symlinks and path traversal.
+func checkFilesystem(path string) error {
+	return filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip inaccessible paths
-		}
-
-		info, err := os.Lstat(p)
-		if err != nil {
-			return nil
-		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			rel, _ := filepath.Rel(path, p)
-			return fmt.Errorf("symlink found at %q: symlinks are not allowed in skill directories", rel)
-		}
-		return nil
-	})
-}
-
-// checkPathTraversal walks the directory and checks for path traversal patterns.
-func checkPathTraversal(path string) error {
-	return filepath.Walk(path, func(p string, _ os.FileInfo, err error) error {
-		if err != nil {
-			return nil
 		}
 
 		rel, err := filepath.Rel(path, p)
@@ -156,11 +132,22 @@ func checkPathTraversal(path string) error {
 			return nil
 		}
 
+		// Check for path traversal
 		for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
 			if component == ".." {
 				return fmt.Errorf("path traversal detected in %q: '..' components are not allowed", rel)
 			}
 		}
+
+		// Check for symlinks (WalkDir doesn't stat, so use Lstat)
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink found at %q: symlinks are not allowed in skill directories", rel)
+		}
+
 		return nil
 	})
 }

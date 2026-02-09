@@ -67,19 +67,27 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	rest := content[len(frontmatterDelimiter):]
 	rest = bytes.TrimPrefix(rest, []byte("\n"))
 
-	endIdx := bytes.Index(rest, frontmatterDelimiter)
+	// Limit the search scope for the closing delimiter to avoid scanning
+	// arbitrarily large inputs. Search within MaxFrontmatterSize + delimiter
+	// bytes for the closing "---"; if not found, the frontmatter is too large.
+	searchLimit := rest
+	maxSearch := MaxFrontmatterSize + len(frontmatterDelimiter)
+	if len(searchLimit) > maxSearch {
+		searchLimit = searchLimit[:maxSearch]
+	}
+
+	endIdx := bytes.Index(searchLimit, frontmatterDelimiter)
 	if endIdx == -1 {
+		if len(rest) > MaxFrontmatterSize {
+			return nil, nil, fmt.Errorf("%w: frontmatter exceeds maximum size of %d bytes",
+				ErrInvalidFrontmatter, MaxFrontmatterSize)
+		}
 		return nil, nil, ErrInvalidFrontmatter
 	}
 
 	frontmatterBytes := rest[:endIdx]
 	body := rest[endIdx+len(frontmatterDelimiter):]
 	body = bytes.TrimPrefix(body, []byte("\n"))
-
-	if len(frontmatterBytes) > MaxFrontmatterSize {
-		return nil, nil, fmt.Errorf("%w: frontmatter exceeds maximum size of %d bytes",
-			ErrInvalidFrontmatter, MaxFrontmatterSize)
-	}
 
 	var fm SkillFrontmatter
 	if err := yaml.Unmarshal(frontmatterBytes, &fm); err != nil {

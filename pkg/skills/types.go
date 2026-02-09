@@ -50,7 +50,11 @@ func (s *StringOrSlice) UnmarshalYAML(value *yaml.Node) error {
 			return nil
 		}
 
-		// Determine delimiter: use comma if present, otherwise space (per spec)
+		// Delimiter precedence: if any comma is present, split on commas;
+		// otherwise split on whitespace (space-delimited is the canonical
+		// format per the Agent Skills spec). This means a mixed-delimiter
+		// string like "Read,Glob Grep" splits on comma, yielding
+		// ["Read", "Glob Grep"] — comma takes priority.
 		var parts []string
 		if strings.Contains(str, ",") {
 			parts = strings.Split(str, ",")
@@ -82,13 +86,18 @@ func (s *StringOrSlice) UnmarshalYAML(value *yaml.Node) error {
 
 // SkillFrontmatter represents the raw YAML frontmatter from a SKILL.md file.
 type SkillFrontmatter struct {
-	Name          string            `yaml:"name"`
-	Description   string            `yaml:"description"`
-	Version       string            `yaml:"version,omitempty"`
-	AllowedTools  StringOrSlice     `yaml:"allowed-tools,omitempty"`
-	License       string            `yaml:"license,omitempty"`
-	Compatibility string            `yaml:"compatibility,omitempty"`
-	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	Name          string        `yaml:"name"`
+	Description   string        `yaml:"description"`
+	Version       string        `yaml:"version,omitempty"`
+	AllowedTools  StringOrSlice `yaml:"allowed-tools,omitempty"`
+	License       string        `yaml:"license,omitempty"`
+	Compatibility string        `yaml:"compatibility,omitempty"`
+	// Metadata is an arbitrary key-value map per the Agent Skills spec.
+	// Note: the spec defines metadata as map[string]string, so extension
+	// fields like "skillet.requires" must be encoded as scalar strings
+	// (e.g. newline-delimited). YAML array values will silently fail
+	// to unmarshal into this map.
+	Metadata map[string]string `yaml:"metadata,omitempty"`
 }
 
 // Dependency represents an external skill dependency (OCI reference).

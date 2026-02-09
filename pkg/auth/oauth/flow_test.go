@@ -994,3 +994,218 @@ func TestTokenRefreshAfterContextCancellation(t *testing.T) {
 	assert.True(t, refreshCalled, "refresh endpoint should have been called")
 	assert.Equal(t, "new-access-token", newToken.AccessToken)
 }
+
+func TestProcessToken_ResourceTokenSourceSelection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses resourceTokenSource when resource parameter is provided", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a mock token server to test refresh behavior with resource parameter
+		var capturedResourceParam string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			err := r.ParseForm()
+			require.NoError(t, err)
+			capturedResourceParam = r.Form.Get("resource")
+
+			response := map[string]interface{}{
+				"access_token":  "refreshed-token",
+				"refresh_token": "refreshed-refresh",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+		}))
+		defer server.Close()
+
+		config := &Config{
+			ClientID: "test-client",
+			AuthURL:  "https://example.com/auth",
+			TokenURL: server.URL,
+			Resource: "https://api.example.com", // Resource parameter provided
+		}
+
+		flow, err := NewFlow(config)
+		require.NoError(t, err)
+
+		// Process token with resource parameter
+		token := &oauth2.Token{
+			AccessToken:  "original-access",
+			RefreshToken: "original-refresh",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-1 * time.Hour), // Expired to trigger refresh
+		}
+
+		result := flow.processToken(context.Background(), token)
+		require.NotNil(t, result)
+
+		// Verify token source was created
+		require.NotNil(t, flow.tokenSource)
+
+		// Trigger a refresh by calling Token() - the token is expired
+		refreshedToken, err := flow.tokenSource.Token()
+		require.NoError(t, err)
+
+		// Verify the refresh request included the resource parameter
+		assert.Equal(t, "https://api.example.com", capturedResourceParam,
+			"resource parameter should be included in refresh request")
+		assert.Equal(t, "refreshed-token", refreshedToken.AccessToken)
+	})
+
+	t.Run("uses standard token source when resource parameter is empty", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a mock token server - should NOT receive resource parameter
+		var capturedResourceParam string
+		var resourceParamPresent bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			err := r.ParseForm()
+			require.NoError(t, err)
+			capturedResourceParam = r.Form.Get("resource")
+			_, resourceParamPresent = r.Form["resource"]
+
+			response := map[string]interface{}{
+				"access_token":  "refreshed-token",
+				"refresh_token": "refreshed-refresh",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+		}))
+		defer server.Close()
+
+		config := &Config{
+			ClientID: "test-client",
+			AuthURL:  "https://example.com/auth",
+			TokenURL: server.URL,
+			Resource: "", // No resource parameter
+		}
+
+		flow, err := NewFlow(config)
+		require.NoError(t, err)
+
+		// Process token without resource parameter
+		token := &oauth2.Token{
+			AccessToken:  "original-access",
+			RefreshToken: "original-refresh",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-1 * time.Hour), // Expired to trigger refresh
+		}
+
+		result := flow.processToken(context.Background(), token)
+		require.NotNil(t, result)
+
+		// Verify token source was created
+		require.NotNil(t, flow.tokenSource)
+
+		// Trigger a refresh by calling Token()
+		refreshedToken, err := flow.tokenSource.Token()
+		require.NoError(t, err)
+
+		// Verify the refresh request did NOT include the resource parameter
+		assert.False(t, resourceParamPresent,
+			"resource parameter should not be present when not configured")
+		assert.Equal(t, "", capturedResourceParam)
+		assert.Equal(t, "refreshed-token", refreshedToken.AccessToken)
+	})
+
+	t.Run("wraps token source with ReuseTokenSource in both cases", func(t *testing.T) {
+		t.Parallel()
+
+		testCases := []struct {
+			name     string
+			resource string
+		}{
+			{"with resource parameter", "https://api.example.com"},
+			{"without resource parameter", ""},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				callCount := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					callCount++
+					response := map[string]interface{}{
+						"access_token":  "token",
+						"refresh_token": "refresh",
+						"token_type":    "Bearer",
+						"expires_in":    3600,
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(response)
+				}))
+				defer server.Close()
+
+				config := &Config{
+					ClientID: "test-client",
+					AuthURL:  "https://example.com/auth",
+					TokenURL: server.URL,
+					Resource: tc.resource,
+				}
+
+				flow, err := NewFlow(config)
+				require.NoError(t, err)
+
+				// Process a valid (non-expired) token
+				token := &oauth2.Token{
+					AccessToken:  "valid-token",
+					RefreshToken: "refresh-token",
+					TokenType:    "Bearer",
+					Expiry:       time.Now().Add(1 * time.Hour), // Still valid
+				}
+
+				flow.processToken(context.Background(), token)
+
+				// Call Token() multiple times - should return cached token without refresh
+				for i := 0; i < 3; i++ {
+					gotToken, err := flow.tokenSource.Token()
+					require.NoError(t, err)
+					assert.Equal(t, "valid-token", gotToken.AccessToken)
+				}
+
+				// Verify no refresh calls were made (ReuseTokenSource cached the token)
+				assert.Equal(t, 0, callCount,
+					"ReuseTokenSource should cache valid tokens and not trigger refresh")
+			})
+		}
+	})
+
+	t.Run("TokenSource() returns the created token source", func(t *testing.T) {
+		t.Parallel()
+
+		config := &Config{
+			ClientID: "test-client",
+			AuthURL:  "https://example.com/auth",
+			TokenURL: "https://example.com/token",
+			Resource: "https://api.example.com",
+		}
+
+		flow, err := NewFlow(config)
+		require.NoError(t, err)
+
+		token := &oauth2.Token{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}
+
+		// Process token to initialize token source
+		flow.processToken(context.Background(), token)
+
+		// Verify TokenSource() returns the same instance
+		ts := flow.TokenSource()
+		require.NotNil(t, ts)
+		assert.Same(t, flow.tokenSource, ts,
+			"TokenSource() should return the internal token source")
+
+		// Verify it works
+		gotToken, err := ts.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "access-token", gotToken.AccessToken)
+	})
+}

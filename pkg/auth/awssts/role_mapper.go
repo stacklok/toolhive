@@ -6,7 +6,6 @@ package awssts
 import (
 	"cmp"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -17,19 +16,29 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// safeClaimValueRegex defines the whitelist of characters allowed in JWT claim values
-// used for CEL expression interpolation. This prevents CEL injection while covering
-// legitimate group/role claim values from major identity providers (Azure AD, Okta,
-// Auth0, Google Workspace, Keycloak, LDAP).
-//
-// Blocked characters that enable CEL injection: " \ ( ) | & ` $ { } [ ] < > ^ %
-var safeClaimValueRegex = regexp.MustCompile(`^[a-zA-Z0-9@.:,;/\-_=+*#!?'~ ]+$`)
+// claimBindingExpression is the generic CEL expression used for claim-based role mappings.
+// Instead of interpolating user-supplied claim values into CEL expression strings,
+// we bind them as variables at evaluation time — making CEL injection impossible by design.
+const claimBindingExpression = `claim_value in claims[role_claim_key]`
 
-// newClaimsEngine creates a CEL engine configured for evaluating JWT claims expressions.
-// The claims are accessible via the "claims" variable as a map[string]any.
-func newClaimsEngine() *cel.Engine {
+// newMatcherEngine creates a CEL engine for admin-authored matcher expressions.
+// The only available variable is "claims" as a map[string]any.
+func newMatcherEngine() *cel.Engine {
 	return cel.NewEngine(
 		celgo.Variable("claims", celgo.MapType(celgo.StringType, celgo.DynType)),
+	)
+}
+
+// newClaimBindingEngine creates a CEL engine for claim-based mappings that uses
+// variable binding instead of string interpolation. Three variables are available:
+//   - claims: the JWT claims map
+//   - claim_value: the claim value to match (e.g. "admins")
+//   - role_claim_key: the claims map key to look up (e.g. "groups")
+func newClaimBindingEngine() *cel.Engine {
+	return cel.NewEngine(
+		celgo.Variable("claims", celgo.MapType(celgo.StringType, celgo.DynType)),
+		celgo.Variable("claim_value", celgo.StringType),
+		celgo.Variable("role_claim_key", celgo.StringType),
 	)
 }
 
@@ -72,9 +81,25 @@ func ValidateRoleArn(roleArn string) error {
 
 // compiledMapping holds a role mapping with its compiled CEL expression.
 type compiledMapping struct {
-	roleArn  string
-	priority int
-	expr     *cel.CompiledExpression
+	roleArn    string
+	priority   int
+	expr       *cel.CompiledExpression
+	claimValue string // non-empty for claim-based mappings; empty for matcher-based
+}
+
+// evalContext builds the CEL variable bindings for evaluating this mapping.
+// Claim-based mappings bind claim_value and role_claim_key as variables so that
+// user-supplied values are never interpolated into CEL expression strings,
+// eliminating CEL injection by design. Matcher-based mappings only need claims.
+func (cm *compiledMapping) evalContext(claims map[string]any, roleClaim string) map[string]any {
+	if cm.claimValue != "" {
+		return map[string]any{
+			"claims":         claims,
+			"claim_value":    cm.claimValue,
+			"role_claim_key": roleClaim,
+		}
+	}
+	return map[string]any{"claims": claims}
 }
 
 // RoleMapper handles mapping JWT claims to IAM roles with priority-based selection.
@@ -94,19 +119,34 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	engine := newClaimsEngine()
+	claimEngine := newClaimBindingEngine()
+	matcherEngine := newMatcherEngine()
+
+	claimExpr, err := claimEngine.Compile(claimBindingExpression)
+	if err != nil {
+		return nil, fmt.Errorf("compiling claim binding expression: %w", err)
+	}
+
 	rm := &RoleMapper{
 		config:   cfg,
 		mappings: make([]compiledMapping, 0, len(cfg.RoleMappings)),
 	}
 
-	// Compile all role mappings
 	for i, mapping := range cfg.RoleMappings {
-		expr, err := compileMapping(engine, cfg.GetRoleClaim(), mapping)
-		if err != nil {
-			return nil, fmt.Errorf("role mapping at index %d: %w", i, err)
+		if mapping.Claim != "" {
+			rm.mappings = append(rm.mappings, compiledMapping{
+				roleArn:    mapping.RoleArn,
+				priority:   mapping.Priority,
+				expr:       claimExpr,
+				claimValue: mapping.Claim,
+			})
+			continue
 		}
 
+		expr, err := matcherEngine.Compile(mapping.Matcher)
+		if err != nil {
+			return nil, fmt.Errorf("role mapping at index %d: %w: %w", i, ErrInvalidMatcher, err)
+		}
 		rm.mappings = append(rm.mappings, compiledMapping{
 			roleArn:  mapping.RoleArn,
 			priority: mapping.Priority,
@@ -115,18 +155,6 @@ func NewRoleMapper(cfg *Config) (*RoleMapper, error) {
 	}
 
 	return rm, nil
-}
-
-// compileMapping converts a RoleMapping to a compiled CEL expression.
-func compileMapping(engine *cel.Engine, roleClaim string, mapping RoleMapping) (*cel.CompiledExpression, error) {
-	celExpr := buildCELExpression(mapping, roleClaim)
-
-	expr, err := engine.Compile(celExpr)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidMatcher, err)
-	}
-
-	return expr, nil
 }
 
 // SelectRole selects the appropriate IAM role based on JWT claims.
@@ -146,13 +174,12 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 		return rm.config.FallbackRoleArn, nil
 	}
 
-	// Build CEL evaluation context
-	ctx := map[string]any{"claims": claims}
-
 	// Find all matching mappings
+	roleClaim := rm.config.GetRoleClaim()
+
 	var matches []compiledMapping
 	for _, mapping := range rm.mappings {
-		match, err := mapping.expr.EvaluateBool(ctx)
+		match, err := mapping.expr.EvaluateBool(mapping.evalContext(claims, roleClaim))
 		if err != nil {
 			logger.Debugw("CEL expression evaluation failed, skipping mapping",
 				"role_arn", mapping.roleArn, "error", err)
@@ -184,8 +211,8 @@ func (rm *RoleMapper) SelectRole(claims map[string]any) (string, error) {
 }
 
 // ValidateConfig validates the AWS STS configuration structure.
-// It checks that required fields are present, ARNs are well-formed, claim values
-// are safe for CEL interpolation, and session duration is within bounds.
+// It checks that required fields are present, ARNs are well-formed,
+// and session duration is within bounds.
 //
 // This performs structural validation only — CEL expression compilation is handled
 // by NewRoleMapper. It is safe to call standalone for early validation at config
@@ -209,13 +236,6 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.FallbackRoleArn != "" {
 		if err := ValidateRoleArn(cfg.FallbackRoleArn); err != nil {
 			return err
-		}
-	}
-
-	// Validate RoleClaim if provided (it's interpolated into CEL expressions)
-	if cfg.RoleClaim != "" {
-		if err := validateClaimValue(cfg.RoleClaim); err != nil {
-			return fmt.Errorf("role_claim: %w", err)
 		}
 	}
 
@@ -249,13 +269,6 @@ func validateRoleMapping(index int, mapping RoleMapping) error {
 		return fmt.Errorf("%w at index %d: claim and matcher are mutually exclusive", ErrInvalidRoleMapping, index)
 	}
 
-	// Validate claim value for safe CEL interpolation
-	if mapping.Claim != "" {
-		if err := validateClaimValue(mapping.Claim); err != nil {
-			return fmt.Errorf("role mapping at index %d: %w", index, err)
-		}
-	}
-
 	// RoleArn is required
 	if mapping.RoleArn == "" {
 		return fmt.Errorf("role mapping at index %d has empty role ARN", index)
@@ -266,24 +279,5 @@ func validateRoleMapping(index int, mapping RoleMapping) error {
 		return fmt.Errorf("role mapping at index %d: %w", index, err)
 	}
 
-	return nil
-}
-
-// buildCELExpression returns the CEL expression for a role mapping.
-// If the mapping has a Matcher, it is used directly. Otherwise, a CEL expression
-// is built from the Claim value: "claim_value" in claims["role_claim"].
-func buildCELExpression(mapping RoleMapping, roleClaim string) string {
-	if mapping.Matcher != "" {
-		return mapping.Matcher
-	}
-	return fmt.Sprintf(`"%s" in claims["%s"]`, mapping.Claim, roleClaim)
-}
-
-// validateClaimValue checks that a claim value is safe for CEL expression interpolation.
-// It rejects values containing characters that could alter CEL expression semantics.
-func validateClaimValue(value string) error {
-	if !safeClaimValueRegex.MatchString(value) {
-		return fmt.Errorf("%w: claim value %q contains characters unsafe for CEL interpolation", ErrInvalidRoleMapping, value)
-	}
 	return nil
 }

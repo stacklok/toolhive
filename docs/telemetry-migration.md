@@ -79,7 +79,7 @@ alignment.
 | `client.address` | Client IP address extracted from `RemoteAddr` |
 | `client.port` | Client port number extracted from `RemoteAddr` |
 | `gen_ai.operation.name` | Set to `"execute_tool"` for `tools/call` requests |
-| `error.type` | HTTP status code as a string (e.g., `"500"`) on error responses (status >= 400) |
+| `error.type` | HTTP status code as a string (e.g., `"500"`) on server error responses (status >= 500) |
 
 ## New Standard Metrics
 
@@ -103,7 +103,7 @@ The `mcp.server.operation.duration` metric includes the following attributes:
 - `mcp.method.name` -- the MCP method
 - `network.transport` -- the mapped transport value
 - `mcp.protocol.version` -- the MCP protocol version
-- `error.type` -- present only on error responses
+- `error.type` -- present only on server error responses (5xx)
 - `gen_ai.tool.name` -- present only for `tools/call`
 - `gen_ai.operation.name` -- present only for `tools/call` (value: `"execute_tool"`)
 - `gen_ai.prompt.name` -- present only for `prompts/get`

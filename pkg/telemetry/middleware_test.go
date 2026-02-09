@@ -581,7 +581,7 @@ func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
 			statusCode:     400,
 			bytesWritten:   256,
 			duration:       50 * time.Millisecond,
-			expectedStatus: codes.Error,
+			expectedStatus: codes.Unset,
 		},
 		{
 			name:           "server error",
@@ -602,12 +602,16 @@ func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
 			}
 
 			// Test the logic for determining status codes
-			var expectedStatus codes.Code
-			if tt.statusCode >= 400 {
-				expectedStatus = codes.Error
-			} else {
-				expectedStatus = codes.Ok
-			}
+			expectedStatus := func() codes.Code {
+				switch {
+				case tt.statusCode >= 500:
+					return codes.Error
+				case tt.statusCode >= 400:
+					return codes.Unset
+				default:
+					return codes.Ok
+				}
+			}()
 
 			assert.Equal(t, tt.expectedStatus, expectedStatus)
 			assert.Equal(t, tt.statusCode, rw.statusCode)

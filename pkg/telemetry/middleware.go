@@ -525,12 +525,18 @@ func (*HTTPMiddleware) finalizeSpan(_ context.Context, span trace.Span, rw *resp
 		attribute.Int64("http.response.body.size", rw.bytesWritten),
 	)
 
-	// Set span status and error.type based on HTTP status code
-	if rw.statusCode >= 400 {
+	// Set span status and error.type based on HTTP status code.
+	// Per OTEL HTTP semantic conventions for server spans:
+	//   - 5xx: set status to Error and add error.type
+	//   - 4xx: leave status unset (client errors are not server errors)
+	//   - 2xx/3xx: set status to Ok
+	switch {
+	case rw.statusCode >= 500:
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
-		// Add error.type attribute as required by the MCP OTEL spec
 		span.SetAttributes(attribute.String("error.type", strconv.Itoa(rw.statusCode)))
-	} else {
+	case rw.statusCode >= 400:
+		// Client errors: leave span status unset per OTEL semconv
+	default:
 		span.SetStatus(codes.Ok, "")
 	}
 }
@@ -796,8 +802,8 @@ func (m *HTTPMiddleware) recordStandardOperationDuration(ctx context.Context, rw
 		attribute.String("mcp.protocol.version", mcpProtocolVersion),
 	}
 
-	// Add error.type on failures
-	if rw.statusCode >= 400 {
+	// Add error.type only on server errors (5xx) per OTEL HTTP semconv
+	if rw.statusCode >= 500 {
 		attrs = append(attrs, attribute.String("error.type", strconv.Itoa(rw.statusCode)))
 	}
 

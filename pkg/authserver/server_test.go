@@ -42,7 +42,7 @@ func TestNew(t *testing.T) {
 
 	validKeyProvider := keys.NewGeneratingProvider(keys.DefaultAlgorithm)
 	validHMAC := &servercrypto.HMACSecrets{Current: validHMACSecret()}
-	validUpstreams := []UpstreamConfig{{Name: "default", Config: validUpstreamConfig()}}
+	validUpstreams := []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}}
 
 	tests := []struct {
 		name        string
@@ -154,12 +154,12 @@ func TestNewServer_Success(t *testing.T) {
 		Issuer:           "https://example.com",
 		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
 		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
-		Upstreams:        []UpstreamConfig{{Name: "default", Config: validUpstreamConfig()}},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 		AllowedAudiences: []string{"https://mcp.example.com"},
 	}
 
 	// Create factory that returns our mock
-	mockFactory := func(_ *upstream.OAuth2Config) (upstream.OAuth2Provider, error) {
+	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
 		return mockUpstream, nil
 	}
 

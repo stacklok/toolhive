@@ -342,6 +342,39 @@ func TestRoleMapper_SelectRole_CELMatcher(t *testing.T) {
 	}
 }
 
+func TestRoleMapper_SelectRole_InjectionAttemptIsSafe(t *testing.T) {
+	t.Parallel()
+
+	// This test proves that CEL injection via claim values is impossible.
+	// The claim value contains a string that, if interpolated into a CEL
+	// expression, would alter its semantics. With variable binding, it is
+	// treated as a literal string and never matches.
+	cfg := &awssts.Config{
+		Region:          "us-east-1",
+		RoleClaim:       "groups",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
+		RoleMappings: []awssts.RoleMapping{
+			{
+				Claim:    `") || true || ("`,
+				RoleArn:  "arn:aws:iam::123456789012:role/InjectedRole",
+				Priority: 1,
+			},
+		},
+	}
+
+	rm, err := awssts.NewRoleMapper(cfg)
+	require.NoError(t, err)
+
+	// The claim value is treated as a literal string — it won't match any
+	// real group name, so we should fall through to the default role.
+	role, err := rm.SelectRole(map[string]any{
+		"sub":    "attacker",
+		"groups": []any{"admins", "users"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/DefaultRole", role)
+}
+
 func TestValidateConfig(t *testing.T) {
 	t.Parallel()
 
@@ -479,7 +512,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "claim with CEL injection characters rejected",
+			name: "claim with CEL-significant characters accepted (variable binding prevents injection)",
 			cfg: &awssts.Config{
 				Region: "us-east-1",
 				RoleMappings: []awssts.RoleMapping{
@@ -490,11 +523,9 @@ func TestValidateConfig(t *testing.T) {
 					},
 				},
 			},
-			wantErr:   true,
-			wantErrIs: awssts.ErrInvalidRoleMapping,
 		},
 		{
-			name: "role_claim with unsafe characters rejected",
+			name: "role_claim with special characters accepted (variable binding prevents injection)",
 			cfg: &awssts.Config{
 				Region:    "us-east-1",
 				RoleClaim: `groups"])||true`,
@@ -502,8 +533,6 @@ func TestValidateConfig(t *testing.T) {
 					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
 				},
 			},
-			wantErr:   true,
-			wantErrIs: awssts.ErrInvalidRoleMapping,
 		},
 	}
 

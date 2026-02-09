@@ -139,7 +139,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 		)
 	}
 
-	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil); err != nil {
+	if err := c.removeClient(r.Context(), []client.Client{{Name: client.ClientApp(clientName)}}, nil); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
 			return httperr.WithCode(
 				fmt.Errorf("failed to unregister client: %w", err),
@@ -182,7 +182,7 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 	}
 
 	// Remove client from the specific group
-	if err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName}); err != nil {
+	if err := c.removeClient(r.Context(), []client.Client{{Name: client.ClientApp(clientName)}}, []string{groupName}); err != nil {
 		if errors.Is(err, client.ErrUnsupportedClientType) {
 			return httperr.WithCode(
 				fmt.Errorf("failed to unregister client from group: %w", err),
@@ -298,21 +298,21 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 
 type createClientRequest struct {
 	// Name is the type of the client to register.
-	Name client.MCPClient `json:"name"`
+	Name client.ClientApp `json:"name"`
 	// Groups is the list of groups configured on the client.
 	Groups []string `json:"groups,omitempty"`
 }
 
 type createClientResponse struct {
 	// Name is the type of the client that was registered.
-	Name client.MCPClient `json:"name"`
+	Name client.ClientApp `json:"name"`
 	// Groups is the list of groups configured on the client.
 	Groups []string `json:"groups,omitempty"`
 }
 
 type bulkClientRequest struct {
 	// Names is the list of client names to operate on.
-	Names []client.MCPClient `json:"names"`
+	Names []client.ClientApp `json:"names"`
 	// Groups is the list of groups configured on the client.
 	Groups []string `json:"groups,omitempty"`
 }

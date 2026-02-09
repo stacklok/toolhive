@@ -16,7 +16,7 @@ require (
 	github.com/docker/go-connections v0.6.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-git/go-billy/v5 v5.7.0
-	github.com/go-git/go-git/v5 v5.16.4
+	github.com/go-git/go-git/v5 v5.16.5
 	github.com/go-jose/go-jose/v3 v3.0.4
 	github.com/go-jose/go-jose/v4 v4.1.3
 	github.com/go-logr/zapr v1.3.0
@@ -25,7 +25,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.20.7
 	github.com/google/uuid v1.6.0
-	github.com/lestrrat-go/httprc/v3 v3.0.3
+	github.com/lestrrat-go/httprc/v3 v3.0.4
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/modelcontextprotocol/registry v1.4.0
@@ -40,7 +40,7 @@ require (
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.4
 	github.com/spf13/viper v1.21.0
-	github.com/stacklok/toolhive-core v0.0.2
+	github.com/stacklok/toolhive-core v0.0.3
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
@@ -57,7 +57,7 @@ require (
 	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/exp/jsonrpc2 v0.0.0-20260112195511-716be5621a96
 	golang.org/x/mod v0.32.0
-	golang.org/x/oauth2 v0.34.0
+	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.39.0
 	golang.org/x/time v0.14.0
@@ -295,6 +295,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.40.0
 	golang.org/x/crypto v0.47.0
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sys v0.40.0
+	golang.org/x/sys v0.41.0
 	k8s.io/client-go v0.35.0
 )

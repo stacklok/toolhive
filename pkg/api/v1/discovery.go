@@ -50,5 +50,5 @@ func (*DiscoveryRoutes) discoverClients(w http.ResponseWriter, r *http.Request) 
 
 // clientStatusResponse represents the response for the client discovery
 type clientStatusResponse struct {
-	Clients []client.MCPClientStatus `json:"clients"`
+	Clients []client.ClientAppStatus `json:"clients"`
 }

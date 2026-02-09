@@ -30,60 +30,62 @@ const lockTimeout = 1 * time.Second
 // defaultURLFieldName is the default URL field name used when no specific mapping exists
 const defaultURLFieldName = "url"
 
-// MCPClient is an enum of supported MCP clients.
-type MCPClient string
+// ClientApp is an enum of supported AI clients (IDEs, editors, and coding tools).
+//
+//nolint:revive // ClientApp is intentionally named for clarity across packages
+type ClientApp string
 
 const (
 	// RooCode represents the Roo Code extension for VS Code.
-	RooCode MCPClient = "roo-code"
+	RooCode ClientApp = "roo-code"
 	// Cline represents the Cline extension for VS Code.
-	Cline MCPClient = "cline"
+	Cline ClientApp = "cline"
 	// Cursor represents the Cursor editor.
-	Cursor MCPClient = "cursor"
+	Cursor ClientApp = "cursor"
 	// VSCodeInsider represents the VS Code Insiders editor.
-	VSCodeInsider MCPClient = "vscode-insider"
+	VSCodeInsider ClientApp = "vscode-insider"
 	// VSCode represents the standard VS Code editor.
-	VSCode MCPClient = "vscode"
+	VSCode ClientApp = "vscode"
 	// ClaudeCode represents the Claude Code CLI.
-	ClaudeCode MCPClient = "claude-code"
+	ClaudeCode ClientApp = "claude-code"
 	// Windsurf represents the Windsurf IDE.
-	Windsurf MCPClient = "windsurf"
+	Windsurf ClientApp = "windsurf"
 	// WindsurfJetBrains represents the Windsurf plugin for JetBrains.
-	WindsurfJetBrains MCPClient = "windsurf-jetbrains"
+	WindsurfJetBrains ClientApp = "windsurf-jetbrains"
 	// AmpCli represents the Sourcegraph Amp CLI.
-	AmpCli MCPClient = "amp-cli"
+	AmpCli ClientApp = "amp-cli"
 	// AmpVSCode represents the Sourcegraph Amp extension for VS Code.
-	AmpVSCode MCPClient = "amp-vscode"
+	AmpVSCode ClientApp = "amp-vscode"
 	// AmpCursor represents the Sourcegraph Amp extension for Cursor.
-	AmpCursor MCPClient = "amp-cursor"
+	AmpCursor ClientApp = "amp-cursor"
 	// AmpVSCodeInsider represents the Sourcegraph Amp extension for VS Code Insiders.
-	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
+	AmpVSCodeInsider ClientApp = "amp-vscode-insider"
 	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
-	AmpWindsurf MCPClient = "amp-windsurf"
+	AmpWindsurf ClientApp = "amp-windsurf"
 	// LMStudio represents the LM Studio application.
-	LMStudio MCPClient = "lm-studio"
+	LMStudio ClientApp = "lm-studio"
 	// Goose represents the Goose AI agent.
-	Goose MCPClient = "goose"
+	Goose ClientApp = "goose"
 	// Trae represents the Trae IDE.
-	Trae MCPClient = "trae"
+	Trae ClientApp = "trae"
 	// Continue represents the Continue.dev IDE plugins.
-	Continue MCPClient = "continue"
+	Continue ClientApp = "continue"
 	// OpenCode represents the OpenCode editor.
-	OpenCode MCPClient = "opencode"
+	OpenCode ClientApp = "opencode"
 	// Kiro represents the Kiro AI IDE.
-	Kiro MCPClient = "kiro"
+	Kiro ClientApp = "kiro"
 	// Antigravity represents the Google Antigravity IDE.
-	Antigravity MCPClient = "antigravity"
+	Antigravity ClientApp = "antigravity"
 	// Zed represents the Zed editor.
-	Zed MCPClient = "zed"
+	Zed ClientApp = "zed"
 	// GeminiCli represents the Google Gemini CLI.
-	GeminiCli MCPClient = "gemini-cli"
+	GeminiCli ClientApp = "gemini-cli"
 	// VSCodeServer represents Microsoft's VS Code Server (remote development).
-	VSCodeServer MCPClient = "vscode-server"
+	VSCodeServer ClientApp = "vscode-server"
 	// MistralVibe represents the Mistral Vibe IDE.
-	MistralVibe MCPClient = "mistral-vibe"
+	MistralVibe ClientApp = "mistral-vibe"
 	// Codex represents the OpenAI Codex CLI.
-	Codex MCPClient = "codex"
+	Codex ClientApp = "codex"
 )
 
 // Extension is extension of the client config file.
@@ -120,9 +122,9 @@ const (
 	TOMLStorageTypeArray TOMLStorageType = "array"
 )
 
-// mcpClientConfig represents a configuration path for a supported MCP client.
-type mcpClientConfig struct {
-	ClientType                    MCPClient
+// clientAppConfig represents a configuration path for a supported MCP client.
+type clientAppConfig struct {
+	ClientType                    ClientApp
 	Description                   string
 	RelPath                       []string
 	SettingsFile                  string
@@ -143,14 +145,14 @@ type mcpClientConfig struct {
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
 // by removing the leading "/" (e.g., "/mcpServers" -> "mcpServers").
-func extractServersKeyFromConfig(cfg *mcpClientConfig) string {
+func extractServersKeyFromConfig(cfg *clientAppConfig) string {
 	return strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
 }
 
 // extractURLLabelFromConfig extracts the URL field label from MCPServersUrlLabelMap.
 // It checks transport types in priority order: StreamableHTTP, then Stdio.
 // Returns defaultURLFieldName if no mapping is found.
-func extractURLLabelFromConfig(cfg *mcpClientConfig) string {
+func extractURLLabelFromConfig(cfg *clientAppConfig) string {
 	if cfg.MCPServersUrlLabelMap != nil {
 		if label, ok := cfg.MCPServersUrlLabelMap[types.TransportTypeStreamableHTTP]; ok {
 			return label
@@ -169,7 +171,7 @@ var (
 	ErrUnsupportedClientType = fmt.Errorf("unsupported client type")
 )
 
-var supportedClientIntegrations = []mcpClientConfig{
+var supportedClientIntegrations = []clientAppConfig{
 	{
 		ClientType:   RooCode,
 		Description:  "VS Code Roo Code extension",
@@ -713,8 +715,8 @@ var supportedClientIntegrations = []mcpClientConfig{
 
 // GetAllClients returns a slice of all supported MCP client types, sorted alphabetically.
 // This is the single source of truth for valid client types.
-func GetAllClients() []MCPClient {
-	clients := make([]MCPClient, 0, len(supportedClientIntegrations))
+func GetAllClients() []ClientApp {
+	clients := make([]ClientApp, 0, len(supportedClientIntegrations))
 	for _, config := range supportedClientIntegrations {
 		clients = append(clients, config.ClientType)
 	}
@@ -737,7 +739,7 @@ func IsValidClient(clientType string) bool {
 
 // GetClientDescription returns the description for a given client type.
 // Returns an empty string if the client type is not found.
-func GetClientDescription(clientType MCPClient) string {
+func GetClientDescription(clientType ClientApp) string {
 	for _, config := range supportedClientIntegrations {
 		if config.ClientType == clientType {
 			return config.Description
@@ -750,7 +752,7 @@ func GetClientDescription(clientType MCPClient) string {
 // with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
 func GetClientListFormatted() string {
 	// Create a sorted copy of the configurations
-	configs := make([]mcpClientConfig, len(supportedClientIntegrations))
+	configs := make([]clientAppConfig, len(supportedClientIntegrations))
 	copy(configs, supportedClientIntegrations)
 	sort.Slice(configs, func(i, j int) bool {
 		return configs[i].ClientType < configs[j].ClientType
@@ -777,18 +779,13 @@ func GetClientListCSV() string {
 // ConfigFile represents a client configuration file
 type ConfigFile struct {
 	Path          string
-	ClientType    MCPClient
+	ClientType    ClientApp
 	ConfigUpdater ConfigUpdater
 	Extension     Extension
 }
 
-// MCPServerConfig represents an MCP server configuration in a client config file
-type MCPServerConfig struct {
-	URL string `json:"url,omitempty"`
-}
-
 // FindClientConfig returns the client configuration file for a given client type.
-func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func FindClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	manager, err := NewClientManager()
 	if err != nil {
 		return nil, err
@@ -797,7 +794,7 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 }
 
 // FindClientConfig returns the client configuration file for a given client type using this manager's dependencies.
-func (cm *ClientManager) FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func (cm *ClientManager) FindClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	// retrieve the metadata of the config files
 	configFile, err := cm.retrieveConfigFileMetadata(clientType)
 	if err != nil {
@@ -859,7 +856,7 @@ func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]Con
 }
 
 // CreateClientConfig creates a new client configuration file for a given client type.
-func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	manager, err := NewClientManager()
 	if err != nil {
 		return nil, err
@@ -868,9 +865,9 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 }
 
 // CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
-func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *mcpClientConfig
+	var clientCfg *clientAppConfig
 	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
@@ -949,7 +946,7 @@ func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transpor
 // If the map is nil or the transport type is not found, it falls back to "url" as the default.
 // For most clients, all transport types map to the same URL field (e.g., "url"), but some clients
 // like Gemini CLI use different URL fields per transport type (e.g., "url" for SSE, "httpUrl" for streamable HTTP).
-func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPServer {
+func buildMCPServer(url, transportType string, clientCfg *clientAppConfig) MCPServer {
 	server := MCPServer{}
 
 	// Determine the URL field name from the transport type using MCPServersUrlLabelMap
@@ -983,9 +980,9 @@ func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPSe
 }
 
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
-func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
+func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *mcpClientConfig
+	var clientCfg *clientAppConfig
 	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
@@ -1009,7 +1006,7 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 	var configUpdater ConfigUpdater
 	switch clientCfg.Extension {
 	case YAML:
-		// Use the generic YAML converter with configuration from mcpClientConfig
+		// Use the generic YAML converter with configuration from clientAppConfig
 		converter := NewGenericYAMLConverter(clientCfg)
 		configUpdater = &YAMLConfigUpdater{
 			Path:      path,

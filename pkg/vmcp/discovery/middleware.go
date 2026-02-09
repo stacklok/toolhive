@@ -26,6 +26,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -45,10 +46,17 @@ const (
 // The registry parameter provides the current list of backends. For dynamic environments
 // (Kubernetes with DynamicRegistry), backends are fetched on each initialize request to
 // ensure the latest backend list is used for capability discovery.
+//
+// The healthStatusProvider parameter (optional, can be nil) enables filtering backends
+// based on current health status from the health monitor. When provided, only healthy and
+// degraded backends are included in capability aggregation; unhealthy, unknown, and
+// unauthenticated backends are excluded (which includes backends with OPEN circuit breakers).
+// When nil (health monitoring disabled), the initial health status from the registry is used.
 func Middleware(
 	manager Manager,
 	registry vmcp.BackendRegistry,
 	sessionManager *transportsession.Manager,
+	healthStatusProvider health.StatusProvider,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +66,7 @@ func Middleware(
 			var err error
 			if sessionID == "" {
 				// Initialize request: discover and cache capabilities in session.
-				ctx, err = handleInitializeRequest(ctx, r, manager, registry)
+				ctx, err = handleInitializeRequest(ctx, r, manager, registry, healthStatusProvider)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
@@ -74,27 +82,109 @@ func Middleware(
 	}
 }
 
+// filterHealthyBackends filters backends to only include those that are healthy
+// or degraded. Backends that are unhealthy, unknown, or unauthenticated are excluded
+// from capability aggregation to prevent exposing tools from unavailable backends.
+//
+// Health status filtering:
+//   - healthy: included (fully operational)
+//   - degraded: included (slow but working)
+//   - empty/zero-value: included (assume healthy when health monitoring is disabled)
+//   - unhealthy: excluded (not responding, circuit breaker may be open)
+//   - unknown: excluded (status not yet determined)
+//   - unauthenticated: excluded (authentication failed)
+//
+// When healthStatusProvider is provided, the current health status from the health
+// monitor is used (respects circuit breaker state). When nil, falls back to the
+// initial health status from the backend registry.
+func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.StatusProvider) []vmcp.Backend {
+	if len(backends) == 0 {
+		return backends
+	}
+
+	healthy := make([]vmcp.Backend, 0, len(backends))
+	excluded := 0
+
+	for i := range backends {
+		backend := &backends[i]
+
+		// Get current health status from health monitor if available
+		// This ensures circuit breaker state is respected during capability aggregation
+		var healthStatus vmcp.BackendHealthStatus
+		if healthStatusProvider != nil {
+			if status, exists := healthStatusProvider.QueryBackendStatus(backend.ID); exists {
+				healthStatus = status
+			} else {
+				// Backend not tracked by health monitor - use registry status
+				healthStatus = backend.HealthStatus
+			}
+		} else {
+			// Health monitoring disabled - use registry status
+			healthStatus = backend.HealthStatus
+		}
+
+		// Include healthy, degraded, and empty/zero-value (assume healthy) backends.
+		// Explicitly exclude unhealthy, unknown, and unauthenticated backends.
+		if healthStatus == "" ||
+			healthStatus == vmcp.BackendHealthy ||
+			healthStatus == vmcp.BackendDegraded {
+			healthy = append(healthy, *backend)
+		} else {
+			excluded++
+			logger.Debugw("excluding backend from capability aggregation due to health status",
+				"backend_name", backend.Name,
+				"backend_id", backend.ID,
+				"health_status", healthStatus,
+				"source", func() string {
+					if healthStatusProvider != nil {
+						return "health_monitor"
+					}
+					return "registry"
+				}())
+		}
+	}
+
+	if excluded > 0 {
+		logger.Debugw("filtered backends for capability aggregation",
+			"total_backends", len(backends),
+			"healthy_backends", len(healthy),
+			"excluded_backends", excluded)
+	}
+
+	return healthy
+}
+
 // handleInitializeRequest performs capability discovery for initialize requests.
 // Returns updated context with discovered capabilities or an error.
 //
 // For dynamic environments, backends are fetched from the registry on each request
 // to ensure the latest backend list is used (e.g., when backends are added/removed).
+//
+// When healthStatusProvider is provided, backends are filtered based on current health
+// status from the health monitor (respects circuit breaker state). When nil, the initial
+// health status from the backend registry is used.
 func handleInitializeRequest(
 	ctx context.Context,
 	r *http.Request,
 	manager Manager,
 	registry vmcp.BackendRegistry,
+	healthStatusProvider health.StatusProvider,
 ) (context.Context, error) {
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
 	// Get current backend list from registry (supports dynamic backend changes)
-	backends := registry.List(discoveryCtx)
+	allBackends := registry.List(discoveryCtx)
+
+	// Filter to only include healthy/degraded backends for capability aggregation
+	// Uses current health status from health monitor when available
+	backends := filterHealthyBackends(allBackends, healthStatusProvider)
 
 	logger.Debugw("starting capability discovery for initialize request",
 		"method", r.Method,
 		"path", r.URL.Path,
-		"backend_count", len(backends))
+		"total_backend_count", len(allBackends),
+		"healthy_backend_count", len(backends))
 
 	capabilities, err := manager.Discover(discoveryCtx, backends)
 	if err != nil {

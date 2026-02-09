@@ -75,13 +75,13 @@ var _ = Describe("Discovery API", Label("api", "discovery", "e2e"), func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Create a map of returned client types
-				clientTypes := make(map[client.MCPClient]bool)
+				clientTypes := make(map[client.ClientApp]bool)
 				for _, status := range result.Clients {
 					clientTypes[status.ClientType] = true
 				}
 
 				// Verify some well-known client types are included
-				expectedClients := []client.MCPClient{
+				expectedClients := []client.ClientApp{
 					client.RooCode,
 					client.Cline,
 					client.Cursor,
@@ -146,12 +146,12 @@ var _ = Describe("Discovery API", Label("api", "discovery", "e2e"), func() {
 				Expect(result1.Clients).To(HaveLen(len(result2.Clients)))
 
 				// Create maps for comparison
-				clients1 := make(map[client.MCPClient]client.MCPClientStatus)
+				clients1 := make(map[client.ClientApp]client.ClientAppStatus)
 				for _, status := range result1.Clients {
 					clients1[status.ClientType] = status
 				}
 
-				clients2 := make(map[client.MCPClient]client.MCPClientStatus)
+				clients2 := make(map[client.ClientApp]client.ClientAppStatus)
 				for _, status := range result2.Clients {
 					clients2[status.ClientType] = status
 				}
@@ -330,7 +330,7 @@ var _ = Describe("Discovery API", Label("api", "discovery", "e2e"), func() {
 // -----------------------------------------------------------------------------
 
 type clientStatusResponse struct {
-	Clients []client.MCPClientStatus `json:"clients"`
+	Clients []client.ClientAppStatus `json:"clients"`
 }
 
 // -----------------------------------------------------------------------------

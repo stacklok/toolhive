@@ -55,6 +55,8 @@ type ValidationResult struct {
 	Valid bool `json:"valid"`
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors,omitempty"`
+	// Warnings is a list of non-blocking validation warnings, if any.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // BuildOptions configures the behavior of the Build operation.

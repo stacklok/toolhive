@@ -16,7 +16,7 @@ import (
 )
 
 // RenderClientStatusTable renders the client status table to stdout.
-func RenderClientStatusTable(clientStatuses []client.MCPClientStatus) error {
+func RenderClientStatusTable(clientStatuses []client.ClientAppStatus) error {
 	if len(clientStatuses) == 0 {
 		fmt.Println("No supported clients found.")
 		return nil

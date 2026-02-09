@@ -61,6 +61,11 @@ func ValidateRoleArn(roleArn string) error {
 	if len(parsed.AccountID) != 12 {
 		return fmt.Errorf("%w: invalid account ID: %s", ErrInvalidRoleArn, roleArn)
 	}
+	for _, c := range parsed.AccountID {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("%w: invalid account ID: %s", ErrInvalidRoleArn, roleArn)
+		}
+	}
 
 	return nil
 }

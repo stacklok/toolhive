@@ -379,6 +379,65 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "awssts.Config": {
+                "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
+                "properties": {
+                    "fallback_role_arn": {
+                        "description": "FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.",
+                        "type": "string"
+                    },
+                    "region": {
+                        "description": "Region is the AWS region for STS and SigV4 signing.",
+                        "type": "string"
+                    },
+                    "role_claim": {
+                        "description": "RoleClaim is the JWT claim to use for role mapping (default: \"groups\").",
+                        "type": "string"
+                    },
+                    "role_mappings": {
+                        "description": "RoleMappings maps JWT claim values to IAM roles with priority.",
+                        "items": {
+                            "$ref": "#/components/schemas/awssts.RoleMapping"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "service": {
+                        "description": "Service is the AWS service name for SigV4 signing (default: \"aws-mcp\").",
+                        "type": "string"
+                    },
+                    "session_duration": {
+                        "description": "SessionDuration is the duration in seconds for assumed role credentials (default: 3600).",
+                        "type": "integer"
+                    },
+                    "session_name_claim": {
+                        "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "awssts.RoleMapping": {
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the simple claim value to match (e.g., group name).\nInternally compiles to a CEL expression: \"\u003cclaim_value\u003e\" in claims[\"\u003crole_claim\u003e\"]\nMutually exclusive with Matcher.",
+                        "type": "string"
+                    },
+                    "matcher": {
+                        "description": "Matcher is a CEL expression for complex matching against JWT claims.\nThe expression has access to a \"claims\" variable containing all JWT claims.\nExamples:\n  - \"admins\" in claims[\"groups\"]\n  - claims[\"sub\"] == \"user123\" \u0026\u0026 !(\"act\" in claims)\nMutually exclusive with Claim.",
+                        "type": "string"
+                    },
+                    "priority": {
+                        "description": "Priority determines selection order (lower number = higher priority).\nWhen multiple mappings match, the one with the lowest priority is selected.\nWhen nil (omitted), the mapping has the lowest possible priority, and\nconfiguration order acts as tie-breaker via stable sort.",
+                        "type": "integer"
+                    },
+                    "role_arn": {
+                        "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "client.ClientApp": {
                 "description": "ClientType is the type of MCP client",
                 "enum": [
@@ -1218,6 +1277,9 @@ const docTemplate = `{
                     "authz_config_path": {
                         "description": "DEPRECATED: Middleware configuration.\nAuthzConfigPath is the path to the authorization configuration file",
                         "type": "string"
+                    },
+                    "aws_sts_config": {
+                        "$ref": "#/components/schemas/awssts.Config"
                     },
                     "base_name": {
                         "description": "BaseName is the base name used for the container (without prefixes)",

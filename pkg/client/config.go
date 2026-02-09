@@ -141,6 +141,11 @@ type clientAppConfig struct {
 	YAMLDefaults        map[string]any  // Default values to add to entries
 	// TOML-specific configuration (only used when Extension == TOML)
 	TOMLStorageType TOMLStorageType // How servers are stored in TOML (map or array)
+	// Skill-specific configuration
+	SupportsSkills       bool                // Whether this client supports skills
+	SkillsGlobalPath     []string            // Path segments for global skills dir (from home dir)
+	SkillsProjectPath    []string            // Path segments for project-local skills dir (from project root)
+	SkillsPlatformPrefix map[string][]string // Platform-specific prefixes for global skills path
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -315,6 +320,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".claude", "skills"},
+		SkillsProjectPath: []string{".claude", "skills"},
 	},
 	{
 		ClientType:           Windsurf,
@@ -588,6 +596,13 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{"opencode", "skills"},
+		SkillsProjectPath: []string{".opencode", "skills"},
+		SkillsPlatformPrefix: map[string][]string{
+			"linux":  {".config"},
+			"darwin": {".config"},
+		},
 	},
 	{
 		ClientType:           Kiro,
@@ -709,7 +724,10 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: "url",
 		},
 		// TOML configuration: uses nested tables format [mcp_servers.servername]
-		TOMLStorageType: TOMLStorageTypeMap,
+		TOMLStorageType:   TOMLStorageTypeMap,
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 }
 

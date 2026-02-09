@@ -16,10 +16,10 @@ import (
 type Scope string
 
 const (
-	// ScopeUser indicates a skill installed for the current user.
+	// ScopeUser indicates a skill installed for the current user (user-wide, ~/).
 	ScopeUser Scope = "user"
-	// ScopeSystem indicates a skill installed system-wide.
-	ScopeSystem Scope = "system"
+	// ScopeProject indicates a skill installed for a specific project (project-local).
+	ScopeProject Scope = "project"
 )
 
 // InstallStatus represents the current status of a skill installation.
@@ -132,7 +132,7 @@ type SkillMetadata struct {
 type InstalledSkill struct {
 	// Metadata contains the skill's metadata.
 	Metadata SkillMetadata `json:"metadata"`
-	// Scope is the installation scope (user or system).
+	// Scope is the installation scope (user or project).
 	Scope Scope `json:"scope"`
 	// Status is the current installation status.
 	Status InstallStatus `json:"status"`

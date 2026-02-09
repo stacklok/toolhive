@@ -122,10 +122,13 @@ func collectWarnings(result *ParseResult, content []byte) []string {
 	return warnings
 }
 
-// validateName checks that a skill name matches the required pattern.
-func validateName(name string) error {
+// ValidateSkillName checks that a skill name conforms to the Agent Skills specification.
+// Names must be 2-64 lowercase alphanumeric characters or hyphens, starting and ending
+// with alphanumeric, with no consecutive hyphens.
+// See: https://agentskills.io/specification
+func ValidateSkillName(name string) error {
 	if name == "" {
-		return nil // Caught by required fields check
+		return fmt.Errorf("invalid skill name: must not be empty")
 	}
 	if !skillNameRegex.MatchString(name) {
 		return fmt.Errorf("invalid skill name %q: must be 2-64 lowercase alphanumeric characters or hyphens, "+
@@ -135,6 +138,15 @@ func validateName(name string) error {
 		return fmt.Errorf("invalid skill name %q: must not contain consecutive hyphens", name)
 	}
 	return nil
+}
+
+// validateName checks that a skill name matches the required pattern.
+// Empty names are allowed here since they are caught by the required fields check in ValidateSkillDir.
+func validateName(name string) error {
+	if name == "" {
+		return nil // Caught by required fields check
+	}
+	return ValidateSkillName(name)
 }
 
 // checkFilesystem walks the directory once, checking for symlinks and path traversal.

@@ -140,6 +140,25 @@ affected and remain unchanged.
 | `mcp.protocol.version` | MCP protocol version (e.g., `2025-06-18`) |
 | `jsonrpc.protocol.version` | JSON-RPC protocol version (always `2.0`) |
 | `gen_ai.operation.name` | Operation type (e.g., `execute_tool`) |
+| `network.protocol.name` | Protocol name (e.g., `http`) |
+| `network.protocol.version` | HTTP protocol version (e.g., `1.1`, `2`) |
+| `client.address` | Client IP address |
+| `client.port` | Client port number |
+| `mcp.session.id` | MCP session ID from `Mcp-Session-Id` header |
+| `error.type` | HTTP status code string on 5xx errors |
+
+## Span Status Changes
+
+The span status behavior has been updated to follow OTEL semantic conventions:
+
+| HTTP Status | Old Behavior | New Behavior |
+|-------------|-------------|-------------|
+| 2xx/3xx | `Ok` | `Ok` |
+| 4xx | `Error` | `Unset` (not a server error) |
+| 5xx | `Error` | `Error` with `error.type` attribute |
+
+Per the OTEL spec, 4xx responses are client errors and should not set the span
+status to Error, as they are not indicative of server-side issues.
 
 ## Span Name Changes
 

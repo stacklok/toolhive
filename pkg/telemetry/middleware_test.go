@@ -550,34 +550,40 @@ func TestHTTPMiddleware_ExtractBackendTransport(t *testing.T) {
 func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
 	t.Parallel()
 
-	middleware := &HTTPMiddleware{}
-
 	tests := []struct {
 		name           string
 		statusCode     int
 		bytesWritten   int64
-		duration       time.Duration
 		expectedStatus codes.Code
 	}{
 		{
 			name:           "success response",
 			statusCode:     200,
 			bytesWritten:   1024,
-			duration:       100 * time.Millisecond,
 			expectedStatus: codes.Ok,
 		},
 		{
-			name:           "client error",
+			name:           "client error leaves status Unset per OTEL semconv",
 			statusCode:     400,
 			bytesWritten:   256,
-			duration:       50 * time.Millisecond,
+			expectedStatus: codes.Unset,
+		},
+		{
+			name:           "not found leaves status Unset per OTEL semconv",
+			statusCode:     404,
+			bytesWritten:   128,
+			expectedStatus: codes.Unset,
+		},
+		{
+			name:           "server error sets Error status",
+			statusCode:     500,
+			bytesWritten:   128,
 			expectedStatus: codes.Error,
 		},
 		{
-			name:           "server error",
-			statusCode:     500,
-			bytesWritten:   128,
-			duration:       200 * time.Millisecond,
+			name:           "service unavailable sets Error status",
+			statusCode:     503,
+			bytesWritten:   64,
 			expectedStatus: codes.Error,
 		},
 	}
@@ -591,10 +597,13 @@ func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
 				bytesWritten: tt.bytesWritten,
 			}
 
-			// Test the logic for determining status codes
+			// Test the logic matching the new OTEL semconv behavior:
+			// 5xx → Error, 4xx → Unset, 2xx/3xx → Ok
 			var expectedStatus codes.Code
-			if tt.statusCode >= 400 {
+			if tt.statusCode >= 500 {
 				expectedStatus = codes.Error
+			} else if tt.statusCode >= 400 {
+				expectedStatus = codes.Unset
 			} else {
 				expectedStatus = codes.Ok
 			}
@@ -602,13 +611,6 @@ func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
 			assert.Equal(t, tt.expectedStatus, expectedStatus)
 			assert.Equal(t, tt.statusCode, rw.statusCode)
 			assert.Equal(t, tt.bytesWritten, rw.bytesWritten)
-
-			// Test duration calculation
-			durationMs := float64(tt.duration.Nanoseconds()) / 1e6
-			assert.Greater(t, durationMs, 0.0)
-
-			// Test middleware exists
-			assert.NotNil(t, middleware)
 		})
 	}
 }
@@ -1208,6 +1210,63 @@ func TestMapTransport(t *testing.T) {
 			network, protocol := mapTransport(tt.transport)
 			assert.Equal(t, tt.expectedNetwork, network)
 			assert.Equal(t, tt.expectedProtocol, protocol)
+		})
+	}
+}
+
+func TestHTTPProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		protoMajor int
+		protoMinor int
+		expected   string
+	}{
+		{"HTTP/1.1", 1, 1, "1.1"},
+		{"HTTP/2.0", 2, 0, "2"},
+		{"HTTP/1.0", 1, 0, "1.0"},
+		{"HTTP/3.0", 3, 0, "3"},
+		{"zero proto returns empty", 0, 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.ProtoMajor = tt.protoMajor
+			req.ProtoMinor = tt.protoMinor
+
+			result := httpProtocolVersion(req)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestParseRemoteAddr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		remoteAddr   string
+		expectedHost string
+		expectedPort int
+	}{
+		{"host:port", "192.168.1.1:8080", "192.168.1.1", 8080},
+		{"localhost:port", "127.0.0.1:3000", "127.0.0.1", 3000},
+		{"empty returns empty", "", "", 0},
+		{"host only (no port)", "192.168.1.1", "192.168.1.1", 0},
+		{"ipv6 with port", "[::1]:8080", "::1", 8080},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			host, port := parseRemoteAddr(tt.remoteAddr)
+			assert.Equal(t, tt.expectedHost, host)
+			assert.Equal(t, tt.expectedPort, port)
 		})
 	}
 }

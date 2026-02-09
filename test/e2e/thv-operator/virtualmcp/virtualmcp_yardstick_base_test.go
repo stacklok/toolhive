@@ -415,10 +415,10 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 		})
 
-		// Note: Backend removal and recovery are tested comprehensively in
-		// virtualmcp_status_reporting_test.go with fast intervals (5s) for quick testing.
-		// That test also verifies phase transitions (Ready→Degraded→Ready) which provides
-		// more thorough coverage than duplicating the test here.
+		// Note: Backend failure, recovery, and status phase transitions are tested
+		// comprehensively in virtualmcp_circuit_breaker_test.go with fast intervals (5s)
+		// for quick testing. That test provides thorough coverage of health monitoring
+		// and phase transitions (Ready→Degraded→Ready), avoiding duplication here.
 
 		AfterAll(func() {
 			By("Cleaning up additional backends from membership test")

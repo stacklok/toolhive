@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-func TestUpsertMCPServerConfig(t *testing.T) {
+func TestUpsertMCPServer(t *testing.T) {
 	t.Parallel()
 
 	logger.Initialize()
@@ -119,7 +119,7 @@ func TestUpsertMCPServerConfig(t *testing.T) {
 	}
 }
 
-func TestRemoveMCPServerConfigNew(t *testing.T) {
+func TestRemoveMCPServer(t *testing.T) {
 	t.Parallel()
 
 	logger.Initialize()

@@ -329,6 +329,8 @@ type EnsureRBACResourcesParams struct {
 	Owner client.Object
 	// Labels are optional labels to apply to all RBAC resources
 	Labels map[string]string
+	// ImagePullSecrets are optional image pull secrets to apply to the ServiceAccount
+	ImagePullSecrets []corev1.LocalObjectReference
 }
 
 // OperationResults contains the operation results for each RBAC resource.
@@ -367,6 +369,7 @@ func (c *Client) EnsureRBACResources(ctx context.Context, params EnsureRBACResou
 			Namespace: params.Namespace,
 			Labels:    params.Labels,
 		},
+		ImagePullSecrets: params.ImagePullSecrets,
 	}
 	saResult, err := c.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, params.Owner)
 	if err != nil {

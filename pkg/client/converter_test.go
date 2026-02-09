@@ -17,8 +17,8 @@ const (
 )
 
 // Helper function to create a Goose-style config
-func createGooseConfig() *mcpClientConfig {
-	return &mcpClientConfig{
+func createGooseConfig() *clientAppConfig {
+	return &clientAppConfig{
 		ClientType:           Goose,
 		MCPServersPathPrefix: "/extensions",
 		MCPServersUrlLabelMap: map[types.TransportType]string{
@@ -36,8 +36,8 @@ func createGooseConfig() *mcpClientConfig {
 }
 
 // Helper function to create a Continue-style config
-func createContinueConfig() *mcpClientConfig {
-	return &mcpClientConfig{
+func createContinueConfig() *clientAppConfig {
+	return &clientAppConfig{
 		ClientType:           Continue,
 		MCPServersPathPrefix: "/mcpServers",
 		MCPServersUrlLabelMap: map[types.TransportType]string{

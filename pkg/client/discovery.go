@@ -60,10 +60,12 @@ func NewTestClientManager(
 	}
 }
 
-// MCPClientStatus represents the status of a supported MCP client
-type MCPClientStatus struct {
+// ClientAppStatus represents the status of a supported client application
+//
+//nolint:revive // ClientAppStatus is intentionally named for clarity across packages
+type ClientAppStatus struct {
 	// ClientType is the type of MCP client
-	ClientType MCPClient `json:"client_type"`
+	ClientType ClientApp `json:"client_type"`
 
 	// Installed indicates whether the client is installed on the system
 	Installed bool `json:"installed"`
@@ -73,8 +75,8 @@ type MCPClientStatus struct {
 }
 
 // GetClientStatus returns the status of all supported MCP clients using this manager's dependencies
-func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]MCPClientStatus, error) {
-	var statuses []MCPClientStatus
+func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus, error) {
+	var statuses []ClientAppStatus
 
 	// Get app configuration to check for registered clients
 	appConfig := cm.configProvider.GetConfig()
@@ -99,7 +101,7 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]MCPClientStatus
 	}
 
 	for _, cfg := range cm.clientIntegrations {
-		status := MCPClientStatus{
+		status := ClientAppStatus{
 			ClientType: cfg.ClientType,
 			Installed:  false, // start with assuming client is not installed
 			Registered: registeredClients[string(cfg.ClientType)],
@@ -127,7 +129,7 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]MCPClientStatus
 }
 
 // GetClientStatus returns the status of all supported MCP clients using the default config provider
-func GetClientStatus(ctx context.Context) ([]MCPClientStatus, error) {
+func GetClientStatus(ctx context.Context) ([]ClientAppStatus, error) {
 	manager, err := NewClientManager()
 	if err != nil {
 		return nil, err

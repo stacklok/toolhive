@@ -133,7 +133,7 @@ func TestGetClientStatus(t *testing.T) {
 	require.NotNil(t, statuses)
 
 	// Create a map for easier testing
-	statusMap := make(map[MCPClient]MCPClientStatus)
+	statusMap := make(map[ClientApp]ClientAppStatus)
 	for _, status := range statuses {
 		statusMap[status.ClientType] = status
 	}
@@ -257,7 +257,7 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 	require.NotNil(t, statuses)
 
 	// Create a map for easier testing
-	statusMap := make(map[MCPClient]MCPClientStatus)
+	statusMap := make(map[ClientApp]ClientAppStatus)
 	for _, status := range statuses {
 		statusMap[status.ClientType] = status
 	}

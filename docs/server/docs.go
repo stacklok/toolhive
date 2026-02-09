@@ -379,7 +379,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "client.MCPClient": {
+            "client.ClientApp": {
                 "description": "ClientType is the type of MCP client",
                 "enum": [
                     "roo-code",
@@ -437,10 +437,10 @@ const docTemplate = `{
                     "Codex"
                 ]
             },
-            "client.MCPClientStatus": {
+            "client.ClientAppStatus": {
                 "properties": {
                     "client_type": {
-                        "$ref": "#/components/schemas/client.MCPClient"
+                        "$ref": "#/components/schemas/client.ClientApp"
                     },
                     "installed": {
                         "description": "Installed indicates whether the client is installed on the system",
@@ -463,7 +463,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "name": {
-                        "$ref": "#/components/schemas/client.MCPClient"
+                        "$ref": "#/components/schemas/client.ClientApp"
                     }
                 },
                 "type": "object"
@@ -1477,7 +1477,7 @@ const docTemplate = `{
                 "description": "InstalledSkill is set if the skill is installed.",
                 "properties": {
                     "clients": {
-                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.MCPClient to a shared package so it can be used here instead of []string.",
+                        "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.",
                         "items": {
                             "type": "string"
                         },
@@ -1824,7 +1824,7 @@ const docTemplate = `{
                     "names": {
                         "description": "Names is the list of client names to operate on.",
                         "items": {
-                            "$ref": "#/components/schemas/client.MCPClient"
+                            "$ref": "#/components/schemas/client.ClientApp"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1853,7 +1853,7 @@ const docTemplate = `{
                 "properties": {
                     "clients": {
                         "items": {
-                            "$ref": "#/components/schemas/client.MCPClientStatus"
+                            "$ref": "#/components/schemas/client.ClientAppStatus"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1872,7 +1872,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "name": {
-                        "$ref": "#/components/schemas/client.MCPClient"
+                        "$ref": "#/components/schemas/client.ClientApp"
                     }
                 },
                 "type": "object"
@@ -1888,7 +1888,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "name": {
-                        "$ref": "#/components/schemas/client.MCPClient"
+                        "$ref": "#/components/schemas/client.ClientApp"
                     }
                 },
                 "type": "object"

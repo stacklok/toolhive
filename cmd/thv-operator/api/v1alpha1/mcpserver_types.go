@@ -701,7 +701,7 @@ type OpenTelemetryConfig struct {
 	// This will change to false in a future release and eventually be removed.
 	// +kubebuilder:default=true
 	// +optional
-	UseLegacyAttributes bool `json:"useLegacyAttributes,omitempty"`
+	UseLegacyAttributes bool `json:"useLegacyAttributes"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration

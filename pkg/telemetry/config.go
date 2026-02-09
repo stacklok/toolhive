@@ -94,7 +94,7 @@ type Config struct {
 	// Currently defaults to true; this will change to false in a future release.
 	// +kubebuilder:default=true
 	// +optional
-	UseLegacyAttributes bool `json:"useLegacyAttributes,omitempty" yaml:"useLegacyAttributes,omitempty"`
+	UseLegacyAttributes bool `json:"useLegacyAttributes" yaml:"useLegacyAttributes"`
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.

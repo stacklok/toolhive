@@ -11,38 +11,79 @@ ToolHive has updated its telemetry span attributes to align with:
 - [OpenTelemetry General Conventions](https://opentelemetry.io/docs/specs/semconv/general/)
 - MCP-specific conventions following the gen_ai namespace pattern
 
-The new attribute names are always emitted. For backward compatibility, you can
-enable dual emission of both old and new names using the `--otel-use-legacy-attributes`
-flag.
+The new attribute names are always emitted. For backward compatibility, dual
+emission of both old and new names is **enabled by default** in this release.
+This default will change to `false` in a future release, at which point only
+the new standard names will be emitted unless you explicitly opt in.
 
 ## Backward Compatibility
 
-### Enabling Dual Emission
+### Current Default
 
-To emit both old and new attribute names during migration:
+Dual emission is **enabled by default** (`--otel-use-legacy-attributes=true`) in
+this release. Every span includes both the new standard names and the old legacy
+names simultaneously, giving you time to migrate dashboards and alerts.
+
+> **Deprecation notice:** In a future release, the default will change to `false`.
+> Plan to update your queries to use the new attribute names.
+
+### Disabling Dual Emission
+
+To emit only the new standard attribute names (opt out of legacy):
 
 **CLI flag:**
 
 ```bash
-thv run --otel-use-legacy-attributes ...
+thv run --otel-use-legacy-attributes=false ...
 ```
 
 **Config file:**
 
 ```yaml
 otel:
-  use-legacy-attributes: true
+  use-legacy-attributes: false
 ```
-
-When enabled, every span includes both the new standard names and the old legacy
-names simultaneously, allowing you to migrate dashboards and alerts gradually.
 
 ### Migration Steps
 
-1. Enable `--otel-use-legacy-attributes` in your deployment
+1. Verify dual emission is active (default in this release)
 2. Update dashboards and alerts to use the new attribute names
 3. Verify new queries work correctly alongside old ones
-4. Disable the legacy flag once migration is complete
+4. Disable the legacy flag with `--otel-use-legacy-attributes=false` once migration is complete
+
+### Kubernetes Operator Deployments
+
+The `UseLegacyAttributes` setting also applies to MCP servers managed by the
+ToolHive Kubernetes operator.
+
+**VirtualMCPServer**: Set the field in the telemetry config:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  config:
+    telemetry:
+      useLegacyAttributes: false  # Set to false to disable dual emission
+```
+
+**MCPServer**: The operator defaults to `true` (dual emission enabled) for this
+release. CRD-level configuration for this field will be added in a future release.
+
+**Recommended upgrade path for K8s clusters:**
+
+1. Update CRDs first (includes the new `useLegacyAttributes` field)
+2. Upgrade the operator — dual emission is enabled by default
+3. Migrate dashboards and alerts to the new attribute names
+4. Set `useLegacyAttributes: false` on VirtualMCPServer resources
+
+### Scope
+
+The `--otel-use-legacy-attributes` flag only affects **trace span attributes**.
+Metric label names (e.g., `mcp_method`, `status_code`, `server`) are not
+affected and remain unchanged.
 
 ## Attribute Name Changes
 
@@ -60,6 +101,7 @@ names simultaneously, allowing you to migrate dashboards and alerts gradually.
 | `http.query` | `url.query` | OTEL URL semconv |
 | `http.status_code` | `http.response.status_code` | OTEL HTTP semconv |
 | `http.response_content_length` | `http.response.body.size` | OTEL HTTP semconv |
+| `http.duration_ms` | *(legacy only)* | Removed from default spans; duration is captured by span timestamps and the `toolhive_mcp_request_duration` histogram metric |
 
 ### MCP Attributes
 
@@ -69,8 +111,8 @@ names simultaneously, allowing you to migrate dashboards and alerts gradually.
 | `mcp.request.id` | `jsonrpc.request.id` | JSON-RPC standard |
 | `mcp.resource.id` | `mcp.resource.uri` | URI semantics |
 | `mcp.transport` | `network.transport` | OTEL network semconv (`pipe`, `tcp`) |
-| `rpc.system` | *(removed by default)* | Available via `--otel-use-legacy-attributes`; replaced by `mcp.protocol.version` |
-| `rpc.service` | *(removed by default)* | Available via `--otel-use-legacy-attributes`; replaced by `mcp.method.name` |
+| `rpc.system` | `rpc.system` | Always emitted (value: `jsonrpc`), required by OTEL JSON-RPC semconv |
+| `rpc.service` | *(legacy only)* | Available via `--otel-use-legacy-attributes`; replaced by `mcp.method.name` |
 
 ### Tool/Prompt Attributes
 
@@ -85,6 +127,7 @@ names simultaneously, allowing you to migrate dashboards and alerts gradually.
 | Attribute | Description |
 |-----------|-------------|
 | `mcp.protocol.version` | MCP protocol version (e.g., `2025-06-18`) |
+| `jsonrpc.protocol.version` | JSON-RPC protocol version (always `2.0`) |
 | `gen_ai.operation.name` | Operation type (e.g., `execute_tool`) |
 | `network.protocol.name` | Protocol name (e.g., `http`) |
 | `network.protocol.version` | HTTP protocol version (e.g., `1.1`, `2`) |

@@ -248,7 +248,11 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	assert.Equal(t, "POST", attrMap["http.request.method"])
 	assert.Equal(t, int64(200), attrMap["http.response.status_code"])
 
-	// Verify old names are NOT present (UseLegacyAttributes defaults to false)
+	// rpc.system is always emitted (required by OTEL JSON-RPC semconv)
+	assert.Equal(t, "jsonrpc", attrMap["rpc.system"])
+	assert.Equal(t, "2.0", attrMap["jsonrpc.protocol.version"])
+
+	// Verify old names are NOT present (UseLegacyAttributes is false in this test)
 	assert.Nil(t, attrMap["mcp.method"], "Legacy mcp.method should not be present")
 	assert.Nil(t, attrMap["mcp.tool.name"], "Legacy mcp.tool.name should not be present")
 	assert.Nil(t, attrMap["http.method"], "Legacy http.method should not be present")

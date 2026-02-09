@@ -160,7 +160,7 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 
 		// Record completion metrics and finalize span
 		duration := time.Since(startTime)
-		m.finalizeSpan(ctx, span, rw)
+		m.finalizeSpan(ctx, span, rw, duration)
 		m.recordMetrics(ctx, r, rw, duration)
 	})
 }
@@ -257,6 +257,8 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	span.SetAttributes(
 		attribute.String("mcp.method.name", parsedMCP.Method),
 		attribute.String("mcp.protocol.version", mcpProtocolVersion),
+		attribute.String("rpc.system", "jsonrpc"),
+		attribute.String("jsonrpc.protocol.version", "2.0"),
 	)
 
 	// Add request ID if available
@@ -264,9 +266,14 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 		span.SetAttributes(attribute.String("jsonrpc.request.id", formatRequestID(parsedMCP.ID)))
 	}
 
-	// Add resource ID if available
+	// Add resource URI for resource-related methods only (per OTEL MCP semconv,
+	// mcp.resource.uri applies to resources/read, resources/subscribe, etc.)
 	if parsedMCP.ResourceID != "" {
-		span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
+		switch parsedMCP.Method {
+		case "resources/read", "resources/subscribe", "resources/unsubscribe",
+			"notifications/resources/updated":
+			span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
+		}
 	}
 
 	// Add method-specific attributes
@@ -311,7 +318,6 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	if m.config.UseLegacyAttributes {
 		span.SetAttributes(
 			attribute.String("mcp.method", parsedMCP.Method),
-			attribute.String("rpc.system", "jsonrpc"),
 			attribute.String("rpc.service", "mcp"),
 		)
 
@@ -478,7 +484,7 @@ func formatRequestID(id interface{}) string {
 }
 
 // finalizeSpan adds response attributes and sets the span status.
-func (m *HTTPMiddleware) finalizeSpan(_ context.Context, span trace.Span, rw *responseWriter) {
+func (m *HTTPMiddleware) finalizeSpan(_ context.Context, span trace.Span, rw *responseWriter, duration time.Duration) {
 	// Always emit new OTEL semconv names
 	span.SetAttributes(
 		attribute.Int("http.response.status_code", rw.statusCode),
@@ -503,6 +509,7 @@ func (m *HTTPMiddleware) finalizeSpan(_ context.Context, span trace.Span, rw *re
 		span.SetAttributes(
 			attribute.Int("http.status_code", rw.statusCode),
 			attribute.Int64("http.response_content_length", rw.bytesWritten),
+			attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
 		)
 	}
 }
@@ -672,6 +679,11 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 		attribute.String("mcp.server.name", m.serverName),
 		attribute.String("network.transport", networkTransport),
 	)
+
+	// Emit legacy SSE attributes if configured
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", m.transport))
+	}
 
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")

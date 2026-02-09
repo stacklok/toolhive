@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -994,14 +995,14 @@ func TestHTTPMiddleware_DualEmission_MCPAttributes(t *testing.T) {
 		{
 			name:                "new MCP attributes only when legacy disabled",
 			useLegacyAttributes: false,
-			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "mcp.resource.uri", "mcp.server.name", "network.transport"},
-			unexpectedLegacy:    []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.system", "rpc.service"},
+			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "rpc.system", "jsonrpc.protocol.version", "mcp.server.name", "network.transport"},
+			unexpectedLegacy:    []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.service"},
 		},
 		{
 			name:                "both old and new MCP attributes when legacy enabled",
 			useLegacyAttributes: true,
-			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "mcp.resource.uri", "mcp.server.name", "network.transport"},
-			expectedLegacy:      []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.system", "rpc.service"},
+			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "rpc.system", "jsonrpc.protocol.version", "mcp.server.name", "network.transport"},
+			expectedLegacy:      []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.service"},
 		},
 	}
 
@@ -1142,7 +1143,7 @@ func TestHTTPMiddleware_DualEmission_FinalizeSpan(t *testing.T) {
 			statusCode:          200,
 			bytesWritten:        1024,
 			expectedNew:         []string{"http.response.status_code", "http.response.body.size"},
-			unexpectedLegacy:    []string{"http.status_code", "http.response_content_length"},
+			unexpectedLegacy:    []string{"http.status_code", "http.response_content_length", "http.duration_ms"},
 		},
 		{
 			name:                "response attributes with legacy",
@@ -1150,7 +1151,7 @@ func TestHTTPMiddleware_DualEmission_FinalizeSpan(t *testing.T) {
 			statusCode:          200,
 			bytesWritten:        1024,
 			expectedNew:         []string{"http.response.status_code", "http.response.body.size"},
-			expectedLegacy:      []string{"http.status_code", "http.response_content_length"},
+			expectedLegacy:      []string{"http.status_code", "http.response_content_length", "http.duration_ms"},
 		},
 	}
 
@@ -1168,7 +1169,7 @@ func TestHTTPMiddleware_DualEmission_FinalizeSpan(t *testing.T) {
 				bytesWritten: tt.bytesWritten,
 			}
 
-			middleware.finalizeSpan(context.Background(), mockSpan, rw)
+			middleware.finalizeSpan(context.Background(), mockSpan, rw, 100*time.Millisecond)
 
 			for _, attr := range tt.expectedNew {
 				assert.Contains(t, mockSpan.attributes, attr, "Expected new attribute %s", attr)

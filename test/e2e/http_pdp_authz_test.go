@@ -271,7 +271,7 @@ var _ = Describe("HTTP PDP Authorization", Label("middleware", "authz", "http-pd
 				// This should fail because query_vulnerabilities_batch is not authorized
 				_, err := mcpClient.CallTool(ctx, "query_vulnerabilities_batch", arguments)
 				Expect(err).To(HaveOccurred(), "Should fail to call unauthorized tool")
-				Expect(err.Error()).To(ContainSubstring("authorization"), "Error should mention authorization")
+				Expect(err.Error()).To(ContainSubstring("Unauthorized"), "Error should mention Unauthorized")
 
 				GinkgoWriter.Printf("Expected authorization failure for unauthorized tool: %v\n", err)
 			})

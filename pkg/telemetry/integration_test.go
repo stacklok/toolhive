@@ -244,8 +244,8 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
 	assert.Equal(t, testToolName, attrMap["gen_ai.tool.name"])
 	assert.Equal(t, "test-123", attrMap["jsonrpc.request.id"])
-	assert.Equal(t, "POST", attrMap["http.method"])
-	assert.Equal(t, int64(200), attrMap["http.status_code"])
+	assert.Equal(t, "POST", attrMap["http.request.method"])
+	assert.Equal(t, int64(200), attrMap["http.response.status_code"])
 
 	// Verify sensitive data is redacted
 	if toolArgs, exists := attrMap["gen_ai.tool.call.arguments"]; exists {

@@ -85,6 +85,16 @@ The telemetry middleware:
 This provides end-to-end visibility across the entire request lifecycle while
 maintaining the modular architecture of ToolHive's middleware system.
 
+## MCP OTEL Semantic Conventions
+
+ToolHive's telemetry attributes and metrics align with the
+[MCP OpenTelemetry Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/)
+specification. If you are migrating from an earlier version of ToolHive that
+used the legacy attribute names, see the
+[Telemetry Migration Guide](./telemetry-migration.md) for a complete list of
+renamed, removed, and new attributes, along with PromQL and trace query
+migration examples.
+
 ## Virtual MCP Server Telemetry
 
 For observability in the Virtual MCP Server (vMCP), including backend request

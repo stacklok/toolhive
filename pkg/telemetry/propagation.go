@@ -7,7 +7,11 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
+
+// Compile-time assertion that MetaCarrier implements propagation.TextMapCarrier
+var _ propagation.TextMapCarrier = (*MetaCarrier)(nil)
 
 // MetaCarrier implements propagation.TextMapCarrier for MCP _meta fields.
 // This enables W3C Trace Context propagation through MCP request params._meta,

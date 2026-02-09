@@ -10,12 +10,12 @@ prometheus:
       - name: "web.enable-remote-write-receiver"
     
     # Add scrape config for OTEL Collector metrics endpoint
-    # additionalScrapeConfigs:
-    #   - job_name: 'toolhive-otel-metrics'
-    #     static_configs:
-    #       - targets: ['otel-collector-opentelemetry-collector.monitoring:8889']
-    #     scrape_interval: 15s
-    #     metrics_path: /metrics
+    additionalScrapeConfigs:
+      - job_name: 'toolhive-otel-metrics'
+        static_configs:
+          - targets: ['otel-collector-opentelemetry-collector.monitoring:8889']
+        scrape_interval: 15s
+        metrics_path: /metrics
     
     # Optional: Configure retention and storage
     retention: "1d"
@@ -41,13 +41,23 @@ grafana:
   
   # Additional data sources configuration
   additionalDataSources:
-    - name: Jaeger
-      type: jaeger
+    - name: Tempo
+      type: tempo
       access: proxy
-      url: http://jaeger-all-in-one-query.monitoring:16686
+      url: http://tempo.monitoring:3200
       isDefault: false
       version: 1
       editable: true
+      jsonData:
+        httpMethod: GET
+        tracesToLogsV2:
+          datasourceUid: ''
+        tracesToMetrics:
+          datasourceUid: ''
+        nodeGraph:
+          enabled: true
+        serviceMap:
+          datasourceUid: ''
 
 # AlertManager configuration (optional)
 alertmanager:

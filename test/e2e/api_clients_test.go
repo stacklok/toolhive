@@ -44,7 +44,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 	})
 
 	Describe("POST /api/v1beta/clients - Register client with workloads", func() {
-		var testClientName client.MCPClient
+		var testClientName client.ClientApp
 		var groupName string
 		var workloadName string
 
@@ -219,7 +219,7 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 	})
 
 	Describe("DELETE /api/v1beta/clients/{name}/groups/{group} - Unregister client from group", func() {
-		var testClientName client.MCPClient
+		var testClientName client.ClientApp
 		var groupName string
 		var workloadName string
 
@@ -307,12 +307,12 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 	})
 
 	Describe("POST /api/v1beta/clients/register - Bulk register clients", func() {
-		var testClientNames []client.MCPClient
+		var testClientNames []client.ClientApp
 		var groupName string
 		var workloadName string
 
 		BeforeEach(func() {
-			testClientNames = []client.MCPClient{
+			testClientNames = []client.ClientApp{
 				client.VSCode, // Use valid client types for bulk tests
 				client.Cline,
 			}
@@ -416,12 +416,12 @@ var _ = Describe("Clients API", Label("api", "clients", "e2e"), func() {
 	})
 
 	Describe("POST /api/v1beta/clients/unregister - Bulk unregister clients", func() {
-		var testClientNames []client.MCPClient
+		var testClientNames []client.ClientApp
 		var groupName string
 		var workloadName string
 
 		BeforeEach(func() {
-			testClientNames = []client.MCPClient{
+			testClientNames = []client.ClientApp{
 				client.Windsurf, // Use different valid client types for bulk unregister tests
 				client.LMStudio,
 			}

@@ -424,7 +424,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		assert.Len(t, configs, len(mockClientConfigs), "Should find all mock client configs")
 
 		// Verify each client type is found
-		foundTypes := make(map[MCPClient]bool)
+		foundTypes := make(map[ClientApp]bool)
 		for _, cf := range configs {
 			foundTypes[cf.ClientType] = true
 		}
@@ -1294,13 +1294,13 @@ func TestGetAllClients(t *testing.T) {
 	}
 
 	// Verify some known clients are in the list
-	expectedClients := []MCPClient{
+	expectedClients := []ClientApp{
 		RooCode, Cline, Cursor, VSCode, VSCodeInsider, ClaudeCode,
 		Windsurf, WindsurfJetBrains, AmpCli, LMStudio, Goose,
 		Continue, Zed, Codex, MistralVibe,
 	}
 
-	clientMap := make(map[MCPClient]bool)
+	clientMap := make(map[ClientApp]bool)
 	for _, client := range clients {
 		clientMap[client] = true
 	}
@@ -1369,7 +1369,7 @@ func TestGetClientDescription(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		client      MCPClient
+		client      ClientApp
 		expectFound bool
 	}{
 		{
@@ -1389,7 +1389,7 @@ func TestGetClientDescription(t *testing.T) {
 		},
 		{
 			name:        "Invalid client",
-			client:      MCPClient("invalid"),
+			client:      ClientApp("invalid"),
 			expectFound: false,
 		},
 	}

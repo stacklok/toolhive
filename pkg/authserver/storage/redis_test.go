@@ -10,6 +10,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
 // --- Test Helpers ---
@@ -44,6 +47,40 @@ func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *min
 		mr.Close()
 	}()
 	fn(context.Background(), storage, mr)
+}
+
+// newRedisTestRequester creates a fosite.Request with a real session.Session
+// that can be properly serialized/deserialized through JSON for Redis storage.
+func newRedisTestRequester(id string, client fosite.Client) fosite.Requester {
+	return &fosite.Request{
+		ID:                id,
+		RequestedAt:       time.Now(),
+		Client:            client,
+		RequestedScope:    fosite.Arguments{"openid", "profile"},
+		GrantedScope:      fosite.Arguments{"openid"},
+		RequestedAudience: fosite.Arguments{},
+		GrantedAudience:   fosite.Arguments{},
+		Form:              make(url.Values),
+		Session:           session.New("test-subject", "", ""),
+	}
+}
+
+// newRedisTestRequesterWithExpiration creates a fosite.Request with a real session.Session
+// and a specific expiration time for the given token type.
+func newRedisTestRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) fosite.Requester {
+	sess := session.New("test-subject", "", "")
+	sess.SetExpiresAt(tokenType, expiresAt)
+	return &fosite.Request{
+		ID:                id,
+		RequestedAt:       time.Now(),
+		Client:            client,
+		RequestedScope:    fosite.Arguments{"openid", "profile"},
+		GrantedScope:      fosite.Arguments{"openid"},
+		RequestedAudience: fosite.Arguments{},
+		GrantedAudience:   fosite.Arguments{},
+		Form:              make(url.Values),
+		Session:           sess,
+	}
 }
 
 func requireRedisNotFoundError(t *testing.T, err error) {
@@ -218,7 +255,7 @@ func TestRedisStorage_AuthorizeCode(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-123", request))
 
 			retrieved, err := s.GetAuthorizeCodeSession(ctx, "code-123", nil)
@@ -239,7 +276,7 @@ func TestRedisStorage_AuthorizeCode(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-123", request))
 			require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "code-123"))
 
@@ -255,7 +292,7 @@ func TestRedisStorage_AuthorizeCode(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-replay", request))
 			require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "code-replay"))
 
@@ -287,7 +324,7 @@ func TestRedisStorage_AccessToken(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAccessTokenSession(ctx, "sig-123", request))
 
 			retrieved, err := s.GetAccessTokenSession(ctx, "sig-123", nil)
@@ -308,7 +345,7 @@ func TestRedisStorage_AccessToken(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAccessTokenSession(ctx, "to-delete", request))
 			require.NoError(t, s.DeleteAccessTokenSession(ctx, "to-delete"))
 
@@ -325,6 +362,51 @@ func TestRedisStorage_AccessToken(t *testing.T) {
 	})
 }
 
+// --- Session Round-Trip Tests ---
+
+func TestRedisStorage_SessionRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("JWT claims survive serialization", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := testClient()
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			// Create a session with JWT claims and upstream session ID
+			sess := session.New("user-123", "upstream-session-456", "test-client")
+			request := &fosite.Request{
+				ID:             "req-jwt",
+				RequestedAt:    time.Now(),
+				Client:         client,
+				RequestedScope: fosite.Arguments{"openid"},
+				GrantedScope:   fosite.Arguments{"openid"},
+				Form:           make(url.Values),
+				Session:        sess,
+			}
+
+			require.NoError(t, s.CreateAccessTokenSession(ctx, "jwt-sig", request))
+
+			retrieved, err := s.GetAccessTokenSession(ctx, "jwt-sig", nil)
+			require.NoError(t, err)
+
+			// Verify the session implements UpstreamSession (required for token refresh)
+			upstreamSess, ok := retrieved.GetSession().(session.UpstreamSession)
+			require.True(t, ok, "session must implement UpstreamSession for token refresh")
+
+			// Verify JWT claims are preserved
+			jwtClaims := upstreamSess.GetJWTClaims()
+			require.NotNil(t, jwtClaims)
+			claims := jwtClaims.ToMapClaims()
+			assert.Equal(t, "user-123", claims["sub"])
+			assert.Equal(t, "upstream-session-456", claims["tsid"])
+			assert.Equal(t, "test-client", claims["client_id"])
+
+			// Verify upstream session ID is preserved
+			assert.Equal(t, "upstream-session-456", upstreamSess.GetIDPSessionID())
+		})
+	})
+}
+
 // --- Refresh Token Tests ---
 
 func TestRedisStorage_RefreshToken(t *testing.T) {
@@ -335,7 +417,7 @@ func TestRedisStorage_RefreshToken(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateRefreshTokenSession(ctx, "refresh-sig", "access-sig", request))
 
 			retrieved, err := s.GetRefreshTokenSession(ctx, "refresh-sig", nil)
@@ -356,7 +438,7 @@ func TestRedisStorage_RefreshToken(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateRefreshTokenSession(ctx, "to-delete", "access-sig", request))
 			require.NoError(t, s.DeleteRefreshTokenSession(ctx, "to-delete"))
 
@@ -374,7 +456,7 @@ func TestRedisStorage_RotateRefreshToken(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("request-123", client)
+			request := newRedisTestRequester("request-123", client)
 
 			require.NoError(t, s.CreateRefreshTokenSession(ctx, "refresh-sig", "access-sig", request))
 			require.NoError(t, s.CreateAccessTokenSession(ctx, "access-sig", request))
@@ -401,7 +483,7 @@ func TestRedisStorage_RevokeAccessToken(t *testing.T) {
 		client := testClient()
 		require.NoError(t, s.RegisterClient(ctx, client))
 
-		request := newMockRequester("request-123", client)
+		request := newRedisTestRequester("request-123", client)
 
 		// Create multiple access tokens with same request ID
 		require.NoError(t, s.CreateAccessTokenSession(ctx, "access-1", request))
@@ -423,7 +505,7 @@ func TestRedisStorage_RevokeRefreshToken(t *testing.T) {
 		client := testClient()
 		require.NoError(t, s.RegisterClient(ctx, client))
 
-		request := newMockRequester("request-123", client)
+		request := newRedisTestRequester("request-123", client)
 
 		require.NoError(t, s.CreateRefreshTokenSession(ctx, "refresh-1", "access-1", request))
 
@@ -444,7 +526,7 @@ func TestRedisStorage_PKCE(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreatePKCERequestSession(ctx, "pkce-sig", request))
 
 			retrieved, err := s.GetPKCERequestSession(ctx, "pkce-sig", nil)
@@ -465,7 +547,7 @@ func TestRedisStorage_PKCE(t *testing.T) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
-			request := newMockRequester("req-1", client)
+			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreatePKCERequestSession(ctx, "to-delete", request))
 			require.NoError(t, s.DeletePKCERequestSession(ctx, "to-delete"))
 
@@ -916,25 +998,25 @@ func TestRedisStorage_InputValidation(t *testing.T) {
 		wantErr error
 	}{
 		{"CreateAuthorizeCodeSession empty code", func(ctx context.Context, s *RedisStorage) error {
-			return s.CreateAuthorizeCodeSession(ctx, "", newMockRequester("r", client))
+			return s.CreateAuthorizeCodeSession(ctx, "", newRedisTestRequester("r", client))
 		}, fosite.ErrInvalidRequest},
 		{"CreateAuthorizeCodeSession nil request", func(ctx context.Context, s *RedisStorage) error {
 			return s.CreateAuthorizeCodeSession(ctx, "code", nil)
 		}, fosite.ErrInvalidRequest},
 		{"CreateAccessTokenSession empty signature", func(ctx context.Context, s *RedisStorage) error {
-			return s.CreateAccessTokenSession(ctx, "", newMockRequester("r", client))
+			return s.CreateAccessTokenSession(ctx, "", newRedisTestRequester("r", client))
 		}, fosite.ErrInvalidRequest},
 		{"CreateAccessTokenSession nil request", func(ctx context.Context, s *RedisStorage) error {
 			return s.CreateAccessTokenSession(ctx, "sig", nil)
 		}, fosite.ErrInvalidRequest},
 		{"CreateRefreshTokenSession empty signature", func(ctx context.Context, s *RedisStorage) error {
-			return s.CreateRefreshTokenSession(ctx, "", "a", newMockRequester("r", client))
+			return s.CreateRefreshTokenSession(ctx, "", "a", newRedisTestRequester("r", client))
 		}, fosite.ErrInvalidRequest},
 		{"CreateRefreshTokenSession nil request", func(ctx context.Context, s *RedisStorage) error {
 			return s.CreateRefreshTokenSession(ctx, "sig", "a", nil)
 		}, fosite.ErrInvalidRequest},
 		{"CreatePKCERequestSession empty signature", func(ctx context.Context, s *RedisStorage) error {
-			return s.CreatePKCERequestSession(ctx, "", newMockRequester("r", client))
+			return s.CreatePKCERequestSession(ctx, "", newRedisTestRequester("r", client))
 		}, fosite.ErrInvalidRequest},
 		{"CreatePKCERequestSession nil request", func(ctx context.Context, s *RedisStorage) error {
 			return s.CreatePKCERequestSession(ctx, "sig", nil)
@@ -1011,7 +1093,7 @@ func TestRedisStorage_TTLHandling(t *testing.T) {
 			require.NoError(t, s.RegisterClient(ctx, client))
 
 			// Create request with short expiration
-			request := newMockRequesterWithExpiration("req-1", client, fosite.AccessToken, time.Now().Add(time.Second))
+			request := newRedisTestRequesterWithExpiration("req-1", client, fosite.AccessToken, time.Now().Add(time.Second))
 			require.NoError(t, s.CreateAccessTokenSession(ctx, "short-lived", request))
 
 			// Should exist initially
@@ -1063,7 +1145,7 @@ func TestRedisStorage_ConcurrentAccess(t *testing.T) {
 				wg.Add(1)
 				go func(idx int) {
 					defer wg.Done()
-					request := newMockRequester(fmt.Sprintf("req-%d", idx), client)
+					request := newRedisTestRequester(fmt.Sprintf("req-%d", idx), client)
 					_ = s.CreateAccessTokenSession(ctx, fmt.Sprintf("token-%d", idx), request)
 				}(i)
 			}
@@ -1078,7 +1160,7 @@ func TestRedisStorage_ConcurrentAccess(t *testing.T) {
 
 			// Preload some data
 			for i := 0; i < 10; i++ {
-				request := newMockRequester(fmt.Sprintf("preload-%d", i), client)
+				request := newRedisTestRequester(fmt.Sprintf("preload-%d", i), client)
 				_ = s.CreateAccessTokenSession(ctx, fmt.Sprintf("preload-%d", i), request)
 			}
 
@@ -1087,7 +1169,7 @@ func TestRedisStorage_ConcurrentAccess(t *testing.T) {
 				wg.Add(2)
 				go func(idx int) {
 					defer wg.Done()
-					request := newMockRequester(fmt.Sprintf("req-%d", idx), client)
+					request := newRedisTestRequester(fmt.Sprintf("req-%d", idx), client)
 					_ = s.CreateAccessTokenSession(ctx, fmt.Sprintf("token-%d", idx), request)
 				}(i)
 				go func(idx int) {

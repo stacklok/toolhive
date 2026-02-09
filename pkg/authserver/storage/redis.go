@@ -14,6 +14,8 @@ import (
 
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
 // Default timeouts for Redis operations.
@@ -60,8 +62,9 @@ type ACLUserConfig struct {
 // It provides distributed storage for OAuth2 tokens, authorization codes,
 // user data, and pending authorizations, enabling horizontal scaling.
 type RedisStorage struct {
-	client    redis.UniversalClient
-	keyPrefix string
+	client         redis.UniversalClient
+	keyPrefix      string
+	sessionFactory session.Factory
 }
 
 // storedSession is a serializable wrapper for fosite.Requester.
@@ -75,8 +78,7 @@ type storedSession struct {
 	GrantedAudience   []string            `json:"granted_audience"`
 	Form              map[string][]string `json:"form"`
 	RequestID         string              `json:"request_id"`
-	Subject           string              `json:"subject"`
-	ExpiresAt         map[string]int64    `json:"expires_at"`
+	Session           json.RawMessage     `json:"session"`
 }
 
 // NewRedisStorage creates Redis-backed storage with Sentinel failover support.
@@ -116,8 +118,9 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 	}
 
 	return &RedisStorage{
-		client:    client,
-		keyPrefix: cfg.KeyPrefix,
+		client:         client,
+		keyPrefix:      cfg.KeyPrefix,
+		sessionFactory: defaultSessionFactory,
 	}, nil
 }
 
@@ -125,9 +128,15 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 // This is useful for testing with miniredis.
 func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *RedisStorage {
 	return &RedisStorage{
-		client:    client,
-		keyPrefix: keyPrefix,
+		client:         client,
+		keyPrefix:      keyPrefix,
+		sessionFactory: defaultSessionFactory,
 	}
+}
+
+// defaultSessionFactory creates session prototypes for deserialization.
+func defaultSessionFactory(subject, idpSessionID, clientID string) fosite.Session {
+	return session.New(subject, idpSessionID, clientID)
 }
 
 func validateConfig(cfg *RedisConfig) error {
@@ -461,8 +470,7 @@ func (s *RedisStorage) CreateRefreshTokenSession(
 	pipe.SAdd(ctx, reqIDKey, signature)
 	pipe.Expire(ctx, reqIDKey, ttl)
 	_, err = pipe.Exec(ctx)
-
-	return nil
+	return err
 }
 
 // GetRefreshTokenSession retrieves the refresh token session by its signature.
@@ -1234,27 +1242,14 @@ func (s *RedisStorage) GetUserProviderIdentities(ctx context.Context, userID str
 // -----------------------
 
 // marshalRequester serializes a fosite.Requester to JSON.
+// The full session is serialized as a JSON blob to preserve all session data
+// including JWT claims, headers, and upstream session IDs. This is critical
+// for token refresh — fosite's JWT strategy requires the session to implement
+// oauth2.JWTSessionContainer, which redisSession did not.
 func marshalRequester(request fosite.Requester) ([]byte, error) {
-	// Preserve all form values (url.Values is map[string][]string)
-	formMap := make(map[string][]string)
-	for key, values := range request.GetRequestForm() {
-		formMap[key] = values
-	}
-
-	// Extract expiration times from session
-	expiresAt := make(map[string]int64)
-	session := request.GetSession()
-	if session != nil {
-		for _, tokenType := range []fosite.TokenType{fosite.AccessToken, fosite.RefreshToken, fosite.AuthorizeCode} {
-			if exp := session.GetExpiresAt(tokenType); !exp.IsZero() {
-				expiresAt[string(tokenType)] = exp.Unix()
-			}
-		}
-	}
-
-	subject := ""
-	if session != nil {
-		subject = session.GetSubject()
+	sessionData, err := json.Marshal(request.GetSession())
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal session: %w", err)
 	}
 
 	stored := storedSession{
@@ -1264,17 +1259,17 @@ func marshalRequester(request fosite.Requester) ([]byte, error) {
 		GrantedScopes:     request.GetGrantedScopes(),
 		RequestedAudience: request.GetRequestedAudience(),
 		GrantedAudience:   request.GetGrantedAudience(),
-		Form:              formMap,
+		Form:              request.GetRequestForm(),
 		RequestID:         request.GetID(),
-		Subject:           subject,
-		ExpiresAt:         expiresAt,
+		Session:           sessionData,
 	}
 
 	return json.Marshal(stored)
 }
 
 // unmarshalRequester deserializes a fosite.Requester from JSON.
-// It requires storage access to look up the client.
+// It requires storage access to look up the client and a session factory
+// to create the correct session type for deserialization.
 func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosite.Requester, error) {
 	var stored storedSession
 	if err := json.Unmarshal(data, &stored); err != nil {
@@ -1287,28 +1282,25 @@ func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosi
 		return nil, fmt.Errorf("failed to get client for session: %w", err)
 	}
 
-	// Convert form values back (stored.Form is map[string][]string, same as url.Values)
-	form := url.Values(stored.Form)
-
-	// Create session with expiration times
-	session := &redisSession{
-		subject:   stored.Subject,
-		expiresAt: make(map[fosite.TokenType]time.Time),
-	}
-	for tokenTypeStr, unix := range stored.ExpiresAt {
-		session.expiresAt[fosite.TokenType(tokenTypeStr)] = time.Unix(unix, 0)
+	// Create a session prototype via factory, then deserialize the full session
+	// blob into it. This preserves JWT claims, headers, and upstream session IDs.
+	sess := s.sessionFactory("", "", "")
+	if len(stored.Session) > 0 {
+		if err := json.Unmarshal(stored.Session, sess); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal session data: %w", err)
+		}
 	}
 
-	return &redisRequester{
-		id:                stored.RequestID,
-		requestedAt:       stored.RequestedAt,
-		client:            client,
-		requestedScopes:   stored.RequestedScopes,
-		grantedScopes:     stored.GrantedScopes,
-		requestedAudience: stored.RequestedAudience,
-		grantedAudience:   stored.GrantedAudience,
-		form:              form,
-		session:           session,
+	return &fosite.Request{
+		ID:                stored.RequestID,
+		RequestedAt:       stored.RequestedAt,
+		Client:            client,
+		RequestedScope:    stored.RequestedScopes,
+		GrantedScope:      stored.GrantedScopes,
+		RequestedAudience: stored.RequestedAudience,
+		GrantedAudience:   stored.GrantedAudience,
+		Form:              url.Values(stored.Form),
+		Session:           sess,
 	}, nil
 }
 
@@ -1318,12 +1310,12 @@ func getTTLFromRequester(request fosite.Requester, tokenType fosite.TokenType, d
 		return defaultTTL
 	}
 
-	session := request.GetSession()
-	if session == nil {
+	sess := request.GetSession()
+	if sess == nil {
 		return defaultTTL
 	}
 
-	expTime := session.GetExpiresAt(tokenType)
+	expTime := sess.GetExpiresAt(tokenType)
 	if expTime.IsZero() {
 		return defaultTTL
 	}
@@ -1335,64 +1327,6 @@ func getTTLFromRequester(request fosite.Requester, tokenType fosite.TokenType, d
 
 	return ttl
 }
-
-// -----------------------
-// Redis Session/Requester Types
-// -----------------------
-
-// redisSession implements fosite.Session for deserialization.
-type redisSession struct {
-	subject   string
-	expiresAt map[fosite.TokenType]time.Time
-}
-
-func (s *redisSession) SetExpiresAt(key fosite.TokenType, exp time.Time) { s.expiresAt[key] = exp }
-func (s *redisSession) GetExpiresAt(key fosite.TokenType) time.Time      { return s.expiresAt[key] }
-func (*redisSession) GetUsername() string                                { return "" }
-func (s *redisSession) GetSubject() string                               { return s.subject }
-func (s *redisSession) Clone() fosite.Session {
-	clone := &redisSession{subject: s.subject, expiresAt: make(map[fosite.TokenType]time.Time)}
-	for k, v := range s.expiresAt {
-		clone.expiresAt[k] = v
-	}
-	return clone
-}
-
-// redisRequester implements fosite.Requester for deserialization.
-type redisRequester struct {
-	id                string
-	requestedAt       time.Time
-	client            fosite.Client
-	requestedScopes   fosite.Arguments
-	requestedAudience fosite.Arguments
-	grantedScopes     fosite.Arguments
-	grantedAudience   fosite.Arguments
-	form              url.Values
-	session           fosite.Session
-}
-
-func (r *redisRequester) SetID(id string)                           { r.id = id }
-func (r *redisRequester) GetID() string                             { return r.id }
-func (r *redisRequester) GetRequestedAt() time.Time                 { return r.requestedAt }
-func (r *redisRequester) GetClient() fosite.Client                  { return r.client }
-func (r *redisRequester) GetRequestedScopes() fosite.Arguments      { return r.requestedScopes }
-func (r *redisRequester) GetRequestedAudience() fosite.Arguments    { return r.requestedAudience }
-func (r *redisRequester) SetRequestedScopes(s fosite.Arguments)     { r.requestedScopes = s }
-func (r *redisRequester) SetRequestedAudience(aud fosite.Arguments) { r.requestedAudience = aud }
-func (r *redisRequester) AppendRequestedScope(scope string) {
-	r.requestedScopes = append(r.requestedScopes, scope)
-}
-func (r *redisRequester) GetGrantedScopes() fosite.Arguments   { return r.grantedScopes }
-func (r *redisRequester) GetGrantedAudience() fosite.Arguments { return r.grantedAudience }
-func (r *redisRequester) GrantScope(scope string)              { r.grantedScopes = append(r.grantedScopes, scope) }
-func (r *redisRequester) GrantAudience(aud string) {
-	r.grantedAudience = append(r.grantedAudience, aud)
-}
-func (r *redisRequester) GetSession() fosite.Session           { return r.session }
-func (r *redisRequester) SetSession(s fosite.Session)          { r.session = s }
-func (r *redisRequester) GetRequestForm() url.Values           { return r.form }
-func (*redisRequester) Merge(_ fosite.Requester)               {}
-func (r *redisRequester) Sanitize(_ []string) fosite.Requester { return r }
 
 // Compile-time interface compliance checks
 var (

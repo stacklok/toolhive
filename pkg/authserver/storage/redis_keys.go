@@ -46,6 +46,12 @@ const (
 
 	// KeyTypeReqIDRefresh is the key type for request ID to refresh token mappings.
 	KeyTypeReqIDRefresh = "reqid:refresh"
+
+	// KeyTypeUserUpstream is the key type for user to upstream token reverse lookups.
+	KeyTypeUserUpstream = "user:upstream"
+
+	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
+	KeyTypeUserProviders = "user:providers"
 )
 
 // DeriveKeyPrefix creates the key prefix from server namespace and name.

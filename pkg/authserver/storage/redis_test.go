@@ -84,8 +84,18 @@ func TestRedisConfig_Validation(t *testing.T) {
 			wantErr: "ACL user configuration is required",
 		},
 		{
+			name:    "missing ACL username",
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Password: "pass"}, KeyPrefix: "test:"},
+			wantErr: "ACL username is required",
+		},
+		{
+			name:    "missing ACL password",
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
+			wantErr: "ACL password is required",
+		},
+		{
 			name:    "missing key prefix",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{}},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
 			wantErr: "key prefix is required",
 		},
 	}
@@ -237,6 +247,25 @@ func TestRedisStorage_AuthorizeCode(t *testing.T) {
 			require.Error(t, err)
 			assert.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
 			assert.NotNil(t, retrieved, "must return request with invalidated error")
+		})
+	})
+
+	t.Run("invalidated code returns ErrInvalidatedAuthorizeCode even after code expires", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client := testClient()
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			request := newMockRequester("req-1", client)
+			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-replay", request))
+			require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "code-replay"))
+
+			// Simulate the auth code key expiring while the invalidation marker survives.
+			codeKey := redisKey(s.keyPrefix, KeyTypeAuthCode, "code-replay")
+			mr.Del(codeKey)
+
+			_, err := s.GetAuthorizeCodeSession(ctx, "code-replay", nil)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
 		})
 	})
 
@@ -514,6 +543,24 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrExpired)
 			assert.Nil(t, retrieved)
+		})
+	})
+
+	t.Run("zero ExpiresAt tokens are retrievable (no expiry)", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Store tokens with zero ExpiresAt (no expiry set).
+			// These should be retrievable — Redis TTL handles actual expiration.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "no-expiry", &UpstreamTokens{
+				AccessToken: "no-expiry-token",
+				ProviderID:  "test-provider",
+			}))
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "no-expiry")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "no-expiry-token", retrieved.AccessToken)
+			assert.Equal(t, "test-provider", retrieved.ProviderID)
+			assert.True(t, retrieved.ExpiresAt.IsZero())
 		})
 	})
 

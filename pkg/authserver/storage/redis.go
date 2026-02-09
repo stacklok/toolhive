@@ -67,19 +67,16 @@ type RedisStorage struct {
 // storedSession is a serializable wrapper for fosite.Requester.
 // This allows storing fosite sessions in Redis as JSON.
 type storedSession struct {
-	ClientID           string              `json:"client_id"`
-	RequestedAt        time.Time           `json:"requested_at"`
-	RequestedScopes    []string            `json:"requested_scopes"`
-	GrantedScopes      []string            `json:"granted_scopes"`
-	RequestedAudience  []string            `json:"requested_audience"`
-	GrantedAudience    []string            `json:"granted_audience"`
-	Form               map[string][]string `json:"form"`
-	RequestID          string              `json:"request_id"`
-	Subject            string              `json:"subject"`
-	ExpiresAt          map[string]int64    `json:"expires_at"`
-	AccessTokenExpiry  int64               `json:"access_token_expiry,omitempty"`
-	RefreshTokenExpiry int64               `json:"refresh_token_expiry,omitempty"`
-	AuthCodeExpiry     int64               `json:"auth_code_expiry,omitempty"`
+	ClientID          string              `json:"client_id"`
+	RequestedAt       time.Time           `json:"requested_at"`
+	RequestedScopes   []string            `json:"requested_scopes"`
+	GrantedScopes     []string            `json:"granted_scopes"`
+	RequestedAudience []string            `json:"requested_audience"`
+	GrantedAudience   []string            `json:"granted_audience"`
+	Form              map[string][]string `json:"form"`
+	RequestID         string              `json:"request_id"`
+	Subject           string              `json:"subject"`
+	ExpiresAt         map[string]int64    `json:"expires_at"`
 }
 
 // NewRedisStorage creates Redis-backed storage with Sentinel failover support.
@@ -145,6 +142,12 @@ func validateConfig(cfg *RedisConfig) error {
 	}
 	if cfg.ACLUserConfig == nil {
 		return errors.New("ACL user configuration is required")
+	}
+	if cfg.ACLUserConfig.Username == "" {
+		return errors.New("ACL username is required")
+	}
+	if cfg.ACLUserConfig.Password == "" {
+		return errors.New("ACL password is required")
 	}
 	if cfg.KeyPrefix == "" {
 		return errors.New("key prefix is required")
@@ -295,11 +298,27 @@ func (s *RedisStorage) CreateAuthorizeCodeSession(ctx context.Context, code stri
 
 // GetAuthorizeCodeSession retrieves the authorization request for a given code.
 func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
-	// Check if invalidated first
+	// Check invalidation marker first. The marker outlives the auth code key
+	// (30 min vs 10 min), so a replayed code must return ErrInvalidatedAuthorizeCode
+	// even after the auth code itself has expired. This is critical for fosite's
+	// replay attack protection per RFC 6819 — it triggers token revocation.
 	invalidatedKey := redisKey(s.keyPrefix, KeyTypeInvalidated, code)
 	invalidated, err := s.client.Exists(ctx, invalidatedKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to check invalidation status: %w", err)
+	}
+	if invalidated > 0 {
+		// Try to return the request data if the auth code key is still alive,
+		// so fosite can use the request ID for token revocation.
+		key := redisKey(s.keyPrefix, KeyTypeAuthCode, code)
+		data, getErr := s.client.Get(ctx, key).Bytes()
+		if getErr == nil {
+			request, unmarshalErr := unmarshalRequester(ctx, data, s)
+			if unmarshalErr == nil {
+				return request, fosite.ErrInvalidatedAuthorizeCode
+			}
+		}
+		return nil, fosite.ErrInvalidatedAuthorizeCode
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeAuthCode, code)
@@ -314,11 +333,6 @@ func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string,
 	request, err := unmarshalRequester(ctx, data, s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-	}
-
-	if invalidated > 0 {
-		// Must return the request along with the error as per fosite documentation
-		return request, fosite.ErrInvalidatedAuthorizeCode
 	}
 
 	return request, nil
@@ -363,29 +377,14 @@ func (s *RedisStorage) CreateAccessTokenSession(ctx context.Context, signature s
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Store the token
-	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return err
-	}
-
-	// Create secondary index for request ID -> signature mapping.
-	// Set TTL on the index to prevent memory growth from orphaned indexes.
-	// If index operations fail, delete the token to prevent orphaned tokens.
+	// Store token, add to request ID index, and set index TTL atomically.
 	reqIDKey := redisSetKey(s.keyPrefix, KeyTypeReqIDAccess, request.GetID())
-	if err := s.client.SAdd(ctx, reqIDKey, signature).Err(); err != nil {
-		// Compensating transaction: delete the token we just stored
-		_ = s.client.Del(ctx, key).Err()
-		return err
-	}
-	// Use the token TTL for the index - when tokens expire, indexes can be cleaned up
-	if err := s.client.Expire(ctx, reqIDKey, ttl).Err(); err != nil {
-		// Compensating transaction: delete the token and remove from index
-		_ = s.client.Del(ctx, key).Err()
-		_ = s.client.SRem(ctx, reqIDKey, signature).Err()
-		return err
-	}
-
-	return nil
+	pipe := s.client.TxPipeline()
+	pipe.Set(ctx, key, data, ttl)
+	pipe.SAdd(ctx, reqIDKey, signature)
+	pipe.Expire(ctx, reqIDKey, ttl)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // GetAccessTokenSession retrieves the access token session by its signature.
@@ -455,27 +454,13 @@ func (s *RedisStorage) CreateRefreshTokenSession(
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Store the token
-	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return err
-	}
-
-	// Create secondary index for request ID -> signature mapping.
-	// Set TTL on the index to prevent memory growth from orphaned indexes.
-	// If index operations fail, delete the token to prevent orphaned tokens.
+	// Store token, add to request ID index, and set index TTL atomically.
 	reqIDKey := redisSetKey(s.keyPrefix, KeyTypeReqIDRefresh, request.GetID())
-	if err := s.client.SAdd(ctx, reqIDKey, signature).Err(); err != nil {
-		// Compensating transaction: delete the token we just stored
-		_ = s.client.Del(ctx, key).Err()
-		return err
-	}
-	// Use the token TTL for the index - when tokens expire, indexes can be cleaned up
-	if err := s.client.Expire(ctx, reqIDKey, ttl).Err(); err != nil {
-		// Compensating transaction: delete the token and remove from index
-		_ = s.client.Del(ctx, key).Err()
-		_ = s.client.SRem(ctx, reqIDKey, signature).Err()
-		return err
-	}
+	pipe := s.client.TxPipeline()
+	pipe.Set(ctx, key, data, ttl)
+	pipe.SAdd(ctx, reqIDKey, signature)
+	pipe.Expire(ctx, reqIDKey, ttl)
+	_, err = pipe.Exec(ctx)
 
 	return nil
 }
@@ -685,12 +670,19 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		return []byte(nullMarker), DefaultAccessTokenTTL, nil
 	}
 
+	// Store 0 for zero time to use as a sentinel meaning "no expiry".
+	// time.Time{}.Unix() returns -62135596800 which is not a useful sentinel.
+	var expiresAtUnix int64
+	if !tokens.ExpiresAt.IsZero() {
+		expiresAtUnix = tokens.ExpiresAt.Unix()
+	}
+
 	stored := storedUpstreamTokens{
 		ProviderID:      tokens.ProviderID,
 		AccessToken:     tokens.AccessToken,
 		RefreshToken:    tokens.RefreshToken,
 		IDToken:         tokens.IDToken,
-		ExpiresAt:       tokens.ExpiresAt.Unix(),
+		ExpiresAt:       expiresAtUnix,
 		UserID:          tokens.UserID,
 		UpstreamSubject: tokens.UpstreamSubject,
 		ClientID:        tokens.ClientID,
@@ -746,14 +738,14 @@ func (s *RedisStorage) updateUpstreamUserSets(ctx context.Context, key, oldUserI
 
 	// Clean up old user's set if UserID changed
 	if oldUserID != "" && oldUserID != newUserID {
-		oldUserUpstreamSetKey := redisSetKey(s.keyPrefix, "user:upstream", oldUserID)
+		oldUserUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, oldUserID)
 		_ = s.client.SRem(ctx, oldUserUpstreamSetKey, key).Err()
 	}
 
 	// Add to user's upstream token set for reverse lookup during DeleteUser.
 	// Only add if tokens have a UserID - allows for cleanup when user is deleted.
 	if newUserID != "" {
-		userUpstreamSetKey := redisSetKey(s.keyPrefix, "user:upstream", newUserID)
+		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, newUserID)
 		if err := s.client.SAdd(ctx, userUpstreamSetKey, key).Err(); err != nil {
 			return err
 		}
@@ -786,11 +778,16 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID string) 
 		return nil, fmt.Errorf("failed to unmarshal upstream tokens: %w", err)
 	}
 
-	expiresAt := time.Unix(stored.ExpiresAt, 0)
-
-	// Check if expired
-	if time.Now().After(expiresAt) {
-		return nil, ErrExpired
+	// Convert stored ExpiresAt back to time.Time.
+	// stored.ExpiresAt == 0 is a sentinel meaning "no expiry" — the write path
+	// stores 0 for zero time. Skip the expiry check in this case since Redis TTL
+	// handles the actual expiration.
+	var expiresAt time.Time
+	if stored.ExpiresAt != 0 {
+		expiresAt = time.Unix(stored.ExpiresAt, 0)
+		if time.Now().After(expiresAt) {
+			return nil, ErrExpired
+		}
 	}
 
 	return &UpstreamTokens{
@@ -828,7 +825,7 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	if string(data) != nullMarker {
 		var stored storedUpstreamTokens
 		if err := json.Unmarshal(data, &stored); err == nil && stored.UserID != "" {
-			userUpstreamSetKey := redisSetKey(s.keyPrefix, "user:upstream", stored.UserID)
+			userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, stored.UserID)
 			_ = s.client.SRem(ctx, userUpstreamSetKey, key).Err()
 		}
 	}
@@ -1030,7 +1027,7 @@ func (s *RedisStorage) DeleteUser(ctx context.Context, id string) error {
 	// Delete associated provider identities and upstream tokens
 	// This requires scanning for keys with the user ID, which is done via pattern matching
 	// For efficiency, we store a set of user's provider identity keys
-	userProviderSetKey := redisSetKey(s.keyPrefix, "user:providers", id)
+	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, id)
 	providerKeys, err := s.client.SMembers(ctx, userProviderSetKey).Result()
 	if err == nil {
 		for _, providerKey := range providerKeys {
@@ -1040,7 +1037,7 @@ func (s *RedisStorage) DeleteUser(ctx context.Context, id string) error {
 	}
 
 	// Delete associated upstream tokens
-	userUpstreamSetKey := redisSetKey(s.keyPrefix, "user:upstream", id)
+	userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, id)
 	upstreamKeys, err := s.client.SMembers(ctx, userUpstreamSetKey).Result()
 	if err == nil {
 		for _, upstreamKey := range upstreamKeys {
@@ -1119,7 +1116,7 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 	// Note: This set may contain stale references if identities are deleted independently.
 	// Stale entries are cleaned up lazily during GetUserProviderIdentities reads.
 	// A future DeleteProviderIdentity method should also clean up this set.
-	userProviderSetKey := redisSetKey(s.keyPrefix, "user:providers", identity.UserID)
+	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, identity.UserID)
 	return s.client.SAdd(ctx, userProviderSetKey, key).Err()
 }
 
@@ -1197,7 +1194,7 @@ func (s *RedisStorage) GetUserProviderIdentities(ctx context.Context, userID str
 	}
 
 	// Get user's provider identity keys
-	userProviderSetKey := redisSetKey(s.keyPrefix, "user:providers", userID)
+	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, userID)
 	keys, err := s.client.SMembers(ctx, userProviderSetKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("failed to get provider identity keys: %w", err)

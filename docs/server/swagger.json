@@ -1563,6 +1563,14 @@
                     "valid": {
                         "description": "Valid indicates whether the skill definition is valid.",
                         "type": "boolean"
+                    },
+                    "warnings": {
+                        "description": "Warnings is a list of non-blocking validation warnings, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"

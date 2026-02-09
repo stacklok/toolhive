@@ -135,30 +135,42 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 	tests := []struct {
 		name         string
 		mcpMethod    string
-		httpMethod   string
-		path         string
+		resourceID   string
 		expectedSpan string
 	}{
 		{
-			name:         "with MCP method",
+			name:         "tools/call with resource ID includes target",
 			mcpMethod:    "tools/call",
-			httpMethod:   "POST",
-			path:         "/messages",
-			expectedSpan: "mcp.tools/call",
+			resourceID:   "github_search",
+			expectedSpan: "tools/call github_search",
 		},
 		{
-			name:         "without MCP method",
+			name:         "prompts/get with resource ID includes target",
+			mcpMethod:    "prompts/get",
+			resourceID:   "code_review",
+			expectedSpan: "prompts/get code_review",
+		},
+		{
+			name:         "tools/call without resource ID uses method only",
+			mcpMethod:    "tools/call",
+			resourceID:   "",
+			expectedSpan: "tools/call",
+		},
+		{
+			name:         "without MCP method returns empty",
 			mcpMethod:    "",
-			httpMethod:   "GET",
-			path:         "/health",
-			expectedSpan: "GET /health",
+			expectedSpan: "",
 		},
 		{
-			name:         "with different MCP method",
+			name:         "resources/read uses method only",
 			mcpMethod:    "resources/read",
-			httpMethod:   "POST",
-			path:         "/api/v1/messages",
-			expectedSpan: "mcp.resources/read",
+			resourceID:   "file://test.txt",
+			expectedSpan: "resources/read",
+		},
+		{
+			name:         "tools/list uses method only",
+			mcpMethod:    "tools/list",
+			expectedSpan: "tools/list",
 		},
 	}
 
@@ -166,17 +178,17 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequest(tt.httpMethod, tt.path, nil)
-			ctx := req.Context()
+			ctx := context.Background()
 
 			if tt.mcpMethod != "" {
 				mcpRequest := &mcpparser.ParsedMCPRequest{
-					Method: tt.mcpMethod,
+					Method:     tt.mcpMethod,
+					ResourceID: tt.resourceID,
 				}
 				ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, mcpRequest)
 			}
 
-			spanName := middleware.createSpanName(ctx, req)
+			spanName := middleware.createSpanName(ctx)
 			assert.Equal(t, tt.expectedSpan, spanName)
 		})
 	}
@@ -906,6 +918,298 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// Dual Emission Tests
+
+func TestHTTPMiddleware_DualEmission_HTTPAttributes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		useLegacyAttributes bool
+		expectedNew         []string
+		expectedLegacy      []string
+		unexpectedLegacy    []string
+	}{
+		{
+			name:                "new attributes only when legacy disabled",
+			useLegacyAttributes: false,
+			expectedNew:         []string{"http.request.method", "url.full", "url.scheme", "server.address", "url.path", "user_agent.original"},
+			unexpectedLegacy:    []string{"http.method", "http.url", "http.scheme", "http.host", "http.target", "http.user_agent"},
+		},
+		{
+			name:                "both old and new when legacy enabled",
+			useLegacyAttributes: true,
+			expectedNew:         []string{"http.request.method", "url.full", "url.scheme", "server.address", "url.path", "user_agent.original"},
+			expectedLegacy:      []string{"http.method", "http.url", "http.scheme", "http.host", "http.target", "http.user_agent"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+			middleware := &HTTPMiddleware{
+				config: Config{UseLegacyAttributes: tt.useLegacyAttributes},
+			}
+
+			req := httptest.NewRequest("POST", "http://localhost:8080/messages?session=123", nil)
+			req.Header.Set("Content-Length", "256")
+			req.Header.Set("User-Agent", "test-client/1.0")
+			req.Host = "localhost:8080"
+
+			middleware.addHTTPAttributes(mockSpan, req)
+
+			// Verify new OTEL semconv names are always present
+			for _, attr := range tt.expectedNew {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected new attribute %s", attr)
+			}
+
+			// Verify legacy names are present when enabled
+			for _, attr := range tt.expectedLegacy {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected legacy attribute %s", attr)
+			}
+
+			// Verify legacy names are absent when disabled
+			for _, attr := range tt.unexpectedLegacy {
+				assert.NotContains(t, mockSpan.attributes, attr, "Unexpected legacy attribute %s", attr)
+			}
+		})
+	}
+}
+
+func TestHTTPMiddleware_DualEmission_MCPAttributes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		useLegacyAttributes bool
+		expectedNew         []string
+		expectedLegacy      []string
+		unexpectedLegacy    []string
+	}{
+		{
+			name:                "new MCP attributes only when legacy disabled",
+			useLegacyAttributes: false,
+			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "rpc.system", "jsonrpc.protocol.version", "mcp.server.name", "network.transport"},
+			unexpectedLegacy:    []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.service"},
+		},
+		{
+			name:                "both old and new MCP attributes when legacy enabled",
+			useLegacyAttributes: true,
+			expectedNew:         []string{"mcp.method.name", "mcp.protocol.version", "jsonrpc.request.id", "rpc.system", "jsonrpc.protocol.version", "mcp.server.name", "network.transport"},
+			expectedLegacy:      []string{"mcp.method", "mcp.request.id", "mcp.resource.id", "mcp.transport", "rpc.service"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+			middleware := &HTTPMiddleware{
+				config:     Config{UseLegacyAttributes: tt.useLegacyAttributes},
+				serverName: "github",
+				transport:  "stdio",
+			}
+
+			mcpRequest := &mcpparser.ParsedMCPRequest{
+				Method:     "tools/call",
+				ID:         "test-123",
+				ResourceID: "github_search",
+				IsRequest:  true,
+			}
+
+			req := httptest.NewRequest("POST", "/messages", nil)
+			ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+			middleware.addMCPAttributes(ctx, mockSpan, req)
+
+			for _, attr := range tt.expectedNew {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected new attribute %s", attr)
+			}
+
+			for _, attr := range tt.expectedLegacy {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected legacy attribute %s", attr)
+			}
+
+			for _, attr := range tt.unexpectedLegacy {
+				assert.NotContains(t, mockSpan.attributes, attr, "Unexpected legacy attribute %s", attr)
+			}
+		})
+	}
+}
+
+func TestHTTPMiddleware_DualEmission_MethodSpecificAttributes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		useLegacyAttributes bool
+		mcpRequest          *mcpparser.ParsedMCPRequest
+		expectedNew         []string
+		expectedLegacy      []string
+		unexpectedLegacy    []string
+	}{
+		{
+			name:                "tools/call without legacy",
+			useLegacyAttributes: false,
+			mcpRequest: &mcpparser.ParsedMCPRequest{
+				Method:     "tools/call",
+				ResourceID: "github_search",
+				Arguments:  map[string]interface{}{"query": "test"},
+			},
+			expectedNew:      []string{"gen_ai.tool.name", "gen_ai.operation.name", "gen_ai.tool.call.arguments"},
+			unexpectedLegacy: []string{"mcp.tool.name", "mcp.tool.arguments"},
+		},
+		{
+			name:                "tools/call with legacy",
+			useLegacyAttributes: true,
+			mcpRequest: &mcpparser.ParsedMCPRequest{
+				Method:     "tools/call",
+				ResourceID: "github_search",
+				Arguments:  map[string]interface{}{"query": "test"},
+			},
+			expectedNew:    []string{"gen_ai.tool.name", "gen_ai.operation.name", "gen_ai.tool.call.arguments"},
+			expectedLegacy: []string{"mcp.tool.name", "mcp.tool.arguments"},
+		},
+		{
+			name:                "prompts/get without legacy",
+			useLegacyAttributes: false,
+			mcpRequest: &mcpparser.ParsedMCPRequest{
+				Method:     "prompts/get",
+				ResourceID: "code_review",
+			},
+			expectedNew:      []string{"gen_ai.prompt.name"},
+			unexpectedLegacy: []string{"mcp.prompt.name"},
+		},
+		{
+			name:                "prompts/get with legacy",
+			useLegacyAttributes: true,
+			mcpRequest: &mcpparser.ParsedMCPRequest{
+				Method:     "prompts/get",
+				ResourceID: "code_review",
+			},
+			expectedNew:    []string{"gen_ai.prompt.name"},
+			expectedLegacy: []string{"mcp.prompt.name"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+			middleware := &HTTPMiddleware{
+				config: Config{UseLegacyAttributes: tt.useLegacyAttributes},
+			}
+
+			middleware.addMethodSpecificAttributes(mockSpan, tt.mcpRequest)
+
+			for _, attr := range tt.expectedNew {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected new attribute %s", attr)
+			}
+
+			for _, attr := range tt.expectedLegacy {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected legacy attribute %s", attr)
+			}
+
+			for _, attr := range tt.unexpectedLegacy {
+				assert.NotContains(t, mockSpan.attributes, attr, "Unexpected legacy attribute %s", attr)
+			}
+		})
+	}
+}
+
+func TestHTTPMiddleware_DualEmission_FinalizeSpan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		useLegacyAttributes bool
+		statusCode          int
+		bytesWritten        int64
+		expectedNew         []string
+		expectedLegacy      []string
+		unexpectedLegacy    []string
+	}{
+		{
+			name:                "response attributes without legacy",
+			useLegacyAttributes: false,
+			statusCode:          200,
+			bytesWritten:        1024,
+			expectedNew:         []string{"http.response.status_code", "http.response.body.size"},
+			unexpectedLegacy:    []string{"http.status_code", "http.response_content_length", "http.duration_ms"},
+		},
+		{
+			name:                "response attributes with legacy",
+			useLegacyAttributes: true,
+			statusCode:          200,
+			bytesWritten:        1024,
+			expectedNew:         []string{"http.response.status_code", "http.response.body.size"},
+			expectedLegacy:      []string{"http.status_code", "http.response_content_length", "http.duration_ms"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockSpan := &mockSpan{attributes: make(map[string]interface{})}
+			middleware := &HTTPMiddleware{
+				config: Config{UseLegacyAttributes: tt.useLegacyAttributes},
+			}
+
+			rw := &responseWriter{
+				statusCode:   tt.statusCode,
+				bytesWritten: tt.bytesWritten,
+			}
+
+			middleware.finalizeSpan(context.Background(), mockSpan, rw, 100*time.Millisecond)
+
+			for _, attr := range tt.expectedNew {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected new attribute %s", attr)
+			}
+
+			for _, attr := range tt.expectedLegacy {
+				assert.Contains(t, mockSpan.attributes, attr, "Expected legacy attribute %s", attr)
+			}
+
+			for _, attr := range tt.unexpectedLegacy {
+				assert.NotContains(t, mockSpan.attributes, attr, "Unexpected legacy attribute %s", attr)
+			}
+		})
+	}
+}
+
+// Helper Function Tests
+
+func TestMapTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		transport        string
+		expectedNetwork  string
+		expectedProtocol string
+	}{
+		{"stdio maps to pipe", "stdio", "pipe", ""},
+		{"sse maps to tcp/http", "sse", "tcp", "http"},
+		{"streamable-http maps to tcp/http", "streamable-http", "tcp", "http"},
+		{"unknown maps to tcp/http", "custom", "tcp", "http"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			network, protocol := mapTransport(tt.transport)
+			assert.Equal(t, tt.expectedNetwork, network)
+			assert.Equal(t, tt.expectedProtocol, protocol)
+		})
+	}
 }
 
 // Factory Middleware Tests

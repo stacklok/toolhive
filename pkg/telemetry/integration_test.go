@@ -232,23 +232,34 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	require.Len(t, spans, 1)
 
 	span := spans[0]
-	assert.Equal(t, "mcp.tools/call", span.Name)
+	assert.Equal(t, "tools/call github_search", span.Name)
 
-	// Verify span attributes
+	// Verify span attributes use new OTEL semconv names
 	attrs := span.Attributes
 	attrMap := make(map[string]interface{})
 	for _, attr := range attrs {
 		attrMap[string(attr.Key)] = attr.Value.AsInterface()
 	}
 
-	assert.Equal(t, "tools/call", attrMap["mcp.method"])
-	assert.Equal(t, testToolName, attrMap["mcp.tool.name"])
-	assert.Equal(t, "test-123", attrMap["mcp.request.id"])
-	assert.Equal(t, "POST", attrMap["http.method"])
-	assert.Equal(t, int64(200), attrMap["http.status_code"])
+	// New OTEL semconv attribute names
+	assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
+	assert.Equal(t, testToolName, attrMap["gen_ai.tool.name"])
+	assert.Equal(t, "test-123", attrMap["jsonrpc.request.id"])
+	assert.Equal(t, "POST", attrMap["http.request.method"])
+	assert.Equal(t, int64(200), attrMap["http.response.status_code"])
+
+	// rpc.system is always emitted (required by OTEL JSON-RPC semconv)
+	assert.Equal(t, "jsonrpc", attrMap["rpc.system"])
+	assert.Equal(t, "2.0", attrMap["jsonrpc.protocol.version"])
+
+	// Verify old names are NOT present (UseLegacyAttributes is false in this test)
+	assert.Nil(t, attrMap["mcp.method"], "Legacy mcp.method should not be present")
+	assert.Nil(t, attrMap["mcp.tool.name"], "Legacy mcp.tool.name should not be present")
+	assert.Nil(t, attrMap["http.method"], "Legacy http.method should not be present")
+	assert.Nil(t, attrMap["http.status_code"], "Legacy http.status_code should not be present")
 
 	// Verify sensitive data is redacted
-	if toolArgs, exists := attrMap["mcp.tool.arguments"]; exists {
+	if toolArgs, exists := attrMap["gen_ai.tool.call.arguments"]; exists {
 		argsStr := toolArgs.(string)
 		assert.Contains(t, argsStr, "api_key=[REDACTED]")
 		assert.Contains(t, argsStr, "query=test query")
@@ -462,6 +473,90 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	assert.True(t, foundRequestCounter, "General request counter should be recorded")
 
 	// Clean up
+	err = meterProvider.Shutdown(ctx)
+	assert.NoError(t, err)
+}
+
+func TestTelemetryIntegration_LegacyAttributes(t *testing.T) {
+	t.Parallel()
+
+	// Create in-memory trace exporter for testing
+	traceExporter := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExporter),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+
+	metricsReader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(metricsReader),
+	)
+
+	config := Config{
+		ServiceName:         "test-service",
+		ServiceVersion:      "1.0.0",
+		UseLegacyAttributes: true, // Enable dual emission
+	}
+
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("success"))
+	})
+
+	wrappedHandler := middleware(testHandler)
+
+	mcpRequest := &mcp.ParsedMCPRequest{
+		Method:     "tools/call",
+		ID:         "test-456",
+		ResourceID: "github_search",
+		Arguments:  map[string]interface{}{"query": "test"},
+		IsRequest:  true,
+	}
+
+	req := httptest.NewRequest("POST", "/messages", nil)
+	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, mcpRequest)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	err := tracerProvider.ForceFlush(t.Context())
+	require.NoError(t, err)
+
+	spans := traceExporter.GetSpans()
+	require.Len(t, spans, 1)
+
+	span := spans[0]
+	assert.Equal(t, "tools/call github_search", span.Name)
+
+	attrMap := make(map[string]interface{})
+	for _, attr := range span.Attributes {
+		attrMap[string(attr.Key)] = attr.Value.AsInterface()
+	}
+
+	// Verify NEW attribute names are present
+	assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
+	assert.Equal(t, "github_search", attrMap["gen_ai.tool.name"])
+	assert.Equal(t, "test-456", attrMap["jsonrpc.request.id"])
+	assert.Equal(t, "POST", attrMap["http.request.method"])
+	assert.Equal(t, int64(200), attrMap["http.response.status_code"])
+
+	// Verify LEGACY attribute names are ALSO present (dual emission)
+	assert.Equal(t, "tools/call", attrMap["mcp.method"])
+	assert.Equal(t, "github_search", attrMap["mcp.tool.name"])
+	assert.Equal(t, "test-456", attrMap["mcp.request.id"])
+	assert.Equal(t, "POST", attrMap["http.method"])
+	assert.Equal(t, int64(200), attrMap["http.status_code"])
+	assert.Equal(t, "jsonrpc", attrMap["rpc.system"])
+	assert.Equal(t, "mcp", attrMap["rpc.service"])
+
+	// Clean up
+	err = tracerProvider.Shutdown(ctx)
+	assert.NoError(t, err)
 	err = meterProvider.Shutdown(ctx)
 	assert.NoError(t, err)
 }

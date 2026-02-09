@@ -85,6 +85,14 @@ The telemetry middleware:
 This provides end-to-end visibility across the entire request lifecycle while
 maintaining the modular architecture of ToolHive's middleware system.
 
+## Telemetry Attribute Migration
+
+ToolHive has aligned its span attribute names with the MCP OpenTelemetry semantic
+conventions. If you have existing dashboards or alerts using the old attribute
+names, see the [Telemetry Migration Guide](./telemetry-migration.md) for a
+complete mapping of old-to-new names and instructions on enabling dual emission
+via `--otel-use-legacy-attributes`.
+
 ## Virtual MCP Server Telemetry
 
 For observability in the Virtual MCP Server (vMCP), including backend request

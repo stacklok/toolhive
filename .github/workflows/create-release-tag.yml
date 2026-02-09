@@ -123,17 +123,38 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create tag and GitHub Release
+      - name: Create tag
         if: steps.check-tag.outputs.exists == 'false'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          TRIGGERED_BY="${{ steps.actor.outputs.triggered_by }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git "$TAG"
           echo "Created and pushed tag: $TAG"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Check if GitHub Release exists
+        id: check-release
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "GitHub Release $TAG does not exist"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          TRIGGERED_BY="${{ steps.actor.outputs.triggered_by }}"
 
           # Create GitHub Release (triggers releaser.yml via release event)
           # Note: Must use PAT (GH_TOKEN) because GITHUB_TOKEN cannot trigger other workflows
@@ -155,27 +176,35 @@ jobs:
       - name: Summary
         run: |
           TAG="v${{ steps.version.outputs.version }}"
+          TAG_EXISTED="${{ steps.check-tag.outputs.exists }}"
+          RELEASE_EXISTED="${{ steps.check-release.outputs.exists }}"
 
-          if [ "${{ steps.check-tag.outputs.exists }}" == "true" ]; then
-            echo "## Tag Already Exists" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Tag \`$TAG\` already exists. No action taken." >> $GITHUB_STEP_SUMMARY
+          echo "## Release Summary for \`$TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit Message | ✅ Release pattern |" >> $GITHUB_STEP_SUMMARY
+          echo "| VERSION Match | ✅ Matches commit |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Actions Taken" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TAG_EXISTED" == "true" ]; then
+            echo "| Git Tag | Already existed |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "## Release Tag Created" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Verification Results" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Commit Message | ✅ Release pattern |" >> $GITHUB_STEP_SUMMARY
-            echo "| VERSION Match | ✅ Matches commit |" >> $GITHUB_STEP_SUMMARY
-            echo "| File Changes | ✅ Only release files |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Release Details" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Tag | \`$TAG\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Git Tag | ✅ Created |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$RELEASE_EXISTED" == "true" ]; then
+            echo "| GitHub Release | Already existed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| GitHub Release | ✅ Created |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "The following workflows will now run:" >> $GITHUB_STEP_SUMMARY
             echo "- \`releaser.yml\` - Build image and publish Helm chart to GHCR" >> $GITHUB_STEP_SUMMARY

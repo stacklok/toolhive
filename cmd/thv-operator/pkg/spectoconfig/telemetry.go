@@ -91,6 +91,7 @@ func ConvertTelemetryConfig(
 		otelHeaders,
 		otelInsecure,
 		otelEnvironmentVariables,
+		true, // Default to true for backward compatibility; not yet configurable via CRD
 	)
 
 	// Apply normalization (endpoint prefix stripping, ServiceName/ServiceVersion defaults)

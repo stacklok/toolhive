@@ -87,6 +87,14 @@ type Config struct {
 	// (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
 	// +optional
 	CustomAttributes map[string]string `json:"customAttributes,omitempty" yaml:"customAttributes,omitempty"`
+
+	// UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names
+	// are emitted alongside the new standard attribute names. When true, spans include both
+	// old and new attribute names for backward compatibility with existing dashboards.
+	// Currently defaults to true; this will change to false in a future release.
+	// +kubebuilder:default=true
+	// +optional
+	UseLegacyAttributes bool `json:"useLegacyAttributes,omitempty" yaml:"useLegacyAttributes,omitempty"`
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
@@ -120,6 +128,7 @@ func DefaultConfig() Config {
 		Insecure:                    false,
 		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
 		EnvironmentVariables:        []string{}, // No environment variables by default
+		UseLegacyAttributes:         true,       // Dual emission for backward compat
 	}
 }
 
@@ -135,6 +144,7 @@ func MaybeMakeConfig(
 	otelHeaders []string,
 	otelInsecure bool,
 	otelEnvironmentVariables []string,
+	otelUseLegacyAttributes bool,
 ) *Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
@@ -177,6 +187,7 @@ func MaybeMakeConfig(
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
+		UseLegacyAttributes:         otelUseLegacyAttributes,
 	}
 }
 

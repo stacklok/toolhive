@@ -61,6 +61,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 		expectedEnvironmentVariables        []string
 		expectedInsecure                    bool
 		expectedEnablePrometheusMetricsPath bool
+		expectedUseLegacyAttributes         bool
 	}{
 		{
 			name: "CLI flags provided, taking precedence over config file",
@@ -97,6 +98,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEnvironmentVariables:        []string{"CLI_VAR1=value1", "CLI_VAR2=value2"},
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: true,
+			expectedUseLegacyAttributes:         false,
 		},
 		{
 			name: "No CLI flags provided, config takes precedence",
@@ -110,6 +112,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				EnvVars:                     []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
 				Insecure:                    true,
 				EnablePrometheusMetricsPath: true,
+				UseLegacyAttributes:         true,
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:                    "",
@@ -127,6 +130,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEnvironmentVariables:        []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: true,
+			expectedUseLegacyAttributes:         true,
 		},
 		{
 			name: "Partial CLI flags provided, mix of CLI and config values",
@@ -200,7 +204,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			})
 			defer cleanup()
 			configInstance := configProvider.GetConfig()
-			finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath := getTelemetryFromFlags(
+			finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath, finalUseLegacyAttributes := getTelemetryFromFlags(
 				cmd,
 				configInstance,
 				tt.runFlags.OtelEndpoint,
@@ -208,6 +212,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				tt.runFlags.OtelEnvironmentVariables,
 				tt.runFlags.OtelInsecure,
 				tt.runFlags.OtelEnablePrometheusMetricsPath,
+				tt.runFlags.OtelUseLegacyAttributes,
 			)
 
 			// Assert the results
@@ -216,6 +221,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			assert.Equal(t, tt.expectedEnvironmentVariables, finalEnvVars, "OTEL environment variables should match expected value")
 			assert.Equal(t, tt.expectedInsecure, finalInsecure, "OTEL insecure setting should match expected value")
 			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
+			assert.Equal(t, tt.expectedUseLegacyAttributes, finalUseLegacyAttributes, "OTEL use legacy attributes setting should match expected value")
 		})
 	}
 }
@@ -340,7 +346,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	defer cleanup()
 
 	configInstance := configProvider.GetConfig()
-	finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath := getTelemetryFromFlags(
+	finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure, finalEnablePrometheusMetricsPath, finalUseLegacyAttributes := getTelemetryFromFlags(
 		cmd,
 		configInstance,
 		runFlags.OtelEndpoint,
@@ -348,6 +354,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 		runFlags.OtelEnvironmentVariables,
 		runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath,
+		runFlags.OtelUseLegacyAttributes,
 	)
 
 	// Verify that CLI values take precedence
@@ -355,5 +362,6 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	assert.Equal(t, 0.7, finalSamplingRate, "CLI sampling rate should take precedence over config")
 	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalEnvVars, "Environment variables should fall back to config when not set via CLI")
 	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
+	assert.Equal(t, true, finalUseLegacyAttributes, "UseLegacyAttributes should default to true when not set via CLI or config")
 	assert.Equal(t, false, finalEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
 }

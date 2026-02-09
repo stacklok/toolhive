@@ -4,6 +4,7 @@
 package awssts_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,6 +61,11 @@ func TestValidateRoleArn(t *testing.T) {
 		{
 			name:    "invalid account ID length",
 			roleArn: "arn:aws:iam::12345:role/MyRole",
+			wantErr: true,
+		},
+		{
+			name:    "non-digit characters in account ID",
+			roleArn: "arn:aws:iam::12345678901a:role/MyRole",
 			wantErr: true,
 		},
 	}
@@ -549,23 +555,33 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 
 	// Run concurrent role selections
 	const numGoroutines = 100
-	results := make(chan string, numGoroutines)
+
+	type roleResult struct {
+		actual   string
+		expected string
+	}
+
+	results := make(chan roleResult, numGoroutines)
 	errs := make(chan error, numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
 		go func(i int) {
 			var groups []any
+			var expected string
 			switch i % 3 {
 			case 0:
 				groups = []any{"admins"}
+				expected = "arn:aws:iam::123456789012:role/AdminRole"
 			case 1:
 				groups = []any{"developers"}
+				expected = "arn:aws:iam::123456789012:role/DevRole"
 			case 2:
 				groups = []any{"users"}
+				expected = "arn:aws:iam::123456789012:role/DefaultRole"
 			}
 
 			claims := map[string]any{
-				"sub":    "user" + string(rune('0'+i%10)),
+				"sub":    fmt.Sprintf("user%d", i),
 				"groups": groups,
 			}
 
@@ -574,22 +590,17 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 				errs <- err
 				return
 			}
-			results <- role
+			results <- roleResult{actual: role, expected: expected}
 		}(i)
 	}
 
-	// Collect results - all should succeed
+	// Collect results - all should succeed with the correct role
 	for i := 0; i < numGoroutines; i++ {
 		select {
 		case err := <-errs:
 			t.Fatalf("unexpected error: %v", err)
-		case role := <-results:
-			// Verify role is one of the expected values
-			assert.Contains(t, []string{
-				"arn:aws:iam::123456789012:role/AdminRole",
-				"arn:aws:iam::123456789012:role/DevRole",
-				"arn:aws:iam::123456789012:role/DefaultRole",
-			}, role)
+		case r := <-results:
+			assert.Equal(t, r.expected, r.actual)
 		}
 	}
 }

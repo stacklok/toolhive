@@ -122,8 +122,8 @@ const (
 	TOMLStorageTypeArray TOMLStorageType = "array"
 )
 
-// mcpClientConfig represents a configuration path for a supported MCP client.
-type mcpClientConfig struct {
+// clientAppConfig represents a configuration path for a supported MCP client.
+type clientAppConfig struct {
 	ClientType                    ClientApp
 	Description                   string
 	RelPath                       []string
@@ -145,14 +145,14 @@ type mcpClientConfig struct {
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
 // by removing the leading "/" (e.g., "/mcpServers" -> "mcpServers").
-func extractServersKeyFromConfig(cfg *mcpClientConfig) string {
+func extractServersKeyFromConfig(cfg *clientAppConfig) string {
 	return strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
 }
 
 // extractURLLabelFromConfig extracts the URL field label from MCPServersUrlLabelMap.
 // It checks transport types in priority order: StreamableHTTP, then Stdio.
 // Returns defaultURLFieldName if no mapping is found.
-func extractURLLabelFromConfig(cfg *mcpClientConfig) string {
+func extractURLLabelFromConfig(cfg *clientAppConfig) string {
 	if cfg.MCPServersUrlLabelMap != nil {
 		if label, ok := cfg.MCPServersUrlLabelMap[types.TransportTypeStreamableHTTP]; ok {
 			return label
@@ -171,7 +171,7 @@ var (
 	ErrUnsupportedClientType = fmt.Errorf("unsupported client type")
 )
 
-var supportedClientIntegrations = []mcpClientConfig{
+var supportedClientIntegrations = []clientAppConfig{
 	{
 		ClientType:   RooCode,
 		Description:  "VS Code Roo Code extension",
@@ -752,7 +752,7 @@ func GetClientDescription(clientType ClientApp) string {
 // with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
 func GetClientListFormatted() string {
 	// Create a sorted copy of the configurations
-	configs := make([]mcpClientConfig, len(supportedClientIntegrations))
+	configs := make([]clientAppConfig, len(supportedClientIntegrations))
 	copy(configs, supportedClientIntegrations)
 	sort.Slice(configs, func(i, j int) bool {
 		return configs[i].ClientType < configs[j].ClientType
@@ -867,7 +867,7 @@ func CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 // CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
 func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *mcpClientConfig
+	var clientCfg *clientAppConfig
 	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
@@ -946,7 +946,7 @@ func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transpor
 // If the map is nil or the transport type is not found, it falls back to "url" as the default.
 // For most clients, all transport types map to the same URL field (e.g., "url"), but some clients
 // like Gemini CLI use different URL fields per transport type (e.g., "url" for SSE, "httpUrl" for streamable HTTP).
-func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPServer {
+func buildMCPServer(url, transportType string, clientCfg *clientAppConfig) MCPServer {
 	server := MCPServer{}
 
 	// Determine the URL field name from the transport type using MCPServersUrlLabelMap
@@ -982,7 +982,7 @@ func buildMCPServer(url, transportType string, clientCfg *mcpClientConfig) MCPSe
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
 func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *mcpClientConfig
+	var clientCfg *clientAppConfig
 	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
@@ -1006,7 +1006,7 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 	var configUpdater ConfigUpdater
 	switch clientCfg.Extension {
 	case YAML:
-		// Use the generic YAML converter with configuration from mcpClientConfig
+		// Use the generic YAML converter with configuration from clientAppConfig
 		converter := NewGenericYAMLConverter(clientCfg)
 		configUpdater = &YAMLConfigUpdater{
 			Path:      path,

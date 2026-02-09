@@ -20,7 +20,7 @@ import (
 type ClientManager struct {
 	homeDir            string
 	groupManager       groups.Manager
-	clientIntegrations []mcpClientConfig
+	clientIntegrations []clientAppConfig
 	configProvider     config.Provider
 }
 
@@ -49,7 +49,7 @@ func NewClientManager() (*ClientManager, error) {
 func NewTestClientManager(
 	homeDir string,
 	groupManager groups.Manager,
-	clientIntegrations []mcpClientConfig,
+	clientIntegrations []clientAppConfig,
 	configProvider config.Provider,
 ) *ClientManager {
 	return &ClientManager{

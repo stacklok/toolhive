@@ -14,7 +14,7 @@ type YAMLConverter interface {
 	RemoveEntry(config interface{}, serverName string) error
 }
 
-// GenericYAMLConverter implements YAMLConverter using configuration from mcpClientConfig
+// GenericYAMLConverter implements YAMLConverter using configuration from clientAppConfig
 type GenericYAMLConverter struct {
 	storageType     YAMLStorageType        // How servers are stored in YAML (map or array)
 	serversPath     string                 // path to servers section (e.g., "extensions" or "mcpServers")
@@ -23,8 +23,8 @@ type GenericYAMLConverter struct {
 	urlLabel        string                 // label for URL field (e.g., "url", "uri", "serverUrl")
 }
 
-// NewGenericYAMLConverter creates a converter from mcpClientConfig
-func NewGenericYAMLConverter(cfg *mcpClientConfig) *GenericYAMLConverter {
+// NewGenericYAMLConverter creates a converter from clientAppConfig
+func NewGenericYAMLConverter(cfg *clientAppConfig) *GenericYAMLConverter {
 	return &GenericYAMLConverter{
 		storageType:     cfg.YAMLStorageType,
 		serversPath:     extractServersKeyFromConfig(cfg),

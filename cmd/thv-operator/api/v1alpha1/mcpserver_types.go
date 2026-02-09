@@ -695,6 +695,13 @@ type OpenTelemetryConfig struct {
 	// Tracing defines OpenTelemetry tracing configuration
 	// +optional
 	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
+
+	// UseLegacyAttributes controls whether legacy attribute names are emitted alongside
+	// the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
+	// This will change to false in a future release and eventually be removed.
+	// +kubebuilder:default=true
+	// +optional
+	UseLegacyAttributes bool `json:"useLegacyAttributes,omitempty"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration

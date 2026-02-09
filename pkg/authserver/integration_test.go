@@ -149,13 +149,13 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		AccessTokenLifespan:  time.Hour,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
-		Upstreams:            []UpstreamConfig{{Name: "default", Config: upstreamCfg}},
+		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 	}
 
 	// 7. Create server using newServer with test options
 	srv, err := newServer(ctx, cfg, stor,
-		withUpstreamFactory(func(_ *upstream.OAuth2Config) (upstream.OAuth2Provider, error) {
+		withUpstreamFactory(func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
 			// Return the provided upstream or nil (which is valid for tests without upstream)
 			return options.upstream, nil
 		}),
@@ -634,6 +634,8 @@ func completeAuthorizationFlow(
 
 // exchangeCodeForTokens exchanges an authorization code for tokens and validates the response.
 // The resource parameter (RFC 8707) specifies the intended audience for the token.
+//
+//nolint:unparam // resource is currently always testAudience but kept for test flexibility
 func exchangeCodeForTokens(
 	t *testing.T,
 	serverURL string,
@@ -758,4 +760,224 @@ func TestIntegration_FullPKCEFlow(t *testing.T) {
 		scopeStrings[i] = scopeStr
 	}
 	assert.ElementsMatch(t, requestedScopes, scopeStrings, "granted scopes should match requested scopes")
+}
+
+// ============================================================================
+// OIDC Provider Integration Tests (OIDCProviderImpl via defaultUpstreamFactory)
+// ============================================================================
+
+// setupTestServerWithOIDCProvider creates a test server with a real OIDCProviderImpl
+// created through the defaultUpstreamFactory. Unlike setupTestServerWithMockOIDC which
+// manually creates a BaseOAuth2Provider, this test path exercises:
+//   - UpstreamConfig{Type: OIDC, OIDCConfig: ...}
+//   - defaultUpstreamFactory dispatching to NewOIDCProvider
+//   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
+func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testServerWithUpstream {
+	t.Helper()
+	ctx := context.Background()
+
+	cfg := m.Config()
+
+	// 1. Generate RSA key for our auth server's signing
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	// 2. Generate HMAC secret
+	secret := make([]byte, 32)
+	_, err = rand.Read(secret)
+	require.NoError(t, err)
+
+	// 3. Create storage
+	stor := storage.NewMemoryStorage()
+
+	// 4. Register test client (public client for PKCE)
+	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
+		ID:            testClientID,
+		Secret:        nil, // public client
+		RedirectURIs:  []string{testRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        []string{"openid", "profile", "email", "offline_access"},
+		Audience:      []string{testAudience},
+		Public:        true,
+	})
+	require.NoError(t, err)
+
+	// 5. Build OIDC upstream config - this is the key difference from setupTestServerWithMockOIDC.
+	// We use UpstreamProviderTypeOIDC with OIDCConfig so that defaultUpstreamFactory
+	// creates an OIDCProviderImpl (not BaseOAuth2Provider).
+	serverCfg := Config{
+		Issuer:               testIssuer,
+		KeyProvider:          &testKeyProvider{key: privateKey},
+		HMACSecrets:          servercrypto.NewHMACSecrets(secret),
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		Upstreams: []UpstreamConfig{{
+			Name: "mockoidc",
+			Type: UpstreamProviderTypeOIDC,
+			OIDCConfig: &upstream.OIDCConfig{
+				CommonOAuthConfig: upstream.CommonOAuthConfig{
+					ClientID:     cfg.ClientID,
+					ClientSecret: cfg.ClientSecret,
+					Scopes:       []string{"openid", "profile", "email"},
+					RedirectURI:  testIssuer + "/oauth/callback",
+				},
+				Issuer: m.Issuer(),
+			},
+		}},
+		AllowedAudiences: []string{testAudience},
+	}
+
+	// 6. Create server using newServer WITHOUT overriding the upstream factory.
+	// This exercises the real defaultUpstreamFactory -> NewOIDCProvider path.
+	srv, err := newServer(ctx, serverCfg, stor)
+	require.NoError(t, err)
+
+	// 7. Create HTTP test server
+	httpServer := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		httpServer.Close()
+		require.NoError(t, srv.Close())
+	})
+
+	return &testServerWithUpstream{
+		testServer: &testServer{
+			Server:     httpServer,
+			PrivateKey: privateKey,
+		},
+		mockOIDC: m,
+	}
+}
+
+// TestIntegration_OIDCProvider_FullFlow tests the complete OAuth flow using the real
+// OIDCProviderImpl created through defaultUpstreamFactory. This verifies that:
+// - OIDC discovery is performed against the mock OIDC server
+// - The authorization flow redirects through the OIDC provider correctly
+// - Token exchange produces a valid JWT access token
+// - The ID token from the upstream OIDC provider is validated
+func TestIntegration_OIDCProvider_FullFlow(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithOIDCProvider(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+	clientState := "oidc-provider-test-state"
+
+	// Complete the authorization flow through mockoidc
+	authCode, returnedState := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        clientState,
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	// Verify state was preserved
+	assert.Equal(t, clientState, returnedState, "client state should be preserved through OIDC flow")
+
+	// Exchange code for tokens with audience
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	// Verify access token is a valid JWT
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	// Verify standard claims
+	assert.Equal(t, testIssuer, claims["iss"], "issuer should match our auth server")
+	assert.Equal(t, testClientID, claims["client_id"], "client_id should match")
+
+	// Verify subject is present (from OIDCProviderImpl's ID token validation)
+	sub, ok := claims["sub"].(string)
+	require.True(t, ok, "sub claim should be a string")
+	assert.NotEmpty(t, sub, "sub claim should not be empty (resolved from OIDC ID token)")
+
+	// Verify refresh token was returned (offline_access scope was requested)
+	refreshToken, ok := tokenData["refresh_token"].(string)
+	require.True(t, ok, "refresh_token should be present when offline_access is requested")
+	require.NotEmpty(t, refreshToken)
+}
+
+// TestIntegration_OIDCProvider_TokenRefresh tests refresh token flow through OIDCProviderImpl.
+// This verifies that token refresh works and the subject identity is consistent
+// per OIDC Core Section 12.2.
+func TestIntegration_OIDCProvider_TokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithOIDCProvider(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Get initial tokens
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "refresh-oidc-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	// Extract tokens
+	originalAccessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	refreshToken, ok := tokenData["refresh_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, refreshToken, "refresh_token should be present")
+
+	// Parse subject from original access token
+	origParsed, err := jwt.ParseSigned(originalAccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var origClaims map[string]interface{}
+	err = origParsed.Claims(ts.PrivateKey.Public(), &origClaims)
+	require.NoError(t, err)
+	originalSub, ok := origClaims["sub"].(string)
+	require.True(t, ok)
+
+	// Use refresh token to get new tokens
+	refreshParams := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testClientID},
+	}
+
+	refreshResp := makeTokenRequest(t, ts.Server.URL, refreshParams)
+	defer refreshResp.Body.Close()
+	require.Equal(t, http.StatusOK, refreshResp.StatusCode, "refresh token request should succeed")
+	refreshData := parseTokenResponse(t, refreshResp)
+
+	// Verify new access token
+	newAccessToken, ok := refreshData["access_token"].(string)
+	require.True(t, ok)
+	assert.NotEqual(t, originalAccessToken, newAccessToken, "refreshed access token should differ")
+
+	// Verify subject consistency (OIDC Section 12.2)
+	newParsed, err := jwt.ParseSigned(newAccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var newClaims map[string]interface{}
+	err = newParsed.Claims(ts.PrivateKey.Public(), &newClaims)
+	require.NoError(t, err)
+	newSub, ok := newClaims["sub"].(string)
+	require.True(t, ok)
+	assert.Equal(t, originalSub, newSub, "subject must be consistent across token refresh (OIDC Section 12.2)")
+
+	// Verify refresh token rotation
+	newRefreshToken, ok := refreshData["refresh_token"].(string)
+	require.True(t, ok)
+	assert.NotEqual(t, refreshToken, newRefreshToken, "token rotation must issue new refresh token")
 }

@@ -28,7 +28,7 @@ type server struct {
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
 // This type enables dependency injection for testing.
-type upstreamProviderFactory func(cfg *upstream.OAuth2Config) (upstream.OAuth2Provider, error)
+type upstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
 
 // serverOption configures the server during construction.
 type serverOption func(*serverOptions)
@@ -38,9 +38,18 @@ type serverOptions struct {
 	upstreamFactory upstreamProviderFactory
 }
 
-// defaultUpstreamFactory creates the production upstream provider.
-func defaultUpstreamFactory(cfg *upstream.OAuth2Config) (upstream.OAuth2Provider, error) {
-	return upstream.NewOAuth2Provider(cfg)
+// defaultUpstreamFactory creates the production upstream provider based on type.
+// For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token validation.
+// For OAuth2 providers, it creates a BaseOAuth2Provider.
+func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+	switch cfg.Type {
+	case UpstreamProviderTypeOIDC:
+		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
+	case UpstreamProviderTypeOAuth2:
+		return upstream.NewOAuth2Provider(cfg.OAuth2Config)
+	default:
+		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
+	}
 }
 
 // withUpstreamFactory sets a custom upstream provider factory.
@@ -119,12 +128,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	upstreamCfg := cfg.GetUpstream()
 
 	// Create upstream IDP provider using factory
-	logger.Debugw("creating upstream IDP provider", "authorizationEndpoint", upstreamCfg.AuthorizationEndpoint)
-	upstreamIDP, err := options.upstreamFactory(upstreamCfg)
+	logger.Debugw("creating upstream IDP provider", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
+	upstreamIDP, err := options.upstreamFactory(ctx, upstreamCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream provider: %w", err)
 	}
-	logger.Debugw("upstream IDP provider configured", "authorizationEndpoint", upstreamCfg.AuthorizationEndpoint)
+	logger.Debugw("upstream IDP provider configured", "type", upstreamCfg.Type, "name", upstreamCfg.Name)
 
 	handlerInstance := handlers.NewHandler(provider, authServerConfig, stor, upstreamIDP)
 

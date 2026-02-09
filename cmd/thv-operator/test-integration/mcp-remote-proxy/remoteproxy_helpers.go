@@ -107,6 +107,28 @@ func (rb *RemoteProxyBuilder) WithPort(port int32) *RemoteProxyBuilder {
 	return rb
 }
 
+// WithExternalAuthConfigRef sets the ExternalAuthConfigRef for the proxy
+func (rb *RemoteProxyBuilder) WithExternalAuthConfigRef(name string) *RemoteProxyBuilder {
+	rb.proxy.Spec.ExternalAuthConfigRef = &mcpv1alpha1.ExternalAuthConfigRef{
+		Name: name,
+	}
+	return rb
+}
+
+// WithToolConfigRef sets the ToolConfigRef for the proxy
+func (rb *RemoteProxyBuilder) WithToolConfigRef(name string) *RemoteProxyBuilder {
+	rb.proxy.Spec.ToolConfigRef = &mcpv1alpha1.ToolConfigRef{
+		Name: name,
+	}
+	return rb
+}
+
+// WithGroupRef sets the GroupRef for the proxy
+func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
+	rb.proxy.Spec.GroupRef = name
+	return rb
+}
+
 // Create builds and creates the MCPRemoteProxy in the cluster
 func (rb *RemoteProxyBuilder) Create(h *MCPRemoteProxyTestHelper) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := rb.proxy.DeepCopy()

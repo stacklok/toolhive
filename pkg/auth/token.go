@@ -704,17 +704,17 @@ const (
 // subsequent calls return immediately. This allows recovery from transient failures
 // (e.g., auth server not yet ready, temporary DNS issues, context cancellation).
 func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
-	// If JWKS URL is already known or there is no issuer to discover from, nothing to do.
-	// After a successful discovery v.jwksURL is populated, so this returns early on subsequent calls.
-	if v.jwksURL != "" || v.issuer == "" {
+	// If there is no issuer to discover from, nothing to do.
+	// v.issuer is immutable after construction, so this check is safe without a lock.
+	if v.issuer == "" {
 		return nil
 	}
 
 	v.oidcDiscoveryMu.Lock()
 	defer v.oidcDiscoveryMu.Unlock()
 
-	// Already discovered successfully - return immediately
-	if v.oidcDiscovered {
+	// Already discovered successfully (or JWKS URL was provided at construction) - return immediately.
+	if v.oidcDiscovered || v.jwksURL != "" {
 		return nil
 	}
 
@@ -791,7 +791,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Validate the signing method
-	if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+	switch token.Method.(type) {
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+		// Supported RSA signing methods
+	default:
 		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 	}
 

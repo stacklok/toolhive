@@ -21,8 +21,8 @@ import (
 
 // createTestClientIntegrations creates fake client integrations for testing
 // These match the file structure that the tests create
-func createTestClientIntegrations() []mcpClientConfig {
-	return []mcpClientConfig{
+func createTestClientIntegrations() []clientAppConfig {
+	return []clientAppConfig{
 		{
 			ClientType:   ClaudeCode,
 			Description:  "Claude Code CLI (Test)",
@@ -102,7 +102,7 @@ func TestGetClientStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create explicit client integrations for this test to avoid race conditions with global variable
-	clientIntegrations := []mcpClientConfig{
+	clientIntegrations := []clientAppConfig{
 		{
 			ClientType:   ClaudeCode,
 			Description:  "Claude Code CLI (Test)",
@@ -133,7 +133,7 @@ func TestGetClientStatus(t *testing.T) {
 	require.NotNil(t, statuses)
 
 	// Create a map for easier testing
-	statusMap := make(map[MCPClient]MCPClientStatus)
+	statusMap := make(map[ClientApp]ClientAppStatus)
 	for _, status := range statuses {
 		statusMap[status.ClientType] = status
 	}
@@ -225,7 +225,7 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 
 	// Now test GetClientStatus using ClientManager with dependency injection
 	// Use explicit client integrations for this test to avoid race conditions with global variable
-	clientIntegrations := []mcpClientConfig{
+	clientIntegrations := []clientAppConfig{
 		{
 			ClientType:   ClaudeCode,
 			Description:  "Claude Code CLI (Test)",
@@ -257,7 +257,7 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 	require.NotNil(t, statuses)
 
 	// Create a map for easier testing
-	statusMap := make(map[MCPClient]MCPClientStatus)
+	statusMap := make(map[ClientApp]ClientAppStatus)
 	for _, status := range statuses {
 		statusMap[status.ClientType] = status
 	}

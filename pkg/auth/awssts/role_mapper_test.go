@@ -4,6 +4,7 @@
 package awssts_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 )
+
+func intPtr(v int) *int { return &v }
 
 func TestValidateRoleArn(t *testing.T) {
 	t.Parallel()
@@ -62,6 +65,11 @@ func TestValidateRoleArn(t *testing.T) {
 			roleArn: "arn:aws:iam::12345:role/MyRole",
 			wantErr: true,
 		},
+		{
+			name:    "non-digit characters in account ID",
+			roleArn: "arn:aws:iam::12345678901a:role/MyRole",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -101,7 +109,7 @@ func TestNewRoleMapper(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -114,7 +122,7 @@ func TestNewRoleMapper(t *testing.T) {
 					{
 						Matcher:  `invalid syntax here`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -159,8 +167,8 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
-					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: 2},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: intPtr(2)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"users", "admins"}},
@@ -173,8 +181,8 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
-					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: 2},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
+					{Claim: "developers", RoleArn: "arn:aws:iam::123456789012:role/DevRole", Priority: intPtr(2)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"admins", "developers"}},
@@ -187,7 +195,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123", "groups": []any{"users"}},
@@ -200,7 +208,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				RoleClaim:       "groups",
 				FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"sub": "user123"},
@@ -212,7 +220,7 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				Region:    "us-east-1",
 				RoleClaim: "groups",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
 			claims:  map[string]any{"sub": "user123", "groups": []any{"users"}},
@@ -235,12 +243,51 @@ func TestRoleMapper_SelectRole(t *testing.T) {
 				Region:    "us-east-1",
 				RoleClaim: "groups",
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA", Priority: 1},
-					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB", Priority: 1},
+					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA", Priority: intPtr(1)},
+					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB", Priority: intPtr(1)},
 				},
 			},
 			claims:   map[string]any{"groups": []any{"group-a", "group-b"}},
 			expected: "arn:aws:iam::123456789012:role/RoleA",
+		},
+		// Nil priority behavior
+		{
+			name: "nil priority sorts after explicit priorities",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/LowPriRole"},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/HighPriRole", Priority: intPtr(1)},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"admins"}},
+			expected: "arn:aws:iam::123456789012:role/HighPriRole",
+		},
+		{
+			name: "all nil priorities preserves config order",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "group-a", RoleArn: "arn:aws:iam::123456789012:role/RoleA"},
+					{Claim: "group-b", RoleArn: "arn:aws:iam::123456789012:role/RoleB"},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"group-a", "group-b"}},
+			expected: "arn:aws:iam::123456789012:role/RoleA",
+		},
+		{
+			name: "single mapping without priority works",
+			cfg: &awssts.Config{
+				Region:    "us-east-1",
+				RoleClaim: "groups",
+				RoleMappings: []awssts.RoleMapping{
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole"},
+				},
+			},
+			claims:   map[string]any{"groups": []any{"admins"}},
+			expected: "arn:aws:iam::123456789012:role/AdminRole",
 		},
 	}
 
@@ -272,17 +319,17 @@ func TestRoleMapper_SelectRole_CELMatcher(t *testing.T) {
 			{
 				Matcher:  `"admins" in claims["groups"] && !("act" in claims)`,
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminDirectRole",
-				Priority: 1,
+				Priority: intPtr(1),
 			},
 			{
 				Matcher:  `"admins" in claims["groups"]`,
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-				Priority: 2,
+				Priority: intPtr(2),
 			},
 			{
 				Matcher:  `claims["sub"].startsWith("service-")`,
 				RoleArn:  "arn:aws:iam::123456789012:role/ServiceRole",
-				Priority: 3,
+				Priority: intPtr(3),
 			},
 		},
 	}
@@ -342,6 +389,39 @@ func TestRoleMapper_SelectRole_CELMatcher(t *testing.T) {
 	}
 }
 
+func TestRoleMapper_SelectRole_InjectionAttemptIsSafe(t *testing.T) {
+	t.Parallel()
+
+	// This test proves that CEL injection via claim values is impossible.
+	// The claim value contains a string that, if interpolated into a CEL
+	// expression, would alter its semantics. With variable binding, it is
+	// treated as a literal string and never matches.
+	cfg := &awssts.Config{
+		Region:          "us-east-1",
+		RoleClaim:       "groups",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/DefaultRole",
+		RoleMappings: []awssts.RoleMapping{
+			{
+				Claim:    `") || true || ("`,
+				RoleArn:  "arn:aws:iam::123456789012:role/InjectedRole",
+				Priority: intPtr(1),
+			},
+		},
+	}
+
+	rm, err := awssts.NewRoleMapper(cfg)
+	require.NoError(t, err)
+
+	// The claim value is treated as a literal string — it won't match any
+	// real group name, so we should fall through to the default role.
+	role, err := rm.SelectRole(map[string]any{
+		"sub":    "attacker",
+		"groups": []any{"admins", "users"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/DefaultRole", role)
+}
+
 func TestValidateConfig(t *testing.T) {
 	t.Parallel()
 
@@ -396,7 +476,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -410,7 +490,7 @@ func TestValidateConfig(t *testing.T) {
 						Claim:    "admins",
 						Matcher:  `"admins" in claims["groups"]`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -424,7 +504,7 @@ func TestValidateConfig(t *testing.T) {
 				RoleMappings: []awssts.RoleMapping{
 					{
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -439,7 +519,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -453,7 +533,7 @@ func TestValidateConfig(t *testing.T) {
 					{
 						Claim:    "admins",
 						RoleArn:  "invalid-arn",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
@@ -479,31 +559,27 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "claim with CEL injection characters rejected",
+			name: "claim with CEL-significant characters accepted (variable binding prevents injection)",
 			cfg: &awssts.Config{
 				Region: "us-east-1",
 				RoleMappings: []awssts.RoleMapping{
 					{
 						Claim:    `") || true || ("`,
 						RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-						Priority: 1,
+						Priority: intPtr(1),
 					},
 				},
 			},
-			wantErr:   true,
-			wantErrIs: awssts.ErrInvalidRoleMapping,
 		},
 		{
-			name: "role_claim with unsafe characters rejected",
+			name: "role_claim with special characters accepted (variable binding prevents injection)",
 			cfg: &awssts.Config{
 				Region:    "us-east-1",
 				RoleClaim: `groups"])||true`,
 				RoleMappings: []awssts.RoleMapping{
-					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: 1},
+					{Claim: "admins", RoleArn: "arn:aws:iam::123456789012:role/AdminRole", Priority: intPtr(1)},
 				},
 			},
-			wantErr:   true,
-			wantErrIs: awssts.ErrInvalidRoleMapping,
 		},
 	}
 
@@ -534,12 +610,12 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 			{
 				Claim:    "admins",
 				RoleArn:  "arn:aws:iam::123456789012:role/AdminRole",
-				Priority: 1,
+				Priority: intPtr(1),
 			},
 			{
 				Claim:    "developers",
 				RoleArn:  "arn:aws:iam::123456789012:role/DevRole",
-				Priority: 2,
+				Priority: intPtr(2),
 			},
 		},
 	}
@@ -549,23 +625,33 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 
 	// Run concurrent role selections
 	const numGoroutines = 100
-	results := make(chan string, numGoroutines)
+
+	type roleResult struct {
+		actual   string
+		expected string
+	}
+
+	results := make(chan roleResult, numGoroutines)
 	errs := make(chan error, numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
 		go func(i int) {
 			var groups []any
+			var expected string
 			switch i % 3 {
 			case 0:
 				groups = []any{"admins"}
+				expected = "arn:aws:iam::123456789012:role/AdminRole"
 			case 1:
 				groups = []any{"developers"}
+				expected = "arn:aws:iam::123456789012:role/DevRole"
 			case 2:
 				groups = []any{"users"}
+				expected = "arn:aws:iam::123456789012:role/DefaultRole"
 			}
 
 			claims := map[string]any{
-				"sub":    "user" + string(rune('0'+i%10)),
+				"sub":    fmt.Sprintf("user%d", i),
 				"groups": groups,
 			}
 
@@ -574,22 +660,17 @@ func TestRoleMapper_Concurrency(t *testing.T) {
 				errs <- err
 				return
 			}
-			results <- role
+			results <- roleResult{actual: role, expected: expected}
 		}(i)
 	}
 
-	// Collect results - all should succeed
+	// Collect results - all should succeed with the correct role
 	for i := 0; i < numGoroutines; i++ {
 		select {
 		case err := <-errs:
 			t.Fatalf("unexpected error: %v", err)
-		case role := <-results:
-			// Verify role is one of the expected values
-			assert.Contains(t, []string{
-				"arn:aws:iam::123456789012:role/AdminRole",
-				"arn:aws:iam::123456789012:role/DevRole",
-				"arn:aws:iam::123456789012:role/DefaultRole",
-			}, role)
+		case r := <-results:
+			assert.Equal(t, r.expected, r.actual)
 		}
 	}
 }

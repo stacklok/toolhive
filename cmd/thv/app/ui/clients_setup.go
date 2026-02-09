@@ -29,7 +29,7 @@ const (
 )
 
 type setupModel struct {
-	Clients         []client.MCPClientStatus
+	Clients         []client.ClientAppStatus
 	Groups          []*groups.Group
 	Cursor          int
 	SelectedClients map[int]struct{}
@@ -146,7 +146,7 @@ func renderGroupRow(m *setupModel, i int, group *groups.Group) string {
 	return itemStyle.Render(row) + "\n"
 }
 
-func renderClientRow(m *setupModel, i int, cli client.MCPClientStatus) string {
+func renderClientRow(m *setupModel, i int, cli client.ClientAppStatus) string {
 	cursor := "  "
 	if m.Cursor == i {
 		cursor = "> "
@@ -164,9 +164,9 @@ func renderClientRow(m *setupModel, i int, cli client.MCPClientStatus) string {
 
 // RunClientSetup runs the interactive client setup and returns the selected clients, groups, and whether the user confirmed.
 func RunClientSetup(
-	clients []client.MCPClientStatus,
+	clients []client.ClientAppStatus,
 	availableGroups []*groups.Group,
-) ([]client.MCPClientStatus, []string, bool, error) {
+) ([]client.ClientAppStatus, []string, bool, error) {
 
 	var selectedGroupsMap = make(map[int]struct{})
 	var currentStep = stepClientSelection
@@ -197,7 +197,7 @@ func RunClientSetup(
 	}
 
 	m := finalModel.(*setupModel)
-	var selectedClients []client.MCPClientStatus
+	var selectedClients []client.ClientAppStatus
 	for i := range m.SelectedClients {
 		selectedClients = append(selectedClients, clients[i])
 	}

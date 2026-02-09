@@ -21,19 +21,36 @@ func TestMetaCarrier_GetSetKeys(t *testing.T) {
 	}
 	carrier := NewMetaCarrier(meta)
 
-	// Test Get with existing string value
-	if got := carrier.Get("existing"); got != "value" {
-		t.Errorf("Get(existing) = %q, want %q", got, "value")
+	// Table-driven test for Get operations
+	getTests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{
+			name: "existing string value",
+			key:  "existing",
+			want: "value",
+		},
+		{
+			name: "non-string value returns empty",
+			key:  "number",
+			want: "",
+		},
+		{
+			name: "non-existent key returns empty",
+			key:  "missing",
+			want: "",
+		},
 	}
 
-	// Test Get with non-string value returns empty
-	if got := carrier.Get("number"); got != "" {
-		t.Errorf("Get(number) = %q, want empty string", got)
-	}
-
-	// Test Get with non-existent key
-	if got := carrier.Get("missing"); got != "" {
-		t.Errorf("Get(missing) = %q, want empty string", got)
+	for _, tt := range getTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := carrier.Get(tt.key); got != tt.want {
+				t.Errorf("Get(%q) = %q, want %q", tt.key, got, tt.want)
+			}
+		})
 	}
 
 	// Test Set

@@ -38,6 +38,22 @@ func IsHealthCheck(ctx context.Context) bool {
 	return ok && val
 }
 
+// StatusProvider provides read-only access to backend health status.
+// This interface enables discovery middleware to query current health state
+// without depending on the full Monitor implementation or internal state.
+//
+// The interface is satisfied by Monitor when health monitoring is enabled,
+// and can be nil when health monitoring is disabled (discovery falls back
+// to registry's initial health status).
+type StatusProvider interface {
+	// QueryBackendStatus returns the current health status for a backend.
+	// Returns (status, exists) where exists indicates if the backend is being monitored.
+	// If exists is false, the caller should fall back to the backend registry's status.
+	//
+	// This method is safe for concurrent access and does not block on health checks.
+	QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool)
+}
+
 // Monitor performs periodic health checks on backend MCP servers.
 // It runs background goroutines for each backend, tracking their health status
 // and consecutive failure counts. The monitor supports graceful shutdown and
@@ -422,6 +438,17 @@ func (m *Monitor) GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, 
 		return vmcp.BackendUnknown, fmt.Errorf("backend %s not found", backendID)
 	}
 	return status, nil
+}
+
+// QueryBackendStatus returns the current health status for a backend.
+// Returns (status, exists) where exists indicates if the backend is being monitored.
+// This method implements the StatusProvider interface for discovery middleware integration.
+//
+// Unlike GetBackendStatus, this method returns a boolean instead of an error,
+// allowing callers to distinguish between "backend not monitored" (exists=false)
+// and "backend is monitored but unhealthy" (exists=true, status=unhealthy).
+func (m *Monitor) QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
+	return m.statusTracker.GetStatus(backendID)
 }
 
 // GetBackendState returns the full health state for a backend.

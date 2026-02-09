@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -429,14 +430,19 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → audit → discovery → backend enrichment → telemetry
-	// Execution order: telemetry → backend enrichment → discovery → audit → auth → handler
+	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
+	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		logger.Info("Telemetry middleware enabled for MCP endpoints")
 	}
+
+	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
+	// This runs before telemetry so that recordMetrics can label metrics with the
+	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
+	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply backend enrichment middleware if audit is configured
 	// This runs after discovery populates the routing table, so it can extract backend names
@@ -449,7 +455,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager)(mcpHandler)
+	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	var healthStatusProvider health.StatusProvider
+	if s.healthMonitor != nil {
+		healthStatusProvider = s.healthMonitor
+	}
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)

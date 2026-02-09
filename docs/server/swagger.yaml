@@ -385,7 +385,7 @@ components:
           description: Version is the version of the configuration format.
           type: string
       type: object
-    client.MCPClient:
+    client.ClientApp:
       description: ClientType is the type of MCP client
       enum:
       - roo-code
@@ -440,10 +440,10 @@ components:
       - VSCodeServer
       - MistralVibe
       - Codex
-    client.MCPClientStatus:
+    client.ClientAppStatus:
       properties:
         client_type:
-          $ref: '#/components/schemas/client.MCPClient'
+          $ref: '#/components/schemas/client.ClientApp'
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -461,7 +461,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/client.MCPClient'
+          $ref: '#/components/schemas/client.ClientApp'
       type: object
     core.Workload:
       properties:
@@ -1356,7 +1356,7 @@ components:
         clients:
           description: |-
             Clients is the list of client identifiers the skill is installed for.
-            TODO: Refactor client.MCPClient to a shared package so it can be used here instead of []string.
+            TODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.
           items:
             type: string
           type: array
@@ -1423,6 +1423,13 @@ components:
         valid:
           description: Valid indicates whether the skill definition is valid.
           type: boolean
+        warnings:
+          description: Warnings is a list of non-blocking validation warnings, if
+            any.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     telemetry.Config:
       description: |-
@@ -1676,7 +1683,7 @@ components:
         names:
           description: Names is the list of client names to operate on.
           items:
-            $ref: '#/components/schemas/client.MCPClient'
+            $ref: '#/components/schemas/client.ClientApp'
           type: array
           uniqueItems: false
       type: object
@@ -1696,7 +1703,7 @@ components:
       properties:
         clients:
           items:
-            $ref: '#/components/schemas/client.MCPClientStatus'
+            $ref: '#/components/schemas/client.ClientAppStatus'
           type: array
           uniqueItems: false
       type: object
@@ -1709,7 +1716,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/client.MCPClient'
+          $ref: '#/components/schemas/client.ClientApp'
       type: object
     v1.createClientResponse:
       properties:
@@ -1720,7 +1727,7 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/client.MCPClient'
+          $ref: '#/components/schemas/client.ClientApp'
       type: object
     v1.createGroupRequest:
       properties:

@@ -18,12 +18,12 @@ import (
 
 // Client represents a registered ToolHive client.
 type Client struct {
-	Name MCPClient `json:"name"`
+	Name ClientApp `json:"name"`
 }
 
 // RegisteredClient represents a registered client with its associated groups.
 type RegisteredClient struct {
-	Name   MCPClient `json:"name"`
+	Name   ClientApp `json:"name"`
 	Groups []string  `json:"groups"`
 }
 
@@ -131,7 +131,7 @@ func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, e
 	registeredClients := make([]RegisteredClient, 0)
 	for clientName := range allRegisteredClients {
 		registered := RegisteredClient{
-			Name:   MCPClient(clientName),
+			Name:   ClientApp(clientName),
 			Groups: clientGroups[clientName],
 		}
 		registeredClients = append(registeredClients, registered)
@@ -197,7 +197,7 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 
 	// Remove the server from each target client
 	for _, clientName := range targetClients {
-		if err := m.removeServerFromClient(MCPClient(clientName), serverName); err != nil && !errors.Is(err, ErrConfigFileNotFound) {
+		if err := m.removeServerFromClient(ClientApp(clientName), serverName); err != nil && !errors.Is(err, ErrConfigFileNotFound) {
 			logger.Warnf("Warning: Failed to remove server from client %s: %v", clientName, err)
 		}
 	}
@@ -206,7 +206,7 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 }
 
 // addWorkloadsToClient adds the specified workloads to the client's configuration
-func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []core.Workload) error {
+func (m *defaultManager) addWorkloadsToClient(clientType ClientApp, workloads []core.Workload) error {
 	if len(workloads) == 0 {
 		// No workloads to add, nothing more to do
 		return nil
@@ -229,7 +229,7 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 }
 
 // removeWorkloadsFromClient removes the specified workloads from the client's configuration
-func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloads []core.Workload) error {
+func (m *defaultManager) removeWorkloadsFromClient(clientType ClientApp, workloads []core.Workload) error {
 	if len(workloads) == 0 {
 		// No workloads to remove, nothing to do
 		return nil
@@ -247,7 +247,7 @@ func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloa
 }
 
 // removeServerFromClient removes an MCP server from a single client configuration
-func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName string) error {
+func (*defaultManager) removeServerFromClient(clientName ClientApp, serverName string) error {
 	clientConfig, err := FindClientConfig(clientName)
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
@@ -264,11 +264,11 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 
 // updateClientWithServer updates a single client with an MCP server configuration, creating config if needed
 func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL, transportType string) error {
-	clientConfig, err := FindClientConfig(MCPClient(clientName))
+	clientConfig, err := FindClientConfig(ClientApp(clientName))
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Create a new client configuration if it doesn't exist
-			clientConfig, err = CreateClientConfig(MCPClient(clientName))
+			clientConfig, err = CreateClientConfig(ClientApp(clientName))
 			if err != nil {
 				return fmt.Errorf("failed to create client configuration for %s: %w", clientName, err)
 			}

@@ -142,8 +142,8 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 }
 
 // Helper to get available (installed) clients
-func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientStatus {
-	var available []client.MCPClientStatus
+func getAvailableClients(statuses []client.ClientAppStatus) []client.ClientAppStatus {
+	var available []client.ClientAppStatus
 	for _, s := range statuses {
 		if s.Installed {
 			available = append(available, s)
@@ -153,7 +153,7 @@ func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientSt
 }
 
 // Helper to register selected clients
-func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus, selectedGroups []string) error {
+func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.ClientAppStatus, selectedGroups []string) error {
 	clients := make([]client.Client, len(clientsToRegister))
 	for i, cli := range clientsToRegister {
 		clients[i] = client.Client{Name: cli.ClientType}
@@ -170,7 +170,7 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
-	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupAddNames)
+	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.ClientApp(clientType)}}, groupAddNames)
 }
 
 func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
@@ -181,7 +181,7 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
-	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupRmNames)
+	return performClientRemoval(cmd.Context(), client.Client{Name: client.ClientApp(clientType)}, groupRmNames)
 }
 
 func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {

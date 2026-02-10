@@ -6,7 +6,6 @@ package oauth
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -25,52 +24,16 @@ type resourceTokenSource struct {
 	httpClient *http.Client
 }
 
-type limitedReadCloser struct {
-	io.Reader
-	c io.Closer
-}
-
-func (l *limitedReadCloser) Close() error {
-	return l.c.Close()
-}
-
-type limitResponseBodyRoundTripper struct {
-	next  http.RoundTripper
-	limit int64
-}
-
-func (l *limitResponseBodyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := l.next.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp != nil && resp.Body != nil && l.limit > 0 {
-		resp.Body = &limitedReadCloser{
-			Reader: io.LimitReader(resp.Body, l.limit),
-			c:      resp.Body,
-		}
-	}
-
-	return resp, nil
-}
-
 // newResourceTokenSource creates a token source that includes the resource parameter
 // in all token requests, including refresh requests.
 // The resource parameter must be non-empty (caller should check before calling).
 func newResourceTokenSource(config *oauth2.Config, token *oauth2.Token, resource string) oauth2.TokenSource {
-	baseTransport := http.DefaultTransport
-	if baseTransport == nil {
-		baseTransport = &http.Transport{}
-	}
-
 	return &resourceTokenSource{
 		config:   config,
 		resource: resource,
 		token:    token,
 		httpClient: &http.Client{
-			Transport: &limitResponseBodyRoundTripper{next: baseTransport, limit: 4096},
-			Timeout:   30 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }

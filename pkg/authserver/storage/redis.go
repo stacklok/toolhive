@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Default timeouts for Redis operations.
@@ -27,6 +28,24 @@ const (
 
 // nullMarker is used to store nil upstream tokens in Redis.
 const nullMarker = "null"
+
+// warnOnCleanupErr logs a warning when a best-effort cleanup operation fails.
+//
+// Secondary index cleanup in Redis (SRem from reverse-lookup sets, Del of orphaned
+// keys) is intentionally best-effort: the primary operation has already succeeded,
+// and failing the overall request due to an index cleanup error would be worse than
+// leaving a stale entry. Stale index entries are bounded by TTL expiration of the
+// underlying keys and are tolerated on read (readers skip missing entries).
+//
+// TODO: Add a periodic background cleanup job to scan and remove stale entries
+// from secondary index sets (KeyTypeReqIDAccess, KeyTypeReqIDRefresh,
+// KeyTypeUserUpstream, KeyTypeUserProviders) to prevent unbounded growth.
+func warnOnCleanupErr(err error, operation, key string) {
+	if err != nil {
+		logger.Warnw("best-effort index cleanup failed",
+			"operation", operation, "key", key, "error", err)
+	}
+}
 
 // RedisConfig holds Redis connection configuration for runtime use.
 type RedisConfig struct {
@@ -431,12 +450,11 @@ func (s *RedisStorage) DeleteAccessTokenSession(ctx context.Context, signature s
 		return fmt.Errorf("failed to delete access token: %w", err)
 	}
 
-	// Clean up the secondary index
+	// Best-effort secondary index cleanup (see warnOnCleanupErr).
 	var stored storedSession
 	if err := json.Unmarshal(data, &stored); err == nil && stored.RequestID != "" {
 		reqIDKey := redisSetKey(s.keyPrefix, KeyTypeReqIDAccess, stored.RequestID)
-		// Ignore error - cleanup is best effort
-		_ = s.client.SRem(ctx, reqIDKey, signature).Err()
+		warnOnCleanupErr(s.client.SRem(ctx, reqIDKey, signature).Err(), "SRem", reqIDKey)
 	}
 
 	return nil
@@ -508,26 +526,27 @@ func (s *RedisStorage) DeleteRefreshTokenSession(ctx context.Context, signature 
 		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
 
-	// Clean up the secondary index
+	// Best-effort secondary index cleanup (see warnOnCleanupErr).
 	var stored storedSession
 	if err := json.Unmarshal(data, &stored); err == nil && stored.RequestID != "" {
 		reqIDKey := redisSetKey(s.keyPrefix, KeyTypeReqIDRefresh, stored.RequestID)
-		// Ignore error - cleanup is best effort
-		_ = s.client.SRem(ctx, reqIDKey, signature).Err()
+		warnOnCleanupErr(s.client.SRem(ctx, reqIDKey, signature).Err(), "SRem", reqIDKey)
 	}
 
 	return nil
 }
 
 // RotateRefreshToken invalidates a refresh token and all its related token data.
+// All operations are best-effort (see warnOnCleanupErr); the new refresh token
+// has already been issued by fosite, so partial cleanup is acceptable.
 func (s *RedisStorage) RotateRefreshToken(ctx context.Context, requestID string, refreshTokenSignature string) error {
 	// Delete the specific refresh token
 	refreshKey := redisKey(s.keyPrefix, KeyTypeRefresh, refreshTokenSignature)
-	_ = s.client.Del(ctx, refreshKey).Err()
+	warnOnCleanupErr(s.client.Del(ctx, refreshKey).Err(), "Del", refreshKey)
 
 	// Remove from the request ID index
 	reqIDRefreshKey := redisSetKey(s.keyPrefix, KeyTypeReqIDRefresh, requestID)
-	_ = s.client.SRem(ctx, reqIDRefreshKey, refreshTokenSignature).Err()
+	warnOnCleanupErr(s.client.SRem(ctx, reqIDRefreshKey, refreshTokenSignature).Err(), "SRem", reqIDRefreshKey)
 
 	// Delete all access tokens associated with this request ID
 	reqIDAccessKey := redisSetKey(s.keyPrefix, KeyTypeReqIDAccess, requestID)
@@ -535,9 +554,9 @@ func (s *RedisStorage) RotateRefreshToken(ctx context.Context, requestID string,
 	if err == nil {
 		for _, sig := range signatures {
 			accessKey := redisKey(s.keyPrefix, KeyTypeAccess, sig)
-			_ = s.client.Del(ctx, accessKey).Err()
+			warnOnCleanupErr(s.client.Del(ctx, accessKey).Err(), "Del", accessKey)
 		}
-		_ = s.client.Del(ctx, reqIDAccessKey).Err()
+		warnOnCleanupErr(s.client.Del(ctx, reqIDAccessKey).Err(), "Del", reqIDAccessKey)
 	}
 
 	return nil
@@ -557,11 +576,11 @@ func (s *RedisStorage) RevokeAccessToken(ctx context.Context, requestID string) 
 
 	for _, sig := range signatures {
 		accessKey := redisKey(s.keyPrefix, KeyTypeAccess, sig)
-		_ = s.client.Del(ctx, accessKey).Err()
+		warnOnCleanupErr(s.client.Del(ctx, accessKey).Err(), "Del", accessKey)
 	}
 
 	// Clean up the index
-	_ = s.client.Del(ctx, reqIDKey).Err()
+	warnOnCleanupErr(s.client.Del(ctx, reqIDKey).Err(), "Del", reqIDKey)
 
 	return nil
 }
@@ -576,11 +595,11 @@ func (s *RedisStorage) RevokeRefreshToken(ctx context.Context, requestID string)
 
 	for _, sig := range signatures {
 		refreshKey := redisKey(s.keyPrefix, KeyTypeRefresh, sig)
-		_ = s.client.Del(ctx, refreshKey).Err()
+		warnOnCleanupErr(s.client.Del(ctx, refreshKey).Err(), "Del", refreshKey)
 	}
 
 	// Clean up the index
-	_ = s.client.Del(ctx, reqIDKey).Err()
+	warnOnCleanupErr(s.client.Del(ctx, reqIDKey).Err(), "Del", reqIDKey)
 
 	return nil
 }
@@ -843,13 +862,12 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 		return fmt.Errorf("failed to delete upstream tokens: %w", err)
 	}
 
-	// Clean up the user:upstream set (best effort - ignore errors)
-	// Handle null marker case
+	// Best-effort secondary index cleanup (see warnOnCleanupErr).
 	if string(data) != nullMarker {
 		var stored storedUpstreamTokens
 		if err := json.Unmarshal(data, &stored); err == nil && stored.UserID != "" {
 			userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, stored.UserID)
-			_ = s.client.SRem(ctx, userUpstreamSetKey, key).Err()
+			warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, key).Err(), "SRem", userUpstreamSetKey)
 		}
 	}
 
@@ -1047,16 +1065,15 @@ func (s *RedisStorage) DeleteUser(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
-	// Delete associated provider identities and upstream tokens
-	// This requires scanning for keys with the user ID, which is done via pattern matching
-	// For efficiency, we store a set of user's provider identity keys
+	// Best-effort cascade deletion of associated data (see warnOnCleanupErr).
+	// The user record is already deleted; orphaned keys will expire via TTL.
 	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, id)
 	providerKeys, err := s.client.SMembers(ctx, userProviderSetKey).Result()
 	if err == nil {
 		for _, providerKey := range providerKeys {
-			_ = s.client.Del(ctx, providerKey).Err()
+			warnOnCleanupErr(s.client.Del(ctx, providerKey).Err(), "Del", providerKey)
 		}
-		_ = s.client.Del(ctx, userProviderSetKey).Err()
+		warnOnCleanupErr(s.client.Del(ctx, userProviderSetKey).Err(), "Del", userProviderSetKey)
 	}
 
 	// Delete associated upstream tokens
@@ -1064,9 +1081,9 @@ func (s *RedisStorage) DeleteUser(ctx context.Context, id string) error {
 	upstreamKeys, err := s.client.SMembers(ctx, userUpstreamSetKey).Result()
 	if err == nil {
 		for _, upstreamKey := range upstreamKeys {
-			_ = s.client.Del(ctx, upstreamKey).Err()
+			warnOnCleanupErr(s.client.Del(ctx, upstreamKey).Err(), "Del", upstreamKey)
 		}
-		_ = s.client.Del(ctx, userUpstreamSetKey).Err()
+		warnOnCleanupErr(s.client.Del(ctx, userUpstreamSetKey).Err(), "Del", userUpstreamSetKey)
 	}
 
 	return nil
@@ -1228,8 +1245,8 @@ func (s *RedisStorage) GetUserProviderIdentities(ctx context.Context, userID str
 		data, err := s.client.Get(ctx, key).Bytes()
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				// Identity was deleted, clean up the set
-				_ = s.client.SRem(ctx, userProviderSetKey, key).Err()
+				// Identity was deleted; best-effort cleanup of stale set entry.
+				warnOnCleanupErr(s.client.SRem(ctx, userProviderSetKey, key).Err(), "SRem", userProviderSetKey)
 				continue
 			}
 			return nil, fmt.Errorf("failed to get identity: %w", err)

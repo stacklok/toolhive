@@ -56,19 +56,24 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	// Validate requested scopes against server's supported scopes
+	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scope, h.config.ScopesSupported)
+	if dcrErr != nil {
+		writeDCRError(w, http.StatusBadRequest, dcrErr)
+		return
+	}
+
 	// Generate client ID
 	clientID := uuid.NewString()
 
 	// Create fosite client using factory.
-	// Use the server's advertised scopes so DCR clients can request any scope
-	// listed in scopes_supported. This keeps discovery and DCR consistent.
 	fositeClient, err := registration.New(registration.Config{
 		ID:            clientID,
 		RedirectURIs:  validated.RedirectURIs,
 		Public:        true,
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
-		Scopes:        h.config.ScopesSupported,
+		Scopes:        scopes,
 		Audience:      h.config.AllowedAudiences,
 	})
 	if err != nil {
@@ -96,7 +101,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Include scope so the client knows what scopes it was granted.
+	// Scope reflects the scopes actually granted to this client (from
+	// ValidateScopes above), not all server-supported scopes. This lets
+	// the client know exactly which scopes it can request.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),
@@ -105,7 +112,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
-		Scope:                   strings.Join(h.config.ScopesSupported, " "),
+		Scope:                   registration.FormatScopes(scopes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

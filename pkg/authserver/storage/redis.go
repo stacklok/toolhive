@@ -190,7 +190,10 @@ func (s *RedisStorage) Close() error {
 
 // Ping checks Redis connectivity (health check).
 func (s *RedisStorage) Ping(ctx context.Context) error {
-	return s.client.Ping(ctx).Err()
+	if err := s.client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("redis health check failed: %w", err)
+	}
+	return nil
 }
 
 // -----------------------
@@ -288,12 +291,16 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 }
 
 // SetClientAssertionJWT marks a JTI as known for the given expiry time.
+// If the JWT has already expired (exp is in the past), this is a no-op: there is
+// no need to store it for replay detection since it will be rejected on expiry
+// checks before reaching the JTI lookup.
 func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
 
 	ttl := time.Until(exp)
 	if ttl <= 0 {
-		// Already expired, don't store
+		logger.Debugw("skipping storage of already-expired client assertion JWT",
+			"jti", jti, "exp", exp)
 		return nil
 	}
 

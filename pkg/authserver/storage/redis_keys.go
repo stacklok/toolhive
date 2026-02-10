@@ -68,6 +68,10 @@ func DeriveKeyPrefix(namespace, name string) string {
 }
 
 // redisKey generates a Redis key with the given prefix, type, and ID.
+// The resulting format is "{prefix}{keyType}:{id}". This assumes the id does not
+// contain colons; callers that need colon-safe keys should use redisProviderKey
+// which uses a length-prefixed format. In practice, IDs passed here are UUIDs,
+// opaque token signatures, or system-generated identifiers that do not contain colons.
 func redisKey(prefix, keyType, id string) string {
 	return fmt.Sprintf("%s%s:%s", prefix, keyType, id)
 }
@@ -80,6 +84,7 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 
 // redisSetKey generates a Redis key for a set that tracks multiple items.
 // Used for secondary indexes like request ID -> token signature mappings.
+// Same colon assumption as redisKey: the id must not contain colons.
 func redisSetKey(prefix, keyType, id string) string {
 	return fmt.Sprintf("%s%s:%s", prefix, keyType, id)
 }

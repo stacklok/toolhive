@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -285,8 +286,22 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	serverName := m.extractServerName(r)
 	span.SetAttributes(attribute.String("mcp.server.name", serverName))
 
-	// Determine backend transport type and map to OTEL network.transport
+	// Add network, client, and session attributes
 	backendTransport := m.extractBackendTransport(r)
+	m.addNetworkAttributes(span, r, backendTransport)
+
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	}
+
+	// Add batch indicator
+	if parsedMCP.IsBatch {
+		span.SetAttributes(attribute.Bool("mcp.is_batch", true))
+	}
+}
+
+// addNetworkAttributes adds network, client, and session attributes to the span.
+func (*HTTPMiddleware) addNetworkAttributes(span trace.Span, r *http.Request, backendTransport string) {
 	networkTransport, protocolName, protocolVersion := mapTransport(backendTransport)
 	span.SetAttributes(attribute.String("network.transport", networkTransport))
 	if protocolName != "" {
@@ -296,13 +311,22 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
 	}
 
-	if m.config.UseLegacyAttributes {
-		span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	// HTTP protocol version from the incoming request
+	if protocolVer := httpProtocolVersion(r); protocolVer != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVer))
 	}
 
-	// Add batch indicator
-	if parsedMCP.IsBatch {
-		span.SetAttributes(attribute.Bool("mcp.is_batch", true))
+	// Client address and port
+	if clientAddr, clientPort := parseRemoteAddr(r.RemoteAddr); clientAddr != "" {
+		span.SetAttributes(attribute.String("client.address", clientAddr))
+		if clientPort > 0 {
+			span.SetAttributes(attribute.Int("client.port", clientPort))
+		}
+	}
+
+	// Session ID if available
+	if sessionID := r.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		span.SetAttributes(attribute.String("mcp.session.id", sessionID))
 	}
 }
 
@@ -398,6 +422,33 @@ func mapTransport(mcpTransport string) (networkTransport, protocolName, protocol
 	}
 }
 
+// httpProtocolVersion extracts the HTTP protocol version from the request.
+func httpProtocolVersion(r *http.Request) string {
+	if r.ProtoMajor == 0 {
+		return ""
+	}
+	if r.ProtoMajor >= 2 && r.ProtoMinor == 0 {
+		return strconv.Itoa(r.ProtoMajor)
+	}
+	return fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
+}
+
+// parseRemoteAddr parses the remote address into host and port.
+func parseRemoteAddr(remoteAddr string) (string, int) {
+	if remoteAddr == "" {
+		return "", 0
+	}
+	host, portStr, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr, 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return host, 0
+	}
+	return host, port
+}
+
 // sanitizeArguments converts arguments to a safe string representation.
 func (m *HTTPMiddleware) sanitizeArguments(arguments map[string]interface{}) string {
 	if len(arguments) == 0 {
@@ -479,10 +530,15 @@ func (m *HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, durat
 		)
 	}
 
-	// Set span status based on HTTP status code
-	if rw.statusCode >= 400 {
+	// Set span status based on HTTP status code per OTEL semconv
+	if rw.statusCode >= 500 {
+		// 5xx: Server errors set span status to Error with error.type
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
+		span.SetAttributes(attribute.String("error.type", strconv.Itoa(rw.statusCode)))
+	} else if rw.statusCode >= 400 {
+		// 4xx: Client errors leave span status Unset (not server errors per OTEL semconv)
 	} else {
+		// 2xx/3xx: Success
 		span.SetStatus(codes.Ok, "")
 	}
 }

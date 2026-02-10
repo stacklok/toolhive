@@ -216,6 +216,63 @@ func TestMapTransport(t *testing.T) {
 	}
 }
 
+func TestHTTPProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		protoMajor int
+		protoMinor int
+		expected   string
+	}{
+		{"HTTP/1.1", 1, 1, "1.1"},
+		{"HTTP/2.0", 2, 0, "2"},
+		{"HTTP/1.0", 1, 0, "1.0"},
+		{"HTTP/3.0", 3, 0, "3"},
+		{"zero proto returns empty", 0, 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.ProtoMajor = tt.protoMajor
+			req.ProtoMinor = tt.protoMinor
+
+			result := httpProtocolVersion(req)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestParseRemoteAddr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		remoteAddr   string
+		expectedHost string
+		expectedPort int
+	}{
+		{"host:port", "192.168.1.1:8080", "192.168.1.1", 8080},
+		{"localhost:port", "127.0.0.1:3000", "127.0.0.1", 3000},
+		{"empty returns empty", "", "", 0},
+		{"host only (no port)", "192.168.1.1", "192.168.1.1", 0},
+		{"ipv6 with port", "[::1]:8080", "::1", 8080},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			host, port := parseRemoteAddr(tt.remoteAddr)
+			assert.Equal(t, tt.expectedHost, host)
+			assert.Equal(t, tt.expectedPort, port)
+		})
+	}
+}
+
 func TestHTTPMiddleware_AddHTTPAttributes_Logic(t *testing.T) {
 	t.Parallel()
 
@@ -1616,7 +1673,6 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 				assert.Contains(t, span.attributes, "jsonrpc.protocol.version")
 				assert.Contains(t, span.attributes, "network.transport")
 				assert.Contains(t, span.attributes, "mcp.server.name")
-				assert.NotContains(t, span.attributes, "network.protocol.version")
 
 				// Legacy names should NOT be present
 				assert.NotContains(t, span.attributes, "mcp.method")
@@ -1670,16 +1726,53 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 			},
 		},
 		{
-			name: "finalizeSpan - error status code",
+			name: "finalizeSpan - 5xx sets Error status with error.type",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				rw := &responseWriter{statusCode: 500, bytesWritten: 128}
 
 				middleware.finalizeSpan(span, rw, 50*time.Millisecond)
 
-				// Status should be set to Error for 500
+				// Status should be set to Error for 5xx
 				assert.Equal(t, codes.Error, span.statusCode)
 				assert.Equal(t, "HTTP 500", span.statusDescription)
+				// error.type should be set for 5xx
+				assert.Equal(t, "500", span.attributes["error.type"])
+			},
+		},
+		{
+			name: "finalizeSpan - 4xx leaves status Unset per OTEL semconv",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				rw := &responseWriter{statusCode: 404, bytesWritten: 64}
+
+				middleware.finalizeSpan(span, rw, 30*time.Millisecond)
+
+				// 4xx: Client errors leave span status Unset (not server errors)
+				assert.Equal(t, codes.Unset, span.statusCode)
+				// error.type should NOT be set for 4xx
+				assert.NotContains(t, span.attributes, "error.type")
+			},
+		},
+		{
+			name: "addMCPAttributes - client.address and mcp.session.id",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				req.RemoteAddr = "192.168.1.100:54321"
+				req.Header.Set("Mcp-Session-Id", "session-abc-123")
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "tools/list",
+					ID:        "test-client",
+					IsRequest: true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				assert.Equal(t, "192.168.1.100", span.attributes["client.address"])
+				assert.Equal(t, int64(54321), span.attributes["client.port"])
+				assert.Equal(t, "session-abc-123", span.attributes["mcp.session.id"])
 			},
 		},
 		{

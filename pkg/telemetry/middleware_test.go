@@ -2019,3 +2019,179 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 		})
 	}
 }
+
+const metricOperationDuration = "mcp.server.operation.duration"
+
+func TestHTTPMiddleware_OperationDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		setupRequest   func(t *testing.T) (*http.Request, context.Context)
+		verifyMetric   func(t *testing.T, rm metricdata.ResourceMetrics)
+		shouldHaveData bool
+	}{
+		{
+			name: "tools/call records operation duration with tool attributes",
+			setupRequest: func(t *testing.T) (*http.Request, context.Context) {
+				t.Helper()
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ID:         "test-123",
+					ResourceID: "github_search",
+					Arguments: map[string]interface{}{
+						"query": "test query",
+					},
+					IsRequest: true,
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+				return req, ctx
+			},
+			verifyMetric: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				// Find the mcp.server.operation.duration metric
+				var foundMetric bool
+				for _, sm := range rm.ScopeMetrics {
+					for _, m := range sm.Metrics {
+						if m.Name == metricOperationDuration {
+							foundMetric = true
+							histData, ok := m.Data.(metricdata.Histogram[float64])
+							require.True(t, ok, "Expected metric data to be Histogram[float64]")
+							require.NotEmpty(t, histData.DataPoints, "Expected at least one data point")
+
+							dp := histData.DataPoints[0]
+							// Check required attributes
+							attrMap := make(map[string]interface{})
+							for _, attr := range dp.Attributes.ToSlice() {
+								attrMap[string(attr.Key)] = attr.Value.AsInterface()
+							}
+
+							assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
+							assert.Equal(t, "github_search", attrMap["gen_ai.tool.name"])
+							assert.Equal(t, "execute_tool", attrMap["gen_ai.operation.name"])
+							assert.Equal(t, "2.0", attrMap["jsonrpc.protocol.version"])
+							assert.Equal(t, "pipe", attrMap["network.transport"])
+							// No error.type for 200 OK
+							_, hasErrorType := attrMap["error.type"]
+							assert.False(t, hasErrorType, "error.type should not be present for 200 OK")
+						}
+					}
+				}
+				assert.True(t, foundMetric, "mcp.server.operation.duration metric should be present")
+			},
+			shouldHaveData: true,
+		},
+		{
+			name: "prompts/get records operation duration with prompt attributes",
+			setupRequest: func(t *testing.T) (*http.Request, context.Context) {
+				t.Helper()
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "prompts/get",
+					ID:         "test-456",
+					ResourceID: "code_review",
+					IsRequest:  true,
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+				return req, ctx
+			},
+			verifyMetric: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				var foundMetric bool
+				for _, sm := range rm.ScopeMetrics {
+					for _, m := range sm.Metrics {
+						if m.Name == metricOperationDuration {
+							foundMetric = true
+							histData, ok := m.Data.(metricdata.Histogram[float64])
+							require.True(t, ok)
+							require.NotEmpty(t, histData.DataPoints)
+
+							dp := histData.DataPoints[0]
+							attrMap := make(map[string]interface{})
+							for _, attr := range dp.Attributes.ToSlice() {
+								attrMap[string(attr.Key)] = attr.Value.AsInterface()
+							}
+
+							assert.Equal(t, "prompts/get", attrMap["mcp.method.name"])
+							assert.Equal(t, "code_review", attrMap["gen_ai.prompt.name"])
+							assert.Equal(t, "2.0", attrMap["jsonrpc.protocol.version"])
+							// prompts/get does not have gen_ai.operation.name
+							_, hasOpName := attrMap["gen_ai.operation.name"]
+							assert.False(t, hasOpName, "gen_ai.operation.name should not be present for prompts/get")
+						}
+					}
+				}
+				assert.True(t, foundMetric, "mcp.server.operation.duration metric should be present")
+			},
+			shouldHaveData: true,
+		},
+		{
+			name: "non-MCP request does not record operation duration",
+			setupRequest: func(t *testing.T) (*http.Request, context.Context) {
+				t.Helper()
+				// No MCP context data - just a plain HTTP request
+				req := httptest.NewRequest("GET", "/health", nil)
+				return req, req.Context()
+			},
+			verifyMetric: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				// Verify that mcp.server.operation.duration is NOT recorded
+				var foundMetric bool
+				for _, sm := range rm.ScopeMetrics {
+					for _, m := range sm.Metrics {
+						if m.Name == metricOperationDuration {
+							foundMetric = true
+						}
+					}
+				}
+				assert.False(t, foundMetric, "mcp.server.operation.duration should not be recorded for non-MCP requests")
+			},
+			shouldHaveData: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a fresh meter provider and reader for each subtest
+			reader := sdkmetric.NewManualReader()
+			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			tracerProvider := tracenoop.NewTracerProvider()
+
+			config := Config{
+				ServiceName:    "test-service",
+				ServiceVersion: "1.0.0",
+			}
+
+			// Create middleware with the test providers
+			middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+
+			// Create test handler that returns 200 OK
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("test response"))
+			})
+
+			// Wrap with middleware
+			wrappedHandler := middleware(testHandler)
+
+			// Setup request with appropriate context
+			req, ctx := tt.setupRequest(t)
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+
+			// Execute request
+			wrappedHandler.ServeHTTP(rec, req)
+
+			// Collect metrics
+			var rm metricdata.ResourceMetrics
+			err := reader.Collect(context.Background(), &rm)
+			require.NoError(t, err)
+
+			// Verify metrics
+			tt.verifyMetric(t, rm)
+		})
+	}
+}

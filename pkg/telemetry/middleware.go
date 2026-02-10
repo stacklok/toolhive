@@ -72,28 +72,40 @@ func NewHTTPMiddleware(
 	meter := meterProvider.Meter(instrumentationName)
 
 	// Initialize metrics
-	requestCounter, _ := meter.Int64Counter(
+	requestCounter, err := meter.Int64Counter(
 		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
 		metric.WithDescription("Total number of MCP requests"),
 	)
+	if err != nil {
+		logger.Debugf("failed to create request counter metric: %v", err)
+	}
 
-	requestDuration, _ := meter.Float64Histogram(
+	requestDuration, err := meter.Float64Histogram(
 		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
 		metric.WithDescription("Duration of MCP requests in seconds"),
 		metric.WithUnit("s"),
 	)
+	if err != nil {
+		logger.Debugf("failed to create request duration metric: %v", err)
+	}
 
-	activeConnections, _ := meter.Int64UpDownCounter(
+	activeConnections, err := meter.Int64UpDownCounter(
 		"toolhive_mcp_active_connections",
 		metric.WithDescription("Number of active MCP connections"),
 	)
+	if err != nil {
+		logger.Debugf("failed to create active connections metric: %v", err)
+	}
 
-	operationDuration, _ := meter.Float64Histogram(
+	operationDuration, err := meter.Float64Histogram(
 		"mcp.server.operation.duration",
 		metric.WithDescription("Duration of MCP server operations"),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
 	)
+	if err != nil {
+		logger.Debugf("failed to create operation duration metric: %v", err)
+	}
 
 	middleware := &HTTPMiddleware{
 		config:            config,
@@ -126,7 +138,16 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			// Record SSE connection establishment immediately
 			m.recordSSEConnection(ctx, r)
 
-			// Pass through to SSE handler without waiting for completion
+			// Track active SSE connections with defer to ensure decrement on close
+			sseAttrs := metric.WithAttributes(
+				attribute.String("server", m.serverName),
+				attribute.String("transport", m.transport),
+				attribute.String("connection_type", "sse"),
+			)
+			m.activeConnections.Add(ctx, 1, sseAttrs)
+			defer m.activeConnections.Add(ctx, -1, sseAttrs)
+
+			// Pass through to SSE handler - blocks for the lifetime of the SSE connection
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -765,14 +786,6 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 
 	// Record the connection establishment
 	m.requestCounter.Add(ctx, 1, attrs)
-
-	// Increment active SSE connections (these will be decremented when connection closes)
-	sseAttrs := metric.WithAttributes(
-		attribute.String("server", m.serverName),
-		attribute.String("transport", m.transport),
-		attribute.String("connection_type", "sse"),
-	)
-	m.activeConnections.Add(ctx, 1, sseAttrs)
 }
 
 // Factory middleware type constant

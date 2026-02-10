@@ -948,13 +948,12 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	}
 
 	// UseLegacyAttributes defaults to true for this release to avoid breaking existing
-	// dashboards and alerts. Unlike other bool flags, we only override from config when
-	// the config value is true, because Go's zero-value false is indistinguishable from
-	// "not set". Users can disable via --otel-use-legacy-attributes=false.
+	// dashboards and alerts. When the config file explicitly sets this field (non-nil),
+	// use the config value. Otherwise, use the CLI flag value (which defaults to true).
 	// This default will change to false in a future release.
 	finalOtelUseLegacyAttributes := otelUseLegacyAttributes
-	if !cmd.Flags().Changed("otel-use-legacy-attributes") && config.OTEL.UseLegacyAttributes {
-		finalOtelUseLegacyAttributes = config.OTEL.UseLegacyAttributes
+	if !cmd.Flags().Changed("otel-use-legacy-attributes") && config.OTEL.UseLegacyAttributes != nil {
+		finalOtelUseLegacyAttributes = *config.OTEL.UseLegacyAttributes
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables,

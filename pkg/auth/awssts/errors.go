@@ -39,7 +39,4 @@ var (
 
 	// ErrSTSNilCredentials is returned when STS returns a response without credentials.
 	ErrSTSNilCredentials = errors.New("STS returned nil credentials")
-
-	// ErrAccessDenied is returned when AWS STS denies access.
-	ErrAccessDenied = errors.New("access denied")
 )

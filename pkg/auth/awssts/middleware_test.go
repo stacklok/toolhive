@@ -5,6 +5,7 @@ package awssts
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
+
+// errAccessDenied is a test-only error used to simulate STS access denial.
+var errAccessDenied = errors.New("access denied")
 
 // TestCreateMiddleware tests the factory function validation.
 func TestCreateMiddleware(t *testing.T) {
@@ -217,7 +221,7 @@ func TestMiddlewareFunc_EndToEnd(t *testing.T) {
 		},
 		{
 			name:       "returns 401 on STS failure",
-			mockClient: &mockSTSClient{err: ErrAccessDenied},
+			mockClient: &mockSTSClient{err: errAccessDenied},
 			requestURL: "/test",
 			wantStatus: http.StatusUnauthorized,
 		},

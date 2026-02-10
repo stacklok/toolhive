@@ -35,9 +35,9 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SupportsSkills:    true,
 			SkillsGlobalPath:  []string{"opencode", "skills"},
 			SkillsProjectPath: []string{".opencode", "skills"},
-			SkillsPlatformPrefix: map[string][]string{
-				"linux":  {".config"},
-				"darwin": {".config"},
+			SkillsPlatformPrefix: map[Platform][]string{
+				PlatformLinux:  {".config"},
+				PlatformDarwin: {".config"},
 			},
 		},
 		{
@@ -52,13 +52,15 @@ func testSkillClientIntegrations() []clientAppConfig {
 	}
 }
 
-func newTestSkillManager(homeDir string) *ClientManager {
-	return NewTestClientManager(homeDir, nil, testSkillClientIntegrations(), nil)
+const testHomeDir = "/fake/home"
+
+func newTestSkillManager() *ClientManager {
+	return NewTestClientManager(testHomeDir, nil, testSkillClientIntegrations(), nil)
 }
 
 func TestSupportsSkills(t *testing.T) {
 	t.Parallel()
-	cm := newTestSkillManager("/fake/home")
+	cm := newTestSkillManager()
 
 	tests := []struct {
 		name     string
@@ -82,7 +84,7 @@ func TestSupportsSkills(t *testing.T) {
 
 func TestListSkillSupportingClients(t *testing.T) {
 	t.Parallel()
-	cm := newTestSkillManager("/fake/home")
+	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
 	// Should include ClaudeCode, Codex, OpenCode, and our test-only no-paths-client
@@ -97,8 +99,7 @@ func TestListSkillSupportingClients(t *testing.T) {
 
 func TestGetSkillPath(t *testing.T) {
 	t.Parallel()
-	homeDir := "/fake/home"
-	cm := newTestSkillManager(homeDir)
+	cm := newTestSkillManager()
 
 	tests := []struct {
 		name           string
@@ -115,21 +116,21 @@ func TestGetSkillPath(t *testing.T) {
 			client:    ClaudeCode,
 			skillName: "my-skill",
 			scope:     skills.ScopeUser,
-			wantPath:  filepath.Join(homeDir, ".claude", "skills", "my-skill"),
+			wantPath:  filepath.Join(testHomeDir, ".claude", "skills", "my-skill"),
 		},
 		{
 			name:      "ScopeUser Codex",
 			client:    Codex,
 			skillName: "my-skill",
 			scope:     skills.ScopeUser,
-			wantPath:  filepath.Join(homeDir, ".agents", "skills", "my-skill"),
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
 		},
 		{
 			name:      "ScopeUser OpenCode",
 			client:    OpenCode,
 			skillName: "my-skill",
 			scope:     skills.ScopeUser,
-			wantPath:  filepath.Join(homeDir, ".config", "opencode", "skills", "my-skill"),
+			wantPath:  filepath.Join(testHomeDir, ".config", "opencode", "skills", "my-skill"),
 		},
 		{
 			name:        "ScopeProject ClaudeCode with explicit root",
@@ -307,7 +308,7 @@ func TestDetectProjectRoot(t *testing.T) {
 
 func TestLookupClientAppConfig(t *testing.T) {
 	t.Parallel()
-	cm := newTestSkillManager("/fake/home")
+	cm := newTestSkillManager()
 
 	tests := []struct {
 		name       string
@@ -340,4 +341,27 @@ func TestLookupClientAppConfig(t *testing.T) {
 		// Verify we got a pointer into the actual slice, not a copy
 		assert.Same(t, &cm.clientIntegrations[0], cfg)
 	})
+}
+
+func TestPlatformPrefixKeysAreValid(t *testing.T) {
+	t.Parallel()
+
+	validPlatforms := map[Platform]bool{
+		PlatformLinux:   true,
+		PlatformDarwin:  true,
+		PlatformWindows: true,
+	}
+
+	// Verify all PlatformPrefix and SkillsPlatformPrefix keys in
+	// supportedClientIntegrations use valid Platform constants.
+	for _, cfg := range supportedClientIntegrations {
+		for platform := range cfg.PlatformPrefix {
+			assert.True(t, validPlatforms[platform],
+				"client %s has unknown PlatformPrefix key %q", cfg.ClientType, platform)
+		}
+		for platform := range cfg.SkillsPlatformPrefix {
+			assert.True(t, validPlatforms[platform],
+				"client %s has unknown SkillsPlatformPrefix key %q", cfg.ClientType, platform)
+		}
+	}
 }

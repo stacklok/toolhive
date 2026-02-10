@@ -137,8 +137,8 @@ func GetClientStatus(ctx context.Context) ([]ClientAppStatus, error) {
 	return manager.GetClientStatus(ctx)
 }
 
-func buildConfigDirectoryPath(relPath []string, platformPrefix map[string][]string, path []string) string {
-	if prefix, ok := platformPrefix[runtime.GOOS]; ok {
+func buildConfigDirectoryPath(relPath []string, platformPrefix map[Platform][]string, path []string) string {
+	if prefix, ok := platformPrefix[Platform(runtime.GOOS)]; ok {
 		path = append(path, prefix...)
 	}
 	path = append(path, relPath...)

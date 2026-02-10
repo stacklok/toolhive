@@ -126,7 +126,7 @@ func (cm *ClientManager) buildSkillsGlobalPath(cfg *clientAppConfig, skillName s
 	}
 
 	parts := []string{cm.homeDir}
-	if prefix, ok := cfg.SkillsPlatformPrefix[runtime.GOOS]; ok {
+	if prefix, ok := cfg.SkillsPlatformPrefix[Platform(runtime.GOOS)]; ok {
 		parts = append(parts, prefix...)
 	}
 	parts = append(parts, cfg.SkillsGlobalPath...)

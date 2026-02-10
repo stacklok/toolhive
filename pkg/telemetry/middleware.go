@@ -170,22 +170,11 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-// createSpanName creates an appropriate span name based on available context.
-// Uses the MCP method and optionally appends the resource target (tool name or prompt name).
 func (*HTTPMiddleware) createSpanName(ctx context.Context) string {
 	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
 	if parsedMCP == nil || parsedMCP.Method == "" {
 		return ""
 	}
-
-	// For tools/call and prompts/get, append the resource target
-	switch parsedMCP.Method {
-	case string(mcp.MethodToolsCall), methodPromptsGet:
-		if parsedMCP.ResourceID != "" {
-			return fmt.Sprintf("%s %s", parsedMCP.Method, parsedMCP.ResourceID)
-		}
-	}
-
 	return parsedMCP.Method
 }
 
@@ -259,7 +248,7 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	// New OTEL MCP semantic convention attributes (always emitted)
 	span.SetAttributes(
 		attribute.String("mcp.method.name", parsedMCP.Method),
-		attribute.String("rpc.system", "jsonrpc"),
+		attribute.String("rpc.system.name", "jsonrpc"),
 		attribute.String("mcp.protocol.version", mcpProtocolVersion),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 	)
@@ -280,6 +269,7 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	if m.config.UseLegacyAttributes {
 		span.SetAttributes(
 			attribute.String("mcp.method", parsedMCP.Method),
+			attribute.String("rpc.system", "jsonrpc"),
 			attribute.String("rpc.service", "mcp"),
 		)
 
@@ -301,10 +291,13 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 
 	// Determine backend transport type and map to OTEL network.transport
 	backendTransport := m.extractBackendTransport(r)
-	networkTransport, protocolName := mapTransport(backendTransport)
+	networkTransport, protocolName, protocolVersion := mapTransport(backendTransport)
 	span.SetAttributes(attribute.String("network.transport", networkTransport))
 	if protocolName != "" {
 		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
+	}
+	if protocolVersion != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
 	}
 
 	if m.config.UseLegacyAttributes {
@@ -340,11 +333,6 @@ func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP 
 			if sanitizedArgs != "" {
 				span.SetAttributes(attribute.String("mcp.tool.arguments", sanitizedArgs))
 			}
-		}
-
-	case "resources/read":
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
 		}
 
 	case methodPromptsGet:
@@ -401,16 +389,16 @@ func (m *HTTPMiddleware) extractBackendTransport(r *http.Request) string {
 	return m.transport
 }
 
-// mapTransport maps MCP transport types to OTEL network.transport values.
-// Returns the OTEL network transport value and the protocol name.
-func mapTransport(mcpTransport string) (networkTransport, protocolName string) {
+func mapTransport(mcpTransport string) (networkTransport, protocolName, protocolVersion string) {
 	switch mcpTransport {
 	case "stdio":
-		return "pipe", ""
-	case "sse", "streamable-http":
-		return networkTransportTCP, networkProtocolHTTP
+		return "pipe", "", ""
+	case "sse":
+		return networkTransportTCP, networkProtocolHTTP, "1.1"
+	case "streamable-http":
+		return networkTransportTCP, networkProtocolHTTP, "2"
 	default:
-		return networkTransportTCP, networkProtocolHTTP
+		return networkTransportTCP, networkProtocolHTTP, ""
 	}
 }
 
@@ -623,12 +611,18 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	m.addHTTPAttributes(span, r)
 
 	// Add SSE-specific attributes
-	networkTransport, _ := mapTransport(m.transport)
+	networkTransport, protocolName, protocolVersion := mapTransport(m.transport)
 	span.SetAttributes(
 		attribute.String("sse.event_type", "connection_established"),
 		attribute.String("mcp.server.name", m.serverName),
 		attribute.String("network.transport", networkTransport),
 	)
+	if protocolName != "" {
+		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
+	}
+	if protocolVersion != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
+	}
 	if m.config.UseLegacyAttributes {
 		span.SetAttributes(attribute.String("mcp.transport", m.transport))
 	}

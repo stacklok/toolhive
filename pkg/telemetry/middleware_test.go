@@ -142,13 +142,13 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 			name:         "tools/call with resource ID",
 			mcpMethod:    "tools/call",
 			resourceID:   "github_search",
-			expectedSpan: "tools/call github_search",
+			expectedSpan: "tools/call",
 		},
 		{
 			name:         "prompts/get with resource ID",
 			mcpMethod:    "prompts/get",
 			resourceID:   "code_review",
-			expectedSpan: "prompts/get code_review",
+			expectedSpan: "prompts/get",
 		},
 		{
 			name:         "tools/call without resource ID",
@@ -197,19 +197,21 @@ func TestMapTransport(t *testing.T) {
 		transport        string
 		expectedNetwork  string
 		expectedProtocol string
+		expectedVersion  string
 	}{
-		{"stdio", "stdio", "pipe", ""},
-		{"sse", "sse", "tcp", "http"},
-		{"streamable-http", "streamable-http", "tcp", "http"},
-		{"unknown defaults to tcp", "unknown", "tcp", "http"},
+		{"stdio", "stdio", "pipe", "", ""},
+		{"sse", "sse", "tcp", "http", "1.1"},
+		{"streamable-http", "streamable-http", "tcp", "http", "2"},
+		{"unknown defaults to tcp", "unknown", "tcp", "http", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			network, protocol := mapTransport(tt.transport)
+			network, protocol, version := mapTransport(tt.transport)
 			assert.Equal(t, tt.expectedNetwork, network)
 			assert.Equal(t, tt.expectedProtocol, protocol)
+			assert.Equal(t, tt.expectedVersion, version)
 		})
 	}
 }
@@ -567,72 +569,6 @@ func TestHTTPMiddleware_ExtractBackendTransport(t *testing.T) {
 	}
 }
 
-func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
-	t.Parallel()
-
-	middleware := &HTTPMiddleware{}
-
-	tests := []struct {
-		name           string
-		statusCode     int
-		bytesWritten   int64
-		duration       time.Duration
-		expectedStatus codes.Code
-	}{
-		{
-			name:           "success response",
-			statusCode:     200,
-			bytesWritten:   1024,
-			duration:       100 * time.Millisecond,
-			expectedStatus: codes.Ok,
-		},
-		{
-			name:           "client error",
-			statusCode:     400,
-			bytesWritten:   256,
-			duration:       50 * time.Millisecond,
-			expectedStatus: codes.Error,
-		},
-		{
-			name:           "server error",
-			statusCode:     500,
-			bytesWritten:   128,
-			duration:       200 * time.Millisecond,
-			expectedStatus: codes.Error,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			rw := &responseWriter{
-				statusCode:   tt.statusCode,
-				bytesWritten: tt.bytesWritten,
-			}
-
-			// Test the logic for determining status codes
-			var expectedStatus codes.Code
-			if tt.statusCode >= 400 {
-				expectedStatus = codes.Error
-			} else {
-				expectedStatus = codes.Ok
-			}
-
-			assert.Equal(t, tt.expectedStatus, expectedStatus)
-			assert.Equal(t, tt.statusCode, rw.statusCode)
-			assert.Equal(t, tt.bytesWritten, rw.bytesWritten)
-
-			// Test duration calculation
-			durationMs := float64(tt.duration.Nanoseconds()) / 1e6
-			assert.Greater(t, durationMs, 0.0)
-
-			// Test middleware exists
-			assert.NotNil(t, middleware)
-		})
-	}
-}
-
 func TestResponseWriter(t *testing.T) {
 	t.Parallel()
 
@@ -912,7 +848,9 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 // mockSpan implements trace.Span for testing
 type mockSpan struct {
 	trace.Span
-	attributes map[string]interface{}
+	attributes        map[string]interface{}
+	statusCode        codes.Code
+	statusDescription string
 }
 
 func (m *mockSpan) SetAttributes(kv ...attribute.KeyValue) {
@@ -926,9 +864,12 @@ func (*mockSpan) AddEvent(string, ...trace.EventOption)   {}
 func (*mockSpan) IsRecording() bool                       { return true }
 func (*mockSpan) RecordError(error, ...trace.EventOption) {}
 func (*mockSpan) SpanContext() trace.SpanContext          { return trace.SpanContext{} }
-func (*mockSpan) SetStatus(codes.Code, string)            {}
-func (*mockSpan) SetName(string)                          {}
-func (*mockSpan) TracerProvider() trace.TracerProvider    { return tracenoop.NewTracerProvider() }
+func (s *mockSpan) SetStatus(code codes.Code, description string) {
+	s.statusCode = code
+	s.statusDescription = description
+}
+func (*mockSpan) SetName(string)                       {}
+func (*mockSpan) TracerProvider() trace.TracerProvider { return tracenoop.NewTracerProvider() }
 
 // contains checks if a slice contains a string
 func contains(slice []string, item string) bool {
@@ -1670,12 +1611,13 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 
 				// New OTEL semconv names should be present
 				assert.Contains(t, span.attributes, "mcp.method.name")
-				assert.Contains(t, span.attributes, "rpc.system")
+				assert.Contains(t, span.attributes, "rpc.system.name")
 				assert.Contains(t, span.attributes, "jsonrpc.request.id")
 				assert.Contains(t, span.attributes, "mcp.protocol.version")
 				assert.Contains(t, span.attributes, "jsonrpc.protocol.version")
 				assert.Contains(t, span.attributes, "network.transport")
 				assert.Contains(t, span.attributes, "mcp.server.name")
+				assert.NotContains(t, span.attributes, "network.protocol.version")
 
 				// Legacy names should NOT be present
 				assert.NotContains(t, span.attributes, "mcp.method")
@@ -1719,10 +1661,90 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 				assert.Contains(t, span.attributes, "http.response.status_code")
 				assert.Contains(t, span.attributes, "http.response.body.size")
 
+				// Status should be set to Ok for 200
+				assert.Equal(t, codes.Ok, span.statusCode)
+
 				// Legacy names should NOT be present
 				assert.NotContains(t, span.attributes, "http.status_code")
 				assert.NotContains(t, span.attributes, "http.response_content_length")
 				assert.NotContains(t, span.attributes, "http.duration_ms")
+			},
+		},
+		{
+			name: "finalizeSpan - error status code",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				rw := &responseWriter{statusCode: 500, bytesWritten: 128}
+
+				middleware.finalizeSpan(span, rw, 50*time.Millisecond)
+
+				// Status should be set to Error for 500
+				assert.Equal(t, codes.Error, span.statusCode)
+				assert.Equal(t, "HTTP 500", span.statusDescription)
+			},
+		},
+		{
+			name: "addMCPAttributes - resource URI for resources/read",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "resources/read",
+					ID:         "test-789",
+					ResourceID: "file://test.txt",
+					IsRequest:  true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				// mcp.resource.uri should be present for resources/read
+				assert.Contains(t, span.attributes, "mcp.resource.uri")
+				assert.Equal(t, "file://test.txt", span.attributes["mcp.resource.uri"])
+			},
+		},
+		{
+			name: "addMCPAttributes - no resource URI for tools/call",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ID:         "test-999",
+					ResourceID: "github_search",
+					IsRequest:  true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				// mcp.resource.uri should NOT be present for tools/call
+				assert.NotContains(t, span.attributes, "mcp.resource.uri")
+			},
+		},
+		{
+			name: "addMCPAttributes - network.protocol.version for SSE",
+			testFunc: func(t *testing.T, _ *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				middlewareSSE := &HTTPMiddleware{
+					config:     Config{UseLegacyAttributes: false},
+					serverName: "github",
+					transport:  "sse",
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "tools/call",
+					ID:        "test-sse",
+					IsRequest: true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middlewareSSE.addMCPAttributes(ctx, span, req)
+
+				// network.protocol.version should be present for SSE
+				assert.Contains(t, span.attributes, "network.protocol.version")
+				assert.Equal(t, "1.1", span.attributes["network.protocol.version"])
+				assert.Equal(t, "http", span.attributes["network.protocol.name"])
 			},
 		},
 	}
@@ -1790,10 +1812,12 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 				// New names
 				assert.Equal(t, "tools/call", span.attributes["mcp.method.name"])
 				assert.Equal(t, "test-456", span.attributes["jsonrpc.request.id"])
+				assert.Equal(t, "jsonrpc", span.attributes["rpc.system.name"])
 				assert.Contains(t, span.attributes, "network.transport")
 
 				// Legacy names also present
 				assert.Equal(t, "tools/call", span.attributes["mcp.method"])
+				assert.Equal(t, "jsonrpc", span.attributes["rpc.system"])
 				assert.Equal(t, "mcp", span.attributes["rpc.service"])
 				assert.Equal(t, "test-456", span.attributes["mcp.request.id"])
 				assert.Equal(t, "github_search", span.attributes["mcp.resource.id"])
@@ -1832,6 +1856,9 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 				// New names
 				assert.Equal(t, int64(201), span.attributes["http.response.status_code"])
 				assert.Equal(t, int64(2048), span.attributes["http.response.body.size"])
+
+				// Status should be set to Ok for 201
+				assert.Equal(t, codes.Ok, span.statusCode)
 
 				// Legacy names also present
 				assert.Equal(t, int64(201), span.attributes["http.status_code"])

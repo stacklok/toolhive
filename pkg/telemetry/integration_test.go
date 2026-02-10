@@ -233,7 +233,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	require.Len(t, spans, 1)
 
 	span := spans[0]
-	assert.Equal(t, "mcp.tools/call", span.Name)
+	assert.Equal(t, "tools/call "+testToolName, span.Name)
 
 	// Verify span attributes
 	attrs := span.Attributes
@@ -242,14 +242,22 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 		attrMap[string(attr.Key)] = attr.Value.AsInterface()
 	}
 
+	// New OTEL semantic convention attributes (always present)
+	assert.Equal(t, "tools/call", attrMap["mcp.method.name"])
+	assert.Equal(t, testToolName, attrMap["gen_ai.tool.name"])
+	assert.Equal(t, "test-123", attrMap["jsonrpc.request.id"])
+	assert.Equal(t, "POST", attrMap["http.request.method"])
+	assert.Equal(t, int64(200), attrMap["http.response.status_code"])
+
+	// Legacy attributes (present because UseLegacyAttributes=true)
 	assert.Equal(t, "tools/call", attrMap["mcp.method"])
 	assert.Equal(t, testToolName, attrMap["mcp.tool.name"])
 	assert.Equal(t, "test-123", attrMap["mcp.request.id"])
 	assert.Equal(t, "POST", attrMap["http.method"])
 	assert.Equal(t, int64(200), attrMap["http.status_code"])
 
-	// Verify sensitive data is redacted
-	if toolArgs, exists := attrMap["mcp.tool.arguments"]; exists {
+	// Verify sensitive data is redacted in new attribute name
+	if toolArgs, exists := attrMap["gen_ai.tool.call.arguments"]; exists {
 		argsStr := toolArgs.(string)
 		assert.Contains(t, argsStr, "api_key=[REDACTED]")
 		assert.Contains(t, argsStr, "query=test query")

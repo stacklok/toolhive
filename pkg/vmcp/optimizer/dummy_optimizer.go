@@ -106,6 +106,16 @@ func (d *DummyOptimizer) toolNames() []string {
 // returned factory share the same underlying storage, enabling cross-session search.
 func NewDummyOptimizerFactory() func(context.Context, []server.ServerTool) (Optimizer, error) {
 	store := NewInMemoryToolStore()
+	return NewDummyOptimizerFactoryWithStore(store)
+}
+
+// NewDummyOptimizerFactoryWithStore returns an OptimizerFactory that creates
+// DummyOptimizer instances backed by the given ToolStore. All optimizers created
+// by the returned factory share the same store, enabling cross-session search.
+//
+// Use this when you need to provide a specific store implementation (e.g.,
+// SQLiteToolStore for FTS5-based search) instead of the default InMemoryToolStore.
+func NewDummyOptimizerFactoryWithStore(store ToolStore) func(context.Context, []server.ServerTool) (Optimizer, error) {
 	return func(ctx context.Context, tools []server.ServerTool) (Optimizer, error) {
 		return NewDummyOptimizer(ctx, store, tools)
 	}

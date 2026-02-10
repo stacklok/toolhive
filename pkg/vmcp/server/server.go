@@ -140,6 +140,11 @@ type Config struct {
 	// If not set, the optimizer is disabled.
 	OptimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
+	// OptimizerEnabled indicates that the optimizer should be enabled.
+	// When true, Start() creates the FTS5 store, wires the OptimizerFactory,
+	// and registers the store cleanup in shutdownFuncs.
+	OptimizerEnabled bool
+
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
 	// In CLI mode: NoOpReporter (no persistent status)
@@ -395,6 +400,18 @@ func New(
 //
 //nolint:gocyclo // Complexity from health monitoring and middleware setup is acceptable
 func (s *Server) Start(ctx context.Context) error {
+	// Create optimizer store if optimizer is enabled
+	if s.config.OptimizerEnabled {
+		store, err := optimizer.NewSQLiteToolStore()
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer store: %w", err)
+		}
+		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
+			return store.Close()
+		})
+		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store)
+	}
+
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface
 	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
 	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.

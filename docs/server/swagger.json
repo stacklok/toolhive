@@ -1631,6 +1631,10 @@
                     "tracingEnabled": {
                         "description": "TracingEnabled controls whether distributed tracing is enabled.\nWhen false, no tracer provider is created even if an endpoint is configured.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
+                    },
+                    "useLegacyAttributes": {
+                        "description": "UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names\nare emitted alongside the new standard attribute names. When true, spans include both\nold and new attribute names for backward compatibility with existing dashboards.\nCurrently defaults to true; this will change to false in a future release.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"

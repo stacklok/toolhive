@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -208,73 +207,95 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 }
 
 // buildUpstreamConfigs converts UpstreamRunConfig slice to UpstreamConfig slice.
-func buildUpstreamConfigs(ctx context.Context, runConfigs []authserver.UpstreamRunConfig) ([]authserver.UpstreamConfig, error) {
+// It preserves the provider type so the factory can create the correct provider
+// (OIDCProviderImpl for OIDC, BaseOAuth2Provider for OAuth2).
+func buildUpstreamConfigs(_ context.Context, runConfigs []authserver.UpstreamRunConfig) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
 	for _, rc := range runConfigs {
-		oauthCfg, err := buildOAuth2Config(ctx, &rc)
+		cfg, err := buildUpstreamConfig(&rc)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 		}
-
-		configs = append(configs, authserver.UpstreamConfig{
-			Name:   rc.Name,
-			Config: oauthCfg,
-		})
+		configs = append(configs, *cfg)
 	}
 
 	return configs, nil
 }
 
-// buildOAuth2Config builds an upstream.OAuth2Config from UpstreamRunConfig.
-func buildOAuth2Config(ctx context.Context, rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
+// buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.
+// It preserves the provider type and builds the appropriate config.
+func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.UpstreamConfig, error) {
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
-		return buildOIDCConfig(ctx, rc)
+		oidcCfg, err := buildOIDCConfig(rc)
+		if err != nil {
+			return nil, err
+		}
+		return &authserver.UpstreamConfig{
+			Name:       rc.Name,
+			Type:       authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: oidcCfg,
+		}, nil
+
 	case authserver.UpstreamProviderTypeOAuth2:
-		return buildPureOAuth2Config(rc)
+		oauth2Cfg, err := buildPureOAuth2Config(rc)
+		if err != nil {
+			return nil, err
+		}
+		return &authserver.UpstreamConfig{
+			Name:         rc.Name,
+			Type:         authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: oauth2Cfg,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", rc.Type)
 	}
 }
 
-// buildOIDCConfig builds an upstream.OAuth2Config for an OIDC provider.
-// It performs OIDC discovery to resolve the authorization and token endpoints.
-func buildOIDCConfig(ctx context.Context, rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
+// buildOIDCConfig builds an upstream.OIDCConfig for an OIDC provider.
+// Discovery is deferred to the provider factory - we only resolve secrets here.
+//
+// Note: OIDCUpstreamRunConfig.UserInfoOverride is intentionally NOT propagated.
+// OIDC providers resolve user identity from the ID token's "sub" claim (validated
+// by OIDCProviderImpl.ExchangeCodeForIdentity), not from the UserInfo endpoint.
+// The UserInfo endpoint may still be discovered via OIDC discovery for other
+// purposes, but it is not used for identity resolution.
+func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, error) {
 	if rc.OIDCConfig == nil {
 		return nil, fmt.Errorf("oidc_config required for OIDC provider")
 	}
 
 	oidc := rc.OIDCConfig
+
+	// Warn if UserInfoOverride is configured but won't be used
+	if oidc.UserInfoOverride != nil {
+		logger.Warnw("userinfo_override is configured for OIDC provider but will not be used; "+
+			"OIDC providers resolve identity from the ID token, not the UserInfo endpoint",
+			"upstream", rc.Name,
+		)
+	}
+
 	clientSecret, err := resolveSecret(oidc.ClientSecretFile, oidc.ClientSecretEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OIDC client secret: %w", err)
 	}
 
-	// Perform OIDC discovery to get the actual endpoints
-	discoveryDoc, err := oauth.DiscoverOIDCEndpoints(ctx, oidc.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed for %s: %w", oidc.IssuerURL, err)
+	// Default scopes if not specified
+	scopes := oidc.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{"openid", "offline_access"}
 	}
 
-	// Build UserInfo config - use override if provided, otherwise use discovered endpoint
-	userInfoCfg := convertUserInfoConfig(oidc.UserInfoOverride)
-	if userInfoCfg == nil && discoveryDoc.UserinfoEndpoint != "" {
-		userInfoCfg = &upstream.UserInfoConfig{
-			EndpointURL: discoveryDoc.UserinfoEndpoint,
-		}
-	}
-
-	return &upstream.OAuth2Config{
+	return &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
 			ClientID:     oidc.ClientID,
 			ClientSecret: clientSecret,
 			RedirectURI:  oidc.RedirectURI,
-			Scopes:       oidc.Scopes,
+			Scopes:       scopes,
 		},
-		AuthorizationEndpoint: discoveryDoc.AuthorizationEndpoint,
-		TokenEndpoint:         discoveryDoc.TokenEndpoint,
-		UserInfo:              userInfoCfg,
+		Issuer: oidc.IssuerURL,
 	}, nil
 }
 

@@ -368,6 +368,7 @@ type OpenTelemetryConfig struct {
 	TracingEnabled              bool     `yaml:"tracing-enabled,omitempty"`
 	Insecure                    bool     `yaml:"insecure,omitempty"`
 	EnablePrometheusMetricsPath bool     `yaml:"enable-prometheus-metrics-path,omitempty"`
+	UseLegacyAttributes         bool     `yaml:"use-legacy-attributes"`
 }
 
 // getRuntimeConfig returns the runtime configuration for a given transport type

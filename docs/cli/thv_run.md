@@ -150,6 +150,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-sampling-rate float                    OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string                    OpenTelemetry service name (defaults to toolhive-mcp-proxy)
       --otel-tracing-enabled                        Enable distributed tracing (when OTLP endpoint is configured) (default true)
+      --otel-use-legacy-attributes                  Emit legacy attribute names alongside new OTEL semantic convention names (default true) (default true)
       --permission-profile string                   Permission profile to use (none, network, or path to JSON file) (default is to use the permission profile from the registry or "network" if not part of the registry)
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")

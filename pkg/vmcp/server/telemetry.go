@@ -85,7 +85,7 @@ var _ vmcp.BackendClient = telemetryBackendClient{}
 // record updates the metrics and creates a span for each method on the BackendClient interface.
 // It returns a function that should be deferred to record the duration, error, and end the span.
 func (t telemetryBackendClient) record(
-	ctx context.Context, target *vmcp.BackendTarget, action string, err *error,
+	ctx context.Context, target *vmcp.BackendTarget, action string, err *error, attrs ...attribute.KeyValue,
 ) (context.Context, func()) {
 	// Create span attributes
 	commonAttrs := []attribute.KeyValue{
@@ -95,6 +95,8 @@ func (t telemetryBackendClient) record(
 		attribute.String("target.transport_type", target.TransportType),
 		attribute.String("action", action),
 	}
+
+	commonAttrs = append(commonAttrs, attrs...)
 
 	ctx, span := t.tracer.Start(ctx, "telemetryBackendClient."+action,
 		// TODO: Add params and results to the span once we have reusable sanitization functions.
@@ -120,7 +122,7 @@ func (t telemetryBackendClient) record(
 func (t telemetryBackendClient) CallTool(
 	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any, meta map[string]any,
 ) (_ *vmcp.ToolCallResult, retErr error) {
-	ctx, done := t.record(ctx, target, "call_tool", &retErr)
+	ctx, done := t.record(ctx, target, "call_tool", &retErr, attribute.String("tool_name", toolName))
 	defer done()
 	return t.backendClient.CallTool(ctx, target, toolName, arguments, meta)
 }
@@ -136,7 +138,7 @@ func (t telemetryBackendClient) ReadResource(
 func (t telemetryBackendClient) GetPrompt(
 	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
 ) (_ *vmcp.PromptGetResult, retErr error) {
-	ctx, done := t.record(ctx, target, "get_prompt", &retErr)
+	ctx, done := t.record(ctx, target, "get_prompt", &retErr, attribute.String("prompt_name", name))
 	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }

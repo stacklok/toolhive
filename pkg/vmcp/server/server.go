@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -434,14 +435,21 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
-	// MCP endpoint - apply middleware chain.
-	// Execution order: recovery → accept-check → auth → audit → discovery → backend enrichment → telemetry → handler
+	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
+	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
+	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
+
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		logger.Info("Telemetry middleware enabled for MCP endpoints")
 	}
+
+	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
+	// This runs before telemetry so that recordMetrics can label metrics with the
+	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
+	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply backend enrichment middleware if audit is configured
 	// This runs after discovery populates the routing table, so it can extract backend names

@@ -254,6 +254,28 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 				EnablePrometheusMetricsPath: true,
 				ServiceName:                 "prom-server", // Defaulted
 				ServiceVersion:              buildVersion,  // Defaulted to build version
+				UseLegacyAttributes:         true,          // Default when OTEL block absent
+			},
+		},
+		{
+			name: "reads UseLegacyAttributes from CR spec",
+			input: &v1alpha1.TelemetryConfig{
+				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
+					Enabled:             true,
+					Endpoint:            "https://otlp:4317",
+					UseLegacyAttributes: false,
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled: true,
+					},
+				},
+			},
+			serverName: "legacy-test",
+			expected: &telemetry.Config{
+				Endpoint:            "otlp:4317",
+				ServiceName:         "legacy-test",
+				ServiceVersion:      buildVersion,
+				TracingEnabled:      true,
+				UseLegacyAttributes: false,
 			},
 		},
 	}
@@ -271,6 +293,7 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			assert.Equal(t, tt.expected.ServiceVersion, result.ServiceVersion)
 			assert.Equal(t, tt.expected.TracingEnabled, result.TracingEnabled)
 			assert.Equal(t, tt.expected.EnablePrometheusMetricsPath, result.EnablePrometheusMetricsPath)
+			assert.Equal(t, tt.expected.UseLegacyAttributes, result.UseLegacyAttributes)
 		})
 	}
 }

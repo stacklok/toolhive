@@ -269,7 +269,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
+		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil, false),
 	}
 
 	// Add header forward configuration if specified

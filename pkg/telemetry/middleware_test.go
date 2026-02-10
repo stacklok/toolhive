@@ -1613,7 +1613,6 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 				assert.Contains(t, span.attributes, "mcp.method.name")
 				assert.Contains(t, span.attributes, "rpc.system.name")
 				assert.Contains(t, span.attributes, "jsonrpc.request.id")
-				assert.Contains(t, span.attributes, "mcp.protocol.version")
 				assert.Contains(t, span.attributes, "jsonrpc.protocol.version")
 				assert.Contains(t, span.attributes, "network.transport")
 				assert.Contains(t, span.attributes, "mcp.server.name")

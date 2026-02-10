@@ -29,9 +29,6 @@ import (
 const (
 	// instrumentationName is the name of this instrumentation package
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
-	// mcpProtocolVersion is the MCP protocol version reported in spans.
-	// TODO: read from MCP-Protocol-Version header when available.
-	mcpProtocolVersion = "2025-06-18"
 	// methodPromptsGet is the MCP method name for prompts/get
 	methodPromptsGet = "prompts/get"
 	// networkTransportTCP is the OTEL value for TCP transport
@@ -249,7 +246,6 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	span.SetAttributes(
 		attribute.String("mcp.method.name", parsedMCP.Method),
 		attribute.String("rpc.system.name", "jsonrpc"),
-		attribute.String("mcp.protocol.version", mcpProtocolVersion),
 		attribute.String("jsonrpc.protocol.version", "2.0"),
 	)
 

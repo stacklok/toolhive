@@ -287,22 +287,32 @@ func TestRedisStorage_AuthorizeCode(t *testing.T) {
 		})
 	})
 
-	t.Run("invalidated code returns ErrInvalidatedAuthorizeCode even after code expires", func(t *testing.T) {
+	t.Run("invalidation extends auth code TTL and returns requester", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			client := testClient()
 			require.NoError(t, s.RegisterClient(ctx, client))
 
 			request := newRedisTestRequester("req-1", client)
 			require.NoError(t, s.CreateAuthorizeCodeSession(ctx, "code-replay", request))
+
+			// Record the initial TTL of the auth code key.
+			codeKey := redisKey(s.keyPrefix, KeyTypeAuthCode, "code-replay")
+			initialTTL := mr.TTL(codeKey)
+
 			require.NoError(t, s.InvalidateAuthorizeCodeSession(ctx, "code-replay"))
 
-			// Simulate the auth code key expiring while the invalidation marker survives.
-			codeKey := redisKey(s.keyPrefix, KeyTypeAuthCode, "code-replay")
-			mr.Del(codeKey)
+			// Verify the auth code TTL was extended to match the invalidation marker.
+			extendedTTL := mr.TTL(codeKey)
+			assert.Greater(t, extendedTTL, initialTTL, "auth code TTL should be extended on invalidation")
 
-			_, err := s.GetAuthorizeCodeSession(ctx, "code-replay", nil)
+			// Fast-forward past the original auth code TTL but within the extended TTL.
+			// The auth code data must still be available for replay detection.
+			mr.FastForward(initialTTL + time.Second)
+
+			retrieved, err := s.GetAuthorizeCodeSession(ctx, "code-replay", nil)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, fosite.ErrInvalidatedAuthorizeCode)
+			assert.NotNil(t, retrieved, "must return request with invalidated error for replay detection")
 		})
 	})
 

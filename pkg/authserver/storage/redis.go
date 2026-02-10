@@ -306,30 +306,10 @@ func (s *RedisStorage) CreateAuthorizeCodeSession(ctx context.Context, code stri
 }
 
 // GetAuthorizeCodeSession retrieves the authorization request for a given code.
+// Matches memory.go's pattern: get the auth code data first, then check if
+// invalidated. InvalidateAuthorizeCodeSession extends the auth code TTL to match
+// the invalidation marker, so the data is always available when the marker exists.
 func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
-	// Check invalidation marker first. The marker outlives the auth code key
-	// (30 min vs 10 min), so a replayed code must return ErrInvalidatedAuthorizeCode
-	// even after the auth code itself has expired. This is critical for fosite's
-	// replay attack protection per RFC 6819 — it triggers token revocation.
-	invalidatedKey := redisKey(s.keyPrefix, KeyTypeInvalidated, code)
-	invalidated, err := s.client.Exists(ctx, invalidatedKey).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to check invalidation status: %w", err)
-	}
-	if invalidated > 0 {
-		// Try to return the request data if the auth code key is still alive,
-		// so fosite can use the request ID for token revocation.
-		key := redisKey(s.keyPrefix, KeyTypeAuthCode, code)
-		data, getErr := s.client.Get(ctx, key).Bytes()
-		if getErr == nil {
-			request, unmarshalErr := unmarshalRequester(ctx, data, s)
-			if unmarshalErr == nil {
-				return request, fosite.ErrInvalidatedAuthorizeCode
-			}
-		}
-		return nil, fosite.ErrInvalidatedAuthorizeCode
-	}
-
 	key := redisKey(s.keyPrefix, KeyTypeAuthCode, code)
 	data, err := s.client.Get(ctx, key).Bytes()
 	if err != nil {
@@ -344,10 +324,26 @@ func (s *RedisStorage) GetAuthorizeCodeSession(ctx context.Context, code string,
 		return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 	}
 
+	// Check if the code has been invalidated.
+	invalidatedKey := redisKey(s.keyPrefix, KeyTypeInvalidated, code)
+	invalidated, err := s.client.Exists(ctx, invalidatedKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to check invalidation status: %w", err)
+	}
+	if invalidated > 0 {
+		// Must return the request along with the error as per fosite documentation.
+		// Fosite needs the Requester to extract the request ID for token revocation
+		// during replay attack handling (RFC 6819).
+		return request, fosite.ErrInvalidatedAuthorizeCode
+	}
+
 	return request, nil
 }
 
 // InvalidateAuthorizeCodeSession marks an authorization code as used/invalid.
+// It extends the auth code key's TTL to match the invalidation marker, ensuring
+// GetAuthorizeCodeSession can always return the Requester alongside
+// ErrInvalidatedAuthorizeCode as required by fosite for token revocation.
 func (s *RedisStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code string) error {
 	key := redisKey(s.keyPrefix, KeyTypeAuthCode, code)
 
@@ -360,9 +356,15 @@ func (s *RedisStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code 
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Authorization code not found"))
 	}
 
-	// Mark as invalidated
+	// Atomically: create invalidation marker and extend auth code TTL to match.
+	// The auth code data must outlive the invalidation marker so that
+	// GetAuthorizeCodeSession can return the Requester for replay detection.
 	invalidatedKey := redisKey(s.keyPrefix, KeyTypeInvalidated, code)
-	return s.client.Set(ctx, invalidatedKey, "1", DefaultInvalidatedCodeTTL).Err()
+	pipe := s.client.TxPipeline()
+	pipe.Set(ctx, invalidatedKey, "1", DefaultInvalidatedCodeTTL)
+	pipe.Expire(ctx, key, DefaultInvalidatedCodeTTL)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // -----------------------

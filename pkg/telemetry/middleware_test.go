@@ -135,30 +135,37 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 	tests := []struct {
 		name         string
 		mcpMethod    string
-		httpMethod   string
-		path         string
+		resourceID   string
 		expectedSpan string
 	}{
 		{
-			name:         "with MCP method",
+			name:         "tools/call with resource ID",
 			mcpMethod:    "tools/call",
-			httpMethod:   "POST",
-			path:         "/messages",
-			expectedSpan: "mcp.tools/call",
+			resourceID:   "github_search",
+			expectedSpan: "tools/call",
 		},
 		{
-			name:         "without MCP method",
-			mcpMethod:    "",
-			httpMethod:   "GET",
-			path:         "/health",
-			expectedSpan: "GET /health",
+			name:         "prompts/get with resource ID",
+			mcpMethod:    "prompts/get",
+			resourceID:   "code_review",
+			expectedSpan: "prompts/get",
 		},
 		{
-			name:         "with different MCP method",
+			name:         "tools/call without resource ID",
+			mcpMethod:    "tools/call",
+			resourceID:   "",
+			expectedSpan: "tools/call",
+		},
+		{
+			name:         "resources/read (no resource appended)",
 			mcpMethod:    "resources/read",
-			httpMethod:   "POST",
-			path:         "/api/v1/messages",
-			expectedSpan: "mcp.resources/read",
+			resourceID:   "file://test.txt",
+			expectedSpan: "resources/read",
+		},
+		{
+			name:         "no MCP method returns empty",
+			mcpMethod:    "",
+			expectedSpan: "",
 		},
 	}
 
@@ -166,18 +173,45 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequest(tt.httpMethod, tt.path, nil)
-			ctx := req.Context()
+			ctx := context.Background()
 
 			if tt.mcpMethod != "" {
 				mcpRequest := &mcpparser.ParsedMCPRequest{
-					Method: tt.mcpMethod,
+					Method:     tt.mcpMethod,
+					ResourceID: tt.resourceID,
 				}
 				ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, mcpRequest)
 			}
 
-			spanName := middleware.createSpanName(ctx, req)
+			spanName := middleware.createSpanName(ctx)
 			assert.Equal(t, tt.expectedSpan, spanName)
+		})
+	}
+}
+
+func TestMapTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		transport        string
+		expectedNetwork  string
+		expectedProtocol string
+		expectedVersion  string
+	}{
+		{"stdio", "stdio", "pipe", "", ""},
+		{"sse", "sse", "tcp", "http", "1.1"},
+		{"streamable-http", "streamable-http", "tcp", "http", "2"},
+		{"unknown defaults to tcp", "unknown", "tcp", "http", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			network, protocol, version := mapTransport(tt.transport)
+			assert.Equal(t, tt.expectedNetwork, network)
+			assert.Equal(t, tt.expectedProtocol, protocol)
+			assert.Equal(t, tt.expectedVersion, version)
 		})
 	}
 }
@@ -535,72 +569,6 @@ func TestHTTPMiddleware_ExtractBackendTransport(t *testing.T) {
 	}
 }
 
-func TestHTTPMiddleware_FinalizeSpan_Logic(t *testing.T) {
-	t.Parallel()
-
-	middleware := &HTTPMiddleware{}
-
-	tests := []struct {
-		name           string
-		statusCode     int
-		bytesWritten   int64
-		duration       time.Duration
-		expectedStatus codes.Code
-	}{
-		{
-			name:           "success response",
-			statusCode:     200,
-			bytesWritten:   1024,
-			duration:       100 * time.Millisecond,
-			expectedStatus: codes.Ok,
-		},
-		{
-			name:           "client error",
-			statusCode:     400,
-			bytesWritten:   256,
-			duration:       50 * time.Millisecond,
-			expectedStatus: codes.Error,
-		},
-		{
-			name:           "server error",
-			statusCode:     500,
-			bytesWritten:   128,
-			duration:       200 * time.Millisecond,
-			expectedStatus: codes.Error,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			rw := &responseWriter{
-				statusCode:   tt.statusCode,
-				bytesWritten: tt.bytesWritten,
-			}
-
-			// Test the logic for determining status codes
-			var expectedStatus codes.Code
-			if tt.statusCode >= 400 {
-				expectedStatus = codes.Error
-			} else {
-				expectedStatus = codes.Ok
-			}
-
-			assert.Equal(t, tt.expectedStatus, expectedStatus)
-			assert.Equal(t, tt.statusCode, rw.statusCode)
-			assert.Equal(t, tt.bytesWritten, rw.bytesWritten)
-
-			// Test duration calculation
-			durationMs := float64(tt.duration.Nanoseconds()) / 1e6
-			assert.Greater(t, durationMs, 0.0)
-
-			// Test middleware exists
-			assert.NotNil(t, middleware)
-		})
-	}
-}
-
 func TestResponseWriter(t *testing.T) {
 	t.Parallel()
 
@@ -880,7 +848,9 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 // mockSpan implements trace.Span for testing
 type mockSpan struct {
 	trace.Span
-	attributes map[string]interface{}
+	attributes        map[string]interface{}
+	statusCode        codes.Code
+	statusDescription string
 }
 
 func (m *mockSpan) SetAttributes(kv ...attribute.KeyValue) {
@@ -894,9 +864,12 @@ func (*mockSpan) AddEvent(string, ...trace.EventOption)   {}
 func (*mockSpan) IsRecording() bool                       { return true }
 func (*mockSpan) RecordError(error, ...trace.EventOption) {}
 func (*mockSpan) SpanContext() trace.SpanContext          { return trace.SpanContext{} }
-func (*mockSpan) SetStatus(codes.Code, string)            {}
-func (*mockSpan) SetName(string)                          {}
-func (*mockSpan) TracerProvider() trace.TracerProvider    { return tracenoop.NewTracerProvider() }
+func (s *mockSpan) SetStatus(code codes.Code, description string) {
+	s.statusCode = code
+	s.statusDescription = description
+}
+func (*mockSpan) SetName(string)                       {}
+func (*mockSpan) TracerProvider() trace.TracerProvider { return tracenoop.NewTracerProvider() }
 
 // contains checks if a slice contains a string
 func contains(slice []string, item string) bool {
@@ -1596,7 +1569,7 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 		testFunc func(t *testing.T, middleware *HTTPMiddleware, mockSpan *mockSpan)
 	}{
 		{
-			name: "addHTTPAttributes - no attributes set",
+			name: "addHTTPAttributes - only new OTEL names, no legacy",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				req := httptest.NewRequest("POST", "http://localhost:8080/messages", nil)
@@ -1604,12 +1577,25 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 
 				middleware.addHTTPAttributes(span, req)
 
-				// No HTTP attributes should be set
-				assert.Empty(t, span.attributes, "Expected no attributes with UseLegacyAttributes disabled")
+				// New OTEL semconv names should be present
+				assert.Contains(t, span.attributes, "http.request.method")
+				assert.Contains(t, span.attributes, "url.full")
+				assert.Contains(t, span.attributes, "url.scheme")
+				assert.Contains(t, span.attributes, "server.address")
+				assert.Contains(t, span.attributes, "url.path")
+				assert.Contains(t, span.attributes, "user_agent.original")
+
+				// Legacy names should NOT be present
+				assert.NotContains(t, span.attributes, "http.method")
+				assert.NotContains(t, span.attributes, "http.url")
+				assert.NotContains(t, span.attributes, "http.scheme")
+				assert.NotContains(t, span.attributes, "http.host")
+				assert.NotContains(t, span.attributes, "http.target")
+				assert.NotContains(t, span.attributes, "http.user_agent")
 			},
 		},
 		{
-			name: "addMCPAttributes - only unconditional attributes set (non-batch)",
+			name: "addMCPAttributes - new names present, legacy absent",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				req := httptest.NewRequest("POST", "/messages", nil)
@@ -1618,23 +1604,22 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 					ID:         "test-123",
 					ResourceID: "github_search",
 					IsRequest:  true,
-					IsBatch:    false,
 				}
 				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
 
 				middleware.addMCPAttributes(ctx, span, req)
 
-				// Only unconditional attributes should be set
-				// mcp.server.name is always set
+				// New OTEL semconv names should be present
+				assert.Contains(t, span.attributes, "mcp.method.name")
+				assert.Contains(t, span.attributes, "rpc.system.name")
+				assert.Contains(t, span.attributes, "jsonrpc.request.id")
+				assert.Contains(t, span.attributes, "jsonrpc.protocol.version")
+				assert.Contains(t, span.attributes, "network.transport")
 				assert.Contains(t, span.attributes, "mcp.server.name")
-				assert.Equal(t, "github", span.attributes["mcp.server.name"])
+				assert.NotContains(t, span.attributes, "network.protocol.version")
 
-				// mcp.is_batch is only set when IsBatch is true (not for false)
-				assert.NotContains(t, span.attributes, "mcp.is_batch")
-
-				// Legacy attributes should NOT be set
+				// Legacy names should NOT be present
 				assert.NotContains(t, span.attributes, "mcp.method")
-				assert.NotContains(t, span.attributes, "rpc.system")
 				assert.NotContains(t, span.attributes, "rpc.service")
 				assert.NotContains(t, span.attributes, "mcp.request.id")
 				assert.NotContains(t, span.attributes, "mcp.resource.id")
@@ -1642,67 +1627,123 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 			},
 		},
 		{
-			name: "addMCPAttributes - batch request includes mcp.is_batch",
-			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
-				t.Helper()
-				req := httptest.NewRequest("POST", "/messages", nil)
-				mcpRequest := &mcpparser.ParsedMCPRequest{
-					Method:    "tools/list",
-					ID:        "batch-123",
-					IsRequest: true,
-					IsBatch:   true,
-				}
-				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
-
-				middleware.addMCPAttributes(ctx, span, req)
-
-				// Unconditional attributes
-				assert.Contains(t, span.attributes, "mcp.server.name")
-				assert.Contains(t, span.attributes, "mcp.is_batch")
-				assert.Equal(t, true, span.attributes["mcp.is_batch"])
-
-				// Legacy attributes should NOT be set
-				assert.NotContains(t, span.attributes, "mcp.method")
-				assert.NotContains(t, span.attributes, "rpc.system")
-			},
-		},
-		{
-			name: "addMethodSpecificAttributes - early return, no attributes",
+			name: "addMethodSpecificAttributes - new gen_ai names, no legacy",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				parsedMCP := &mcpparser.ParsedMCPRequest{
 					Method:     "tools/call",
 					ResourceID: "github_search",
-					Arguments: map[string]interface{}{
-						"query": "test",
-					},
+					Arguments:  map[string]interface{}{"query": "test"},
 				}
 
 				middleware.addMethodSpecificAttributes(span, parsedMCP)
 
-				// No attributes should be set due to early return
-				assert.Empty(t, span.attributes, "Expected no attributes with UseLegacyAttributes disabled")
+				// New gen_ai names should be present
+				assert.Contains(t, span.attributes, "gen_ai.tool.name")
+				assert.Contains(t, span.attributes, "gen_ai.operation.name")
+				assert.Contains(t, span.attributes, "gen_ai.tool.call.arguments")
+
+				// Legacy names should NOT be present
+				assert.NotContains(t, span.attributes, "mcp.tool.name")
+				assert.NotContains(t, span.attributes, "mcp.tool.arguments")
 			},
 		},
 		{
-			name: "finalizeSpan - no http attributes, span status still set",
+			name: "finalizeSpan - new response names, no legacy",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
-				rw := &responseWriter{
-					statusCode:   200,
-					bytesWritten: 1024,
-				}
-				duration := 100 * time.Millisecond
+				rw := &responseWriter{statusCode: 200, bytesWritten: 1024}
 
-				middleware.finalizeSpan(span, rw, duration)
+				middleware.finalizeSpan(span, rw, 100*time.Millisecond)
 
-				// HTTP attributes should NOT be set
+				// New names should be present
+				assert.Contains(t, span.attributes, "http.response.status_code")
+				assert.Contains(t, span.attributes, "http.response.body.size")
+
+				// Status should be set to Ok for 200
+				assert.Equal(t, codes.Ok, span.statusCode)
+
+				// Legacy names should NOT be present
 				assert.NotContains(t, span.attributes, "http.status_code")
 				assert.NotContains(t, span.attributes, "http.response_content_length")
 				assert.NotContains(t, span.attributes, "http.duration_ms")
+			},
+		},
+		{
+			name: "finalizeSpan - error status code",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				rw := &responseWriter{statusCode: 500, bytesWritten: 128}
 
-				// Span status is still set (mockSpan has no-op SetStatus)
-				// We can't verify SetStatus was called, but we verify no attributes were set
+				middleware.finalizeSpan(span, rw, 50*time.Millisecond)
+
+				// Status should be set to Error for 500
+				assert.Equal(t, codes.Error, span.statusCode)
+				assert.Equal(t, "HTTP 500", span.statusDescription)
+			},
+		},
+		{
+			name: "addMCPAttributes - resource URI for resources/read",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "resources/read",
+					ID:         "test-789",
+					ResourceID: "file://test.txt",
+					IsRequest:  true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				// mcp.resource.uri should be present for resources/read
+				assert.Contains(t, span.attributes, "mcp.resource.uri")
+				assert.Equal(t, "file://test.txt", span.attributes["mcp.resource.uri"])
+			},
+		},
+		{
+			name: "addMCPAttributes - no resource URI for tools/call",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ID:         "test-999",
+					ResourceID: "github_search",
+					IsRequest:  true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				// mcp.resource.uri should NOT be present for tools/call
+				assert.NotContains(t, span.attributes, "mcp.resource.uri")
+			},
+		},
+		{
+			name: "addMCPAttributes - network.protocol.version for SSE",
+			testFunc: func(t *testing.T, _ *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				middlewareSSE := &HTTPMiddleware{
+					config:     Config{UseLegacyAttributes: false},
+					serverName: "github",
+					transport:  "sse",
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "tools/call",
+					ID:        "test-sse",
+					IsRequest: true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middlewareSSE.addMCPAttributes(ctx, span, req)
+
+				// network.protocol.version should be present for SSE
+				assert.Contains(t, span.attributes, "network.protocol.version")
+				assert.Equal(t, "1.1", span.attributes["network.protocol.version"])
+				assert.Equal(t, "http", span.attributes["network.protocol.name"])
 			},
 		},
 	}
@@ -1711,19 +1752,12 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create middleware with UseLegacyAttributes disabled
 			middleware := &HTTPMiddleware{
-				config: Config{
-					UseLegacyAttributes: false,
-				},
+				config:     Config{UseLegacyAttributes: false},
 				serverName: "github",
 				transport:  "stdio",
 			}
-
-			// Create mock span
 			span := &mockSpan{attributes: make(map[string]interface{})}
-
-			// Run test
 			tt.testFunc(t, middleware, span)
 		})
 	}
@@ -1737,7 +1771,7 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 		testFunc func(t *testing.T, middleware *HTTPMiddleware, mockSpan *mockSpan)
 	}{
 		{
-			name: "addHTTPAttributes - all attributes set",
+			name: "addHTTPAttributes - both new and legacy names present",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				req := httptest.NewRequest("POST", "http://localhost:8080/api/v1/messages?session=123", nil)
@@ -1746,21 +1780,21 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 
 				middleware.addHTTPAttributes(span, req)
 
-				// All HTTP attributes should be set
-				assert.Contains(t, span.attributes, "http.method")
+				// New OTEL semconv names
+				assert.Equal(t, "POST", span.attributes["http.request.method"])
+				assert.Equal(t, "http", span.attributes["url.scheme"])
+				assert.Equal(t, "localhost:8080", span.attributes["server.address"])
+				assert.Equal(t, "test-client/1.0", span.attributes["user_agent.original"])
+
+				// Legacy names also present
 				assert.Equal(t, "POST", span.attributes["http.method"])
-				assert.Contains(t, span.attributes, "http.url")
-				assert.Contains(t, span.attributes, "http.scheme")
 				assert.Equal(t, "http", span.attributes["http.scheme"])
-				assert.Contains(t, span.attributes, "http.host")
 				assert.Equal(t, "localhost:8080", span.attributes["http.host"])
-				assert.Contains(t, span.attributes, "http.target")
-				assert.Contains(t, span.attributes, "http.user_agent")
 				assert.Equal(t, "test-client/1.0", span.attributes["http.user_agent"])
 			},
 		},
 		{
-			name: "addMCPAttributes - all attributes including legacy",
+			name: "addMCPAttributes - both new and legacy names present",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				req := httptest.NewRequest("POST", "/messages", nil)
@@ -1769,74 +1803,66 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 					ID:         "test-456",
 					ResourceID: "github_search",
 					IsRequest:  true,
-					IsBatch:    false,
 				}
 				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
 
 				middleware.addMCPAttributes(ctx, span, req)
 
-				// Legacy attributes should be set
-				assert.Contains(t, span.attributes, "mcp.method")
+				// New names
+				assert.Equal(t, "tools/call", span.attributes["mcp.method.name"])
+				assert.Equal(t, "test-456", span.attributes["jsonrpc.request.id"])
+				assert.Equal(t, "jsonrpc", span.attributes["rpc.system.name"])
+				assert.Contains(t, span.attributes, "network.transport")
+
+				// Legacy names also present
 				assert.Equal(t, "tools/call", span.attributes["mcp.method"])
-				assert.Contains(t, span.attributes, "rpc.system")
 				assert.Equal(t, "jsonrpc", span.attributes["rpc.system"])
-				assert.Contains(t, span.attributes, "rpc.service")
 				assert.Equal(t, "mcp", span.attributes["rpc.service"])
-				assert.Contains(t, span.attributes, "mcp.request.id")
 				assert.Equal(t, "test-456", span.attributes["mcp.request.id"])
-				assert.Contains(t, span.attributes, "mcp.resource.id")
 				assert.Equal(t, "github_search", span.attributes["mcp.resource.id"])
-				assert.Contains(t, span.attributes, "mcp.transport")
 				assert.Equal(t, "stdio", span.attributes["mcp.transport"])
-
-				// Unconditional attributes
-				assert.Contains(t, span.attributes, "mcp.server.name")
-				assert.Equal(t, "github", span.attributes["mcp.server.name"])
-
-				// mcp.is_batch is only set when IsBatch is true
-				assert.NotContains(t, span.attributes, "mcp.is_batch")
 			},
 		},
 		{
-			name: "addMethodSpecificAttributes - tool name set for tools/call",
+			name: "addMethodSpecificAttributes - both gen_ai and legacy names",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				parsedMCP := &mcpparser.ParsedMCPRequest{
 					Method:     "tools/call",
 					ResourceID: "github_search",
-					Arguments: map[string]interface{}{
-						"query": "test",
-					},
+					Arguments:  map[string]interface{}{"query": "test"},
 				}
 
 				middleware.addMethodSpecificAttributes(span, parsedMCP)
 
-				// Tool-specific attributes should be set
-				// Tool name comes from ResourceID
-				assert.Contains(t, span.attributes, "mcp.tool.name")
+				// New gen_ai names
+				assert.Equal(t, "github_search", span.attributes["gen_ai.tool.name"])
+				assert.Equal(t, "execute_tool", span.attributes["gen_ai.operation.name"])
+
+				// Legacy names also present
 				assert.Equal(t, "github_search", span.attributes["mcp.tool.name"])
 			},
 		},
 		{
-			name: "finalizeSpan - http attributes set",
+			name: "finalizeSpan - both new and legacy response names",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
-				rw := &responseWriter{
-					statusCode:   201,
-					bytesWritten: 2048,
-				}
+				rw := &responseWriter{statusCode: 201, bytesWritten: 2048}
 				duration := 250 * time.Millisecond
 
 				middleware.finalizeSpan(span, rw, duration)
 
-				// HTTP attributes should be set
-				assert.Contains(t, span.attributes, "http.status_code")
+				// New names
+				assert.Equal(t, int64(201), span.attributes["http.response.status_code"])
+				assert.Equal(t, int64(2048), span.attributes["http.response.body.size"])
+
+				// Status should be set to Ok for 201
+				assert.Equal(t, codes.Ok, span.statusCode)
+
+				// Legacy names also present
 				assert.Equal(t, int64(201), span.attributes["http.status_code"])
-				assert.Contains(t, span.attributes, "http.response_content_length")
 				assert.Equal(t, int64(2048), span.attributes["http.response_content_length"])
 				assert.Contains(t, span.attributes, "http.duration_ms")
-				durationMs := float64(duration.Nanoseconds()) / 1e6
-				assert.Equal(t, durationMs, span.attributes["http.duration_ms"])
 			},
 		},
 	}
@@ -1845,19 +1871,12 @@ func TestHTTPMiddleware_LegacyAttributes_Enabled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create middleware with UseLegacyAttributes enabled
 			middleware := &HTTPMiddleware{
-				config: Config{
-					UseLegacyAttributes: true,
-				},
+				config:     Config{UseLegacyAttributes: true},
 				serverName: "github",
 				transport:  "stdio",
 			}
-
-			// Create mock span
 			span := &mockSpan{attributes: make(map[string]interface{})}
-
-			// Run test
 			tt.testFunc(t, middleware, span)
 		})
 	}

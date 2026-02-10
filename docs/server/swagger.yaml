@@ -1517,6 +1517,15 @@ components:
             +kubebuilder:default=false
             +optional
           type: boolean
+        useLegacyAttributes:
+          description: |-
+            UseLegacyAttributes controls whether legacy (pre-MCP OTEL semconv) attribute names
+            are emitted alongside the new standard attribute names. When true, spans include both
+            old and new attribute names for backward compatibility with existing dashboards.
+            Currently defaults to true; this will change to false in a future release.
+            +kubebuilder:default=true
+            +optional
+          type: boolean
       type: object
     templates.RuntimeConfig:
       description: |-

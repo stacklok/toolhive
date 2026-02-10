@@ -610,6 +610,13 @@ spec:
                             description: SamplingRate is the trace sampling rate (0.0-1.0)
                             type: string
                         type: object
+                      useLegacyAttributes:
+                        default: true
+                        description: |-
+                          UseLegacyAttributes controls whether legacy attribute names are emitted alongside
+                          the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
+                          This will change to false in a future release and eventually be removed.
+                        type: boolean
                     type: object
                   prometheus:
                     description: Prometheus defines Prometheus-specific configuration

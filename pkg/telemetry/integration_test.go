@@ -186,8 +186,9 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	)
 
 	config := Config{
-		ServiceName:    "test-service",
-		ServiceVersion: "1.0.0",
+		ServiceName:         "test-service",
+		ServiceVersion:      "1.0.0",
+		UseLegacyAttributes: true,
 	}
 
 	// Create middleware directly with real providers

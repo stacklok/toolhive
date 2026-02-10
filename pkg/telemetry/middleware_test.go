@@ -201,7 +201,7 @@ func TestMapTransport(t *testing.T) {
 	}{
 		{"stdio", "stdio", "pipe", "", ""},
 		{"sse", "sse", "tcp", "http", "1.1"},
-		{"streamable-http", "streamable-http", "tcp", "http", "2"},
+		{"streamable-http", "streamable-http", "tcp", "http", ""},
 		{"unknown defaults to tcp", "unknown", "tcp", "http", ""},
 	}
 
@@ -927,6 +927,19 @@ func (s *mockSpan) SetStatus(code codes.Code, description string) {
 }
 func (*mockSpan) SetName(string)                       {}
 func (*mockSpan) TracerProvider() trace.TracerProvider { return tracenoop.NewTracerProvider() }
+
+// mockTracer is a test tracer that captures spans created via Start().
+type mockTracer struct {
+	trace.Tracer
+	lastSpan *mockSpan
+	lastName string
+}
+
+func (mt *mockTracer) Start(ctx context.Context, spanName string, _ ...trace.SpanStartOption) (context.Context, trace.Span) {
+	mt.lastSpan = &mockSpan{attributes: make(map[string]interface{})}
+	mt.lastName = spanName
+	return ctx, mt.lastSpan
+}
 
 // contains checks if a slice contains a string
 func contains(slice []string, item string) bool {
@@ -2165,7 +2178,7 @@ func TestHTTPMiddleware_OperationDuration(t *testing.T) {
 				ServiceVersion: "1.0.0",
 			}
 
-			// Create middleware with the test providers
+			// Create middleware with the test providers - uses "stdio" as transport
 			middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
 
 			// Create test handler that returns 200 OK
@@ -2192,6 +2205,74 @@ func TestHTTPMiddleware_OperationDuration(t *testing.T) {
 
 			// Verify metrics
 			tt.verifyMetric(t, rm)
+		})
+	}
+}
+
+func TestRecordSSEConnection_DualEmission(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		transport           string
+		useLegacy           bool
+		expectLegacyAttrs   bool
+		expectedNetworkAttr string
+	}{
+		{
+			name:                "SSE with legacy attributes enabled emits both new and legacy",
+			transport:           "sse",
+			useLegacy:           true,
+			expectLegacyAttrs:   true,
+			expectedNetworkAttr: "tcp",
+		},
+		{
+			name:                "SSE with legacy attributes disabled emits only new",
+			transport:           "sse",
+			useLegacy:           false,
+			expectLegacyAttrs:   false,
+			expectedNetworkAttr: "tcp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mt := &mockTracer{}
+			meterProvider := noop.NewMeterProvider()
+			meter := meterProvider.Meter(instrumentationName)
+			requestCounter, _ := meter.Int64Counter("toolhive_mcp_requests")
+
+			middleware := &HTTPMiddleware{
+				config:         Config{UseLegacyAttributes: tt.useLegacy},
+				tracer:         mt,
+				serverName:     "github",
+				transport:      tt.transport,
+				requestCounter: requestCounter,
+			}
+
+			req := httptest.NewRequest("GET", "/sse", nil)
+			middleware.recordSSEConnection(req.Context(), req)
+
+			span := mt.lastSpan
+			require.NotNil(t, span, "expected a span to be created")
+			assert.Equal(t, "sse.connection_established", mt.lastName)
+
+			// New OTEL semconv attributes should always be present
+			assert.Equal(t, tt.expectedNetworkAttr, span.attributes["network.transport"])
+			assert.Equal(t, "github", span.attributes["mcp.server.name"])
+			assert.Equal(t, "connection_established", span.attributes["sse.event_type"])
+			assert.Equal(t, "http", span.attributes["network.protocol.name"])
+
+			// Legacy attribute should only be present when UseLegacyAttributes is true
+			if tt.expectLegacyAttrs {
+				assert.Equal(t, tt.transport, span.attributes["mcp.transport"],
+					"legacy mcp.transport should be set when UseLegacyAttributes is true")
+			} else {
+				assert.NotContains(t, span.attributes, "mcp.transport",
+					"legacy mcp.transport should not be set when UseLegacyAttributes is false")
+			}
 		})
 	}
 }

@@ -1245,8 +1245,10 @@ func (s *RedisStorage) GetUserProviderIdentities(ctx context.Context, userID str
 		data, err := s.client.Get(ctx, key).Bytes()
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				// Identity was deleted; best-effort cleanup of stale set entry.
-				warnOnCleanupErr(s.client.SRem(ctx, userProviderSetKey, key).Err(), "SRem", userProviderSetKey)
+				// Stale set entry — the identity key has expired or was deleted.
+				// Skip silently; stale entries are cleaned up during write
+				// operations (DeleteUser, CreateProviderIdentity) to avoid
+				// mutation side effects in this read-only method.
 				continue
 			}
 			return nil, fmt.Errorf("failed to get identity: %w", err)

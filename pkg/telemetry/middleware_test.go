@@ -1815,7 +1815,7 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 			},
 		},
 		{
-			name: "addMCPAttributes - network.protocol.version for SSE",
+			name: "addMCPAttributes - protocol versions for SSE backend with HTTP/1.1 client",
 			testFunc: func(t *testing.T, _ *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
 				middlewareSSE := &HTTPMiddleware{
@@ -1833,10 +1833,55 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 
 				middlewareSSE.addMCPAttributes(ctx, span, req)
 
-				// network.protocol.version should be present for SSE
-				assert.Contains(t, span.attributes, "network.protocol.version")
+				// network.protocol.version is the incoming request (HTTP/1.1 from httptest default)
 				assert.Equal(t, "1.1", span.attributes["network.protocol.version"])
+				// mcp.backend.protocol.version is the backend transport
+				assert.Equal(t, "1.1", span.attributes["mcp.backend.protocol.version"])
 				assert.Equal(t, "http", span.attributes["network.protocol.name"])
+			},
+		},
+		{
+			name: "addMCPAttributes - HTTP/2 client with SSE backend shows distinct versions",
+			testFunc: func(t *testing.T, _ *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				middlewareSSE := &HTTPMiddleware{
+					config:     Config{UseLegacyAttributes: false},
+					serverName: "github",
+					transport:  "sse",
+				}
+				req := httptest.NewRequest("POST", "/messages", nil)
+				req.ProtoMajor = 2
+				req.ProtoMinor = 0
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "tools/call",
+					ID:        "test-http2",
+					IsRequest: true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middlewareSSE.addMCPAttributes(ctx, span, req)
+
+				// network.protocol.version is the incoming HTTP/2 request
+				assert.Equal(t, "2", span.attributes["network.protocol.version"])
+				// mcp.backend.protocol.version is the SSE backend (HTTP/1.1)
+				assert.Equal(t, "1.1", span.attributes["mcp.backend.protocol.version"])
+			},
+		},
+		{
+			name: "addMCPAttributes - no mcp.session.id when header absent",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				req := httptest.NewRequest("POST", "/messages", nil)
+				mcpRequest := &mcpparser.ParsedMCPRequest{
+					Method:    "tools/list",
+					ID:        "test-no-session",
+					IsRequest: true,
+				}
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+
+				middleware.addMCPAttributes(ctx, span, req)
+
+				assert.NotContains(t, span.attributes, "mcp.session.id")
 			},
 		},
 	}

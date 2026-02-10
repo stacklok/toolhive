@@ -302,13 +302,13 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 
 // addNetworkAttributes adds network, client, and session attributes to the span.
 func (*HTTPMiddleware) addNetworkAttributes(span trace.Span, r *http.Request, backendTransport string) {
-	networkTransport, protocolName, protocolVersion := mapTransport(backendTransport)
+	networkTransport, protocolName, backendProtocolVersion := mapTransport(backendTransport)
 	span.SetAttributes(attribute.String("network.transport", networkTransport))
 	if protocolName != "" {
 		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
 	}
-	if protocolVersion != "" {
-		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
+	if backendProtocolVersion != "" {
+		span.SetAttributes(attribute.String("mcp.backend.protocol.version", backendProtocolVersion))
 	}
 
 	// HTTP protocol version from the incoming request
@@ -663,7 +663,7 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	m.addHTTPAttributes(span, r)
 
 	// Add SSE-specific attributes
-	networkTransport, protocolName, protocolVersion := mapTransport(m.transport)
+	networkTransport, protocolName, backendProtocolVersion := mapTransport(m.transport)
 	span.SetAttributes(
 		attribute.String("sse.event_type", "connection_established"),
 		attribute.String("mcp.server.name", m.serverName),
@@ -672,8 +672,11 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	if protocolName != "" {
 		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
 	}
-	if protocolVersion != "" {
-		span.SetAttributes(attribute.String("network.protocol.version", protocolVersion))
+	if backendProtocolVersion != "" {
+		span.SetAttributes(attribute.String("mcp.backend.protocol.version", backendProtocolVersion))
+	}
+	if protocolVer := httpProtocolVersion(r); protocolVer != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVer))
 	}
 	if m.config.UseLegacyAttributes {
 		span.SetAttributes(attribute.String("mcp.transport", m.transport))

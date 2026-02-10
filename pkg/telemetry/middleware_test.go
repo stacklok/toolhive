@@ -139,28 +139,28 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 		expectedSpan string
 	}{
 		{
-			name:         "tools/call with resource ID",
+			name:         "tools/call with resource ID includes target",
 			mcpMethod:    "tools/call",
 			resourceID:   "github_search",
-			expectedSpan: "tools/call",
+			expectedSpan: "tools/call github_search",
 		},
 		{
-			name:         "prompts/get with resource ID",
+			name:         "prompts/get with resource ID includes target",
 			mcpMethod:    "prompts/get",
 			resourceID:   "code_review",
-			expectedSpan: "prompts/get",
+			expectedSpan: "prompts/get code_review",
 		},
 		{
-			name:         "tools/call without resource ID",
+			name:         "tools/call without resource ID omits target",
 			mcpMethod:    "tools/call",
 			resourceID:   "",
 			expectedSpan: "tools/call",
 		},
 		{
-			name:         "resources/read (no resource appended)",
+			name:         "resources/read with URI includes target",
 			mcpMethod:    "resources/read",
 			resourceID:   "file://test.txt",
-			expectedSpan: "resources/read",
+			expectedSpan: "resources/read file://test.txt",
 		},
 		{
 			name:         "no MCP method returns empty",

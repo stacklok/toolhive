@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
@@ -61,13 +62,23 @@ func monitorBackends(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
 	}
+	clientOperationDuration, err := meter.Float64Histogram(
+		"mcp.client.operation.duration",
+		metric.WithDescription("Duration of MCP client operations"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client operation duration histogram: %w", err)
+	}
 
 	return telemetryBackendClient{
-		backendClient:    backendClient,
-		tracer:           tracerProvider.Tracer(instrumentationName),
-		requestsTotal:    requestsTotal,
-		errorsTotal:      errorsTotal,
-		requestsDuration: requestsDuration,
+		backendClient:           backendClient,
+		tracer:                  tracerProvider.Tracer(instrumentationName),
+		requestsTotal:           requestsTotal,
+		errorsTotal:             errorsTotal,
+		requestsDuration:        requestsDuration,
+		clientOperationDuration: clientOperationDuration,
 	}, nil
 }
 
@@ -75,9 +86,10 @@ type telemetryBackendClient struct {
 	backendClient vmcp.BackendClient
 	tracer        trace.Tracer
 
-	requestsTotal    metric.Int64Counter
-	errorsTotal      metric.Int64Counter
-	requestsDuration metric.Float64Histogram
+	requestsTotal           metric.Int64Counter
+	errorsTotal             metric.Int64Counter
+	requestsDuration        metric.Float64Histogram
+	clientOperationDuration metric.Float64Histogram
 }
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
@@ -101,6 +113,7 @@ func (t telemetryBackendClient) record(
 	ctx, span := t.tracer.Start(ctx, "telemetryBackendClient."+action,
 		// TODO: Add params and results to the span once we have reusable sanitization functions.
 		trace.WithAttributes(commonAttrs...),
+		trace.WithSpanKind(trace.SpanKindClient),
 	)
 
 	metricAttrs := metric.WithAttributes(commonAttrs...)
@@ -110,6 +123,7 @@ func (t telemetryBackendClient) record(
 	return ctx, func() {
 		duration := time.Since(start)
 		t.requestsDuration.Record(ctx, duration.Seconds(), metricAttrs)
+		t.clientOperationDuration.Record(ctx, duration.Seconds(), metricAttrs)
 		if err != nil && *err != nil {
 			t.errorsTotal.Add(ctx, 1, metricAttrs)
 			span.RecordError(*err)

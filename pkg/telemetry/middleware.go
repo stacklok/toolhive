@@ -38,6 +38,11 @@ const (
 	networkProtocolHTTP = "http"
 )
 
+// MCPHistogramBuckets are the bucket boundaries defined by the MCP OTEL semantic conventions
+// for MCP server histograms (e.g. mcp.server.operation.duration).
+// See https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/mcp.md
+var MCPHistogramBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
+
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
 	config         Config
@@ -51,6 +56,7 @@ type HTTPMiddleware struct {
 	// Metrics
 	requestCounter    metric.Int64Counter
 	requestDuration   metric.Float64Histogram
+	operationDuration metric.Float64Histogram
 	activeConnections metric.Int64UpDownCounter
 }
 
@@ -82,6 +88,13 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
+	operationDuration, _ := meter.Float64Histogram(
+		"mcp.server.operation.duration",
+		metric.WithDescription("Duration of MCP server operations"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
+	)
+
 	middleware := &HTTPMiddleware{
 		config:            config,
 		tracerProvider:    tracerProvider,
@@ -92,6 +105,7 @@ func NewHTTPMiddleware(
 		transport:         transport,
 		requestCounter:    requestCounter,
 		requestDuration:   requestDuration,
+		operationDuration: operationDuration,
 		activeConnections: activeConnections,
 	}
 
@@ -631,6 +645,15 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	// Record request duration
 	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
 
+	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
+	// mcpMethod should never be "unknown" for requests reaching the MCP middleware;
+	// if it is, the middleware chain is misconfigured (see #3687).
+	if mcpMethod != "unknown" {
+		m.recordOperationDuration(ctx, r, mcpMethod, mcpResourceID, rw.statusCode, duration)
+	} else {
+		logger.Warnf("MCP method could not be determined for request %s %s — middleware may be misconfigured", r.Method, r.URL.Path)
+	}
+
 	// For tools/call, record tool-specific metrics
 	if mcpMethod == string(mcp.MethodToolsCall) {
 		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
@@ -649,6 +672,50 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 			}
 		}
 	}
+}
+
+// recordOperationDuration records the mcp.server.operation.duration metric
+// per the OTEL MCP semantic conventions.
+func (m *HTTPMiddleware) recordOperationDuration(
+	ctx context.Context, r *http.Request, mcpMethod, resourceID string, statusCode int, duration time.Duration,
+) {
+	networkTransport, protocolName, _ := mapTransport(m.transport)
+
+	specAttrs := []attribute.KeyValue{
+		attribute.String("mcp.method.name", mcpMethod),
+		attribute.String("jsonrpc.protocol.version", "2.0"),
+		attribute.String("network.transport", networkTransport),
+	}
+	if protocolName != "" {
+		specAttrs = append(specAttrs, attribute.String("network.protocol.name", protocolName))
+	}
+	if pv := httpProtocolVersion(r); pv != "" {
+		specAttrs = append(specAttrs, attribute.String("network.protocol.version", pv))
+	}
+
+	// error.type: Conditionally required on error.
+	// NOTE: This only captures HTTP-level errors (5xx). JSON-RPC errors returned
+	// with HTTP 200 are not yet captured here — that requires response body parsing
+	// which is tracked as future work (rpc.response.status_code, error.type for
+	// JSON-RPC error codes like -32601).
+	if statusCode >= 500 {
+		specAttrs = append(specAttrs, attribute.String("error.type", strconv.Itoa(statusCode)))
+	}
+
+	// Method-specific attributes
+	switch mcpMethod {
+	case string(mcp.MethodToolsCall):
+		specAttrs = append(specAttrs, attribute.String("gen_ai.operation.name", "execute_tool"))
+		if resourceID != "" {
+			specAttrs = append(specAttrs, attribute.String("gen_ai.tool.name", resourceID))
+		}
+	case methodPromptsGet:
+		if resourceID != "" {
+			specAttrs = append(specAttrs, attribute.String("gen_ai.prompt.name", resourceID))
+		}
+	}
+
+	m.operationDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(specAttrs...))
 }
 
 // recordSSEConnection records telemetry for SSE connection establishment.

@@ -17,6 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 // createTestConfigProvider creates a config provider for testing with the provided configuration.
 func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
 	t.Helper()
@@ -112,7 +114,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				EnvVars:                     []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
 				Insecure:                    true,
 				EnablePrometheusMetricsPath: true,
-				UseLegacyAttributes:         true,
+				UseLegacyAttributes:         boolPtr(true),
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:                    "",
@@ -190,6 +192,40 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEnvironmentVariables:        nil,
 			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: false,
+		},
+		{
+			name: "Config disables legacy attributes, CLI flag unchanged",
+			setupFlags: func(_ *cobra.Command) {
+				// Don't set any flags - config value should take effect
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				UseLegacyAttributes: boolPtr(false),
+			},
+			runFlags: &RunFlags{
+				OtelUseLegacyAttributes: true, // CLI default
+				Transport:               "sse",
+				ProxyMode:               "sse",
+				Host:                    "localhost",
+				PermissionProfile:       "none",
+			},
+			expectedUseLegacyAttributes: false,
+		},
+		{
+			name: "Config not set (nil), CLI default true should be used",
+			setupFlags: func(_ *cobra.Command) {
+				// Don't set any flags
+			},
+			configOTEL: config.OpenTelemetryConfig{
+				// UseLegacyAttributes not set — remains nil
+			},
+			runFlags: &RunFlags{
+				OtelUseLegacyAttributes: true, // CLI default
+				Transport:               "sse",
+				ProxyMode:               "sse",
+				Host:                    "localhost",
+				PermissionProfile:       "none",
+			},
+			expectedUseLegacyAttributes: true,
 		},
 	}
 

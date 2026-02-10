@@ -184,11 +184,16 @@ func createAWSStsMiddlewareFunc(
 				return
 			}
 
-			// Extract session name from claims
+			// Extract and validate session name from claims
 			sessionName, err := extractSessionName(claims, sessionNameClaim)
 			if err != nil {
 				logger.Warnf("Failed to extract session name: %v", err)
 				http.Error(w, "Missing session name claim", http.StatusUnauthorized)
+				return
+			}
+			if err := ValidateSessionName(sessionName); err != nil {
+				logger.Warnf("Invalid session name %q: %v", sessionName, err)
+				http.Error(w, "Invalid session name", http.StatusUnauthorized)
 				return
 			}
 

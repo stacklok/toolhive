@@ -142,9 +142,9 @@ type clientAppConfig struct {
 	// TOML-specific configuration (only used when Extension == TOML)
 	TOMLStorageType TOMLStorageType // How servers are stored in TOML (map or array)
 	// Skill-specific configuration
-	SupportsSkills       bool                // Whether this client supports skills
-	SkillsGlobalPath     []string            // Path segments for global skills dir (from home dir)
-	SkillsProjectPath    []string            // Path segments for project-local skills dir (from project root)
+	SupportsSkills    bool     // Whether this client supports skills
+	SkillsGlobalPath  []string // Path segments for global skills dir (from home dir)
+	SkillsProjectPath []string // Path segments for project-local skills dir (from project root)
 	// SkillsPlatformPrefix maps runtime.GOOS values (e.g., "linux", "darwin") to path
 	// segments inserted between home dir and SkillsGlobalPath. Needed for clients
 	// following platform conventions (e.g., XDG ~/.config/ on Linux/macOS).

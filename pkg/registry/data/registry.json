@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-02-09T00:24:33Z",
+  "last_updated": "2026-02-10T00:28:53Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -877,9 +877,9 @@
         "search_engine_batch"
       ],
       "metadata": {
-        "stars": 1947,
+        "stars": 2007,
         "pulls": 65,
-        "last_updated": "2026-01-25T13:38:14Z"
+        "last_updated": "2026-02-09T03:01:53Z"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "tags": [
@@ -1043,6 +1043,7 @@
         "wait_for_build"
       ],
       "metadata": {
+        "stars": 45,
         "last_updated": "2026-01-30T02:55:47Z"
       },
       "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
@@ -1538,7 +1539,8 @@
       ],
       "metadata": {
         "stars": 6,
-        "last_updated": "2026-02-05T04:49:15Z"
+        "pulls": 993,
+        "last_updated": "2026-02-09T09:15:26Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -1719,7 +1721,9 @@
         "sampleLLM"
       ],
       "metadata": {
-        "last_updated": "2026-01-30T02:55:47Z"
+        "stars": 78304,
+        "pulls": 14373,
+        "last_updated": "2026-02-09T09:15:24Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -2891,9 +2895,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 5196,
+        "stars": 5444,
         "pulls": 99,
-        "last_updated": "2026-01-25T13:38:14Z"
+        "last_updated": "2026-02-09T03:01:53Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -3686,6 +3690,7 @@
         "list_servers"
       ],
       "metadata": {
+        "stars": 4,
         "last_updated": "2026-01-30T02:55:47Z"
       },
       "repository_url": "https://github.com/nokia/mcp-redfish",
@@ -4417,6 +4422,7 @@
         "get_vulnerability"
       ],
       "metadata": {
+        "stars": 26,
         "last_updated": "2026-01-30T02:55:46Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
@@ -4856,6 +4862,7 @@
         "get_targets"
       ],
       "metadata": {
+        "stars": 360,
         "last_updated": "2026-01-30T02:55:46Z"
       },
       "repository_url": "https://github.com/pab1it0/prometheus-mcp-server",
@@ -5430,8 +5437,9 @@
         "toggle_automatic_analysis"
       ],
       "metadata": {
-        "stars": 359,
-        "last_updated": "2026-01-25T13:39:47Z"
+        "stars": 374,
+        "pulls": 93353,
+        "last_updated": "2026-02-09T09:15:25Z"
       },
       "repository_url": "https://github.com/SonarSource/sonarqube-mcp-server",
       "tags": [
@@ -5526,29 +5534,33 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "cancel_subscription",
         "create_coupon",
         "create_customer",
+        "create_invoice",
+        "create_invoice_item",
         "create_payment_link",
         "create_price",
         "create_product",
         "create_refund",
-        "create_invoice_item",
-        "create_invoice",
         "finalize_invoice",
         "list_coupons",
         "list_customers",
         "list_disputes",
+        "list_invoices",
+        "list_payment_intents",
         "list_prices",
         "list_products",
         "list_subscriptions",
         "retrieve_balance",
-        "cancel_subscription",
+        "search_stripe_documentation",
         "update_dispute",
         "update_subscription"
       ],
       "metadata": {
-        "stars": 1250,
-        "last_updated": "2026-02-05T04:47:27Z"
+        "stars": 1258,
+        "pulls": 18407,
+        "last_updated": "2026-02-09T09:15:25Z"
       },
       "repository_url": "https://github.com/stripe/agent-toolkit",
       "tags": [
@@ -6741,7 +6753,7 @@
       ],
       "metadata": {
         "stars": 91,
-        "last_updated": "2026-01-25T13:38:13Z"
+        "last_updated": "2026-02-09T03:01:52Z"
       },
       "repository_url": "https://github.com/square/square-mcp-server",
       "tags": [
@@ -6795,7 +6807,7 @@
         "search_stripe_documentation"
       ],
       "metadata": {
-        "last_updated": "2026-01-25T13:38:13Z"
+        "last_updated": "2026-02-09T03:01:52Z"
       },
       "tags": [
         "remote",
@@ -6861,7 +6873,7 @@
         "web_fetch_vercel_url"
       ],
       "metadata": {
-        "last_updated": "2026-01-25T13:38:14Z"
+        "last_updated": "2026-02-09T03:01:53Z"
       },
       "tags": [
         "remote",

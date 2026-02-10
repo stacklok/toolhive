@@ -37,12 +37,31 @@ type Config struct {
 	SessionNameClaim string `json:"session_name_claim,omitempty" yaml:"session_name_claim,omitempty"`
 }
 
+// defaultSessionDuration is the default session duration in seconds (1 hour).
+const defaultSessionDuration int32 = 3600
+
 // GetRoleClaim returns the configured role claim or the default.
 func (c *Config) GetRoleClaim() string {
 	if c.RoleClaim != "" {
 		return c.RoleClaim
 	}
 	return defaultRoleClaim
+}
+
+// GetService returns the configured service name or the default ("aws-mcp").
+func (c *Config) GetService() string {
+	if c.Service != "" {
+		return c.Service
+	}
+	return defaultService
+}
+
+// GetSessionDuration returns the configured session duration or the default (3600s).
+func (c *Config) GetSessionDuration() int32 {
+	if c.SessionDuration != 0 {
+		return c.SessionDuration
+	}
+	return defaultSessionDuration
 }
 
 // RoleMapping maps a JWT claim value or CEL expression to an IAM role with explicit priority.

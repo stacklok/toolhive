@@ -659,18 +659,45 @@ type storedUpstreamTokens struct {
 	ClientID        string `json:"client_id"`
 }
 
-// getExistingUpstreamUserID retrieves the UserID from existing upstream tokens, if any.
-func (s *RedisStorage) getExistingUpstreamUserID(ctx context.Context, key string) string {
-	existingData, err := s.client.Get(ctx, key).Bytes()
-	if err != nil || string(existingData) == nullMarker {
-		return ""
-	}
-	var existingStored storedUpstreamTokens
-	if json.Unmarshal(existingData, &existingStored) != nil {
-		return ""
-	}
-	return existingStored.UserID
-}
+// storeUpstreamTokensScript atomically reads the existing UserID, writes new token
+// data, and updates user reverse-index sets. This prevents a race condition where
+// concurrent writes for the same session could leave orphaned entries in user sets.
+//
+// KEYS[1] = token key
+// ARGV[1] = new token data (JSON or "null" marker)
+// ARGV[2] = TTL in milliseconds
+// ARGV[3] = new UserID ("" if no user)
+// ARGV[4] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
+var storeUpstreamTokensScript = redis.NewScript(`
+local oldUserID = ""
+local existing = redis.call('GET', KEYS[1])
+if existing and existing ~= "null" then
+    local ok, decoded = pcall(cjson.decode, existing)
+    if ok and type(decoded) == "table" and decoded.user_id and decoded.user_id ~= "" then
+        oldUserID = decoded.user_id
+    end
+end
+
+local ttlMs = tonumber(ARGV[2])
+if ttlMs > 0 then
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
+else
+    redis.call('SET', KEYS[1], ARGV[1])
+end
+
+local newUserID = ARGV[3]
+local setPrefix = ARGV[4]
+
+if oldUserID ~= "" and oldUserID ~= newUserID then
+    redis.call('SREM', setPrefix .. oldUserID, KEYS[1])
+end
+
+if newUserID ~= "" then
+    redis.call('SADD', setPrefix .. newUserID, KEYS[1])
+end
+
+return 1
+`)
 
 // marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
 func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {
@@ -713,6 +740,8 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 }
 
 // StoreUpstreamTokens stores the upstream IDP tokens for a session.
+// Uses a Lua script to atomically read the old UserID, write new token data,
+// and update user reverse-index sets, preventing race conditions on concurrent writes.
 func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID string, tokens *UpstreamTokens) error {
 	if sessionID == "" {
 		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
@@ -720,43 +749,27 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID string
 
 	key := redisKey(s.keyPrefix, KeyTypeUpstream, sessionID)
 
-	// Check for existing token to handle UserID changes on overwrite.
-	oldUserID := s.getExistingUpstreamUserID(ctx, key)
-
-	// Marshal tokens and calculate TTL
 	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
 	if err != nil {
 		return err
 	}
 
-	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return err
-	}
-
-	// Handle user set operations for reverse lookup
-	return s.updateUpstreamUserSets(ctx, key, oldUserID, tokens)
-}
-
-// updateUpstreamUserSets handles adding/removing upstream token references in user sets.
-func (s *RedisStorage) updateUpstreamUserSets(ctx context.Context, key, oldUserID string, tokens *UpstreamTokens) error {
 	newUserID := ""
 	if tokens != nil {
 		newUserID = tokens.UserID
 	}
 
-	// Clean up old user's set if UserID changed
-	if oldUserID != "" && oldUserID != newUserID {
-		oldUserUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, oldUserID)
-		_ = s.client.SRem(ctx, oldUserUpstreamSetKey, key).Err()
-	}
+	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
 
-	// Add to user's upstream token set for reverse lookup during DeleteUser.
-	// Only add if tokens have a UserID - allows for cleanup when user is deleted.
-	if newUserID != "" {
-		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, newUserID)
-		if err := s.client.SAdd(ctx, userUpstreamSetKey, key).Err(); err != nil {
-			return err
-		}
+	_, err = storeUpstreamTokensScript.Run(ctx, s.client,
+		[]string{key},
+		string(data),
+		ttl.Milliseconds(),
+		newUserID,
+		userSetKeyPrefix,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("failed to store upstream tokens: %w", err)
 	}
 
 	return nil

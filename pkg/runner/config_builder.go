@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
@@ -754,6 +755,22 @@ func internalRunConfigBuilder(
 	// Resolve the OTel service name from the workload name when not explicitly set.
 	// This ensures the service name is always populated before persisting the config.
 	telemetry.ResolveServiceName(b.config.TelemetryConfig, b.config.Name)
+
+	// When the embedded auth server is configured and the proxy has no
+	// explicit PRM scopes, derive them from the AS's ScopesSupported.
+	// This ensures the PRM advertises the same scopes the AS supports
+	// (including offline_access for refresh tokens).
+	// If the AS also has no explicit scopes, use the auth server's
+	// default scopes (registration.DefaultScopes).
+	if b.config.EmbeddedAuthServerConfig != nil &&
+		b.config.OIDCConfig != nil &&
+		len(b.config.OIDCConfig.Scopes) == 0 {
+		scopes := b.config.EmbeddedAuthServerConfig.ScopesSupported
+		if len(scopes) == 0 {
+			scopes = registration.DefaultScopes
+		}
+		b.config.OIDCConfig.Scopes = scopes
+	}
 
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.

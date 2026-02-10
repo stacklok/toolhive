@@ -1128,7 +1128,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			issuer:       "https://auth.example.com",
 			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
-			scopes:       nil, // Test default scopes
+			scopes:       nil, // Test default scopes (should default to ["openid"])
 			method:       "GET",
 			origin:       "",
 			expectStatus: http.StatusOK,
@@ -1164,7 +1164,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			issuer:       "",
 			jwksURL:      "",
 			resourceURL:  "https://api.example.com",
-			scopes:       []string{}, // Test empty scopes (should default to openid)
+			scopes:       []string{}, // Test empty scopes (should default to ["openid"])
 			method:       "GET",
 			origin:       "https://client.example.com",
 			expectStatus: http.StatusOK,

@@ -1092,7 +1092,9 @@ func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) ht
 			return
 		}
 
-		// Use provided scopes or default to 'openid'
+		// Use provided scopes or fall back to a minimal default.
+		// When the embedded auth server is used, the caller provides
+		// the AS's ScopesSupported explicitly (see config_builder.go).
 		supportedScopes := scopes
 		if len(supportedScopes) == 0 {
 			supportedScopes = []string{"openid"}

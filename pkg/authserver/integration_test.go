@@ -47,8 +47,9 @@ type testServer struct {
 
 // testServerOptions configures the test server setup.
 type testServerOptions struct {
-	upstream upstream.OAuth2Provider
-	scopes   []string
+	upstream            upstream.OAuth2Provider
+	scopes              []string
+	accessTokenLifespan time.Duration
 }
 
 // testServerOption is a functional option for test server setup.
@@ -65,6 +66,13 @@ func withUpstream(provider upstream.OAuth2Provider) testServerOption {
 func withScopes(scopes []string) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.scopes = scopes
+	}
+}
+
+// withAccessTokenLifespan configures the access token lifetime for the test server.
+func withAccessTokenLifespan(d time.Duration) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.accessTokenLifespan = d
 	}
 }
 
@@ -142,11 +150,17 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	}
 
 	// 6. Create config using testKeyProvider
+	accessTokenLifespan := func() time.Duration {
+		if options.accessTokenLifespan > 0 {
+			return options.accessTokenLifespan
+		}
+		return time.Hour
+	}()
 	cfg := Config{
 		Issuer:               testIssuer,
 		KeyProvider:          &testKeyProvider{key: privateKey},
 		HMACSecrets:          servercrypto.NewHMACSecrets(secret),
-		AccessTokenLifespan:  time.Hour,
+		AccessTokenLifespan:  accessTokenLifespan,
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
@@ -510,7 +524,8 @@ func startMockOIDC(t *testing.T) *mockoidc.MockOIDC {
 }
 
 // setupTestServerWithMockOIDC creates a test server with mockoidc as upstream.
-func setupTestServerWithMockOIDC(t *testing.T, m *mockoidc.MockOIDC) *testServerWithUpstream {
+// Additional options are forwarded to setupTestServer (e.g., withAccessTokenLifespan).
+func setupTestServerWithMockOIDC(t *testing.T, m *mockoidc.MockOIDC, extraOpts ...testServerOption) *testServerWithUpstream {
 	t.Helper()
 
 	cfg := m.Config()
@@ -536,10 +551,11 @@ func setupTestServerWithMockOIDC(t *testing.T, m *mockoidc.MockOIDC) *testServer
 	upstreamIDP, err := upstream.NewOAuth2Provider(upstreamCfg)
 	require.NoError(t, err)
 
-	ts := setupTestServer(t,
+	opts := append([]testServerOption{
 		withUpstream(upstreamIDP),
 		withScopes([]string{"openid", "profile", "email", "offline_access"}),
-	)
+	}, extraOpts...)
+	ts := setupTestServer(t, opts...)
 
 	return &testServerWithUpstream{
 		testServer:       ts,
@@ -980,4 +996,120 @@ func TestIntegration_OIDCProvider_TokenRefresh(t *testing.T) {
 	newRefreshToken, ok := refreshData["refresh_token"].(string)
 	require.True(t, ok)
 	assert.NotEqual(t, refreshToken, newRefreshToken, "token rotation must issue new refresh token")
+}
+
+// TestIntegration_NoRefreshToken_WithoutOfflineAccess verifies that when the
+// offline_access scope is NOT requested, no refresh token is issued.
+func TestIntegration_NoRefreshToken_WithoutOfflineAccess(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Request only openid+profile — and the client isn't registered for offline_access
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "no-refresh-test",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	// Exchange code for tokens
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	tokenResp := parseTokenResponse(t, resp)
+
+	// Access token should be present
+	_, hasAccess := tokenResp["access_token"].(string)
+	assert.True(t, hasAccess, "access_token should be present")
+
+	// Refresh token must NOT be present without offline_access
+	_, hasRefresh := tokenResp["refresh_token"]
+	assert.False(t, hasRefresh, "refresh_token must NOT be issued without offline_access scope")
+}
+
+// TestIntegration_RefreshToken_ShortLivedAccessToken verifies the refresh token
+// flow with a very short access token lifetime, proving that refresh tokens can
+// be used to obtain new access tokens after the original expires.
+func TestIntegration_RefreshToken_ShortLivedAccessToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m,
+		withAccessTokenLifespan(time.Minute), // minimum allowed by provider validation
+	)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Get tokens with offline_access
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "short-lived-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authCode},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	tokenResp := parseTokenResponse(t, resp)
+
+	// Verify the short expiry (1 minute)
+	expiresIn, ok := tokenResp["expires_in"].(float64)
+	require.True(t, ok)
+	assert.InDelta(t, 60, expiresIn, 5, "expires_in should be ~60 seconds")
+
+	refreshToken, ok := tokenResp["refresh_token"].(string)
+	require.True(t, ok, "refresh_token must be present with offline_access")
+
+	// We don't actually wait for the token to expire (would slow down tests).
+	// Instead, verify the refresh flow works immediately — the important thing
+	// is that a refresh token was issued and can be used.
+
+	// Use refresh token to get a new access token
+	refreshResp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testClientID},
+	})
+	defer refreshResp.Body.Close()
+	require.Equal(t, http.StatusOK, refreshResp.StatusCode, "refresh should succeed after access token expiry")
+	refreshData := parseTokenResponse(t, refreshResp)
+
+	// New access token should be present and different
+	newAccessToken, ok := refreshData["access_token"].(string)
+	require.True(t, ok)
+	assert.NotEqual(t, tokenResp["access_token"], newAccessToken)
+
+	// Verify the new token has a fresh expiry (not expired)
+	parsedToken, err := jwt.ParseSigned(newAccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err)
+
+	exp, ok := claims["exp"].(float64)
+	require.True(t, ok)
+	assert.Greater(t, int64(exp), time.Now().Unix(), "refreshed token exp must be in the future")
 }

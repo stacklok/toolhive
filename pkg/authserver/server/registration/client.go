@@ -81,10 +81,9 @@ func (c *LoopbackClient) GetMatchingRedirectURI(requestedURI string) string {
 	return ""
 }
 
-// DefaultScopes are the default OIDC scopes for registered clients.
-// Also used as the default for ScopesSupported in config.go when no
-// scopes are explicitly configured.
-var DefaultScopes = []string{"openid", "profile", "email"}
+// DefaultScopes are the default OAuth 2.0 scopes for registered clients.
+// Includes offline_access to enable refresh token issuance.
+var DefaultScopes = []string{"openid", "profile", "email", "offline_access"}
 
 // Config holds configuration for creating a new OAuth client.
 type Config struct {

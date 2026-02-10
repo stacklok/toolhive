@@ -16,6 +16,18 @@ import (
 	"golang.org/x/oauth2"
 )
 
+func clientCredentialsFromRequest(r *http.Request) (clientID, clientSecret string) {
+	if username, password, ok := r.BasicAuth(); ok {
+		return username, password
+	}
+
+	if err := r.ParseForm(); err != nil {
+		return "", ""
+	}
+
+	return r.Form.Get("client_id"), r.Form.Get("client_secret")
+}
+
 func TestNewResourceTokenSource(t *testing.T) {
 	t.Parallel()
 
@@ -108,8 +120,9 @@ func TestResourceTokenSource_Token_ExpiredToken(t *testing.T) {
 			assert.Equal(t, "refresh_token", r.Form.Get("grant_type"))
 			assert.Equal(t, "old-refresh-token", r.Form.Get("refresh_token"))
 			assert.Equal(t, "https://api.example.com", r.Form.Get("resource"))
-			assert.Equal(t, "test-client", r.Form.Get("client_id"))
-			assert.Equal(t, "test-secret", r.Form.Get("client_secret"))
+			clientID, clientSecret := clientCredentialsFromRequest(r)
+			assert.Equal(t, "test-client", clientID)
+			assert.Equal(t, "test-secret", clientSecret)
 
 			// Return new token
 			response := map[string]interface{}{
@@ -144,6 +157,9 @@ func TestResourceTokenSource_Token_ExpiredToken(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "new-access-token", token.AccessToken)
 		assert.Equal(t, "new-refresh-token", token.RefreshToken)
+		assert.False(t, token.Expiry.IsZero(), "refreshed token should have expiry set")
+		assert.True(t, token.Expiry.After(time.Now()), "refreshed token should expire in the future")
+		assert.True(t, token.Valid(), "refreshed token should be valid")
 
 		// Verify request was made
 		require.NotNil(t, capturedRequest)
@@ -158,9 +174,10 @@ func TestResourceTokenSource_Token_ExpiredToken(t *testing.T) {
 			err := r.ParseForm()
 			require.NoError(t, err)
 
-			// Verify client credentials are present
-			assert.Equal(t, "my-client-id", r.Form.Get("client_id"))
-			assert.Equal(t, "my-client-secret", r.Form.Get("client_secret"))
+			// Verify client credentials are present (either via Basic auth or form fields)
+			clientID, clientSecret := clientCredentialsFromRequest(r)
+			assert.Equal(t, "my-client-id", clientID)
+			assert.Equal(t, "my-client-secret", clientSecret)
 
 			response := map[string]interface{}{
 				"access_token":  "new-token",
@@ -283,7 +300,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := newResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token refresh failed with status 500")
+		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
 	})
 
 	t.Run("returns error on invalid JSON response", func(t *testing.T) {
@@ -311,7 +328,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := newResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to parse token response")
+		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
 	})
 
 	t.Run("returns error when token endpoint is unreachable", func(t *testing.T) {
@@ -333,7 +350,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := newResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token refresh request failed")
+		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
 	})
 
 	t.Run("returns error on non-200 status codes", func(t *testing.T) {
@@ -374,7 +391,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 				ts := newResourceTokenSource(config, expiredToken, "https://api.example.com")
 				_, err := ts.Token()
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "token refresh failed with status")
+				assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
 			})
 		}
 	})

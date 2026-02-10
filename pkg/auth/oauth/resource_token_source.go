@@ -5,11 +5,9 @@ package oauth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -27,16 +25,52 @@ type resourceTokenSource struct {
 	httpClient *http.Client
 }
 
+type limitedReadCloser struct {
+	io.Reader
+	c io.Closer
+}
+
+func (l *limitedReadCloser) Close() error {
+	return l.c.Close()
+}
+
+type limitResponseBodyRoundTripper struct {
+	next  http.RoundTripper
+	limit int64
+}
+
+func (l *limitResponseBodyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := l.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp != nil && resp.Body != nil && l.limit > 0 {
+		resp.Body = &limitedReadCloser{
+			Reader: io.LimitReader(resp.Body, l.limit),
+			c:      resp.Body,
+		}
+	}
+
+	return resp, nil
+}
+
 // newResourceTokenSource creates a token source that includes the resource parameter
 // in all token requests, including refresh requests.
 // The resource parameter must be non-empty (caller should check before calling).
 func newResourceTokenSource(config *oauth2.Config, token *oauth2.Token, resource string) oauth2.TokenSource {
+	baseTransport := http.DefaultTransport
+	if baseTransport == nil {
+		baseTransport = &http.Transport{}
+	}
+
 	return &resourceTokenSource{
 		config:   config,
 		resource: resource,
 		token:    token,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Transport: &limitResponseBodyRoundTripper{next: baseTransport, limit: 4096},
+			Timeout:   30 * time.Second,
 		},
 	}
 }
@@ -66,51 +100,35 @@ func (r *resourceTokenSource) refreshWithResource(ctx context.Context) (*oauth2.
 		return nil, fmt.Errorf("no refresh token available")
 	}
 
-	// Build refresh request with resource parameter
-	v := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {r.token.RefreshToken},
+	// Use x/oauth2 internals via Exchange() so we get:
+	// - expires_in -> Expiry handling
+	// - defaulting to HTTP Basic auth (or auto-detection)
+	// - structured error parsing via oauth2.RetrieveError
+	//
+	// Note: Exchange() will include an empty "code" parameter in the body.
+	// This is a known workaround for adding custom refresh params.
+	refreshToken := r.token.RefreshToken
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", refreshToken),
+		oauth2.SetAuthURLParam("resource", r.resource),
 	}
 
-	// Add resource parameter per RFC 8707
-	v.Set("resource", r.resource)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
 
-	// Add client credentials
-	if r.config.ClientID != "" {
-		v.Set("client_id", r.config.ClientID)
-	}
-	if r.config.ClientSecret != "" {
-		v.Set("client_secret", r.config.ClientSecret)
-	}
-
-	// Make the request
-	req, err := http.NewRequestWithContext(ctx, "POST", r.config.Endpoint.TokenURL, strings.NewReader(v.Encode()))
+	token, err := r.config.Exchange(ctx, "", opts...)
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token refresh request failed: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close() // Ignore error on close during cleanup
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("token refresh with resource parameter failed: %w", err)
 	}
 
-	// Parse the token response
-	var token oauth2.Token
-	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	// Preserve refresh token if the server does not return a new one.
+	if token.RefreshToken == "" {
+		token.RefreshToken = refreshToken
 	}
 
 	logger.Debugw("token refreshed with resource parameter",
 		"resource", r.resource,
 	)
 
-	return &token, nil
+	return token, nil
 }

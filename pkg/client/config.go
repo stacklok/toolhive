@@ -145,7 +145,11 @@ type clientAppConfig struct {
 	SupportsSkills       bool                // Whether this client supports skills
 	SkillsGlobalPath     []string            // Path segments for global skills dir (from home dir)
 	SkillsProjectPath    []string            // Path segments for project-local skills dir (from project root)
-	SkillsPlatformPrefix map[string][]string // Platform-specific prefixes for global skills path
+	// SkillsPlatformPrefix maps runtime.GOOS values (e.g., "linux", "darwin") to path
+	// segments inserted between home dir and SkillsGlobalPath. Needed for clients
+	// following platform conventions (e.g., XDG ~/.config/ on Linux/macOS).
+	// If nil or missing an entry for the current OS, no prefix is added.
+	SkillsPlatformPrefix map[string][]string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix

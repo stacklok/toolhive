@@ -279,7 +279,7 @@ func TestValidateSkillDir_Symlink(t *testing.T) {
 		"expected symlink error in %v", result.Errors)
 }
 
-func TestValidateName(t *testing.T) {
+func TestValidateSkillName(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -291,7 +291,7 @@ func TestValidateName(t *testing.T) {
 		{name: "valid with numbers", input: "skill-v2", wantErr: false},
 		{name: "valid min length", input: "ab", wantErr: false},
 		{name: "valid all numbers", input: "123", wantErr: false},
-		{name: "empty - skipped", input: "", wantErr: false},
+		{name: "empty", input: "", wantErr: true},
 		{name: "single char", input: "a", wantErr: true},
 		{name: "uppercase", input: "MySkill", wantErr: true},
 		{name: "starts with hyphen", input: "-skill", wantErr: true},
@@ -306,7 +306,7 @@ func TestValidateName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateName(tt.input)
+			err := ValidateSkillName(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {

@@ -78,15 +78,16 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 func validateFields(result *ParseResult, dirName string) []string {
 	var errs []string
 
-	if err := validateName(result.Name); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if result.Name != "" && result.Name != dirName {
-		errs = append(errs,
-			fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
-	}
 	if result.Name == "" {
 		errs = append(errs, "name is required")
+	} else {
+		if err := ValidateSkillName(result.Name); err != nil {
+			errs = append(errs, err.Error())
+		}
+		if result.Name != dirName {
+			errs = append(errs,
+				fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
+		}
 	}
 	if result.Description == "" {
 		errs = append(errs, "description is required")
@@ -138,15 +139,6 @@ func ValidateSkillName(name string) error {
 		return fmt.Errorf("invalid skill name %q: must not contain consecutive hyphens", name)
 	}
 	return nil
-}
-
-// validateName checks that a skill name matches the required pattern.
-// Empty names are allowed here since they are caught by the required fields check in ValidateSkillDir.
-func validateName(name string) error {
-	if name == "" {
-		return nil // Caught by required fields check
-	}
-	return ValidateSkillName(name)
 }
 
 // checkFilesystem walks the directory once, checking for symlinks and path traversal.

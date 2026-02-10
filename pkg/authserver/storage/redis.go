@@ -537,12 +537,22 @@ func (s *RedisStorage) DeleteRefreshTokenSession(ctx context.Context, signature 
 }
 
 // RotateRefreshToken invalidates a refresh token and all its related token data.
-// All operations are best-effort (see warnOnCleanupErr); the new refresh token
-// has already been issued by fosite, so partial cleanup is acceptable.
+// This is a no-op if the token does not exist (returns nil), matching the behavior
+// of the in-memory implementation. All cleanup operations are best-effort
+// (see warnOnCleanupErr); the new refresh token has already been issued by fosite,
+// so partial cleanup is acceptable.
 func (s *RedisStorage) RotateRefreshToken(ctx context.Context, requestID string, refreshTokenSignature string) error {
-	// Delete the specific refresh token
+	// Delete the specific refresh token. Del returns the number of keys removed;
+	// 0 means the token did not exist (already rotated or never created).
 	refreshKey := redisKey(s.keyPrefix, KeyTypeRefresh, refreshTokenSignature)
-	warnOnCleanupErr(s.client.Del(ctx, refreshKey).Err(), "Del", refreshKey)
+	deleted, err := s.client.Del(ctx, refreshKey).Result()
+	if err != nil {
+		warnOnCleanupErr(err, "Del", refreshKey)
+	}
+	if deleted == 0 {
+		logger.Debugw("refresh token not found during rotation, treating as no-op",
+			"request_id", requestID, "signature", refreshTokenSignature)
+	}
 
 	// Remove from the request ID index
 	reqIDRefreshKey := redisSetKey(s.keyPrefix, KeyTypeReqIDRefresh, requestID)

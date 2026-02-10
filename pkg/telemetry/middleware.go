@@ -170,24 +170,26 @@ func (*HTTPMiddleware) createSpanName(ctx context.Context, r *http.Request) stri
 }
 
 // addHTTPAttributes adds standard HTTP attributes to the span.
-func (*HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
-	span.SetAttributes(
-		attribute.String("http.method", r.Method),
-		attribute.String("http.url", r.URL.String()),
-		attribute.String("http.scheme", r.URL.Scheme),
-		attribute.String("http.host", r.Host),
-		attribute.String("http.target", r.URL.Path),
-		attribute.String("http.user_agent", r.UserAgent()),
-	)
+func (m *HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.String()),
+			attribute.String("http.scheme", r.URL.Scheme),
+			attribute.String("http.host", r.Host),
+			attribute.String("http.target", r.URL.Path),
+			attribute.String("http.user_agent", r.UserAgent()),
+		)
 
-	// Add content length if available
-	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
-		span.SetAttributes(attribute.String("http.request_content_length", contentLength))
-	}
+		// Add content length if available
+		if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+			span.SetAttributes(attribute.String("http.request_content_length", contentLength))
+		}
 
-	// Add query parameters if present
-	if r.URL.RawQuery != "" {
-		span.SetAttributes(attribute.String("http.query", r.URL.RawQuery))
+		// Add query parameters if present
+		if r.URL.RawQuery != "" {
+			span.SetAttributes(attribute.String("http.query", r.URL.RawQuery))
+		}
 	}
 }
 
@@ -217,21 +219,23 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 		return
 	}
 
-	// Add basic MCP attributes
-	span.SetAttributes(
-		attribute.String("mcp.method", parsedMCP.Method),
-		attribute.String("rpc.system", "jsonrpc"),
-		attribute.String("rpc.service", "mcp"),
-	)
+	if m.config.UseLegacyAttributes {
+		// Add basic MCP attributes
+		span.SetAttributes(
+			attribute.String("mcp.method", parsedMCP.Method),
+			attribute.String("rpc.system", "jsonrpc"),
+			attribute.String("rpc.service", "mcp"),
+		)
 
-	// Add request ID if available
-	if parsedMCP.ID != nil {
-		span.SetAttributes(attribute.String("mcp.request.id", formatRequestID(parsedMCP.ID)))
-	}
+		// Add request ID if available
+		if parsedMCP.ID != nil {
+			span.SetAttributes(attribute.String("mcp.request.id", formatRequestID(parsedMCP.ID)))
+		}
 
-	// Add resource ID if available
-	if parsedMCP.ResourceID != "" {
-		span.SetAttributes(attribute.String("mcp.resource.id", parsedMCP.ResourceID))
+		// Add resource ID if available
+		if parsedMCP.ResourceID != "" {
+			span.SetAttributes(attribute.String("mcp.resource.id", parsedMCP.ResourceID))
+		}
 	}
 
 	// Add method-specific attributes
@@ -246,7 +250,9 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	// The transport should never be empty as both CLI and API have fallbacks to "streamable-http"
 	// If transport is still empty, it indicates a configuration issue in middleware construction
 	backendTransport := m.extractBackendTransport(r)
-	span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	}
 
 	// Add batch indicator
 	if parsedMCP.IsBatch {
@@ -256,6 +262,10 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 
 // addMethodSpecificAttributes adds attributes specific to certain MCP methods.
 func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
+	if !m.config.UseLegacyAttributes {
+		return
+	}
+
 	switch parsedMCP.Method {
 	case string(mcp.MethodToolsCall):
 		// For tool calls, the ResourceID is the tool name
@@ -386,13 +396,15 @@ func formatRequestID(id interface{}) string {
 }
 
 // finalizeSpan adds response attributes and sets the span status.
-func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duration time.Duration) {
+func (m *HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duration time.Duration) {
 	// Add response attributes
-	span.SetAttributes(
-		attribute.Int("http.status_code", rw.statusCode),
-		attribute.Int64("http.response_content_length", rw.bytesWritten),
-		attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
-	)
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(
+			attribute.Int("http.status_code", rw.statusCode),
+			attribute.Int64("http.response_content_length", rw.bytesWritten),
+			attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
+		)
+	}
 
 	// Set span status based on HTTP status code
 	if rw.statusCode >= 400 {
@@ -525,8 +537,10 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	span.SetAttributes(
 		attribute.String("sse.event_type", "connection_established"),
 		attribute.String("mcp.server.name", m.serverName),
-		attribute.String("mcp.transport", m.transport),
 	)
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", m.transport))
+	}
 
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")

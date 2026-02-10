@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -29,6 +30,12 @@ import (
 const (
 	// instrumentationName is the name of this instrumentation package
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
+	// methodPromptsGet is the MCP method name for prompts/get
+	methodPromptsGet = "prompts/get"
+	// networkTransportTCP is the OTEL value for TCP transport
+	networkTransportTCP = "tcp"
+	// networkProtocolHTTP is the OTEL value for HTTP protocol
+	networkProtocolHTTP = "http"
 )
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
@@ -125,7 +132,10 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		))
 
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
-		spanName := m.createSpanName(ctx, r)
+		spanName := m.createSpanName(ctx)
+		if spanName == "" {
+			spanName = fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+		}
 		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
@@ -158,36 +168,52 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-// createSpanName creates an appropriate span name based on available context.
-func (*HTTPMiddleware) createSpanName(ctx context.Context, r *http.Request) string {
-	// Try to get MCP method from parsed data
-	if mcpMethod := mcpparser.GetMCPMethod(ctx); mcpMethod != "" {
-		return fmt.Sprintf("mcp.%s", mcpMethod)
+func (*HTTPMiddleware) createSpanName(ctx context.Context) string {
+	parsedMCP := mcpparser.GetParsedMCPRequest(ctx)
+	if parsedMCP == nil || parsedMCP.Method == "" {
+		return ""
 	}
-
-	// Fall back to HTTP method + path
-	return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+	return parsedMCP.Method
 }
 
 // addHTTPAttributes adds standard HTTP attributes to the span.
-func (*HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
+func (m *HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
+	// New OTEL HTTP semantic convention attributes (always emitted)
 	span.SetAttributes(
-		attribute.String("http.method", r.Method),
-		attribute.String("http.url", r.URL.String()),
-		attribute.String("http.scheme", r.URL.Scheme),
-		attribute.String("http.host", r.Host),
-		attribute.String("http.target", r.URL.Path),
-		attribute.String("http.user_agent", r.UserAgent()),
+		attribute.String("http.request.method", r.Method),
+		attribute.String("url.full", r.URL.String()),
+		attribute.String("url.scheme", r.URL.Scheme),
+		attribute.String("server.address", r.Host),
+		attribute.String("url.path", r.URL.Path),
+		attribute.String("user_agent.original", r.UserAgent()),
 	)
 
-	// Add content length if available
-	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
-		span.SetAttributes(attribute.String("http.request_content_length", contentLength))
+	if r.ContentLength > 0 {
+		span.SetAttributes(attribute.Int64("http.request.body.size", r.ContentLength))
 	}
 
-	// Add query parameters if present
 	if r.URL.RawQuery != "" {
-		span.SetAttributes(attribute.String("http.query", r.URL.RawQuery))
+		span.SetAttributes(attribute.String("url.query", r.URL.RawQuery))
+	}
+
+	// Legacy attribute names (emitted only when UseLegacyAttributes is true)
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.url", r.URL.String()),
+			attribute.String("http.scheme", r.URL.Scheme),
+			attribute.String("http.host", r.Host),
+			attribute.String("http.target", r.URL.Path),
+			attribute.String("http.user_agent", r.UserAgent()),
+		)
+
+		if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+			span.SetAttributes(attribute.String("http.request_content_length", contentLength))
+		}
+
+		if r.URL.RawQuery != "" {
+			span.SetAttributes(attribute.String("http.query", r.URL.RawQuery))
+		}
 	}
 }
 
@@ -217,36 +243,56 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 		return
 	}
 
-	// Add basic MCP attributes
+	// New OTEL MCP semantic convention attributes (always emitted)
 	span.SetAttributes(
-		attribute.String("mcp.method", parsedMCP.Method),
-		attribute.String("rpc.system", "jsonrpc"),
-		attribute.String("rpc.service", "mcp"),
+		attribute.String("mcp.method.name", parsedMCP.Method),
+		attribute.String("rpc.system.name", "jsonrpc"),
+		attribute.String("jsonrpc.protocol.version", "2.0"),
 	)
 
-	// Add request ID if available
 	if parsedMCP.ID != nil {
-		span.SetAttributes(attribute.String("mcp.request.id", formatRequestID(parsedMCP.ID)))
+		span.SetAttributes(attribute.String("jsonrpc.request.id", formatRequestID(parsedMCP.ID)))
 	}
 
-	// Add resource ID if available
+	// Resource URI: only set for resource-related methods
 	if parsedMCP.ResourceID != "" {
-		span.SetAttributes(attribute.String("mcp.resource.id", parsedMCP.ResourceID))
+		switch parsedMCP.Method {
+		case "resources/read", "resources/subscribe", "resources/unsubscribe", "notifications/resources/updated":
+			span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
+		}
+	}
+
+	// Legacy attribute names (emitted only when UseLegacyAttributes is true)
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(
+			attribute.String("mcp.method", parsedMCP.Method),
+			attribute.String("rpc.system", "jsonrpc"),
+			attribute.String("rpc.service", "mcp"),
+		)
+
+		if parsedMCP.ID != nil {
+			span.SetAttributes(attribute.String("mcp.request.id", formatRequestID(parsedMCP.ID)))
+		}
+
+		if parsedMCP.ResourceID != "" {
+			span.SetAttributes(attribute.String("mcp.resource.id", parsedMCP.ResourceID))
+		}
 	}
 
 	// Add method-specific attributes
 	m.addMethodSpecificAttributes(span, parsedMCP)
 
-	// Extract server name from the request, defaulting to the middleware's configured server name
+	// Extract server name from the request
 	serverName := m.extractServerName(r)
 	span.SetAttributes(attribute.String("mcp.server.name", serverName))
 
-	// Determine backend transport type
-	// Note: ToolHive supports multiple transport types including stdio, sse, streamable-http
-	// The transport should never be empty as both CLI and API have fallbacks to "streamable-http"
-	// If transport is still empty, it indicates a configuration issue in middleware construction
+	// Add network, client, and session attributes
 	backendTransport := m.extractBackendTransport(r)
-	span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	m.addNetworkAttributes(span, r, backendTransport)
+
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", backendTransport))
+	}
 
 	// Add batch indicator
 	if parsedMCP.IsBatch {
@@ -254,33 +300,75 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	}
 }
 
+// addNetworkAttributes adds network, client, and session attributes to the span.
+func (*HTTPMiddleware) addNetworkAttributes(span trace.Span, r *http.Request, backendTransport string) {
+	networkTransport, protocolName, backendProtocolVersion := mapTransport(backendTransport)
+	span.SetAttributes(attribute.String("network.transport", networkTransport))
+	if protocolName != "" {
+		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
+	}
+	if backendProtocolVersion != "" {
+		span.SetAttributes(attribute.String("mcp.backend.protocol.version", backendProtocolVersion))
+	}
+
+	// HTTP protocol version from the incoming request
+	if protocolVer := httpProtocolVersion(r); protocolVer != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVer))
+	}
+
+	// Client address and port
+	if clientAddr, clientPort := parseRemoteAddr(r.RemoteAddr); clientAddr != "" {
+		span.SetAttributes(attribute.String("client.address", clientAddr))
+		if clientPort > 0 {
+			span.SetAttributes(attribute.Int("client.port", clientPort))
+		}
+	}
+
+	// Session ID if available
+	if sessionID := r.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		span.SetAttributes(attribute.String("mcp.session.id", sessionID))
+	}
+}
+
 // addMethodSpecificAttributes adds attributes specific to certain MCP methods.
 func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
 	switch parsedMCP.Method {
 	case string(mcp.MethodToolsCall):
-		// For tool calls, the ResourceID is the tool name
+		// New gen_ai namespace attributes (always emitted)
 		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.tool.name", parsedMCP.ResourceID))
+			span.SetAttributes(attribute.String("gen_ai.tool.name", parsedMCP.ResourceID))
 		}
-		// Add sanitized arguments
-		if args := m.sanitizeArguments(parsedMCP.Arguments); args != "" {
-			span.SetAttributes(attribute.String("mcp.tool.arguments", args))
+		span.SetAttributes(attribute.String("gen_ai.operation.name", "execute_tool"))
+
+		sanitizedArgs := m.sanitizeArguments(parsedMCP.Arguments)
+		if sanitizedArgs != "" {
+			span.SetAttributes(attribute.String("gen_ai.tool.call.arguments", sanitizedArgs))
 		}
 
-	case "resources/read":
-		// For resource reads, the ResourceID is the URI
-		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.resource.uri", parsedMCP.ResourceID))
+		// Legacy names
+		if m.config.UseLegacyAttributes {
+			if parsedMCP.ResourceID != "" {
+				span.SetAttributes(attribute.String("mcp.tool.name", parsedMCP.ResourceID))
+			}
+			if sanitizedArgs != "" {
+				span.SetAttributes(attribute.String("mcp.tool.arguments", sanitizedArgs))
+			}
 		}
 
-	case "prompts/get":
-		// For prompt gets, the ResourceID is the prompt name
+	case methodPromptsGet:
+		// New gen_ai namespace attribute (always emitted)
 		if parsedMCP.ResourceID != "" {
-			span.SetAttributes(attribute.String("mcp.prompt.name", parsedMCP.ResourceID))
+			span.SetAttributes(attribute.String("gen_ai.prompt.name", parsedMCP.ResourceID))
+		}
+
+		// Legacy name
+		if m.config.UseLegacyAttributes {
+			if parsedMCP.ResourceID != "" {
+				span.SetAttributes(attribute.String("mcp.prompt.name", parsedMCP.ResourceID))
+			}
 		}
 
 	case "initialize":
-		// For initialize, the ResourceID is the client name
 		if parsedMCP.ResourceID != "" {
 			span.SetAttributes(attribute.String("mcp.client.name", parsedMCP.ResourceID))
 		}
@@ -319,6 +407,46 @@ func (m *HTTPMiddleware) extractBackendTransport(r *http.Request) string {
 	}
 
 	return m.transport
+}
+
+func mapTransport(mcpTransport string) (networkTransport, protocolName, protocolVersion string) {
+	switch mcpTransport {
+	case "stdio":
+		return "pipe", "", ""
+	case "sse":
+		return networkTransportTCP, networkProtocolHTTP, "1.1"
+	case "streamable-http":
+		return networkTransportTCP, networkProtocolHTTP, "2"
+	default:
+		return networkTransportTCP, networkProtocolHTTP, ""
+	}
+}
+
+// httpProtocolVersion extracts the HTTP protocol version from the request.
+func httpProtocolVersion(r *http.Request) string {
+	if r.ProtoMajor == 0 {
+		return ""
+	}
+	if r.ProtoMajor >= 2 && r.ProtoMinor == 0 {
+		return strconv.Itoa(r.ProtoMajor)
+	}
+	return fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
+}
+
+// parseRemoteAddr parses the remote address into host and port.
+func parseRemoteAddr(remoteAddr string) (string, int) {
+	if remoteAddr == "" {
+		return "", 0
+	}
+	host, portStr, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr, 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return host, 0
+	}
+	return host, port
 }
 
 // sanitizeArguments converts arguments to a safe string representation.
@@ -386,18 +514,31 @@ func formatRequestID(id interface{}) string {
 }
 
 // finalizeSpan adds response attributes and sets the span status.
-func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duration time.Duration) {
-	// Add response attributes
+func (m *HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duration time.Duration) {
+	// New OTEL HTTP semantic convention response attributes (always emitted)
 	span.SetAttributes(
-		attribute.Int("http.status_code", rw.statusCode),
-		attribute.Int64("http.response_content_length", rw.bytesWritten),
-		attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
+		attribute.Int("http.response.status_code", rw.statusCode),
+		attribute.Int64("http.response.body.size", rw.bytesWritten),
 	)
 
-	// Set span status based on HTTP status code
-	if rw.statusCode >= 400 {
+	// Legacy response attributes
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(
+			attribute.Int("http.status_code", rw.statusCode),
+			attribute.Int64("http.response_content_length", rw.bytesWritten),
+			attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
+		)
+	}
+
+	// Set span status based on HTTP status code per OTEL semconv
+	if rw.statusCode >= 500 {
+		// 5xx: Server errors set span status to Error with error.type
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
+		span.SetAttributes(attribute.String("error.type", strconv.Itoa(rw.statusCode)))
+	} else if rw.statusCode >= 400 {
+		// 4xx: Client errors leave span status Unset (not server errors per OTEL semconv)
 	} else {
+		// 2xx/3xx: Success
 		span.SetStatus(codes.Ok, "")
 	}
 }
@@ -522,11 +663,24 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 	m.addHTTPAttributes(span, r)
 
 	// Add SSE-specific attributes
+	networkTransport, protocolName, backendProtocolVersion := mapTransport(m.transport)
 	span.SetAttributes(
 		attribute.String("sse.event_type", "connection_established"),
 		attribute.String("mcp.server.name", m.serverName),
-		attribute.String("mcp.transport", m.transport),
+		attribute.String("network.transport", networkTransport),
 	)
+	if protocolName != "" {
+		span.SetAttributes(attribute.String("network.protocol.name", protocolName))
+	}
+	if backendProtocolVersion != "" {
+		span.SetAttributes(attribute.String("mcp.backend.protocol.version", backendProtocolVersion))
+	}
+	if protocolVer := httpProtocolVersion(r); protocolVer != "" {
+		span.SetAttributes(attribute.String("network.protocol.version", protocolVer))
+	}
+	if m.config.UseLegacyAttributes {
+		span.SetAttributes(attribute.String("mcp.transport", m.transport))
+	}
 
 	// End the span immediately since this is just the connection establishment
 	span.SetStatus(codes.Ok, "SSE connection established")

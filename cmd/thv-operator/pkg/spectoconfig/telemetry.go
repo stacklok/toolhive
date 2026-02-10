@@ -37,6 +37,7 @@ func ConvertTelemetryConfig(
 	var otelHeaders []string
 	var otelInsecure bool
 	var otelEnvironmentVariables []string
+	otelUseLegacyAttributes := true // Default to true for backward compatibility
 
 	// Process OpenTelemetry configuration
 	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
@@ -74,6 +75,8 @@ func ConvertTelemetryConfig(
 		if otel.Metrics != nil {
 			otelMetricsEnabled = otel.Metrics.Enabled
 		}
+
+		otelUseLegacyAttributes = otel.UseLegacyAttributes
 	}
 
 	// Process Prometheus configuration
@@ -91,6 +94,7 @@ func ConvertTelemetryConfig(
 		otelHeaders,
 		otelInsecure,
 		otelEnvironmentVariables,
+		otelUseLegacyAttributes,
 	)
 
 	// Apply normalization (endpoint prefix stripping, ServiceName/ServiceVersion defaults)

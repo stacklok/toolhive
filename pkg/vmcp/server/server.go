@@ -138,7 +138,7 @@ type Config struct {
 
 	// OptimizerFactory builds an optimizer from a list of tools.
 	// If not set, the optimizer is disabled.
-	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
+	OptimizerFactory func([]server.ServerTool) (optimizer.Optimizer, error)
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -217,6 +217,11 @@ type Server struct {
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
+
+	// sessionOptimizers tracks optimizer instances per session for lifecycle management.
+	// Protected by sessionOptimizersMu.
+	sessionOptimizers   map[string]optimizer.Optimizer
+	sessionOptimizersMu sync.RWMutex
 
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
@@ -380,6 +385,7 @@ func New(
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
 		statusReporter:    cfg.StatusReporter,
+		sessionOptimizers: make(map[string]optimizer.Optimizer),
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -633,6 +639,16 @@ func (s *Server) Stop(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
 		}
 	}
+
+	// Close all session optimizers
+	s.sessionOptimizersMu.Lock()
+	for id, opt := range s.sessionOptimizers {
+		if err := opt.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close optimizer for session %s: %w", id, err))
+		}
+	}
+	s.sessionOptimizers = make(map[string]optimizer.Optimizer)
+	s.sessionOptimizersMu.Unlock()
 
 	// Stop health monitor to clean up health check goroutines
 	s.healthMonitorMu.RLock()
@@ -897,8 +913,19 @@ func (s *Server) injectOptimizerCapabilities(
 		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
 	}
 
+	// Create optimizer instance from factory
+	opt, err := s.config.OptimizerFactory(sdkTools)
+	if err != nil {
+		return fmt.Errorf("failed to create optimizer: %w", err)
+	}
+
+	// Track optimizer for lifecycle management (Close on session teardown)
+	s.sessionOptimizersMu.Lock()
+	s.sessionOptimizers[sessionID] = opt
+	s.sessionOptimizersMu.Unlock()
+
 	// Create optimizer tools (find_tool, call_tool)
-	optimizerTools := adapter.CreateOptimizerTools(s.config.OptimizerFactory(sdkTools))
+	optimizerTools := adapter.CreateOptimizerTools(opt)
 
 	logger.Debugw("created optimizer tools for session",
 		"session_id", sessionID,

@@ -36,7 +36,8 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 		},
 	}
 
-	opt := NewDummyOptimizer(tools)
+	store := NewInMemoryToolStore()
+	opt := NewDummyOptimizer(store, tools)
 
 	tests := []struct {
 		name          string
@@ -124,7 +125,8 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 		},
 	}
 
-	opt := NewDummyOptimizer(tools)
+	store := NewInMemoryToolStore()
+	opt := NewDummyOptimizer(store, tools)
 
 	tests := []struct {
 		name          string
@@ -188,4 +190,18 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDummyOptimizer_Close(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryToolStore()
+	opt := NewDummyOptimizer(store, nil)
+
+	err := opt.Close()
+	require.NoError(t, err)
+
+	// Close is safe to call multiple times
+	err = opt.Close()
+	require.NoError(t, err)
 }

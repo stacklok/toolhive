@@ -33,6 +33,10 @@ func (m *mockOptimizer) CallTool(ctx context.Context, input optimizer.CallToolIn
 	return mcp.NewToolResultText("ok"), nil
 }
 
+func (*mockOptimizer) Close() error {
+	return nil
+}
+
 func TestCreateOptimizerTools(t *testing.T) {
 	t.Parallel()
 

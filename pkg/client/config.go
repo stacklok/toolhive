@@ -889,14 +889,7 @@ func CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 // CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
 func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *clientAppConfig
-	for _, cfg := range cm.clientIntegrations {
-		if cfg.ClientType == clientType {
-			clientCfg = &cfg
-			break
-		}
-	}
-
+	clientCfg := cm.lookupClientAppConfig(clientType)
 	if clientCfg == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
@@ -953,14 +946,12 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 
 // Upsert updates/inserts an MCP server in a client configuration file using this manager's dependencies.
 func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transportType string) error {
-	for i := range cm.clientIntegrations {
-		if cf.ClientType != cm.clientIntegrations[i].ClientType {
-			continue
-		}
-		server := buildMCPServer(url, transportType, &cm.clientIntegrations[i])
-		return cf.ConfigUpdater.Upsert(name, server)
+	cfg := cm.lookupClientAppConfig(cf.ClientType)
+	if cfg == nil {
+		return nil
 	}
-	return nil
+	server := buildMCPServer(url, transportType, cfg)
+	return cf.ConfigUpdater.Upsert(name, server)
 }
 
 // buildMCPServer constructs an MCPServer struct with the appropriate URL field and optional type field.
@@ -1004,14 +995,7 @@ func buildMCPServer(url, transportType string, clientCfg *clientAppConfig) MCPSe
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
 func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *clientAppConfig
-	for _, cfg := range cm.clientIntegrations {
-		if cfg.ClientType == clientType {
-			clientCfg = &cfg
-			break
-		}
-	}
-
+	clientCfg := cm.lookupClientAppConfig(clientType)
 	if clientCfg == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}

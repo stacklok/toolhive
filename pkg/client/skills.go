@@ -29,12 +29,8 @@ var (
 
 // SupportsSkills returns whether the given client supports skills.
 func (cm *ClientManager) SupportsSkills(clientType ClientApp) bool {
-	for _, cfg := range cm.clientIntegrations {
-		if cfg.ClientType == clientType {
-			return cfg.SupportsSkills
-		}
-	}
-	return false
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && cfg.SupportsSkills
 }
 
 // ListSkillSupportingClients returns a sorted slice of all clients that support skills.

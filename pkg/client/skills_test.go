@@ -304,3 +304,40 @@ func TestDetectProjectRoot(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrProjectRootNotFound))
 	})
 }
+
+func TestLookupClientAppConfig(t *testing.T) {
+	t.Parallel()
+	cm := newTestSkillManager("/fake/home")
+
+	tests := []struct {
+		name       string
+		clientType ClientApp
+		wantNil    bool
+		wantType   ClientApp
+	}{
+		{name: "finds existing client", clientType: ClaudeCode, wantNil: false, wantType: ClaudeCode},
+		{name: "finds another client", clientType: Codex, wantNil: false, wantType: Codex},
+		{name: "returns nil for unknown client", clientType: ClientApp("nonexistent"), wantNil: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := cm.lookupClientAppConfig(tt.clientType)
+			if tt.wantNil {
+				assert.Nil(t, cfg)
+			} else {
+				require.NotNil(t, cfg)
+				assert.Equal(t, tt.wantType, cfg.ClientType)
+			}
+		})
+	}
+
+	t.Run("returns pointer to slice element not a copy", func(t *testing.T) {
+		t.Parallel()
+		cfg := cm.lookupClientAppConfig(ClaudeCode)
+		require.NotNil(t, cfg)
+		// Verify we got a pointer into the actual slice, not a copy
+		assert.Same(t, &cm.clientIntegrations[0], cfg)
+	})
+}

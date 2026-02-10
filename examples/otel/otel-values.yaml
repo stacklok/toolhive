@@ -31,9 +31,9 @@ config:
       send_batch_max_size: 2048
 
   exporters:
-    # Jaeger exporter for distributed tracing
-    otlp/jaeger:
-      endpoint: http://jaeger-all-in-one-collector.monitoring:4317
+    # Tempo exporter for distributed tracing
+    otlp/tempo:
+      endpoint: http://tempo.monitoring:4317
       tls:
         insecure: true
       timeout: 30s
@@ -50,25 +50,6 @@ config:
       # Convert OTEL runtime metrics to Prometheus-compatible names
       resource_to_telemetry_conversion:
         enabled: true
-      # Ensure standard metric naming
-      # Note: prometheus exporter doesn't support metric_relabeling
-      # Metric name mapping would need to be done in Prometheus scrape config
-    prometheusremotewrite:
-      endpoint: http://kube-prometheus-stack-prometheus.monitoring:9090/api/v1/write
-      tls:
-        insecure: true
-      headers:
-        X-Prometheus-Remote-Write-Version: "0.1.0"
-        X-Scope-OrgID: "toolhive"
-      timeout: 60s
-      retry_on_failure:
-        enabled: true
-        initial_interval: 1s
-        max_interval: 30s
-        max_elapsed_time: 120s
-        multiplier: 2
-      resource_to_telemetry_conversion:
-        enabled: true
     debug:
       verbosity: detailed
 
@@ -82,12 +63,12 @@ config:
       traces:
         receivers: [otlp]
         processors: [batch]
-        exporters: [otlp/jaeger]
+        exporters: [otlp/tempo]
       metrics:
         receivers: [otlp, kubeletstats]
         processors: [batch]
-        # Prioritize prometheus exporter for scraping, keep remote write as backup
-        exporters: [prometheusremotewrite, prometheus,]
+        # Prioritize prometheus exporter for scraping
+        exporters: [prometheus,]
       logs:
         receivers: [otlp]
         processors: [batch]

@@ -39,9 +39,9 @@ const defaultService = "aws-mcp"
 
 // requestSigner signs HTTP requests using AWS Signature Version 4.
 //
-// SigV4 signing must be the last middleware in the chain before sending
-// the request, as any modification to headers after signing will invalidate
-// the signature.
+// SigV4 signing should run as close to the backend as possible.
+// Modifying signed headers or the request body after signing will
+// invalidate the signature.
 type requestSigner struct {
 	signer  *v4.Signer
 	region  string
@@ -135,6 +135,8 @@ func (*requestSigner) hashPayload(req *http.Request) (string, []byte, error) {
 		return emptySHA256, nil, nil
 	}
 
+	defer func() { _ = req.Body.Close() }()
+
 	// Read the body with a size limit to prevent memory exhaustion
 	bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxPayloadSize+1))
 	if err != nil {
@@ -142,11 +144,6 @@ func (*requestSigner) hashPayload(req *http.Request) (string, []byte, error) {
 	}
 	if len(bodyBytes) > maxPayloadSize {
 		return "", nil, fmt.Errorf("request body exceeds maximum size of %d bytes", maxPayloadSize)
-	}
-
-	// Close the original body
-	if err := req.Body.Close(); err != nil {
-		return "", nil, err
 	}
 
 	// Hash the body

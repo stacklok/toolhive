@@ -1,0 +1,29 @@
+# Helm values for Grafana Tempo - distributed tracing backend
+# Install with:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm repo update
+#   helm upgrade -i tempo grafana/tempo -f tempo-values.yaml -n monitoring --create-namespace
+
+tempo:
+  # Enable search/query functionality in the Tempo API
+  search:
+    enabled: true
+
+  # OTLP gRPC receiver - the OTEL Collector sends traces here
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+
+  # Local filesystem storage (no S3/GCS needed for dev)
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      wal:
+        path: /var/tempo/wal
+
+  # Retention for local development
+  retention: 24h

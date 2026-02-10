@@ -233,7 +233,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	require.Len(t, spans, 1)
 
 	span := spans[0]
-	assert.Equal(t, "tools/call", span.Name)
+	assert.Equal(t, "tools/call "+testToolName, span.Name)
 
 	// Verify span attributes
 	attrs := span.Attributes

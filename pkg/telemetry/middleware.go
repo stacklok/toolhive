@@ -208,6 +208,11 @@ func (*HTTPMiddleware) createSpanName(ctx context.Context) string {
 	if parsedMCP == nil || parsedMCP.Method == "" {
 		return ""
 	}
+	// OTEL MCP semconv: span name should be "{mcp.method.name} {target}"
+	// where target is the tool/prompt/resource name when available.
+	if parsedMCP.ResourceID != "" {
+		return parsedMCP.Method + " " + parsedMCP.ResourceID
+	}
 	return parsedMCP.Method
 }
 
@@ -362,6 +367,11 @@ func (*HTTPMiddleware) addNetworkAttributes(span trace.Span, r *http.Request, ba
 	// Session ID if available
 	if sessionID := r.Header.Get("Mcp-Session-Id"); sessionID != "" {
 		span.SetAttributes(attribute.String("mcp.session.id", sessionID))
+	}
+
+	// MCP protocol version from the streamable HTTP transport header
+	if mcpVersion := r.Header.Get("MCP-Protocol-Version"); mcpVersion != "" {
+		span.SetAttributes(attribute.String("mcp.protocol.version", mcpVersion))
 	}
 }
 

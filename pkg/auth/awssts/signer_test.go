@@ -25,7 +25,7 @@ func TestEmptySHA256IsCorrect(t *testing.T) {
 	assert.Equal(t, hex.EncodeToString(h[:]), emptySHA256)
 }
 
-func Test_newRequestSigner(t *testing.T) {
+func TestNewRequestSigner(t *testing.T) {
 	t.Parallel()
 
 	t.Run("succeeds with valid region", func(t *testing.T) {
@@ -50,8 +50,9 @@ func Test_newRequestSigner(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // Tests share signer and credentials state
 func TestSigner_SignRequest(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	signer, err := newRequestSigner("us-east-1")
 	require.NoError(t, err)
@@ -65,6 +66,7 @@ func TestSigner_SignRequest(t *testing.T) {
 	}
 
 	t.Run("signs request with body", func(t *testing.T) {
+		t.Parallel()
 		body := `{"method": "tools/list"}`
 		req, _ := http.NewRequestWithContext(ctx, "POST", "https://aws-mcp.us-east-1.api.aws/mcp", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -87,6 +89,8 @@ func TestSigner_SignRequest(t *testing.T) {
 	})
 
 	t.Run("signs request without body", func(t *testing.T) {
+		t.Parallel()
+
 		req, _ := http.NewRequestWithContext(ctx, "GET", "https://aws-mcp.us-east-1.api.aws/mcp", nil)
 
 		err := signer.SignRequest(ctx, req, validCreds)
@@ -95,6 +99,8 @@ func TestSigner_SignRequest(t *testing.T) {
 	})
 
 	t.Run("signs request with empty body", func(t *testing.T) {
+		t.Parallel()
+
 		req, _ := http.NewRequestWithContext(ctx, "POST", "https://aws-mcp.us-east-1.api.aws/mcp", http.NoBody)
 
 		err := signer.SignRequest(ctx, req, validCreds)
@@ -103,6 +109,8 @@ func TestSigner_SignRequest(t *testing.T) {
 	})
 
 	t.Run("errors with nil credentials", func(t *testing.T) {
+		t.Parallel()
+
 		req, _ := http.NewRequestWithContext(ctx, "POST", "https://aws-mcp.us-east-1.api.aws/mcp", nil)
 
 		err := signer.SignRequest(ctx, req, nil)
@@ -110,12 +118,13 @@ func TestSigner_SignRequest(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // Tests share signer state
 func TestSigner_HashPayload(t *testing.T) {
+	t.Parallel()
 	signer, err := newRequestSigner("us-east-1")
 	require.NoError(t, err)
 
 	t.Run("hashes body correctly", func(t *testing.T) {
+		t.Parallel()
 		body := "test body content"
 		req, _ := http.NewRequest("POST", "http://example.com", strings.NewReader(body))
 
@@ -132,6 +141,7 @@ func TestSigner_HashPayload(t *testing.T) {
 	})
 
 	t.Run("handles nil body", func(t *testing.T) {
+		t.Parallel()
 		req, _ := http.NewRequest("GET", "http://example.com", nil)
 
 		hash, bodyBytes, err := signer.hashPayload(req)
@@ -141,6 +151,7 @@ func TestSigner_HashPayload(t *testing.T) {
 	})
 
 	t.Run("handles http.NoBody", func(t *testing.T) {
+		t.Parallel()
 		req, _ := http.NewRequest("GET", "http://example.com", http.NoBody)
 
 		hash, bodyBytes, err := signer.hashPayload(req)
@@ -150,6 +161,7 @@ func TestSigner_HashPayload(t *testing.T) {
 	})
 
 	t.Run("handles large body within limit", func(t *testing.T) {
+		t.Parallel()
 		// 1MB body (well within 10MB limit)
 		largeBody := bytes.Repeat([]byte("x"), 1024*1024)
 		req, _ := http.NewRequest("POST", "http://example.com", bytes.NewReader(largeBody))
@@ -161,6 +173,7 @@ func TestSigner_HashPayload(t *testing.T) {
 	})
 
 	t.Run("rejects body exceeding size limit", func(t *testing.T) {
+		t.Parallel()
 		oversizedBody := bytes.Repeat([]byte("x"), maxPayloadSize+1)
 		req, _ := http.NewRequest("POST", "http://example.com", bytes.NewReader(oversizedBody))
 

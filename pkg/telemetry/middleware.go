@@ -58,6 +58,7 @@ type HTTPMiddleware struct {
 	requestDuration   metric.Float64Histogram
 	operationDuration metric.Float64Histogram
 	activeConnections metric.Int64UpDownCounter
+	toolCallCounter   metric.Int64Counter
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -107,6 +108,14 @@ func NewHTTPMiddleware(
 		logger.Debugf("failed to create operation duration metric: %v", err)
 	}
 
+	toolCallCounter, err := meter.Int64Counter(
+		"toolhive_mcp_tool_calls",
+		metric.WithDescription("Total number of MCP tool calls"),
+	)
+	if err != nil {
+		logger.Debugf("failed to create tool call counter metric: %v", err)
+	}
+
 	middleware := &HTTPMiddleware{
 		config:            config,
 		tracerProvider:    tracerProvider,
@@ -119,6 +128,7 @@ func NewHTTPMiddleware(
 		requestDuration:   requestDuration,
 		operationDuration: operationDuration,
 		activeConnections: activeConnections,
+		toolCallCounter:   toolCallCounter,
 	}
 
 	return middleware.Handler
@@ -461,7 +471,7 @@ func mapTransport(mcpTransport string) (networkTransport, protocolName, protocol
 	case "sse":
 		return networkTransportTCP, networkProtocolHTTP, "1.1"
 	case "streamable-http":
-		return networkTransportTCP, networkProtocolHTTP, "2"
+		return networkTransportTCP, networkProtocolHTTP, ""
 	default:
 		return networkTransportTCP, networkProtocolHTTP, ""
 	}
@@ -693,14 +703,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 				attribute.String("tool", parsedMCP.ResourceID),
 				attribute.String("status", status),
 			)
-
-			// Record tool-specific counter
-			if toolCounter, err := m.meter.Int64Counter(
-				"toolhive_mcp_tool_calls", // The exporter adds the _total suffix automatically
-				metric.WithDescription("Total number of MCP tool calls"),
-			); err == nil {
-				toolCounter.Add(ctx, 1, toolAttrs)
-			}
+			m.toolCallCounter.Add(ctx, 1, toolAttrs)
 		}
 	}
 }

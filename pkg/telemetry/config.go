@@ -43,14 +43,14 @@ type Config struct {
 	// When false, no tracer provider is created even if an endpoint is configured.
 	// +kubebuilder:default=false
 	// +optional
-	TracingEnabled bool `json:"tracingEnabled,omitempty" yaml:"tracingEnabled,omitempty"`
+	TracingEnabled bool `json:"tracingEnabled" yaml:"tracingEnabled"`
 
 	// MetricsEnabled controls whether OTLP metrics are enabled.
 	// When false, OTLP metrics are not sent even if an endpoint is configured.
 	// This is independent of EnablePrometheusMetricsPath.
 	// +kubebuilder:default=false
 	// +optional
-	MetricsEnabled bool `json:"metricsEnabled,omitempty" yaml:"metricsEnabled,omitempty"`
+	MetricsEnabled bool `json:"metricsEnabled" yaml:"metricsEnabled"`
 
 	// SamplingRate is the trace sampling rate (0.0-1.0) as a string.
 	// Only used when TracingEnabled is true.

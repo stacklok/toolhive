@@ -33,9 +33,6 @@ type Optimizer interface {
 	// Returns the tool's result or an error if the tool is not found or execution fails.
 	// Returns the MCP CallToolResult directly from the underlying tool handler.
 	CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error)
-
-	// Close releases resources held by this optimizer instance.
-	Close() error
 }
 
 // FindToolInput contains the parameters for finding tools.

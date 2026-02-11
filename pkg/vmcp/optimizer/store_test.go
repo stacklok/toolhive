@@ -148,27 +148,6 @@ func TestInMemoryToolStore_Search(t *testing.T) {
 	})
 }
 
-func TestInMemoryToolStore_Close(t *testing.T) {
-	t.Parallel()
-
-	t.Run("close is safe", func(t *testing.T) {
-		t.Parallel()
-
-		store := NewInMemoryToolStore()
-		err := store.Close()
-		require.NoError(t, err)
-	})
-
-	t.Run("close is safe to call multiple times", func(t *testing.T) {
-		t.Parallel()
-
-		store := NewInMemoryToolStore()
-		require.NoError(t, store.Close())
-		require.NoError(t, store.Close())
-		require.NoError(t, store.Close())
-	})
-}
-
 func TestInMemoryToolStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 

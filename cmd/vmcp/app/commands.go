@@ -10,7 +10,6 @@ import (
 	"os"
 	"time"
 
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.opentelemetry.io/otel/trace"
@@ -485,10 +484,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	if cfg.Optimizer != nil {
 		// TODO: update this with the real optimizer.
-		store := optimizer.NewInMemoryToolStore()
-		serverCfg.OptimizerFactory = func(tools []mcpserver.ServerTool) (optimizer.Optimizer, error) {
-			return optimizer.NewDummyOptimizer(store, tools), nil
-		}
+		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizerFactory()
 	}
 
 	// Convert composite tool configurations to workflow definitions

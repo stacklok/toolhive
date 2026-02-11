@@ -16,6 +16,9 @@ import (
 
 // ToolStore defines the interface for storing and searching tools.
 // Implementations may use in-memory maps, SQLite FTS5, or other backends.
+//
+// A ToolStore is shared across multiple optimizer instances (one per session)
+// and is accessed concurrently. Implementations must be thread-safe.
 type ToolStore interface {
 	// UpsertTools adds or updates tools in the store.
 	// Tools are identified by name; duplicate names are overwritten.
@@ -26,9 +29,6 @@ type ToolStore interface {
 	// If scope is empty, all tools are searched.
 	// Returns matches ranked by relevance.
 	Search(ctx context.Context, query string, scope []string) ([]ToolMatch, error)
-
-	// Close releases any resources held by the store.
-	Close() error
 }
 
 // InMemoryToolStore implements ToolStore using an in-memory map with
@@ -100,11 +100,6 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, scope []stri
 	}
 
 	return matches, nil
-}
-
-// Close is a no-op for the in-memory store.
-func (*InMemoryToolStore) Close() error {
-	return nil
 }
 
 // getToolSchema returns the input schema for a tool.

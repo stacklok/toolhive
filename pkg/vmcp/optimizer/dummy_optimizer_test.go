@@ -37,7 +37,8 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt := NewDummyOptimizer(store, tools)
+	opt, err := NewDummyOptimizer(store, tools)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name          string
@@ -108,6 +109,50 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 	}
 }
 
+func TestDummyOptimizerFactory_SharedStorage(t *testing.T) {
+	t.Parallel()
+
+	factory := NewDummyOptimizerFactory()
+
+	// First optimizer with tool_a
+	opt1, err := factory([]server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Alpha tool"}},
+	})
+	require.NoError(t, err)
+
+	// Second optimizer with tool_b
+	opt2, err := factory([]server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_b", Description: "Beta tool"}},
+	})
+	require.NoError(t, err)
+
+	// opt1 can only find tool_a (scoped to its allowedTools)
+	result1, err := opt1.FindTool(context.Background(), FindToolInput{ToolDescription: "tool"})
+	require.NoError(t, err)
+	require.Len(t, result1.Tools, 1)
+	require.Equal(t, "tool_a", result1.Tools[0].Name)
+
+	// opt2 can only find tool_b (scoped to its allowedTools)
+	result2, err := opt2.FindTool(context.Background(), FindToolInput{ToolDescription: "tool"})
+	require.NoError(t, err)
+	require.Len(t, result2.Tools, 1)
+	require.Equal(t, "tool_b", result2.Tools[0].Name)
+
+	// Both tools exist in the shared store — verify by creating an optimizer with both in scope
+	opt3, err := factory([]server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Alpha tool"}},
+		{Tool: mcp.Tool{Name: "tool_b", Description: "Beta tool"}},
+	})
+	require.NoError(t, err)
+
+	result3, err := opt3.FindTool(context.Background(), FindToolInput{ToolDescription: "tool"})
+	require.NoError(t, err)
+	require.Len(t, result3.Tools, 2)
+
+	names := []string{result3.Tools[0].Name, result3.Tools[1].Name}
+	require.ElementsMatch(t, []string{"tool_a", "tool_b"}, names)
+}
+
 func TestDummyOptimizer_CallTool(t *testing.T) {
 	t.Parallel()
 
@@ -126,7 +171,8 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt := NewDummyOptimizer(store, tools)
+	opt, err := NewDummyOptimizer(store, tools)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name          string
@@ -190,18 +236,4 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestDummyOptimizer_Close(t *testing.T) {
-	t.Parallel()
-
-	store := NewInMemoryToolStore()
-	opt := NewDummyOptimizer(store, nil)
-
-	err := opt.Close()
-	require.NoError(t, err)
-
-	// Close is safe to call multiple times
-	err = opt.Close()
-	require.NoError(t, err)
 }

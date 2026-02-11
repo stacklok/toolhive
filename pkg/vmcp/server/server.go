@@ -218,11 +218,6 @@ type Server struct {
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
 
-	// sessionOptimizers tracks optimizer instances per session for lifecycle management.
-	// Protected by sessionOptimizersMu.
-	sessionOptimizers   map[string]optimizer.Optimizer
-	sessionOptimizersMu sync.RWMutex
-
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
@@ -385,7 +380,6 @@ func New(
 		ready:             make(chan struct{}),
 		healthMonitor:     healthMon,
 		statusReporter:    cfg.StatusReporter,
-		sessionOptimizers: make(map[string]optimizer.Optimizer),
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -639,16 +633,6 @@ func (s *Server) Stop(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
 		}
 	}
-
-	// Close all session optimizers
-	s.sessionOptimizersMu.Lock()
-	for id, opt := range s.sessionOptimizers {
-		if err := opt.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close optimizer for session %s: %w", id, err))
-		}
-	}
-	s.sessionOptimizers = make(map[string]optimizer.Optimizer)
-	s.sessionOptimizersMu.Unlock()
 
 	// Stop health monitor to clean up health check goroutines
 	s.healthMonitorMu.RLock()
@@ -918,11 +902,6 @@ func (s *Server) injectOptimizerCapabilities(
 	if err != nil {
 		return fmt.Errorf("failed to create optimizer: %w", err)
 	}
-
-	// Track optimizer for lifecycle management (Close on session teardown)
-	s.sessionOptimizersMu.Lock()
-	s.sessionOptimizers[sessionID] = opt
-	s.sessionOptimizersMu.Unlock()
 
 	// Create optimizer tools (find_tool, call_tool)
 	optimizerTools := adapter.CreateOptimizerTools(opt)

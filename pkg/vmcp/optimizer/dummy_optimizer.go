@@ -24,8 +24,8 @@ type DummyOptimizer struct {
 	// store is the shared tool store used for search.
 	store ToolStore
 
-	// scope contains the names of tools this optimizer instance can access.
-	scope []string
+	// allowedTools contains the names of tools this optimizer instance can access.
+	allowedTools []string
 
 	// handlers contains tool handlers indexed by name for CallTool.
 	handlers map[string]server.ServerTool
@@ -35,23 +35,23 @@ type DummyOptimizer struct {
 //
 // The tools slice should contain all backend tools (as ServerTool with handlers).
 // Tools are upserted into the shared store and scoped for this optimizer instance.
-func NewDummyOptimizer(store ToolStore, tools []server.ServerTool) Optimizer {
-	scope := make([]string, 0, len(tools))
+func NewDummyOptimizer(store ToolStore, tools []server.ServerTool) (Optimizer, error) {
+	allowedTools := make([]string, 0, len(tools))
 	handlers := make(map[string]server.ServerTool, len(tools))
 	for _, tool := range tools {
-		scope = append(scope, tool.Tool.Name)
+		allowedTools = append(allowedTools, tool.Tool.Name)
 		handlers[tool.Tool.Name] = tool
 	}
 
-	// Upsert tools into the shared store (best-effort; errors logged at call site if needed)
-	//nolint:errcheck // UpsertTools for InMemoryToolStore never returns an error
-	_ = store.UpsertTools(context.Background(), tools)
+	if err := store.UpsertTools(context.Background(), tools); err != nil {
+		return nil, fmt.Errorf("failed to upsert tools into store: %w", err)
+	}
 
 	return &DummyOptimizer{
-		store:    store,
-		scope:    scope,
-		handlers: handlers,
-	}
+		store:        store,
+		allowedTools: allowedTools,
+		handlers:     handlers,
+	}, nil
 }
 
 // FindTool searches for tools using the shared ToolStore, scoped to this instance's tools.
@@ -63,7 +63,7 @@ func (d *DummyOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fi
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	matches, err := d.store.Search(ctx, input.ToolDescription, d.scope)
+	matches, err := d.store.Search(ctx, input.ToolDescription, d.allowedTools)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
@@ -98,7 +98,12 @@ func (d *DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mc
 	return tool.Handler(ctx, request)
 }
 
-// Close is a no-op for DummyOptimizer. The shared store is closed separately.
-func (*DummyOptimizer) Close() error {
-	return nil
+// NewDummyOptimizerFactory returns an OptimizerFactory that creates DummyOptimizer
+// instances backed by a shared InMemoryToolStore. All optimizers created by the
+// returned factory share the same underlying storage, enabling cross-session search.
+func NewDummyOptimizerFactory() func([]server.ServerTool) (Optimizer, error) {
+	store := NewInMemoryToolStore()
+	return func(tools []server.ServerTool) (Optimizer, error) {
+		return NewDummyOptimizer(store, tools)
+	}
 }

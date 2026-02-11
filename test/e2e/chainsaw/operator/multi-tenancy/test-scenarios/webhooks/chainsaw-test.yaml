@@ -1,0 +1,105 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: webhook-validation
+spec:
+  description: Tests that admission webhooks reject invalid configurations
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: check-prerequisites
+    description: Check if webhooks and CRDs are available
+    try:
+    - script:
+        content: |
+          echo "Checking if webhook CRDs are installed..."
+
+          # Check if VirtualMCPServer CRD exists
+          if ! kubectl get crd virtualmcpservers.toolhive.stacklok.dev >/dev/null 2>&1; then
+            echo "VirtualMCPServer CRD not found - skipping webhook tests"
+            echo "These tests require Virtual MCP CRDs to be installed"
+            exit 0
+          fi
+
+          # Check if ValidatingWebhookConfiguration exists
+          if ! kubectl get validatingwebhookconfiguration toolhive-operator-validating-webhook-configuration >/dev/null 2>&1; then
+            echo "ValidatingWebhookConfiguration not found - webhooks are not enabled"
+            echo "These tests require webhooks to be enabled: operator.webhook.enabled=true"
+            exit 0
+          fi
+
+          echo "Prerequisites met: CRDs and webhooks are available"
+
+  - name: setup-namespace
+    description: Create test namespace for webhook validation
+    try:
+    - script:
+        content: |
+          echo "Creating test namespace..."
+          kubectl create namespace test-namespace --dry-run=client -o yaml | kubectl apply -f -
+          echo "Test namespace ready"
+
+  - name: test-invalid-configurations
+    description: Test that webhooks reject invalid configurations
+    try:
+    - script:
+        content: |
+          echo "Testing webhook validation - attempting to create invalid resources..."
+
+          # Test 1: VirtualMCPServer without required groupRef
+          echo "1. Testing VirtualMCPServer without groupRef..."
+          if kubectl apply -f - <<EOF 2>&1 | grep -q "denied the request\|groupRef is required"
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPServer
+          metadata:
+            name: invalid-vmcp
+            namespace: test-namespace
+          spec:
+            port: 8080
+          EOF
+          then
+            echo "   Webhook correctly rejected invalid VirtualMCPServer"
+          else
+            echo "   Webhook did not reject invalid VirtualMCPServer"
+            exit 1
+          fi
+
+          # Test 2: MCPExternalAuthConfig with conflicting auth types
+          echo "2. Testing MCPExternalAuthConfig with conflicting auth types..."
+          if kubectl apply -f - <<EOF 2>&1 | grep -q "denied the request"
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPExternalAuthConfig
+          metadata:
+            name: invalid-auth
+            namespace: test-namespace
+          spec:
+            oauth2:
+              clientID: test
+              clientSecretRef: {name: s, key: k}
+              tokenURL: https://example.com/token
+            oidc:
+              issuer: https://example.com
+              clientID: test
+              clientSecretRef: {name: s, key: k}
+          EOF
+          then
+            echo "   Webhook correctly rejected invalid MCPExternalAuthConfig"
+          else
+            echo "   Webhook did not reject invalid MCPExternalAuthConfig"
+            exit 1
+          fi
+
+          echo ""
+          echo "All webhook validation tests passed"
+
+  - name: cleanup
+    description: Clean up test namespace
+    try:
+    - script:
+        content: |
+          echo "Cleaning up test namespace..."
+          kubectl delete namespace test-namespace --ignore-not-found=true
+          echo "Cleanup complete"

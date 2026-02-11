@@ -203,6 +203,18 @@ operator:
   # -- Affinity settings for the operator pod
   affinity: {}
 
+  # -- Webhook configuration for admission validation
+  webhook:
+    # -- Enable webhook server and admission validation.
+    # When enabled, the operator will generate self-signed certificates and
+    # create ValidatingWebhookConfiguration for resources with validation webhooks.
+    # Currently validates: VirtualMCPServer, VirtualMCPCompositeToolDefinition, and MCPExternalAuthConfig.
+    # Webhook handlers are only registered for resources whose feature controllers are enabled.
+    # NOTE: Disabled by default. Enable explicitly when webhook support is needed.
+    enabled: false
+    # -- Failure policy for webhooks. Can be "Fail" (block invalid resources) or "Ignore" (allow invalid resources).
+    failurePolicy: Fail
+
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API

@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
+	webhookpkg "github.com/stacklok/toolhive/cmd/thv-operator/pkg/webhook"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
@@ -91,6 +92,14 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+
+	// Setup webhook certificates and inject CA bundle before starting manager
+	// This must be done before setting up webhooks with the manager
+	webhookConfig := webhookpkg.GetSetupConfigFromEnv()
+	if err := webhookpkg.Setup(context.Background(), webhookConfig, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to setup webhook certificates and inject CA bundle")
 		os.Exit(1)
 	}
 

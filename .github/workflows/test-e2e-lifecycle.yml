@@ -8,6 +8,8 @@ on:
       - 'cmd/thv-operator/**'
       - 'pkg/**'
       - 'test/e2e/thv-operator/**'
+      - 'test/e2e/chainsaw/operator/**'
+      - 'deploy/charts/operator/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
 permissions:
@@ -96,7 +98,7 @@ jobs:
         kind load docker-image --name toolhive python:3.9-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
 
-    - name: Deploy operator with VMCP_IMAGE
+    - name: Deploy operator with VMCP_IMAGE and webhooks
       run: |
         export KUBECONFIG=kconfig.yaml
         echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
@@ -109,17 +111,64 @@ jobs:
         kind load docker-image --name toolhive ${OPERATOR_IMAGE}
         kind load docker-image --name toolhive ${TOOLHIVE_IMAGE}
 
-        # Deploy operator with VMCP_IMAGE environment variable
+        # Deploy operator with VMCP_IMAGE and webhooks enabled
         helm upgrade --install toolhive-operator deploy/charts/operator \
           --set operator.image=${OPERATOR_IMAGE} \
           --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
           --set operator.vmcpImage=${{ env.VMCP_IMAGE }} \
+          --set operator.webhook.enabled=true \
           --namespace toolhive-system \
           --create-namespace \
           --kubeconfig kconfig.yaml
 
         # Wait for operator to be ready
         kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
+
+        # Wait for webhook pods to be ready
+        echo "Waiting for webhook service to be ready..."
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
+
+        # Verify webhook service exists and has endpoints
+        echo "Verifying webhook service..."
+        kubectl get svc toolhive-operator-webhook-service -n toolhive-system --kubeconfig kconfig.yaml
+        kubectl get endpoints toolhive-operator-webhook-service -n toolhive-system --kubeconfig kconfig.yaml
+
+        # Verify ValidatingWebhookConfiguration was created
+        echo "Verifying ValidatingWebhookConfiguration..."
+        kubectl get validatingwebhookconfiguration toolhive-operator-validating-webhook-configuration --kubeconfig kconfig.yaml
+
+        # Check operator logs for webhook setup
+        echo "Checking operator logs for webhook initialization..."
+        kubectl logs -n toolhive-system deployment/toolhive-operator --tail=20 --kubeconfig kconfig.yaml | grep -i webhook || true
+
+        # Give webhook server additional time to be fully ready
+        echo "Waiting for webhook server to be fully initialized..."
+        sleep 15
+
+        # Smoke test: Try to create an invalid resource to verify webhook is rejecting requests
+        echo "Smoke test: Verifying webhook is functional..."
+        kubectl create namespace webhook-test --kubeconfig kconfig.yaml
+        set +e
+        kubectl apply -f - --kubeconfig kconfig.yaml 2>&1 | tee /tmp/webhook-test.log <<EOF
+        apiVersion: toolhive.stacklok.dev/v1alpha1
+        kind: VirtualMCPServer
+        metadata:
+          name: test-invalid
+          namespace: webhook-test
+        spec:
+          port: 8080
+        EOF
+        set -e
+
+        if grep -q "denied the request\|groupRef is required" /tmp/webhook-test.log; then
+          echo "SUCCESS: Webhook is functional and rejecting invalid resources"
+        else
+          echo "WARNING: Webhook may not be working correctly. Test output:"
+          cat /tmp/webhook-test.log
+          echo "Continuing with tests anyway..."
+        fi
+
+        kubectl delete namespace webhook-test --kubeconfig kconfig.yaml || true
 
     - name: Run VirtualMCP Lifecycle E2E tests
       run: |

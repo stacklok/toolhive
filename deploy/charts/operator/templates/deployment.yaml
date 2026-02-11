@@ -42,6 +42,11 @@ spec:
           - --leader-elect
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
+            {{- if .Values.operator.webhook.enabled }}
+            - containerPort: 9443
+              name: webhook
+              protocol: TCP
+            {{- end }}
           env:
           - name: GOMEMLIMIT
             value: {{ .Values.operator.gc.gomeglimit | quote }}
@@ -64,6 +69,14 @@ spec:
             value: {{ .Values.operator.features.registry | quote }}
           - name: ENABLE_VMCP
             value: {{ .Values.operator.features.virtualMCP | quote }}
+          - name: ENABLE_WEBHOOKS
+            value: {{ .Values.operator.webhook.enabled | quote }}
+          {{- if .Values.operator.webhook.enabled }}
+          - name: WEBHOOK_SERVICE_NAME
+            value: {{ include "operator.fullname" . }}-webhook-service
+          - name: WEBHOOK_CONFIG_NAME
+            value: {{ include "operator.fullname" . }}-validating-webhook-configuration
+          {{- end }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"
@@ -85,14 +98,23 @@ spec:
             {{- toYaml .Values.operator.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
-          {{- with .Values.operator.volumeMounts }}
           volumeMounts:
+            {{- if .Values.operator.webhook.enabled }}
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: false
+            {{- end }}
+            {{- with .Values.operator.volumeMounts }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
-      {{- with .Values.operator.volumes }}
+            {{- end }}
       volumes:
+        {{- if .Values.operator.webhook.enabled }}
+        - name: webhook-certs
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.operator.volumes }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       {{- with .Values.operator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

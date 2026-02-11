@@ -1,0 +1,75 @@
+{{- if .Values.operator.webhook.enabled -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "operator.fullname" . }}-validating-webhook-configuration
+  labels:
+    {{- include "operator.labels" . | nindent 4 }}
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig
+    # CA bundle will be injected by the operator at startup
+    caBundle: ""
+  failurePolicy: {{ .Values.operator.webhook.failurePolicy }}
+  name: mcpexternalauthconfigs.toolhive.stacklok.dev
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - mcpexternalauthconfigs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpcompositetooldefinition
+    # CA bundle will be injected by the operator at startup
+    caBundle: ""
+  failurePolicy: {{ .Values.operator.webhook.failurePolicy }}
+  name: virtualmcpcompositetooldefinitions.toolhive.stacklok.dev
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - virtualmcpcompositetooldefinitions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver
+    # CA bundle will be injected by the operator at startup
+    caBundle: ""
+  failurePolicy: {{ .Values.operator.webhook.failurePolicy }}
+  name: virtualmcpservers.toolhive.stacklok.dev
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - virtualmcpservers
+  sideEffects: None
+{{- end }}

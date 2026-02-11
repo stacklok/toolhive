@@ -1,0 +1,17 @@
+{{- if .Values.operator.webhook.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "operator.fullname" . }}-webhook-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "operator.labels" . | nindent 4 }}
+spec:
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: 9443
+    protocol: TCP
+  selector:
+    {{- include "operator.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,15 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: operator-tests
+spec:
+  skipDelete: false
+  failFast: false
+  parallel: 1
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    delete: 30s
+    error: 30s
+    exec: 300s

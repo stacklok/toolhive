@@ -139,6 +139,11 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	return s
 }
 
+// Health is a no-op for in-memory storage since it is always available.
+func (*MemoryStorage) Health(_ context.Context) error {
+	return nil
+}
+
 // Close stops the background cleanup goroutine and waits for it to finish.
 // This should be called when the storage is no longer needed.
 func (s *MemoryStorage) Close() error {

@@ -714,6 +714,20 @@ func (mr *MockStorageMockRecorder) GetUserProviderIdentities(ctx, userID any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserProviderIdentities", reflect.TypeOf((*MockStorage)(nil).GetUserProviderIdentities), ctx, userID)
 }
 
+// Health mocks base method.
+func (m *MockStorage) Health(ctx context.Context) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Health", ctx)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Health indicates an expected call of Health.
+func (mr *MockStorageMockRecorder) Health(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Health", reflect.TypeOf((*MockStorage)(nil).Health), ctx)
+}
+
 // InvalidateAuthorizeCodeSession mocks base method.
 func (m *MockStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code string) error {
 	m.ctrl.T.Helper()

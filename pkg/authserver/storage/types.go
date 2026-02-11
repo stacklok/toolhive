@@ -329,6 +329,10 @@ type Storage interface {
 	// token exchange. Keyed by the same code/signature as the authorization code.
 	pkce.PKCERequestStorage
 
+	// Health checks connectivity to the storage backend.
+	// Returns nil if the storage is healthy and reachable.
+	Health(ctx context.Context) error
+
 	// Close releases any resources held by the storage implementation.
 	// This should be called when the storage is no longer needed.
 	Close() error

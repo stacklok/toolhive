@@ -1273,14 +1273,14 @@ func TestRedisKeyGeneration(t *testing.T) {
 
 // --- Health Check Tests ---
 
-func TestRedisStorage_Ping(t *testing.T) {
+func TestRedisStorage_Health(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-		err := s.Ping(ctx)
+		err := s.Health(ctx)
 		require.NoError(t, err)
 	})
 }
 
-func TestRedisStorage_Ping_ConnectionFailure(t *testing.T) {
+func TestRedisStorage_Health_ConnectionFailure(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -1292,6 +1292,6 @@ func TestRedisStorage_Ping_ConnectionFailure(t *testing.T) {
 	// Close the miniredis server to simulate connection failure
 	mr.Close()
 
-	err := storage.Ping(context.Background())
+	err := storage.Health(context.Background())
 	require.Error(t, err)
 }

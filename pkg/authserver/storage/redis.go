@@ -81,9 +81,8 @@ type ACLUserConfig struct {
 // It provides distributed storage for OAuth2 tokens, authorization codes,
 // user data, and pending authorizations, enabling horizontal scaling.
 type RedisStorage struct {
-	client         redis.UniversalClient
-	keyPrefix      string
-	sessionFactory session.Factory
+	client    redis.UniversalClient
+	keyPrefix string
 }
 
 // storedSession is a serializable wrapper for fosite.Requester.
@@ -137,9 +136,8 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 	}
 
 	return &RedisStorage{
-		client:         client,
-		keyPrefix:      cfg.KeyPrefix,
-		sessionFactory: defaultSessionFactory,
+		client:    client,
+		keyPrefix: cfg.KeyPrefix,
 	}, nil
 }
 
@@ -147,9 +145,8 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 // This is useful for testing with miniredis.
 func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *RedisStorage {
 	return &RedisStorage{
-		client:         client,
-		keyPrefix:      keyPrefix,
-		sessionFactory: defaultSessionFactory,
+		client:    client,
+		keyPrefix: keyPrefix,
 	}
 }
 
@@ -183,17 +180,17 @@ func validateConfig(cfg *RedisConfig) error {
 	return nil
 }
 
-// Close closes the Redis client connection.
-func (s *RedisStorage) Close() error {
-	return s.client.Close()
-}
-
-// Ping checks Redis connectivity (health check).
-func (s *RedisStorage) Ping(ctx context.Context) error {
+// Health checks Redis connectivity.
+func (s *RedisStorage) Health(ctx context.Context) error {
 	if err := s.client.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("redis health check failed: %w", err)
 	}
 	return nil
+}
+
+// Close closes the Redis client connection.
+func (s *RedisStorage) Close() error {
+	return s.client.Close()
 }
 
 // -----------------------
@@ -1335,7 +1332,7 @@ func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosi
 
 	// Create a session prototype via factory, then deserialize the full session
 	// blob into it. This preserves JWT claims, headers, and upstream session IDs.
-	sess := s.sessionFactory("", "", "")
+	sess := defaultSessionFactory("", "", "")
 	if len(stored.Session) > 0 {
 		if err := json.Unmarshal(stored.Session, sess); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal session data: %w", err)

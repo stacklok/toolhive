@@ -65,9 +65,6 @@ type RunConfig struct {
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
 // This is designed for Sentinel-only deployments with ACL user authentication.
 type RedisRunConfig struct {
-	// DeploymentMode must be "sentinel" - only Sentinel deployments are supported.
-	DeploymentMode string `json:"deploymentMode" yaml:"deploymentMode"`
-
 	// SentinelConfig contains Sentinel-specific configuration.
 	SentinelConfig *SentinelRunConfig `json:"sentinelConfig,omitempty" yaml:"sentinelConfig,omitempty"`
 

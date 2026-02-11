@@ -112,6 +112,11 @@ type Config struct {
 	// Scopes overrides the default scopes.
 	// If nil or empty, DefaultScopes is used.
 	Scopes []string
+
+	// Audience is the list of allowed audience values for this client.
+	// Per RFC 8707, the "resource" parameter in token requests is validated
+	// against this list. If nil, audience validation will reject all values.
+	Audience []string
 }
 
 // New creates a fosite.Client from the given configuration.
@@ -143,6 +148,7 @@ func New(cfg Config) (fosite.Client, error) {
 		ResponseTypes: responseTypes,
 		GrantTypes:    grantTypes,
 		Scopes:        scopes,
+		Audience:      cfg.Audience,
 		Public:        cfg.Public,
 	}
 

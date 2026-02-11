@@ -69,6 +69,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		GrantTypes:    validated.GrantTypes,
 		ResponseTypes: validated.ResponseTypes,
 		Scopes:        h.config.ScopesSupported,
+		Audience:      h.config.AllowedAudiences,
 	})
 	if err != nil {
 		logger.Errorw("failed to create client", "error", err)

@@ -130,7 +130,10 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 			return nil
 		})
 
-	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{}}
+	allowedAudiences := []string{"https://mcp.example.com"}
+	handler := &Handler{storage: stor, config: &server.AuthorizationServerConfig{
+		AllowedAudiences: allowedAudiences,
+	}}
 
 	reqBody, err := json.Marshal(registration.DCRRequest{
 		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
@@ -155,4 +158,6 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	assert.Equal(t, resp.ClientID, loopbackClient.GetID())
 	assert.True(t, loopbackClient.IsPublic())
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, loopbackClient.GetRedirectURIs())
+	assert.Equal(t, fosite.Arguments(allowedAudiences), loopbackClient.GetAudience(),
+		"DCR client must inherit server's AllowedAudiences so refresh token requests with resource= succeed")
 }

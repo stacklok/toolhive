@@ -104,11 +104,13 @@ func TestCreateWorkload(t *testing.T) {
 	logger.Initialize()
 
 	tests := []struct {
-		name           string
-		requestBody    string
-		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
-		expectedStatus int
-		expectedBody   string
+		name                  string
+		requestBody           string
+		setupMock             func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		expectedServerOrImage string
+		expectedRuntimeConfig *templates.RuntimeConfig
+		expectedStatus        int
+		expectedBody          string
 	}{
 		{
 			name:        "invalid JSON",
@@ -136,6 +138,28 @@ func TestCreateWorkload(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid proxy_mode",
+		},
+		{
+			name:        "with runtime config override",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {"builder_image": "golang:1.24-alpine", "additional_packages": ["ca-certificates"]}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.NotNil(t, runConfig.RuntimeConfig)
+						assert.Equal(t, "golang:1.24-alpine", runConfig.RuntimeConfig.BuilderImage)
+						assert.Equal(t, []string{"ca-certificates"}, runConfig.RuntimeConfig.AdditionalPackages)
+						return nil
+					})
+			},
+			expectedRuntimeConfig: &templates.RuntimeConfig{
+				BuilderImage:       "golang:1.24-alpine",
+				AdditionalPackages: []string{"ca-certificates"},
+			},
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
 		},
 		{
 			name:        "with tool filters",
@@ -212,12 +236,17 @@ func TestCreateWorkload(t *testing.T) {
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 
 			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+			expectedServerOrImage := tt.expectedServerOrImage
+			if expectedServerOrImage == "" {
+				expectedServerOrImage = "test-image"
+			}
 
 			mockRetriever := makeMockRetriever(t,
-				"test-image",
+				expectedServerOrImage,
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				tt.expectedRuntimeConfig,
 			)
 
 			routes := &WorkloadRoutes{
@@ -411,6 +440,7 @@ func TestUpdateWorkload(t *testing.T) {
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				nil,
 			)
 
 			routes := &WorkloadRoutes{
@@ -556,6 +586,7 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				nil,
 			)
 
 			routes := &WorkloadRoutes{
@@ -595,12 +626,14 @@ func makeMockRetriever(
 	returnedImage string,
 	returnedServerMetadata regtypes.ServerMetadata,
 	returnedError error,
+	expectedRuntimeConfig *templates.RuntimeConfig,
 ) retriever.Retriever {
 	t.Helper()
 
-	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, _ *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, runtimeConfig *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
+		assert.Equal(t, expectedRuntimeConfig, runtimeConfig)
 		return returnedImage, returnedServerMetadata, returnedError
 	}
 }

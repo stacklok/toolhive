@@ -147,10 +147,9 @@ const DefaultServiceNamePrefix = "thv-"
 
 // DefaultConfig returns a default telemetry configuration.
 func DefaultConfig() Config {
-	versionInfo := versions.GetVersionInfo()
 	return Config{
-		ServiceName:                 "", // empty — resolved at runtime from the workload name
-		ServiceVersion:              versionInfo.Version,
+		ServiceName:                 "",     // empty — resolved at runtime from the workload name
+		ServiceVersion:              "",     // resolved at runtime in NewProvider()
 		TracingEnabled:              true,   // Enable tracing by default if endpoint is configured
 		MetricsEnabled:              true,   // Enable metrics by default if endpoint is configured
 		SamplingRate:                "0.05", // 5% sampling by default
@@ -203,7 +202,7 @@ func MaybeMakeConfig(
 	return &Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 otelServiceName,
-		ServiceVersion:              DefaultConfig().ServiceVersion,
+		ServiceVersion:              "", // resolved at runtime in NewProvider()
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
 		SamplingRate:                strconv.FormatFloat(otelSamplingRate, 'f', -1, 64),
@@ -243,9 +242,17 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		return nil, err
 	}
 
+	// Always use the current binary version so that restarts and exports
+	// report the version actually running, not the version that originally
+	// created the config. See https://github.com/stacklok/toolhive/issues/2296
+	serviceVersion := config.ServiceVersion
+	if serviceVersion == "" {
+		serviceVersion = versions.GetVersionInfo().Version
+	}
+
 	telemetryOptions := []providers.ProviderOption{
 		providers.WithServiceName(config.ServiceName),
-		providers.WithServiceVersion(config.ServiceVersion),
+		providers.WithServiceVersion(serviceVersion),
 		providers.WithOTLPEndpoint(config.Endpoint),
 		providers.WithHeaders(config.Headers),
 		providers.WithInsecure(config.Insecure),

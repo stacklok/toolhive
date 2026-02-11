@@ -166,6 +166,15 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Extract trace context from incoming request headers
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 
+		// Extract trace context from MCP _meta field if present.
+		// Per the MCP OTEL spec, servers should use traceparent/tracestate from
+		// params._meta as the parent span context. This takes priority over HTTP
+		// headers since _meta is the MCP-specified propagation mechanism.
+		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.Meta != nil {
+			carrier := NewMetaCarrier(parsedMCP.Meta)
+			ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+		}
+
 		// Increment active connections
 		m.activeConnections.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("server", m.serverName),

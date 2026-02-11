@@ -14,10 +14,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -521,4 +524,99 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 	// We just verify the metrics are present and contain our server name
 	assert.Contains(t, metricsBody, "toolhive_mcp_requests")
 	assert.Contains(t, metricsBody, `server="multi-test"`)
+}
+
+func TestTelemetryIntegration_MetaTraceContextExtraction(t *testing.T) { //nolint:paralleltest // Mutates global OTEL propagator
+	// Set up W3C Trace Context propagator globally (required for Extract to work)
+	oldPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer otel.SetTextMapPropagator(oldPropagator)
+
+	// Create in-memory trace exporter
+	traceExporter := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(traceExporter),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	defer func() { _ = tracerProvider.Shutdown(context.Background()) }()
+
+	metricsReader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(metricsReader))
+	defer func() { _ = meterProvider.Shutdown(context.Background()) }()
+
+	config := Config{
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+	}
+
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	wrappedHandler := middleware(testHandler)
+
+	// Create a parent span to generate a valid traceparent
+	parentTracer := tracerProvider.Tracer("test-parent")
+	_, parentSpan := parentTracer.Start(context.Background(), "parent-operation")
+	parentSpanCtx := parentSpan.SpanContext()
+	parentTraceID := parentSpanCtx.TraceID().String()
+	parentSpanID := parentSpanCtx.SpanID().String()
+	parentSpan.End()
+
+	// Build traceparent string from the parent span
+	traceparent := "00-" + parentTraceID + "-" + parentSpanID + "-01"
+
+	// Create an MCP request with _meta containing traceparent
+	mcpRequest := &mcp.ParsedMCPRequest{
+		Method:     "tools/call",
+		ID:         "trace-test",
+		ResourceID: "my_tool",
+		IsRequest:  true,
+		Meta: map[string]interface{}{
+			"traceparent": traceparent,
+		},
+	}
+
+	req := httptest.NewRequest("POST", "/messages", nil)
+	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, mcpRequest)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Force flush and get spans
+	err := tracerProvider.ForceFlush(context.Background())
+	require.NoError(t, err)
+
+	spans := traceExporter.GetSpans()
+
+	// Find the middleware span (not the parent-operation span)
+	var middlewareSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name != "parent-operation" {
+			middlewareSpan = &spans[i]
+			break
+		}
+	}
+	require.NotNil(t, middlewareSpan, "middleware span should exist")
+
+	// The middleware span should have the same trace ID as the parent
+	assert.Equal(t, parentTraceID, middlewareSpan.SpanContext.TraceID().String(),
+		"middleware span should inherit trace ID from _meta traceparent")
+
+	// The middleware span's parent should be the parent span
+	assert.Equal(t, parentSpanID, middlewareSpan.Parent.SpanID().String(),
+		"middleware span parent should be the span from _meta traceparent")
+
+	// Verify the span is a child (not root) — it should have a valid parent span ID
+	assert.True(t, middlewareSpan.Parent.SpanID().IsValid(),
+		"middleware span should have a valid parent span ID from _meta extraction")
+
+	// Also verify the span kind is Server
+	assert.Equal(t, trace.SpanKindServer, middlewareSpan.SpanKind)
 }

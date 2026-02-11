@@ -1504,12 +1504,12 @@ const docTemplate = `{
                 "description": "Scope from which to uninstall",
                 "enum": [
                     "user",
-                    "system"
+                    "project"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
                     "ScopeUser",
-                    "ScopeSystem"
+                    "ScopeProject"
                 ]
             },
             "skills.SkillInfo": {

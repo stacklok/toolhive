@@ -78,15 +78,16 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 func validateFields(result *ParseResult, dirName string) []string {
 	var errs []string
 
-	if err := validateName(result.Name); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if result.Name != "" && result.Name != dirName {
-		errs = append(errs,
-			fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
-	}
 	if result.Name == "" {
 		errs = append(errs, "name is required")
+	} else {
+		if err := ValidateSkillName(result.Name); err != nil {
+			errs = append(errs, err.Error())
+		}
+		if result.Name != dirName {
+			errs = append(errs,
+				fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
+		}
 	}
 	if result.Description == "" {
 		errs = append(errs, "description is required")
@@ -122,10 +123,13 @@ func collectWarnings(result *ParseResult, content []byte) []string {
 	return warnings
 }
 
-// validateName checks that a skill name matches the required pattern.
-func validateName(name string) error {
+// ValidateSkillName checks that a skill name conforms to the Agent Skills specification.
+// Names must be 2-64 lowercase alphanumeric characters or hyphens, starting and ending
+// with alphanumeric, with no consecutive hyphens.
+// See: https://agentskills.io/specification
+func ValidateSkillName(name string) error {
 	if name == "" {
-		return nil // Caught by required fields check
+		return fmt.Errorf("invalid skill name: must not be empty")
 	}
 	if !skillNameRegex.MatchString(name) {
 		return fmt.Errorf("invalid skill name %q: must be 2-64 lowercase alphanumeric characters or hyphens, "+

@@ -122,13 +122,25 @@ const (
 	TOMLStorageTypeArray TOMLStorageType = "array"
 )
 
+// Platform represents a runtime.GOOS value used as a key in platform-specific path maps.
+type Platform string
+
+const (
+	// PlatformLinux is the Linux platform.
+	PlatformLinux Platform = "linux"
+	// PlatformDarwin is the macOS platform.
+	PlatformDarwin Platform = "darwin"
+	// PlatformWindows is the Windows platform.
+	PlatformWindows Platform = "windows"
+)
+
 // clientAppConfig represents a configuration path for a supported MCP client.
 type clientAppConfig struct {
 	ClientType                    ClientApp
 	Description                   string
 	RelPath                       []string
 	SettingsFile                  string
-	PlatformPrefix                map[string][]string
+	PlatformPrefix                map[Platform][]string
 	MCPServersPathPrefix          string
 	Extension                     Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio mapped to streamable-http (SSE deprecated)
@@ -141,6 +153,15 @@ type clientAppConfig struct {
 	YAMLDefaults        map[string]any  // Default values to add to entries
 	// TOML-specific configuration (only used when Extension == TOML)
 	TOMLStorageType TOMLStorageType // How servers are stored in TOML (map or array)
+	// Skill-specific configuration
+	SupportsSkills    bool     // Whether this client supports skills
+	SkillsGlobalPath  []string // Path segments for global skills dir (from home dir)
+	SkillsProjectPath []string // Path segments for project-local skills dir (from project root)
+	// SkillsPlatformPrefix maps Platform values to path segments inserted between
+	// home dir and SkillsGlobalPath. Needed for clients following platform conventions
+	// (e.g., XDG ~/.config/ on Linux/macOS).
+	// If nil or missing an entry for the current OS, no prefix is added.
+	SkillsPlatformPrefix map[Platform][]string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -179,10 +200,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		RelPath: []string{
 			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings",
 		},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
@@ -205,10 +226,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		RelPath: []string{
 			"Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings",
 		},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
@@ -231,10 +252,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		RelPath: []string{
 			"Code - Insiders", "User",
 		},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		MCPServersPathPrefix: "/servers",
 		Extension:            JSON,
@@ -258,10 +279,10 @@ var supportedClientIntegrations = []clientAppConfig{
 			"Code", "User",
 		},
 		MCPServersPathPrefix: "/servers",
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -315,6 +336,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".claude", "skills"},
+		SkillsProjectPath: []string{".claude", "skills"},
 	},
 	{
 		ClientType:           Windsurf,
@@ -360,10 +384,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
 		RelPath:              []string{"amp"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {".config"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {".config"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -384,10 +408,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
 		RelPath:              []string{"Code", "User"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -408,10 +432,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
 		RelPath:              []string{"Code - Insiders", "User"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -432,10 +456,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
 		RelPath:              []string{"Cursor", "User"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -456,10 +480,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
 		RelPath:              []string{"Windsurf", "User"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -499,10 +523,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "config.yaml",
 		MCPServersPathPrefix: "/extensions",
 		RelPath:              []string{"goose"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {".config"},
-			"windows": {"AppData", "Block"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {".config"},
+			PlatformWindows: {"AppData", "Block"},
 		},
 		Extension: YAML,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -530,10 +554,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "mcp.json",
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{"Trae", "User"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {"Library", "Application Support"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
@@ -588,6 +612,13 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{"opencode", "skills"},
+		SkillsProjectPath: []string{".opencode", "skills"},
+		SkillsPlatformPrefix: map[Platform][]string{
+			PlatformLinux:  {".config"},
+			PlatformDarwin: {".config"},
+		},
 	},
 	{
 		ClientType:           Kiro,
@@ -628,10 +659,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/context_servers",
 		RelPath:              []string{"zed"},
-		PlatformPrefix: map[string][]string{
-			"linux":   {".config"},
-			"darwin":  {".config"},
-			"windows": {"AppData", "Roaming"},
+		PlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {".config"},
+			PlatformWindows: {"AppData", "Roaming"},
 		},
 		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
@@ -709,7 +740,10 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: "url",
 		},
 		// TOML configuration: uses nested tables format [mcp_servers.servername]
-		TOMLStorageType: TOMLStorageTypeMap,
+		TOMLStorageType:   TOMLStorageTypeMap,
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 }
 
@@ -867,14 +901,7 @@ func CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 // CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
 func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *clientAppConfig
-	for _, cfg := range cm.clientIntegrations {
-		if cfg.ClientType == clientType {
-			clientCfg = &cfg
-			break
-		}
-	}
-
+	clientCfg := cm.lookupClientAppConfig(clientType)
 	if clientCfg == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
@@ -931,14 +958,12 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 
 // Upsert updates/inserts an MCP server in a client configuration file using this manager's dependencies.
 func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transportType string) error {
-	for i := range cm.clientIntegrations {
-		if cf.ClientType != cm.clientIntegrations[i].ClientType {
-			continue
-		}
-		server := buildMCPServer(url, transportType, &cm.clientIntegrations[i])
-		return cf.ConfigUpdater.Upsert(name, server)
+	cfg := cm.lookupClientAppConfig(cf.ClientType)
+	if cfg == nil {
+		return nil
 	}
-	return nil
+	server := buildMCPServer(url, transportType, cfg)
+	return cf.ConfigUpdater.Upsert(name, server)
 }
 
 // buildMCPServer constructs an MCPServer struct with the appropriate URL field and optional type field.
@@ -982,14 +1007,7 @@ func buildMCPServer(url, transportType string, clientCfg *clientAppConfig) MCPSe
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
 func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
-	var clientCfg *clientAppConfig
-	for _, cfg := range cm.clientIntegrations {
-		if cfg.ClientType == clientType {
-			clientCfg = &cfg
-			break
-		}
-	}
-
+	clientCfg := cm.lookupClientAppConfig(clientType)
 	if clientCfg == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
@@ -1049,8 +1067,8 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 	}, nil
 }
 
-func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[string][]string, path []string) string {
-	if prefix, ok := platformPrefix[runtime.GOOS]; ok {
+func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[Platform][]string, path []string) string {
+	if prefix, ok := platformPrefix[Platform(runtime.GOOS)]; ok {
 		path = append(path, prefix...)
 	}
 	path = append(path, relPath...)

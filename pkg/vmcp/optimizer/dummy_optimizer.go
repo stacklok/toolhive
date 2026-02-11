@@ -5,72 +5,61 @@ package optimizer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// DummyOptimizer implements the Optimizer interface using exact string matching.
+// DummyOptimizer implements the Optimizer interface using a shared ToolStore
+// for search and a local handler map for tool invocation.
 //
-// This implementation is intended for testing and development. It performs
-// case-insensitive substring matching on tool names and descriptions.
+// This implementation is intended for testing and development. It delegates
+// search to the ToolStore (which performs case-insensitive substring matching
+// for InMemoryToolStore) and scopes results to only the tools this instance
+// was created with.
 //
 // For production use, see the EmbeddingOptimizer which uses semantic similarity.
 type DummyOptimizer struct {
+	// store is the shared tool store used for search.
+	store ToolStore
+
 	// tools contains all available tools indexed by name.
 	tools map[string]server.ServerTool
 }
 
-// NewDummyOptimizer creates a new DummyOptimizer with the given tools.
+// NewDummyOptimizer creates a new DummyOptimizer backed by the given ToolStore.
 //
 // The tools slice should contain all backend tools (as ServerTool with handlers).
-func NewDummyOptimizer(tools []server.ServerTool) Optimizer {
+// Tools are upserted into the shared store and scoped for this optimizer instance.
+func NewDummyOptimizer(ctx context.Context, store ToolStore, tools []server.ServerTool) (Optimizer, error) {
 	toolMap := make(map[string]server.ServerTool, len(tools))
 	for _, tool := range tools {
 		toolMap[tool.Tool.Name] = tool
 	}
 
-	return DummyOptimizer{
-		tools: toolMap,
+	if err := store.UpsertTools(ctx, tools); err != nil {
+		return nil, fmt.Errorf("failed to upsert tools into store: %w", err)
 	}
+
+	return &DummyOptimizer{
+		store: store,
+		tools: toolMap,
+	}, nil
 }
 
-// FindTool searches for tools using exact substring matching.
-//
-// The search is case-insensitive and matches against:
-//   - Tool name (substring match)
-//   - Tool description (substring match)
+// FindTool searches for tools using the shared ToolStore, scoped to this instance's tools.
 //
 // Returns all matching tools with a score of 1.0 (exact match semantics).
 // TokenMetrics are returned as zero values (not implemented in dummy).
-func (d DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindToolOutput, error) {
+func (d *DummyOptimizer) FindTool(ctx context.Context, input FindToolInput) (*FindToolOutput, error) {
 	if input.ToolDescription == "" {
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	searchTerm := strings.ToLower(input.ToolDescription)
-
-	var matches []ToolMatch
-	for _, tool := range d.tools {
-		nameLower := strings.ToLower(tool.Tool.Name)
-		descLower := strings.ToLower(tool.Tool.Description)
-
-		// Check if search term matches name or description
-		if strings.Contains(nameLower, searchTerm) || strings.Contains(descLower, searchTerm) {
-			schema, err := getToolSchema(tool.Tool)
-			if err != nil {
-				return nil, err
-			}
-			matches = append(matches, ToolMatch{
-				Name:        tool.Tool.Name,
-				Description: tool.Tool.Description,
-				InputSchema: schema,
-				Score:       1.0, // Exact match semantics
-			})
-		}
+	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames())
+	if err != nil {
+		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
 
 	return &FindToolOutput{
@@ -83,7 +72,7 @@ func (d DummyOptimizer) FindTool(_ context.Context, input FindToolInput) (*FindT
 //
 // The tool is looked up by exact name match. If found, the handler
 // is invoked directly with the given parameters.
-func (d DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
+func (d *DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
 		return nil, fmt.Errorf("tool_name is required")
 	}
@@ -103,17 +92,21 @@ func (d DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp
 	return tool.Handler(ctx, request)
 }
 
-// getToolSchema returns the input schema for a tool.
-// Prefers RawInputSchema if set, otherwise marshals InputSchema.
-func getToolSchema(tool mcp.Tool) (json.RawMessage, error) {
-	if len(tool.RawInputSchema) > 0 {
-		return tool.RawInputSchema, nil
+// toolNames returns the names of all tools in the handlers map.
+func (d *DummyOptimizer) toolNames() []string {
+	names := make([]string, 0, len(d.tools))
+	for name := range d.tools {
+		names = append(names, name)
 	}
+	return names
+}
 
-	// Fall back to InputSchema
-	data, err := json.Marshal(tool.InputSchema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
+// NewDummyOptimizerFactory returns an OptimizerFactory that creates DummyOptimizer
+// instances backed by a shared InMemoryToolStore. All optimizers created by the
+// returned factory share the same underlying storage, enabling cross-session search.
+func NewDummyOptimizerFactory() func(context.Context, []server.ServerTool) (Optimizer, error) {
+	store := NewInMemoryToolStore()
+	return func(ctx context.Context, tools []server.ServerTool) (Optimizer, error) {
+		return NewDummyOptimizer(ctx, store, tools)
 	}
-	return data, nil
 }

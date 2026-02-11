@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
@@ -373,11 +374,15 @@ func runtimeConfigFromRequest(req *createRequest) *templates.RuntimeConfig {
 		return nil
 	}
 
-	runtimeConfig := &templates.RuntimeConfig{
-		BuilderImage: req.RuntimeConfig.BuilderImage,
+	runtimeConfig := &templates.RuntimeConfig{}
+	if builderImage := strings.TrimSpace(req.RuntimeConfig.BuilderImage); builderImage != "" {
+		runtimeConfig.BuilderImage = builderImage
 	}
 	if len(req.RuntimeConfig.AdditionalPackages) > 0 {
 		runtimeConfig.AdditionalPackages = append([]string{}, req.RuntimeConfig.AdditionalPackages...)
+	}
+	if runtimeConfig.BuilderImage == "" && len(runtimeConfig.AdditionalPackages) == 0 {
+		return nil
 	}
 
 	return runtimeConfig

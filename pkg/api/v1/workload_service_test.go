@@ -166,6 +166,36 @@ func TestRuntimeConfigFromRequest(t *testing.T) {
 		assert.Nil(t, runtimeConfigFromRequest(req))
 	})
 
+	t.Run("empty runtime config returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuilderImage: "   ",
+				},
+			},
+		}
+
+		assert.Nil(t, runtimeConfigFromRequest(req))
+	})
+
+	t.Run("trims builder image", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuilderImage: "  golang:1.24-alpine  ",
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
+	})
+
 	t.Run("copies runtime config", func(t *testing.T) {
 		t.Parallel()
 

@@ -24,11 +24,8 @@ type DummyOptimizer struct {
 	// store is the shared tool store used for search.
 	store ToolStore
 
-	// allowedTools contains the names of tools this optimizer instance can access.
-	allowedTools []string
-
-	// handlers contains tool handlers indexed by name for CallTool.
-	handlers map[string]server.ServerTool
+	// tools contains all available tools indexed by name.
+	tools map[string]server.ServerTool
 }
 
 // NewDummyOptimizer creates a new DummyOptimizer backed by the given ToolStore.
@@ -36,11 +33,9 @@ type DummyOptimizer struct {
 // The tools slice should contain all backend tools (as ServerTool with handlers).
 // Tools are upserted into the shared store and scoped for this optimizer instance.
 func NewDummyOptimizer(store ToolStore, tools []server.ServerTool) (Optimizer, error) {
-	allowedTools := make([]string, 0, len(tools))
-	handlers := make(map[string]server.ServerTool, len(tools))
+	toolMap := make(map[string]server.ServerTool, len(tools))
 	for _, tool := range tools {
-		allowedTools = append(allowedTools, tool.Tool.Name)
-		handlers[tool.Tool.Name] = tool
+		toolMap[tool.Tool.Name] = tool
 	}
 
 	if err := store.UpsertTools(context.Background(), tools); err != nil {
@@ -48,9 +43,8 @@ func NewDummyOptimizer(store ToolStore, tools []server.ServerTool) (Optimizer, e
 	}
 
 	return &DummyOptimizer{
-		store:        store,
-		allowedTools: allowedTools,
-		handlers:     handlers,
+		store: store,
+		tools: toolMap,
 	}, nil
 }
 
@@ -63,7 +57,7 @@ func (d *DummyOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fi
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	matches, err := d.store.Search(ctx, input.ToolDescription, d.allowedTools)
+	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames())
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
@@ -84,7 +78,7 @@ func (d *DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mc
 	}
 
 	// Verify the tool exists
-	tool, exists := d.handlers[input.ToolName]
+	tool, exists := d.tools[input.ToolName]
 	if !exists {
 		return mcp.NewToolResultError(fmt.Sprintf("tool not found: %s", input.ToolName)), nil
 	}
@@ -96,6 +90,15 @@ func (d *DummyOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mc
 
 	// Call the tool handler directly
 	return tool.Handler(ctx, request)
+}
+
+// toolNames returns the names of all tools in the handlers map.
+func (d *DummyOptimizer) toolNames() []string {
+	names := make([]string, 0, len(d.tools))
+	for name := range d.tools {
+		names = append(names, name)
+	}
+	return names
 }
 
 // NewDummyOptimizerFactory returns an OptimizerFactory that creates DummyOptimizer

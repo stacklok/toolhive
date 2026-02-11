@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -251,4 +252,73 @@ func TestProvider_ShutdownTimeout(t *testing.T) {
 
 	// Shutdown may fail due to network connection (expected in tests)
 	_ = provider.Shutdown(shutdownCtx)
+}
+
+// TestConfigString_HeaderRedaction tests that String() and GoString() redact header values
+// across all header scenarios (populated, empty, nil).
+func TestConfigString_HeaderRedaction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		headers        map[string]string
+		expectRedacted bool
+	}{
+		{
+			name:           "single header is redacted",
+			headers:        map[string]string{"Authorization": "Bearer token123"},
+			expectRedacted: true,
+		},
+		{
+			name: "multiple headers are redacted",
+			headers: map[string]string{
+				"Authorization":  "Bearer eyJhbGciOiJIUzI1NiJ9...",
+				"X-API-Key":      "sk_live_1234567890abcdef",
+				"X-Custom-Token": "supersecret",
+			},
+			expectRedacted: true,
+		},
+		{
+			name:           "empty headers produce no redaction",
+			headers:        map[string]string{},
+			expectRedacted: false,
+		},
+		{
+			name:           "nil headers produce no redaction and no panic",
+			headers:        nil,
+			expectRedacted: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := Config{
+				Endpoint:       "localhost:4318",
+				ServiceName:    "test-service",
+				ServiceVersion: "1.0.0",
+				Headers:        tt.headers,
+			}
+
+			// String() and GoString() must produce the same output
+			output := config.String()
+			assert.Equal(t, output, config.GoString(), "GoString() should delegate to String()")
+			assert.Equal(t, output, fmt.Sprintf("%#v", config), "%%#v should use GoString()")
+
+			// Config fields should always be present
+			assert.Contains(t, output, "localhost:4318")
+			assert.Contains(t, output, "test-service")
+
+			if tt.expectRedacted {
+				assert.Contains(t, output, "[REDACTED]")
+				for key, value := range tt.headers {
+					assert.Contains(t, output, key, "header key should be visible")
+					assert.NotContains(t, output, value, "header value must not be visible")
+				}
+			} else {
+				assert.NotContains(t, output, "[REDACTED]")
+			}
+		})
+	}
 }

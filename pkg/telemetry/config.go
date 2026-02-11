@@ -97,6 +97,32 @@ type Config struct {
 	UseLegacyAttributes bool `json:"useLegacyAttributes" yaml:"useLegacyAttributes"`
 }
 
+// Ensure Config implements fmt.Stringer and fmt.GoStringer
+var _ fmt.Stringer = Config{}
+var _ fmt.GoStringer = Config{}
+
+// GoString returns the same redacted representation as String().
+// This prevents credential leakage via the %#v format verb, which calls GoString() instead of String().
+func (c Config) GoString() string {
+	return c.String()
+}
+
+// String returns a human-readable representation of the Config with sensitive header values redacted.
+func (c Config) String() string {
+	// Redact header values to prevent credential leakage
+	redactedHeaders := make(map[string]string, len(c.Headers))
+	for key := range c.Headers {
+		redactedHeaders[key] = "[REDACTED]"
+	}
+
+	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
+		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
+		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, UseLegacyAttributes: %t}",
+		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
+		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
+		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes, c.UseLegacyAttributes)
+}
+
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
 // Returns 0.0 if the string is empty or cannot be parsed.
 func (c *Config) GetSamplingRateFloat() float64 {

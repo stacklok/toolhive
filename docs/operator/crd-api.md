@@ -778,6 +778,40 @@ _Appears in:_
 | `enabled` _boolean_ | Enabled controls whether audit logging is enabled<br />When true, enables audit logging with default configuration | false | Optional: \{\} <br /> |
 
 
+#### api.v1alpha1.AuthServerStorageConfig
+
+
+
+AuthServerStorageConfig configures the storage backend for the embedded auth server.
+
+
+
+_Appears in:_
+- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _[api.v1alpha1.AuthServerStorageType](#apiv1alpha1authserverstoragetype)_ | Type specifies the storage backend type.<br />Valid values: "memory" (default), "redis". | memory | Enum: [memory redis] <br /> |
+| `redis` _[api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)_ | Redis configures the Redis storage backend.<br />Required when type is "redis". |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.AuthServerStorageType
+
+_Underlying type:_ _string_
+
+AuthServerStorageType represents the type of storage backend for the embedded auth server
+
+
+
+_Appears in:_
+- [api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)
+
+| Field | Description |
+| --- | --- |
+| `memory` | AuthServerStorageTypeMemory is the in-memory storage backend (default)<br /> |
+| `redis` | AuthServerStorageTypeRedis is the Redis storage backend<br /> |
+
+
 #### api.v1alpha1.AuthzConfigRef
 
 
@@ -906,6 +940,7 @@ _Appears in:_
 | `hmacSecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />Currently only a single upstream provider is supported (validated at runtime). |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `storage` _[api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.EmbeddingResourceOverrides
@@ -2324,6 +2359,63 @@ _Appears in:_
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
 
 
+#### api.v1alpha1.RedisACLUserConfig
+
+
+
+RedisACLUserConfig configures Redis ACL user authentication.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `usernameSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username. |  | Required: \{\} <br /> |
+| `passwordSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
+
+
+#### api.v1alpha1.RedisSentinelConfig
+
+
+
+RedisSentinelConfig configures Redis Sentinel connection.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `masterName` _string_ | MasterName is the name of the Redis master monitored by Sentinel. |  | Required: \{\} <br /> |
+| `sentinelAddrs` _string array_ | SentinelAddrs is a list of Sentinel host:port addresses.<br />Mutually exclusive with SentinelService. |  | Optional: \{\} <br /> |
+| `sentinelService` _[api.v1alpha1.SentinelServiceRef](#apiv1alpha1sentinelserviceref)_ | SentinelService enables automatic discovery from a Kubernetes Service.<br />Mutually exclusive with SentinelAddrs. |  | Optional: \{\} <br /> |
+| `db` _integer_ | DB is the Redis database number. | 0 | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.RedisStorageConfig
+
+
+
+RedisStorageConfig configures Redis connection for auth server storage.
+Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+
+
+
+_Appears in:_
+- [api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `sentinelConfig` _[api.v1alpha1.RedisSentinelConfig](#apiv1alpha1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration. |  | Required: \{\} <br /> |
+| `aclUserConfig` _[api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
+| `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+| `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+| `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
+
+
 #### api.v1alpha1.RegistryFilter
 
 
@@ -2454,6 +2546,7 @@ _Appears in:_
 - [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
 - [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
+- [api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)
 - [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
@@ -2478,6 +2571,19 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.SentinelServiceRef
+
+_Underlying type:_ _[api.v1alpha1.struct{Name string "json:\"name\""; Namespace string "json:\"namespace,omitempty\""; Port int32 "json:\"port,omitempty\""}](#apiv1alpha1struct{name string "json:\"name\""; namespace string "json:\"namespace,omitempty\""; port int32 "json:\"port,omitempty\""})_
+
+SentinelServiceRef references a Kubernetes Service for Sentinel discovery.
+
+
+
+_Appears in:_
+- [api.v1alpha1.RedisSentinelConfig](#apiv1alpha1redissentinelconfig)
+
 
 
 #### api.v1alpha1.StorageReference

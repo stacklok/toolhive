@@ -1156,6 +1156,506 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 	}
 }
 
+func validEmbeddedAuthServerConfig() *EmbeddedAuthServerConfig {
+	return &EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		SigningKeySecretRefs: []SecretKeyRef{
+			{Name: "signing-key-secret", Key: "private-key"},
+		},
+		HMACSecretRefs: []SecretKeyRef{
+			{Name: "hmac-secret", Key: "secret"},
+		},
+		UpstreamProviders: []UpstreamProviderConfig{
+			{
+				Name: "okta",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://okta.example.com",
+					ClientID:  "client-id",
+				},
+			},
+		},
+	}
+}
+
+func TestMCPExternalAuthConfig_ValidateStorageConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      *MCPExternalAuthConfig
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "valid embedded auth server with no storage (defaults to memory)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:               ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: validEmbeddedAuthServerConfig(),
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid memory storage type",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{Type: "memory"}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: false,
+		},
+		{
+			name: "memory storage with redis config should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type:  "memory",
+					Redis: &RedisStorageConfig{},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "redis configuration must not be set when type is 'memory'",
+		},
+		{
+			name: "redis storage without redis config should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{Type: "redis"}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "redis configuration is required when type is 'redis'",
+		},
+		{
+			name: "valid redis storage with sentinel addrs",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379", "sentinel-1:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: false,
+		},
+		{
+			name: "valid redis storage with sentinel service ref",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName: "mymaster",
+							SentinelService: &SentinelServiceRef{
+								Name:      "redis-sentinel",
+								Namespace: "redis-ns",
+								Port:      26379,
+							},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: false,
+		},
+		{
+			name: "redis storage missing sentinel config should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "sentinelConfig is required",
+		},
+		{
+			name: "redis storage missing master name should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "masterName is required",
+		},
+		{
+			name: "both sentinelAddrs and sentinelService should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+							SentinelService: &SentinelServiceRef{
+								Name: "redis-sentinel",
+							},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "exactly one of sentinelAddrs or sentinelService must be specified, not both",
+		},
+		{
+			name: "neither sentinelAddrs nor sentinelService should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName: "mymaster",
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "exactly one of sentinelAddrs or sentinelService must be specified",
+		},
+		{
+			name: "sentinel service with empty name should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:      "mymaster",
+							SentinelService: &SentinelServiceRef{},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "sentinelService: name is required",
+		},
+		{
+			name: "redis storage missing acl user config should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "aclUserConfig is required",
+		},
+		{
+			name: "redis storage missing username secret ref should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "usernameSecretRef is required",
+		},
+		{
+			name: "redis storage missing password secret ref should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+						},
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "passwordSecretRef is required",
+		},
+		{
+			name: "valid custom timeout durations",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+						DialTimeout:  "10s",
+						ReadTimeout:  "5s",
+						WriteTimeout: "5s",
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: false,
+		},
+		{
+			name: "invalid dial timeout should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+						DialTimeout: "not-a-duration",
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "invalid dialTimeout",
+		},
+		{
+			name: "invalid read timeout should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+						ReadTimeout: "invalid",
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "invalid readTimeout",
+		},
+		{
+			name: "invalid write timeout should fail",
+			config: func() *MCPExternalAuthConfig {
+				cfg := validEmbeddedAuthServerConfig()
+				cfg.Storage = &AuthServerStorageConfig{
+					Type: "redis",
+					Redis: &RedisStorageConfig{
+						SentinelConfig: &RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel-0:26379"},
+						},
+						ACLUserConfig: &RedisACLUserConfig{
+							UsernameSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+						WriteTimeout: "abc",
+					},
+				}
+				return &MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+					Spec: MCPExternalAuthConfigSpec{
+						Type:               ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: cfg,
+					},
+				}
+			}(),
+			expectError: true,
+			errorMsg:    "invalid writeTimeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := tt.config.ValidateCreate(context.Background(), tt.config)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestMCPExternalAuthConfig_ValidateUpdate(t *testing.T) {
 	t.Parallel()
 

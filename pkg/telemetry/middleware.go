@@ -85,6 +85,7 @@ func NewHTTPMiddleware(
 		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
 		metric.WithDescription("Duration of MCP requests in seconds"),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(MCPHistogramBuckets...),
 	)
 	if err != nil {
 		logger.Debugf("failed to create request duration metric: %v", err)

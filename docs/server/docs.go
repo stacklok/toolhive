@@ -1459,6 +1459,23 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "skills.Dependency": {
+                "properties": {
+                    "digest": {
+                        "description": "Digest is the OCI digest for upgrade detection.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the dependency name.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the OCI reference for the dependency.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "skills.InstallStatus": {
                 "description": "Status is the current installation status.",
                 "enum": [
@@ -1484,6 +1501,18 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "dependencies": {
+                        "description": "Dependencies is the list of external skill dependencies.",
+                        "items": {
+                            "$ref": "#/components/schemas/skills.Dependency"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest (sha256:...) for upgrade detection.",
+                        "type": "string"
+                    },
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the skill was installed.",
                         "type": "string"
@@ -1491,11 +1520,23 @@ const docTemplate = `{
                     "metadata": {
                         "$ref": "#/components/schemas/skills.SkillMetadata"
                     },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path for project-scoped skills. Empty for user-scoped.",
+                        "type": "string"
+                    },
+                    "reference": {
+                        "description": "Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).",
+                        "type": "string"
+                    },
                     "scope": {
                         "$ref": "#/components/schemas/skills.Scope"
                     },
                     "status": {
                         "$ref": "#/components/schemas/skills.InstallStatus"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag (e.g. v1.0.0).",
+                        "type": "string"
                     }
                 },
                 "type": "object"

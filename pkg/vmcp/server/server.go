@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,10 @@ const (
 
 	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
 	defaultShutdownTimeout = 10 * time.Second
+
+	// defaultHeartbeatInterval sends SSE heartbeat pings on GET connections.
+	// Prevents proxies/load balancers from closing idle SSE connections.
+	defaultHeartbeatInterval = 30 * time.Second
 
 	// defaultSessionTTL is the default session time-to-live duration.
 	// Sessions that are inactive for this duration will be automatically cleaned up.
@@ -400,6 +405,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
 		server.WithSessionIdManager(sessionAdapter),
+		server.WithHeartbeatInterval(defaultHeartbeatInterval),
 	)
 
 	// Create HTTP mux with separated authenticated and unauthenticated routes
@@ -432,6 +438,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
 	// Code wraps: auth → audit → discovery → backend enrichment → MCP parsing → telemetry
 	// Execution order: telemetry → MCP parsing → backend enrichment → discovery → audit → auth → handler
+
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {
@@ -485,7 +492,10 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("Authentication middleware enabled for MCP endpoints")
 	}
 
-	// Apply recovery middleware last (so it executes first and catches panics from all other middleware)
+	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
+	mcpHandler = headerValidatingMiddleware(mcpHandler)
+
+	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)
 	logger.Info("Recovery middleware enabled for MCP endpoints")
 
@@ -1160,4 +1170,28 @@ func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
 	if _, err := w.Write(data); err != nil {
 		logger.Errorf("Failed to write backend health response: %v", err)
 	}
+}
+
+// notAcceptableBody is the JSON-RPC error returned when a GET request is missing
+// the Accept: text/event-stream header required by the Streamable HTTP transport.
+var notAcceptableBody = []byte(
+	`{"jsonrpc":"2.0","id":"server-error","error":` +
+		`{"code":-32600,"message":"Not Acceptable: Client must accept text/event-stream"}}`,
+)
+
+// headerValidatingMiddleware rejects GET requests that do not include
+// Accept: text/event-stream, as required by the MCP Streamable HTTP transport spec.
+func headerValidatingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet &&
+			!strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotAcceptable)
+			if _, err := w.Write(notAcceptableBody); err != nil {
+				logger.Errorf("Failed to write not-acceptable response: %v", err)
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

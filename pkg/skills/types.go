@@ -98,7 +98,12 @@ type SkillFrontmatter struct {
 
 // Dependency represents an external skill dependency (OCI reference).
 type Dependency struct {
+	// Name is the dependency name.
+	Name string `json:"name,omitempty"`
+	// Reference is the OCI reference for the dependency.
 	Reference string `json:"reference"`
+	// Digest is the OCI digest for upgrade detection.
+	Digest string `json:"digest,omitempty"`
 }
 
 // ParseResult contains the parsed contents of a SKILL.md file.
@@ -134,6 +139,14 @@ type InstalledSkill struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// Scope is the installation scope (user or project).
 	Scope Scope `json:"scope"`
+	// ProjectRoot is the project root path for project-scoped skills. Empty for user-scoped.
+	ProjectRoot string `json:"project_root,omitempty"`
+	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
+	Reference string `json:"reference,omitempty"`
+	// Tag is the OCI tag (e.g. v1.0.0).
+	Tag string `json:"tag,omitempty"`
+	// Digest is the OCI digest (sha256:...) for upgrade detection.
+	Digest string `json:"digest,omitempty"`
 	// Status is the current installation status.
 	Status InstallStatus `json:"status"`
 	// InstalledAt is the timestamp when the skill was installed.
@@ -141,6 +154,8 @@ type InstalledSkill struct {
 	// Clients is the list of client identifiers the skill is installed for.
 	// TODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.
 	Clients []string `json:"clients,omitempty"`
+	// Dependencies is the list of external skill dependencies.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

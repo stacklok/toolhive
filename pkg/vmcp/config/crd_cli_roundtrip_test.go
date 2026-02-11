@@ -724,10 +724,12 @@ func TestCRDToCliRoundtrip_HeaderInjection_EnvVarResolution(t *testing.T) {
 
 			if strategy == nil {
 				t.Fatal("no auth strategy found")
+				return
 			}
 
 			if strategy.HeaderInjection == nil {
 				t.Fatal("HeaderInjection is nil")
+				return
 			}
 
 			if strategy.HeaderInjection.HeaderValue != tt.wantHeaderValue {

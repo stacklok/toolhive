@@ -41,6 +41,7 @@ func TestAddFormatFlag(t *testing.T) {
 			flag := cmd.Flags().Lookup("format")
 			if flag == nil {
 				t.Fatal("format flag was not added")
+				return
 			}
 
 			// Verify default value
@@ -88,6 +89,7 @@ func TestAddGroupFlag(t *testing.T) {
 			flag := cmd.Flags().Lookup("group")
 			if flag == nil {
 				t.Fatal("group flag was not added")
+				return
 			}
 
 			// Verify shorthand
@@ -138,6 +140,7 @@ func TestAddAllFlag(t *testing.T) {
 			flag := cmd.Flags().Lookup("all")
 			if flag == nil {
 				t.Fatal("all flag was not added")
+				return
 			}
 
 			// Verify shorthand

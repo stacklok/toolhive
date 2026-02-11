@@ -141,11 +141,15 @@ func (c *Config) SetSamplingRateFromFloat(rate float64) {
 	c.SamplingRate = strconv.FormatFloat(rate, 'f', -1, 64)
 }
 
+// DefaultServiceNamePrefix is prepended to the workload name when deriving the
+// OTel service name automatically (e.g. "thv-fetch", "thv-github").
+const DefaultServiceNamePrefix = "thv-"
+
 // DefaultConfig returns a default telemetry configuration.
 func DefaultConfig() Config {
 	versionInfo := versions.GetVersionInfo()
 	return Config{
-		ServiceName:                 "toolhive-mcp-proxy",
+		ServiceName:                 "", // empty — resolved at runtime from the workload name
 		ServiceVersion:              versionInfo.Version,
 		TracingEnabled:              true,   // Enable tracing by default if endpoint is configured
 		MetricsEnabled:              true,   // Enable metrics by default if endpoint is configured
@@ -184,12 +188,6 @@ func MaybeMakeConfig(
 		}
 	}
 
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = DefaultConfig().ServiceName
-	}
-
 	// Process environment variables - split comma-separated values
 	var processedEnvVars []string
 	for _, envVarEntry := range otelEnvironmentVariables {
@@ -204,7 +202,7 @@ func MaybeMakeConfig(
 	}
 	return &Config{
 		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
+		ServiceName:                 otelServiceName,
 		ServiceVersion:              DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
@@ -214,6 +212,18 @@ func MaybeMakeConfig(
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		UseLegacyAttributes:         otelUseLegacyAttributes,
+	}
+}
+
+// ResolveServiceName sets the telemetry service name on the config if it has
+// not been explicitly provided. When empty, it derives the name from the
+// workload/server name with the "thv-" prefix (e.g. "thv-fetch").
+func ResolveServiceName(config *Config, serverName string) {
+	if config == nil || config.ServiceName != "" {
+		return
+	}
+	if serverName != "" {
+		config.ServiceName = DefaultServiceNamePrefix + serverName
 	}
 }
 

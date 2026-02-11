@@ -1711,6 +1711,88 @@ func TestBuildWWWAuthenticate_Format(t *testing.T) {
 	}
 }
 
+func TestBuildWWWAuthenticate_Scope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		scopes      []string
+		expectScope bool
+		expectValue string
+	}{
+		{
+			name:        "scopes set",
+			scopes:      []string{"openid", "profile", "email"},
+			expectScope: true,
+			expectValue: `scope="openid profile email"`,
+		},
+		{
+			name:        "single scope",
+			scopes:      []string{"openid"},
+			expectScope: true,
+			expectValue: `scope="openid"`,
+		},
+		{
+			name:        "nil scopes omits parameter",
+			scopes:      nil,
+			expectScope: false,
+		},
+		{
+			name:        "empty scopes omits parameter",
+			scopes:      []string{},
+			expectScope: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tv := &TokenValidator{
+				issuer: issuer,
+				scopes: tt.scopes,
+			}
+
+			got := tv.buildWWWAuthenticate(false, "")
+
+			if tt.expectScope {
+				if !strings.Contains(got, tt.expectValue) {
+					t.Errorf("Expected %s in: %s", tt.expectValue, got)
+				}
+			} else {
+				if strings.Contains(got, "scope=") {
+					t.Errorf("Expected no scope parameter in: %s", got)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildWWWAuthenticate_ScopeOrdering(t *testing.T) {
+	t.Parallel()
+
+	tv := &TokenValidator{
+		issuer:      issuer,
+		resourceURL: "https://resource.example.com",
+		scopes:      []string{"openid", "offline_access"},
+	}
+
+	got := tv.buildWWWAuthenticate(true, "token expired")
+
+	// Verify the order: realm, resource_metadata, scope, error, error_description
+	realmIdx := strings.Index(got, "realm=")
+	resourceIdx := strings.Index(got, "resource_metadata=")
+	scopeIdx := strings.Index(got, "scope=")
+	errorIdx := strings.Index(got, "error=")
+
+	if realmIdx < 0 || resourceIdx < 0 || scopeIdx < 0 || errorIdx < 0 {
+		t.Fatalf("Expected all parameters present in: %s", got)
+	}
+	if realmIdx >= resourceIdx || resourceIdx >= scopeIdx || scopeIdx >= errorIdx {
+		t.Errorf("Parameters not in expected order (realm, resource_metadata, scope, error) in: %s", got)
+	}
+}
+
 func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
 	t.Parallel()
 

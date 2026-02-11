@@ -359,6 +359,7 @@ type TokenValidator struct {
 	introspectURL     string       // Optional introspection endpoint
 	client            *http.Client // HTTP client for making requests
 	resourceURL       string       // (RFC 9728)
+	scopes            []string     // OAuth scopes to advertise in WWW-Authenticate (RFC 6750 §3)
 	registry          *Registry    // Token introspection providers
 	insecureAllowHTTP bool         // Allow HTTP (non-HTTPS) OIDC issuers for development/testing
 
@@ -642,6 +643,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		jwksClient:        cache,
 		client:            config.httpClient,
 		resourceURL:       config.ResourceURL,
+		scopes:            config.Scopes,
 		registry:          registry,
 		insecureAllowHTTP: config.InsecureAllowHTTP,
 	}
@@ -1010,6 +1012,11 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 				path)
 			parts = append(parts, fmt.Sprintf(`resource_metadata="%s"`, EscapeQuotes(metadataURL)))
 		}
+	}
+
+	// scope (RFC 6750 §3) - only when explicitly configured
+	if len(v.scopes) > 0 {
+		parts = append(parts, fmt.Sprintf(`scope="%s"`, EscapeQuotes(strings.Join(v.scopes, " "))))
 	}
 
 	// error fields (RFC 6750 §3)

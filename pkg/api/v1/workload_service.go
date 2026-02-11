@@ -379,7 +379,11 @@ func runtimeConfigFromRequest(req *createRequest) *templates.RuntimeConfig {
 		runtimeConfig.BuilderImage = builderImage
 	}
 	if len(req.RuntimeConfig.AdditionalPackages) > 0 {
-		runtimeConfig.AdditionalPackages = append([]string{}, req.RuntimeConfig.AdditionalPackages...)
+		for _, pkg := range req.RuntimeConfig.AdditionalPackages {
+			if trimmedPkg := strings.TrimSpace(pkg); trimmedPkg != "" {
+				runtimeConfig.AdditionalPackages = append(runtimeConfig.AdditionalPackages, trimmedPkg)
+			}
+		}
 	}
 	if runtimeConfig.BuilderImage == "" && len(runtimeConfig.AdditionalPackages) == 0 {
 		return nil

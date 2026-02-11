@@ -173,7 +173,7 @@ func loadRuntimeConfig(
 		merged.BuilderImage = strings.TrimSpace(override.BuilderImage)
 	}
 	if len(override.AdditionalPackages) > 0 {
-		merged.AdditionalPackages = append([]string{}, override.AdditionalPackages...)
+		merged.AdditionalPackages = append(merged.AdditionalPackages, override.AdditionalPackages...)
 	}
 
 	return merged

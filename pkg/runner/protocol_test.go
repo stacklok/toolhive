@@ -470,14 +470,16 @@ func TestLoadRuntimeConfig_MergesMissingOverrideFields(t *testing.T) {
 		t.Fatalf("BuilderImage = %q, want base %q", got.BuilderImage, base.BuilderImage)
 	}
 
-	// Explicit additional packages override should be preserved.
-	if !reflect.DeepEqual(got.AdditionalPackages, []string{"curl"}) {
-		t.Fatalf("AdditionalPackages = %v, want %v", got.AdditionalPackages, []string{"curl"})
+	// Additional packages should be appended to base defaults.
+	expectedPackages := append([]string{}, base.AdditionalPackages...)
+	expectedPackages = append(expectedPackages, "curl")
+	if !reflect.DeepEqual(got.AdditionalPackages, expectedPackages) {
+		t.Fatalf("AdditionalPackages = %v, want %v", got.AdditionalPackages, expectedPackages)
 	}
 
 	// Ensure merged config is detached from input slices.
 	override.AdditionalPackages[0] = "git"
-	if got.AdditionalPackages[0] != "curl" {
+	if got.AdditionalPackages[len(got.AdditionalPackages)-1] != "curl" {
 		t.Fatalf("AdditionalPackages mutated via override input: got %v", got.AdditionalPackages)
 	}
 }

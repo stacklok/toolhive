@@ -172,7 +172,8 @@ func TestRuntimeConfigFromRequest(t *testing.T) {
 		req := &createRequest{
 			updateRequest: updateRequest{
 				RuntimeConfig: &templates.RuntimeConfig{
-					BuilderImage: "   ",
+					BuilderImage:       "   ",
+					AdditionalPackages: []string{"", "   "},
 				},
 			},
 		}
@@ -194,6 +195,22 @@ func TestRuntimeConfigFromRequest(t *testing.T) {
 		result := runtimeConfigFromRequest(req)
 		require.NotNil(t, result)
 		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
+	})
+
+	t.Run("trims and filters additional packages", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					AdditionalPackages: []string{" git ", "", "  ", "curl"},
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, []string{"git", "curl"}, result.AdditionalPackages)
 	})
 
 	t.Run("copies runtime config", func(t *testing.T) {

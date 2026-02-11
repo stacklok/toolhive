@@ -450,6 +450,7 @@ func TestLoadRuntimeConfig_MergesMissingOverrideFields(t *testing.T) {
 	base := loadRuntimeConfig(templates.TransportTypeGO, nil)
 	if base == nil {
 		t.Fatal("loadRuntimeConfig returned nil base config")
+		return
 	}
 	if base.BuilderImage == "" {
 		t.Fatal("base runtime config has empty builder image")
@@ -461,6 +462,7 @@ func TestLoadRuntimeConfig_MergesMissingOverrideFields(t *testing.T) {
 	got := loadRuntimeConfig(templates.TransportTypeGO, override)
 	if got == nil {
 		t.Fatal("loadRuntimeConfig returned nil merged config")
+		return
 	}
 
 	// Missing builder image in override should inherit the base builder image.
@@ -489,6 +491,7 @@ func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
 	})
 	if got == nil {
 		t.Fatal("loadRuntimeConfig returned nil config")
+		return
 	}
 	if got.BuilderImage != customImage {
 		t.Fatalf("BuilderImage = %q, want %q", got.BuilderImage, customImage)

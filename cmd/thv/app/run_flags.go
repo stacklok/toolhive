@@ -222,7 +222,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.OtelEndpoint, "otel-endpoint", "",
 		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
 	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
-		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+		"OpenTelemetry service name (defaults to thv-<workload-name>)")
 	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", true,
 		"Enable distributed tracing (when OTLP endpoint is configured)")
 	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", true,
@@ -624,6 +624,9 @@ func configureMiddlewareAndOptions(
 	configProvider := cfg.NewDefaultProvider()
 	appConfig := configProvider.GetConfig()
 
+	// Resolve the OTel service name from the workload name when not explicitly set
+	telemetry.ResolveServiceName(telemetryConfig, serverName)
+
 	// Configure middleware from flags
 	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
 	if err != nil {
@@ -998,12 +1001,6 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		}
 	}
 
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = telemetry.DefaultConfig().ServiceName
-	}
-
 	// Process environment variables - split comma-separated values
 	var processedEnvVars []string
 	for _, envVarEntry := range otelEnvironmentVariables {
@@ -1027,7 +1024,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 
 	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
+		ServiceName:                 otelServiceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,

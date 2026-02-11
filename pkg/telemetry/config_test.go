@@ -185,7 +185,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	config := DefaultConfig()
 
-	assert.Equal(t, "toolhive-mcp-proxy", config.ServiceName)
+	assert.Empty(t, config.ServiceName, "ServiceName should be empty by default (resolved at runtime from workload name)")
 	assert.NotEmpty(t, config.ServiceVersion)
 	assert.Equal(t, "0.05", config.SamplingRate)
 	assert.NotNil(t, config.Headers)
@@ -193,6 +193,53 @@ func TestDefaultConfig(t *testing.T) {
 	assert.False(t, config.Insecure)
 	assert.False(t, config.EnablePrometheusMetricsPath)
 	assert.Empty(t, config.Endpoint)
+}
+
+// TestResolveServiceName tests service name resolution from workload name
+func TestResolveServiceName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		config         *Config
+		serverName     string
+		expectedResult string
+	}{
+		{
+			name:           "nil config is a no-op",
+			config:         nil,
+			serverName:     "fetch",
+			expectedResult: "",
+		},
+		{
+			name:           "empty service name gets workload name with prefix",
+			config:         &Config{},
+			serverName:     "fetch",
+			expectedResult: "thv-fetch",
+		},
+		{
+			name:           "explicit service name is preserved",
+			config:         &Config{ServiceName: "my-custom-name"},
+			serverName:     "fetch",
+			expectedResult: "my-custom-name",
+		},
+		{
+			name:           "empty server name leaves service name empty",
+			config:         &Config{},
+			serverName:     "",
+			expectedResult: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ResolveServiceName(tt.config, tt.serverName)
+			if tt.config != nil {
+				assert.Equal(t, tt.expectedResult, tt.config.ServiceName)
+			}
+		})
+	}
 }
 
 // TestProvider_Middleware tests middleware creation

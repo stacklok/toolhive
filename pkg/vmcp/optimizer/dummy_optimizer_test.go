@@ -37,7 +37,7 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, tools)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -113,15 +113,16 @@ func TestDummyOptimizerFactory_SharedStorage(t *testing.T) {
 	t.Parallel()
 
 	factory := NewDummyOptimizerFactory()
+	ctx := context.Background()
 
 	// First optimizer with tool_a
-	opt1, err := factory([]server.ServerTool{
+	opt1, err := factory(ctx, []server.ServerTool{
 		{Tool: mcp.Tool{Name: "tool_a", Description: "Alpha tool"}},
 	})
 	require.NoError(t, err)
 
 	// Second optimizer with tool_b
-	opt2, err := factory([]server.ServerTool{
+	opt2, err := factory(ctx, []server.ServerTool{
 		{Tool: mcp.Tool{Name: "tool_b", Description: "Beta tool"}},
 	})
 	require.NoError(t, err)
@@ -139,7 +140,7 @@ func TestDummyOptimizerFactory_SharedStorage(t *testing.T) {
 	require.Equal(t, "tool_b", result2.Tools[0].Name)
 
 	// Both tools exist in the shared store — verify by creating an optimizer with both in scope
-	opt3, err := factory([]server.ServerTool{
+	opt3, err := factory(ctx, []server.ServerTool{
 		{Tool: mcp.Tool{Name: "tool_a", Description: "Alpha tool"}},
 		{Tool: mcp.Tool{Name: "tool_b", Description: "Beta tool"}},
 	})
@@ -171,7 +172,7 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, tools)
 	require.NoError(t, err)
 
 	tests := []struct {

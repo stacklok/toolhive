@@ -32,13 +32,13 @@ type DummyOptimizer struct {
 //
 // The tools slice should contain all backend tools (as ServerTool with handlers).
 // Tools are upserted into the shared store and scoped for this optimizer instance.
-func NewDummyOptimizer(store ToolStore, tools []server.ServerTool) (Optimizer, error) {
+func NewDummyOptimizer(ctx context.Context, store ToolStore, tools []server.ServerTool) (Optimizer, error) {
 	toolMap := make(map[string]server.ServerTool, len(tools))
 	for _, tool := range tools {
 		toolMap[tool.Tool.Name] = tool
 	}
 
-	if err := store.UpsertTools(context.Background(), tools); err != nil {
+	if err := store.UpsertTools(ctx, tools); err != nil {
 		return nil, fmt.Errorf("failed to upsert tools into store: %w", err)
 	}
 
@@ -104,9 +104,9 @@ func (d *DummyOptimizer) toolNames() []string {
 // NewDummyOptimizerFactory returns an OptimizerFactory that creates DummyOptimizer
 // instances backed by a shared InMemoryToolStore. All optimizers created by the
 // returned factory share the same underlying storage, enabling cross-session search.
-func NewDummyOptimizerFactory() func([]server.ServerTool) (Optimizer, error) {
+func NewDummyOptimizerFactory() func(context.Context, []server.ServerTool) (Optimizer, error) {
 	store := NewInMemoryToolStore()
-	return func(tools []server.ServerTool) (Optimizer, error) {
-		return NewDummyOptimizer(store, tools)
+	return func(ctx context.Context, tools []server.ServerTool) (Optimizer, error) {
+		return NewDummyOptimizer(ctx, store, tools)
 	}
 }

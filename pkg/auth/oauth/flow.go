@@ -463,7 +463,14 @@ func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult
 	// initial OAuth flow completes. Using the original ctx would cause "context canceled"
 	// errors when attempting to refresh tokens, as that context gets cancelled when
 	// the OAuth callback server shuts down.
-	base := f.oauth2Config.TokenSource(context.Background(), token)
+	var base oauth2.TokenSource
+	if f.config.Resource != "" {
+		// Use resourceTokenSource wrapper to add resource parameter to refresh requests (RFC 8707)
+		base = newResourceTokenSource(f.oauth2Config, token, f.config.Resource)
+	} else {
+		// No resource parameter needed, use standard token source
+		base = f.oauth2Config.TokenSource(context.Background(), token)
+	}
 
 	// ReuseTokenSource ensures that refresh happens only when needed
 	f.tokenSource = oauth2.ReuseTokenSource(token, base)

@@ -138,7 +138,7 @@ type Config struct {
 
 	// OptimizerFactory builds an optimizer from a list of tools.
 	// If not set, the optimizer is disabled.
-	OptimizerFactory func([]server.ServerTool) optimizer.Optimizer
+	OptimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -885,6 +885,7 @@ func (s *Server) injectCapabilities(
 // 1. Converts all tools (backend + composite) to SDK format with handlers
 // 2. Injects the optimizer capabilities into the session
 func (s *Server) injectOptimizerCapabilities(
+	ctx context.Context,
 	sessionID string,
 	caps *aggregator.AggregatedCapabilities,
 ) error {
@@ -897,8 +898,14 @@ func (s *Server) injectOptimizerCapabilities(
 		return fmt.Errorf("failed to convert tools to SDK format: %w", err)
 	}
 
+	// Create optimizer instance from factory
+	opt, err := s.config.OptimizerFactory(ctx, sdkTools)
+	if err != nil {
+		return fmt.Errorf("failed to create optimizer: %w", err)
+	}
+
 	// Create optimizer tools (find_tool, call_tool)
-	optimizerTools := adapter.CreateOptimizerTools(s.config.OptimizerFactory(sdkTools))
+	optimizerTools := adapter.CreateOptimizerTools(opt)
 
 	logger.Debugw("created optimizer tools for session",
 		"session_id", sessionID,
@@ -1009,7 +1016,7 @@ func (s *Server) handleSessionRegistration(
 		"prompt_count", len(caps.RoutingTable.Prompts))
 
 	if s.config.OptimizerFactory != nil {
-		err = s.injectOptimizerCapabilities(sessionID, caps)
+		err = s.injectOptimizerCapabilities(ctx, sessionID, caps)
 		if err != nil {
 			logger.Errorw("failed to create optimizer tools",
 				"error", err,

@@ -1,0 +1,113 @@
+# Example: VirtualMCPServer with Optimizer Enabled
+#
+# This example demonstrates a VirtualMCPServer with the optimizer feature.
+# When the optimizer is enabled, vMCP exposes only two meta-tools to clients:
+#   - find_tool: Search for tools by natural language description
+#   - call_tool: Invoke a discovered tool by name
+#
+# This reduces token usage for LLMs by avoiding sending all tool definitions
+# upfront, instead allowing on-demand tool discovery.
+#
+# This example creates:
+# 1. An MCPGroup to organize backends
+# 2. A yardstick MCPServer backend
+# 3. A fetch MCPServer backend (URL fetching)
+# 4. A VirtualMCPServer with optimizer enabled and anonymous auth
+#
+# Usage:
+#   kubectl apply -f vmcp_optimizer_example.yaml
+
+---
+# Step 1: Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: optimizer-services
+  namespace: default
+spec:
+  description: Backend services for optimizer-enabled VirtualMCPServer
+
+---
+# Step 2: Create MCPServer backend - yardstick
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create MCPServer backend - fetch (URL content fetching)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: optimizer-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 4: Create VirtualMCPServer with optimizer
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: optimizer-vmcp
+  namespace: default
+spec:
+  config:
+    groupRef: optimizer-services
+
+    # Aggregation: prefix strategy prevents tool name conflicts
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+
+    # Optimizer: enables find_tool / call_tool meta-tools
+    # Currently uses DummyOptimizer (substring matching).
+    # The embeddingService field is required by the schema but unused
+    # by DummyOptimizer — it will be used by the future EmbeddingOptimizer.
+    optimizer:
+      embeddingService: "placeholder"
+
+    # Operational settings
+    operational:
+      failureHandling:
+        healthCheckInterval: 30s
+
+  # Incoming authentication (client -> vMCP)
+  # Anonymous auth for easy local testing
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends)
+  # Discovered mode auto-discovers auth from backend MCPServers
+  outgoingAuth:
+    source: discovered

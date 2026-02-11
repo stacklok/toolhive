@@ -59,6 +59,7 @@ func monitorBackends(
 		"toolhive_vmcp_backend_requests_duration",
 		metric.WithDescription("Duration of requests in seconds per backend"),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
@@ -267,6 +268,7 @@ func monitorWorkflowExecutors(
 		"toolhive_vmcp_workflow_duration",
 		metric.WithDescription("Duration of workflow executions in seconds"),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.MCPHistogramBuckets...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)

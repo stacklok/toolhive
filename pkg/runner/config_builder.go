@@ -751,6 +751,10 @@ func internalRunConfigBuilder(
 		}
 	}
 
+	// Resolve the OTel service name from the workload name when not explicitly set.
+	// This ensures the service name is always populated before persisting the config.
+	telemetry.ResolveServiceName(b.config.TelemetryConfig, b.config.Name)
+
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
 	processedEnvVars := envVars

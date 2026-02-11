@@ -484,7 +484,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	if cfg.Optimizer != nil {
 		// TODO: update this with the real optimizer.
-		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizer
+		serverCfg.OptimizerFactory = optimizer.NewDummyOptimizerFactory()
 	}
 
 	// Convert composite tool configurations to workflow definitions

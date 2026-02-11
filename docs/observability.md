@@ -396,37 +396,6 @@ using a `MetaCarrier` that implements `propagation.TextMapCarrier` for MCP
 `_meta` maps. The MCP `_meta` field is extracted by the MCP parsing middleware
 (`pkg/mcp/parser.go`) and stored in the request context.
 
-## Security Considerations
-
-### OTLP Header Redaction
-
-OTLP authentication headers (e.g., `Authorization: Bearer <token>`) are
-automatically redacted in all log output. The `Config.String()` and
-`Config.GoString()` methods replace header values with `[REDACTED]` while
-keeping header keys visible for debugging.
-
-### Tool Argument Sanitization
-
-When tool call arguments are captured in span attributes, the following
-protections are applied:
-
-1. **Sensitive key detection**: Argument keys matching sensitive patterns
-   (`password`, `token`, `secret`, `key`, `auth`, `credential`, `api_key`,
-   `access_token`, `refresh_token`, `private`) are replaced with `[REDACTED]`.
-2. **Value truncation**: Individual values are truncated to 100 characters;
-   the total arguments string is truncated to 200 characters.
-
-### Environment Variable Capture
-
-The `--otel-env-vars` configuration reads host environment variables and
-includes their values in telemetry spans. **Only variables explicitly listed
-are captured.** However, there is no built-in deny-list preventing capture of
-sensitive variables.
-
-**Recommendation**: Do not include environment variables containing secrets
-(e.g., `AWS_SECRET_ACCESS_KEY`, `DATABASE_PASSWORD`) in the
-`environmentVariables` list.
-
 ## Legacy Attribute Compatibility
 
 ToolHive supports dual emission of span attributes controlled by the

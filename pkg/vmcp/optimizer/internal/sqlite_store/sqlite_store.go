@@ -2,44 +2,60 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package sqlitestore implements a SQLite-based ToolStore for search over
-// MCP tool metadata. It currently uses FTS5 for full-text search and may
-// be extended with embedding-based semantic search in the future.
+// MCP tool metadata. It uses FTS5 for full-text search and optional
+// embedding-based semantic search for hybrid retrieval.
 package sqlitestore
 
 import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
+	"golang.org/x/sync/errgroup"
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
+
+// maxToolsToReturn is the maximum number of results returned to the caller.
+const maxToolsToReturn = 8
+
+// hybridSemanticToolsRatio controls the proportion of semantic vs FTS5
+// results in hybrid mode: 0 = all FTS5, 1 = all semantic.
+const hybridSemanticToolsRatio = 0.5
 
 //go:embed schema.sql
 var schemaSQL string
 
-// sqliteToolStore implements a tool store using SQLite with FTS5 for full-text search.
+// sqliteToolStore implements a tool store using SQLite with FTS5 for full-text search
+// and optional vector embedding-based semantic search.
 // It satisfies the optimizer.ToolStore interface.
 type sqliteToolStore struct {
-	db *sql.DB
+	db              *sql.DB
+	embeddingClient types.EmbeddingClient // nil = FTS5-only
 }
 
-// NewSQLiteToolStore creates a new sqliteToolStore backed by a shared in-memory
+// NewSQLiteToolStore creates a new ToolStore backed by a shared in-memory
 // SQLite database. All callers of this constructor share the same database,
 // which is the intended production behavior (one shared store per server).
-func NewSQLiteToolStore() (sqliteToolStore, error) {
-	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared")
+// If embeddingClient is non-nil, semantic search is enabled alongside FTS5.
+func NewSQLiteToolStore(embeddingClient types.EmbeddingClient) (types.ToolStore, error) {
+	return newSQLiteToolStore("file:memdb?mode=memory&cache=shared", embeddingClient)
 }
 
 // newSQLiteToolStore creates a tool store backed by a database described
 // in the connectionString. It is useful for tests, where we want multiple
 // isolated (non-shared) databases.
-func newSQLiteToolStore(connectionString string) (sqliteToolStore, error) {
+func newSQLiteToolStore(connectionString string, embeddingClient types.EmbeddingClient) (sqliteToolStore, error) {
 	db, err := sql.Open("sqlite", connectionString)
 	if err != nil {
 		return sqliteToolStore{}, fmt.Errorf("failed to open sqlite database: %w", err)
@@ -51,7 +67,7 @@ func newSQLiteToolStore(connectionString string) (sqliteToolStore, error) {
 		return sqliteToolStore{}, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	return sqliteToolStore{db: db}, nil
+	return sqliteToolStore{db: db, embeddingClient: embeddingClient}, nil
 }
 
 // UpsertTools adds or updates tools in the store.
@@ -66,14 +82,19 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 		}
 	}()
 
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO llm_capabilities (name, description) VALUES (?, ?)")
+	embBlobs, err := s.generateEmbeddings(ctx, tools)
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO llm_capabilities (name, description, embedding) VALUES (?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
-	for _, tool := range tools {
-		if _, err := stmt.ExecContext(ctx, tool.Tool.Name, tool.Tool.Description); err != nil {
+	for i, tool := range tools {
+		if _, err := stmt.ExecContext(ctx, tool.Tool.Name, tool.Tool.Description, embBlobs[i]); err != nil {
 			return fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
 		}
 	}
@@ -81,7 +102,34 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 	return tx.Commit()
 }
 
-// Search finds tools matching the query string using FTS5 full-text search.
+// generateEmbeddings produces encoded embedding blobs for each tool.
+// If no embedding client is configured, it returns a slice of nil byte slices.
+func (s sqliteToolStore) generateEmbeddings(ctx context.Context, tools []server.ServerTool) ([][]byte, error) {
+	blobs := make([][]byte, len(tools))
+
+	if s.embeddingClient == nil {
+		return blobs, nil
+	}
+
+	texts := make([]string, len(tools))
+	for i, tool := range tools {
+		texts[i] = fmt.Sprintf("name: %s description: %s", tool.Tool.Name, tool.Tool.Description)
+	}
+
+	embeddings, err := s.embeddingClient.EmbedBatch(ctx, texts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embeddings: %w", err)
+	}
+
+	for i, emb := range embeddings {
+		blobs[i] = encodeEmbedding(emb)
+	}
+
+	return blobs, nil
+}
+
+// Search finds tools matching the query string using FTS5 full-text search
+// and optional semantic search when an embedding client is configured.
 // The allowedTools parameter limits results to only tools with names in the given set.
 // If allowedTools is empty, no results are returned (empty = no access).
 // Returns matches ranked by relevance.
@@ -91,16 +139,53 @@ func (s sqliteToolStore) Search(ctx context.Context, query string, allowedTools 
 	}
 
 	ftsExpr := sanitizeFTS5Query(query)
-	if ftsExpr == "" {
-		return nil, nil
+
+	// FTS5-only path (no embedding client)
+	if s.embeddingClient == nil {
+		if ftsExpr == "" {
+			return nil, nil
+		}
+		return s.searchFTS5(ctx, ftsExpr, allowedTools, maxToolsToReturn)
 	}
 
-	return s.searchFTS5(ctx, ftsExpr, allowedTools)
+	// Hybrid search: derive per-method limits from the ratio.
+	ftsLimit, semanticLimit := hybridSearchLimits(maxToolsToReturn, hybridSemanticToolsRatio)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	var ftsResults []types.ToolMatch
+	if ftsExpr != "" && ftsLimit > 0 {
+		g.Go(func() error {
+			var err error
+			ftsResults, err = s.searchFTS5(gCtx, ftsExpr, allowedTools, ftsLimit)
+			return err
+		})
+	}
+
+	var semanticResults []types.ToolMatch
+	if semanticLimit > 0 {
+		g.Go(func() error {
+			var err error
+			semanticResults, err = s.searchSemantic(gCtx, query, allowedTools, semanticLimit)
+			return err
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return mergeResults(ftsResults, semanticResults, maxToolsToReturn), nil
 }
 
 // Close releases the underlying database connection.
 func (s sqliteToolStore) Close() error {
-	return s.db.Close()
+	var embErr error
+	if s.embeddingClient != nil {
+		embErr = s.embeddingClient.Close()
+	}
+	dbErr := s.db.Close()
+	return errors.Join(embErr, dbErr)
 }
 
 // searchFTS5 performs a full-text search using FTS5 MATCH with BM25 ranking.
@@ -110,7 +195,7 @@ func (s sqliteToolStore) Close() error {
 // The ftsExpr is produced by sanitizeFTS5Query and is always passed as a
 // parameterized ? value, never interpolated into SQL.
 func (s sqliteToolStore) searchFTS5(
-	ctx context.Context, ftsExpr string, allowedTools []string,
+	ctx context.Context, ftsExpr string, allowedTools []string, limit int,
 ) ([]types.ToolMatch, error) {
 	allowedJSON, err := json.Marshal(allowedTools)
 	if err != nil {
@@ -122,9 +207,10 @@ func (s sqliteToolStore) searchFTS5(
 		JOIN llm_capabilities t ON t.rowid = fts.rowid
 		WHERE llm_capabilities_fts MATCH ?
 		  AND t.name IN (SELECT value FROM json_each(?))
-		ORDER BY rank`
+		ORDER BY rank
+		LIMIT ?`
 
-	rows, err := s.db.QueryContext(ctx, queryStr, ftsExpr, string(allowedJSON))
+	rows, err := s.db.QueryContext(ctx, queryStr, ftsExpr, string(allowedJSON), limit)
 	if err != nil {
 		return nil, fmt.Errorf("FTS5 query failed: %w", err)
 	}
@@ -145,6 +231,100 @@ func (s sqliteToolStore) searchFTS5(
 	}
 
 	return matches, rows.Err()
+}
+
+// searchSemantic performs embedding-based semantic search.
+// It embeds the query, loads all candidate embeddings from the database,
+// computes cosine distance, and returns the closest matches.
+//
+//nolint:unparam // limit kept for API consistency with searchFTS5
+func (s sqliteToolStore) searchSemantic(
+	ctx context.Context, query string, allowedTools []string, limit int,
+) ([]types.ToolMatch, error) {
+	queryVec, err := s.embeddingClient.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to embed query: %w", err)
+	}
+
+	allowedJSON, err := json.Marshal(allowedTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal allowed tools: %w", err)
+	}
+
+	queryStr := `SELECT name, description, embedding
+		FROM llm_capabilities
+		WHERE embedding IS NOT NULL
+		  AND name IN (SELECT value FROM json_each(?))`
+
+	rows, err := s.db.QueryContext(ctx, queryStr, string(allowedJSON))
+	if err != nil {
+		return nil, fmt.Errorf("semantic query failed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var matches []types.ToolMatch
+	for rows.Next() {
+		var name, description string
+		var embBlob []byte
+		if err := rows.Scan(&name, &description, &embBlob); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		emb := decodeEmbedding(embBlob)
+		dist := similarity.CosineDistance(queryVec, emb)
+
+		matches = append(matches, types.ToolMatch{
+			Name:        name,
+			Description: description,
+			Score:       dist,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by distance ascending (lower = better match)
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Score < matches[j].Score
+	})
+
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+
+	return matches, nil
+}
+
+// mergeResults combines FTS5 and semantic results, deduplicating by name
+// (keeping the lower score for duplicates), sorting by score ascending
+// (lower = better match), and truncating to maxResults.
+func mergeResults(fts, semantic []types.ToolMatch, maxResults int) []types.ToolMatch {
+	seen := make(map[string]types.ToolMatch, len(fts)+len(semantic))
+	for _, m := range fts {
+		seen[m.Name] = m
+	}
+	for _, m := range semantic {
+		existing, ok := seen[m.Name]
+		if !ok || m.Score < existing.Score {
+			seen[m.Name] = m
+		}
+	}
+
+	merged := make([]types.ToolMatch, 0, len(seen))
+	for _, m := range seen {
+		merged = append(merged, m)
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Score < merged[j].Score
+	})
+
+	if len(merged) > maxResults {
+		merged = merged[:maxResults]
+	}
+
+	return merged
 }
 
 // problematicWords contains words that FTS5 interprets as operators or that
@@ -203,8 +383,35 @@ func sanitizeFTS5Query(query string) string {
 	return strings.Join(quoted, " OR ")
 }
 
-// normalizeBM25 converts an FTS5 bm25() rank to a 0-1 score.
+// hybridSearchLimits computes the per-method result limits for hybrid search
+// from the total limit and the semantic ratio (0 = all FTS5, 1 = all semantic).
+func hybridSearchLimits(total int, semanticRatio float64) (ftsLimit, semanticLimit int) {
+	semanticLimit = int(math.Round(float64(total) * semanticRatio))
+	ftsLimit = total - semanticLimit
+	return ftsLimit, semanticLimit
+}
+
+// normalizeBM25 converts an FTS5 bm25() rank to a [0, 2) distance score.
 // FTS5 bm25() returns negative values where more negative = better match.
+// The output is scaled to [0, 2) to align with cosine distance range.
 func normalizeBM25(rank float64) float64 {
-	return 1.0 / (1.0 - rank)
+	return 2.0 / (1.0 - rank)
+}
+
+// encodeEmbedding serializes a float32 slice to a little-endian byte slice.
+func encodeEmbedding(vec []float32) []byte {
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	return buf
+}
+
+// decodeEmbedding deserializes a little-endian byte slice to a float32 slice.
+func decodeEmbedding(buf []byte) []float32 {
+	vec := make([]float32, len(buf)/4)
+	for i := range vec {
+		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+	}
+	return vec
 }

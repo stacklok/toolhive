@@ -17,9 +17,6 @@ import (
 func TestNormalizeTelemetryConfig(t *testing.T) {
 	t.Parallel()
 
-	// Get the expected build version for tests
-	buildVersion := telemetry.DefaultConfig().ServiceVersion
-
 	tests := []struct {
 		name        string
 		input       *telemetry.Config
@@ -40,9 +37,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 			},
 			defaultName: "default-service",
 			expected: &telemetry.Config{
-				Endpoint:       "otlp-collector:4317",
-				ServiceName:    "my-service",
-				ServiceVersion: buildVersion,
+				Endpoint:    "otlp-collector:4317",
+				ServiceName: "my-service",
 			},
 		},
 		{
@@ -53,9 +49,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 			},
 			defaultName: "default-service",
 			expected: &telemetry.Config{
-				Endpoint:       "localhost:4317",
-				ServiceName:    "my-service",
-				ServiceVersion: buildVersion,
+				Endpoint:    "localhost:4317",
+				ServiceName: "my-service",
 			},
 		},
 		{
@@ -66,9 +61,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 			},
 			defaultName: "default-service",
 			expected: &telemetry.Config{
-				Endpoint:       "otlp-collector:4317",
-				ServiceName:    "my-service",
-				ServiceVersion: buildVersion,
+				Endpoint:    "otlp-collector:4317",
+				ServiceName: "my-service",
 			},
 		},
 		{
@@ -79,13 +73,12 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 			},
 			defaultName: "default-service",
 			expected: &telemetry.Config{
-				Endpoint:       "localhost:4317",
-				ServiceName:    "default-service",
-				ServiceVersion: buildVersion,
+				Endpoint:    "localhost:4317",
+				ServiceName: "default-service",
 			},
 		},
 		{
-			name: "defaults ServiceVersion to build version when empty",
+			name: "ServiceVersion left empty for runtime resolution",
 			input: &telemetry.Config{
 				Endpoint:       "localhost:4317",
 				ServiceName:    "my-service",
@@ -93,9 +86,8 @@ func TestNormalizeTelemetryConfig(t *testing.T) {
 			},
 			defaultName: "default-service",
 			expected: &telemetry.Config{
-				Endpoint:       "localhost:4317",
-				ServiceName:    "my-service",
-				ServiceVersion: buildVersion,
+				Endpoint:    "localhost:4317",
+				ServiceName: "my-service",
 			},
 		},
 		{
@@ -193,11 +185,10 @@ func TestNormalizeTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 	t.Parallel()
 
-	// Get the expected build version for tests
-	buildVersion := telemetry.DefaultConfig().ServiceVersion
-
 	// This test verifies that ConvertTelemetryConfig uses NormalizeTelemetryConfig
-	// to apply endpoint prefix stripping and service name/version defaults
+	// to apply endpoint prefix stripping and service name defaults.
+	// ServiceVersion is intentionally left empty — it is resolved at runtime
+	// in telemetry.NewProvider() to always reflect the running binary version.
 	tests := []struct {
 		name       string
 		input      *v1alpha1.TelemetryConfig
@@ -221,7 +212,6 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			expected: &telemetry.Config{
 				Endpoint:       "otlp-collector:4317", // Prefix stripped
 				ServiceName:    "my-mcp-server",       // Defaulted
-				ServiceVersion: buildVersion,          // Defaulted to build version
 				TracingEnabled: true,
 				SamplingRate:   "0.1",
 			},
@@ -237,9 +227,8 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			},
 			serverName: "default-server",
 			expected: &telemetry.Config{
-				Endpoint:       "localhost:4317", // Prefix stripped
-				ServiceName:    "custom-service", // Preserved
-				ServiceVersion: buildVersion,     // Defaulted to build version
+				Endpoint:    "localhost:4317", // Prefix stripped
+				ServiceName: "custom-service", // Preserved
 			},
 		},
 		{
@@ -253,7 +242,6 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			expected: &telemetry.Config{
 				EnablePrometheusMetricsPath: true,
 				ServiceName:                 "prom-server", // Defaulted
-				ServiceVersion:              buildVersion,  // Defaulted to build version
 				UseLegacyAttributes:         true,          // Default when OTEL block absent
 			},
 		},
@@ -273,7 +261,6 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 			expected: &telemetry.Config{
 				Endpoint:            "otlp:4317",
 				ServiceName:         "legacy-test",
-				ServiceVersion:      buildVersion,
 				TracingEnabled:      true,
 				UseLegacyAttributes: false,
 			},

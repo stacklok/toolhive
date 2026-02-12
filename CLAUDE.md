@@ -196,6 +196,23 @@ ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol
 - Also take care of tests which set env vars. Try and write the tests in a way
   that the tests are isolated from other tests which may set the same env vars.
 
+### Test Quality Guidelines
+
+When writing or reviewing tests:
+
+1. **Structure**: Prefer table-driven (declarative) tests over imperative tests for better readability and maintainability.
+2. **Redundancy**: Avoid overlapping test cases that exercise the same code path.
+3. **Value**: Every test must add meaningful coverage. Remove tests that don't.
+4. **Consolidation**: Consolidate multiple small test functions into a single table-driven test when they test the same function or behavior.
+5. **Naming**: Use clear, descriptive test names that convey the scenario being tested.
+6. **Boilerplate**: Minimize setup code. Extract shared setup into helpers or use `t.Helper()` functions.
+
+#### Critical Requirements
+
+- **Test scope**: Tests must only test the code in the package under test. Do not test behavior of dependencies, external packages, or transitive functionality. If a test is exercising code outside the package, flag it for removal or refactoring.
+- **Mocking**: Use mocks for external dependencies. Mocks must use the `go.uber.org/mock` (gomock) framework, consistent with ToolHive conventions. Generate mocks with `mockgen` and place them in `mocks/` subdirectories.
+- **Assertions**: Prefer `require.NoError(t, err)` instead of `t.Fatal` for error checking. The `require` package (from `github.com/stretchr/testify`) provides better error messages and consistency.
+
 ### CLI Testing Philosophy
 
 **CLI commands should be tested primarily with E2E tests, not unit tests.**

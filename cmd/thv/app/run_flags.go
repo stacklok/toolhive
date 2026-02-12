@@ -1025,7 +1025,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 	telemetryCfg := &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 otelServiceName,
-		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		ServiceVersion:              "", // resolved at runtime in NewProvider()
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
 		Headers:                     headers,

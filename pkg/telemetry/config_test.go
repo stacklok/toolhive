@@ -186,7 +186,7 @@ func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
 	assert.Empty(t, config.ServiceName, "ServiceName should be empty by default (resolved at runtime from workload name)")
-	assert.NotEmpty(t, config.ServiceVersion)
+	assert.Empty(t, config.ServiceVersion, "ServiceVersion should be empty by default (resolved at runtime in NewProvider)")
 	assert.Equal(t, "0.05", config.SamplingRate)
 	assert.NotNil(t, config.Headers)
 	assert.Empty(t, config.Headers)

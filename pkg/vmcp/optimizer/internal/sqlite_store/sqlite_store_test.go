@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -14,9 +15,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestStore(t *testing.T) *SQLiteToolStore {
+// testDBCounter ensures each test gets a unique in-memory database.
+var testDBCounter atomic.Int64
+
+func newTestStore(t *testing.T) sqliteToolStore {
 	t.Helper()
-	store, err := NewSQLiteToolStore()
+	id := testDBCounter.Add(1)
+	store, err := newSQLiteToolStore(fmt.Sprintf("file:testdb_%d?mode=memory&cache=shared", id))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -28,14 +33,6 @@ func makeTools(tools ...mcp.Tool) []server.ServerTool {
 	result := make([]server.ServerTool, len(tools))
 	for i, tool := range tools {
 		result[i] = server.ServerTool{Tool: tool}
-	}
-	return result
-}
-
-func toolNames(tools []server.ServerTool) []string {
-	result := make([]string, len(tools))
-	for i, tool := range tools {
-		result[i] = tool.Tool.Name
 	}
 	return result
 }
@@ -52,44 +49,60 @@ func TestNewSQLiteToolStore(t *testing.T) {
 
 func TestSQLiteToolStore_UpsertTools(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t)
-	ctx := context.Background()
 
-	tools := makeTools(
-		mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
-		mcp.NewTool("write_file", mcp.WithDescription("Write content to a file")),
-	)
+	tests := []struct {
+		name         string
+		initial      []server.ServerTool
+		upsert       []server.ServerTool
+		searchQuery  string
+		allowedTools []string
+		wantLen      int
+		wantDesc     string
+	}{
+		{
+			name: "insert new tools",
+			upsert: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
+				mcp.NewTool("write_file", mcp.WithDescription("Write content to a file")),
+			),
+			searchQuery:  "file",
+			allowedTools: []string{"read_file", "write_file"},
+			wantLen:      2,
+		},
+		{
+			name: "overwrite updates description",
+			initial: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file")),
+			),
+			upsert: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read any file from the filesystem")),
+			),
+			searchQuery:  "filesystem",
+			allowedTools: []string{"read_file"},
+			wantLen:      1,
+			wantDesc:     "Read any file from the filesystem",
+		},
+	}
 
-	require.NoError(t, store.UpsertTools(ctx, tools))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := newTestStore(t)
+			ctx := context.Background()
 
-	// Verify tools are stored by searching for them
-	results, err := store.Search(ctx, "file", toolNames(tools))
-	require.NoError(t, err)
-	require.Len(t, results, 2)
-}
+			if tc.initial != nil {
+				require.NoError(t, store.UpsertTools(ctx, tc.initial))
+			}
+			require.NoError(t, store.UpsertTools(ctx, tc.upsert))
 
-func TestSQLiteToolStore_UpsertTools_Overwrite(t *testing.T) {
-	t.Parallel()
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	// Insert initial tool
-	tools := makeTools(
-		mcp.NewTool("read_file", mcp.WithDescription("Read a file")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
-
-	// Overwrite with updated description
-	updated := makeTools(
-		mcp.NewTool("read_file", mcp.WithDescription("Read any file from the filesystem")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, updated))
-
-	// Verify updated description is returned
-	results, err := store.Search(ctx, "filesystem", toolNames(updated))
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, "Read any file from the filesystem", results[0].Description)
+			results, err := store.Search(ctx, tc.searchQuery, tc.allowedTools)
+			require.NoError(t, err)
+			require.Len(t, results, tc.wantLen)
+			if tc.wantDesc != "" && len(results) > 0 {
+				require.Equal(t, tc.wantDesc, results[0].Description)
+			}
+		})
+	}
 }
 
 func TestSQLiteToolStore_Search(t *testing.T) {
@@ -101,6 +114,8 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 		query        string
 		allowedTools []string
 		wantNames    []string
+		wantNonEmpty bool // just assert results are non-empty (when exact names vary)
+		checkScores  bool // assert all scores are in (0, 1]
 	}{
 		{
 			name: "search by name",
@@ -153,6 +168,44 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 			allowedTools: []string{"read_file"},
 			wantNames:    nil,
 		},
+		{
+			name: "empty query returns no results",
+			tools: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file")),
+			),
+			query:        "",
+			allowedTools: []string{"read_file"},
+			wantNames:    nil,
+		},
+		{
+			name: "whitespace-only query returns no results",
+			tools: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file")),
+			),
+			query:        "   ",
+			allowedTools: []string{"read_file"},
+			wantNames:    nil,
+		},
+		{
+			name: "special chars - multi-word query matches",
+			tools: makeTools(
+				mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
+			),
+			query:        "read disk",
+			allowedTools: []string{"read_file"},
+			wantNonEmpty: true,
+		},
+		{
+			name: "BM25 scores are normalized to (0, 1]",
+			tools: makeTools(
+				mcp.NewTool("generic_tool", mcp.WithDescription("A tool that does many things including search")),
+				mcp.NewTool("search_tool", mcp.WithDescription("Search for files, search documents, search everything")),
+			),
+			query:        "search",
+			allowedTools: []string{"generic_tool", "search_tool"},
+			wantNonEmpty: true,
+			checkScores:  true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -166,87 +219,24 @@ func TestSQLiteToolStore_Search(t *testing.T) {
 			results, err := store.Search(ctx, tc.query, tc.allowedTools)
 			require.NoError(t, err)
 
-			var gotNames []string
-			for _, r := range results {
-				gotNames = append(gotNames, r.Name)
+			if tc.wantNonEmpty {
+				require.NotEmpty(t, results)
+			} else {
+				var gotNames []string
+				for _, r := range results {
+					gotNames = append(gotNames, r.Name)
+				}
+				require.ElementsMatch(t, tc.wantNames, gotNames)
 			}
-			require.ElementsMatch(t, tc.wantNames, gotNames)
+
+			if tc.checkScores {
+				for _, r := range results {
+					require.Greater(t, r.Score, 0.0, "score should be positive for tool %s", r.Name)
+					require.LessOrEqual(t, r.Score, 1.0, "score should be <= 1 for tool %s", r.Name)
+				}
+			}
 		})
 	}
-}
-
-func TestSQLiteToolStore_Search_BM25Ranking(t *testing.T) {
-	t.Parallel()
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	tools := makeTools(
-		mcp.NewTool("generic_tool", mcp.WithDescription("A tool that does many things including search")),
-		mcp.NewTool("search_tool", mcp.WithDescription("Search for files, search documents, search everything")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
-
-	results, err := store.Search(ctx, "search", toolNames(tools))
-	require.NoError(t, err)
-	require.NotEmpty(t, results)
-
-	for _, r := range results {
-		require.Greater(t, r.Score, 0.0, "score should be positive for tool %s", r.Name)
-		require.LessOrEqual(t, r.Score, 1.0, "score should be <= 1 for tool %s", r.Name)
-	}
-}
-
-func TestSQLiteToolStore_Search_SpecialChars(t *testing.T) {
-	t.Parallel()
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	tools := makeTools(
-		mcp.NewTool("read_file", mcp.WithDescription("Read a file from disk")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
-	allowed := toolNames(tools)
-
-	// Queries containing the word "read" should still match (special chars
-	// are passed through to FTS5 as part of the quoted phrase/term).
-	matchQueries := []string{
-		"read",
-		"read file",
-		"read disk",
-	}
-	for _, q := range matchQueries {
-		results, err := store.Search(ctx, q, allowed)
-		require.NoError(t, err, "search failed for query %q", q)
-		require.NotEmpty(t, results, "expected at least 1 result for query %q", q)
-	}
-
-	// Queries with only special chars that produce no real words should
-	// return empty (no LIKE fallback).
-	emptyQueries := []string{
-		"",
-		"   ",
-	}
-	for _, q := range emptyQueries {
-		results, err := store.Search(ctx, q, allowed)
-		require.NoError(t, err, "search should not error for query %q", q)
-		require.Empty(t, results, "expected empty results for query %q", q)
-	}
-}
-
-func TestSQLiteToolStore_Search_EmptyQuery(t *testing.T) {
-	t.Parallel()
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	tools := makeTools(
-		mcp.NewTool("read_file", mcp.WithDescription("Read a file")),
-	)
-	require.NoError(t, store.UpsertTools(ctx, tools))
-
-	// Empty query returns no results (no LIKE fallback)
-	results, err := store.Search(ctx, "", toolNames(tools))
-	require.NoError(t, err)
-	require.Empty(t, results)
 }
 
 func TestSQLiteToolStore_Close(t *testing.T) {
@@ -316,37 +306,37 @@ func TestSanitizeFTS5Query(t *testing.T) {
 
 	tests := []struct {
 		input    string
-		expected string
+		wantExpr string
 	}{
-		{input: "simple", expected: `"simple"`},
-		{input: "two words", expected: `"two" OR "words"`},
-		{input: "hello world foo", expected: `"hello" OR "world" OR "foo"`},
-		{input: "", expected: ""},
-		{input: "   ", expected: ""},
+		{input: "simple", wantExpr: `"simple"`},
+		{input: "two words", wantExpr: `"two" OR "words"`},
+		{input: "hello world foo", wantExpr: `"hello" OR "world" OR "foo"`},
+		{input: "", wantExpr: ""},
+		{input: "   ", wantExpr: ""},
 
 		// Special chars are NOT stripped (unlike previous behavior)
-		{input: "key:value", expected: `"key:value"`},
-		{input: `"quoted"`, expected: `"""quoted"""`},
-		{input: "read*", expected: `"read*"`},
-		{input: "***", expected: `"***"`},
-		{input: "read + file", expected: `"read" OR "+" OR "file"`},
+		{input: "key:value", wantExpr: `"key:value"`},
+		{input: `"quoted"`, wantExpr: `"""quoted"""`},
+		{input: "read*", wantExpr: `"read*"`},
+		{input: "***", wantExpr: `"***"`},
+		{input: "read + file", wantExpr: `"read" OR "+" OR "file"`},
 
 		// Problematic words trigger phrase search
-		{input: "name value", expected: `"name value"`},
-		{input: "search description fast", expected: `"search description fast"`},
-		{input: "read tool write", expected: `"read tool write"`},
-		{input: "schema definition", expected: `"schema definition"`},
+		{input: "name value", wantExpr: `"name value"`},
+		{input: "search description fast", wantExpr: `"search description fast"`},
+		{input: "read tool write", wantExpr: `"read tool write"`},
+		{input: "schema definition", wantExpr: `"schema definition"`},
 
 		// Non-problematic multi-word queries use OR
-		{input: "read write", expected: `"read" OR "write"`},
-		{input: "github slack", expected: `"github" OR "slack"`},
+		{input: "read write", wantExpr: `"read" OR "write"`},
+		{input: "github slack", wantExpr: `"github" OR "slack"`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			t.Parallel()
-			got := sanitizeFTS5Query(tt.input)
-			require.Equal(t, tt.expected, got)
+			gotExpr := sanitizeFTS5Query(tt.input)
+			require.Equal(t, tt.wantExpr, gotExpr)
 		})
 	}
 }

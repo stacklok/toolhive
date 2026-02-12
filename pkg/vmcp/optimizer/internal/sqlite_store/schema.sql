@@ -7,7 +7,10 @@ CREATE TABLE IF NOT EXISTS llm_capabilities (
     description TEXT NOT NULL DEFAULT ''
 );
 
--- FTS5 virtual table for full-text search with BM25 ranking
+-- FTS5 virtual table for full-text search with BM25 ranking.
+-- tokenize='porter' uses the Porter stemming algorithm so that morphological
+-- variants of a word (e.g. "running", "runs", "ran") match the root form "run".
+-- This improves recall for natural-language tool descriptions.
 CREATE VIRTUAL TABLE IF NOT EXISTS llm_capabilities_fts USING fts5(
     name,
     description,

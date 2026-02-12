@@ -173,9 +173,32 @@ tasks:
       - task: test-e2e-windows
         platforms: [windows]
 
+  test-integration-unixlike:
+    desc: Run integration tests on Linux and macOS (requires Docker)
+    platforms: [linux, darwin]
+    internal: true
+    cmds:
+      - which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      - go test -ldflags=-extldflags=-Wl,-w -v -json -race -tags integration ./... | gotestfmt -hide "all"
+
+  test-integration-windows:
+    desc: Run integration tests on Windows (requires Docker)
+    platforms: [windows]
+    internal: true
+    cmds:
+      - go test -v -race -tags integration ./...
+
+  test-integration:
+    desc: Run integration tests (requires Docker)
+    cmds:
+      - task: test-integration-unixlike
+        platforms: [linux, darwin]
+      - task: test-integration-windows
+        platforms: [windows]
+
   test-all:
-    desc: Run all tests (unit and e2e)
-    deps: [test, test-e2e]
+    desc: Run all tests (unit, integration, and e2e)
+    deps: [test, test-integration, test-e2e]
 
   build:
     desc: Build the binary

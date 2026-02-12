@@ -175,7 +175,7 @@ func startSentinel(ctx context.Context, networkName, config string) (testcontain
 			{
 				Reader:            strings.NewReader(config),
 				ContainerFilePath: "/data/sentinel.conf",
-				FileMode:          0o666,
+				FileMode:          0o664,
 			},
 		},
 		WaitingFor: wait.ForLog("+monitor master").WithStartupTimeout(30 * time.Second),
@@ -347,7 +347,10 @@ func withIntegrationStorage(t *testing.T, fn func(context.Context, *RedisStorage
 	storage := NewRedisStorageWithClient(client, prefix)
 	t.Cleanup(func() { _ = storage.Close() })
 
-	fn(context.Background(), storage)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	fn(ctx, storage)
 }
 
 func sanitizeTestName(name string) string {

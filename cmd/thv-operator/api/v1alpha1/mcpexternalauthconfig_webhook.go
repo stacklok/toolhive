@@ -21,7 +21,7 @@ func (r *MCPExternalAuthConfig) SetupWebhookWithManager(mgr ctrl.Manager) error 
 }
 
 //nolint:lll // kubebuilder webhook marker cannot be split
-// +kubebuilder:webhook:path=/validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=toolhive.stacklok.com,resources=mcpexternalauthconfigs,verbs=create;update,versions=v1alpha1,name=vmcpexternalauthconfig.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=create;update,versions=v1alpha1,name=vmcpexternalauthconfig.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomValidator = &MCPExternalAuthConfig{}
 

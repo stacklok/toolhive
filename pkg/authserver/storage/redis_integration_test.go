@@ -318,8 +318,8 @@ func TestMain(m *testing.M) {
 	cancel()
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not set up Redis Sentinel cluster: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Integration tests will be skipped; unit tests will still run.\n")
+		fmt.Fprintf(os.Stderr, "Failed to set up Redis Sentinel cluster: %v\n", err)
+		os.Exit(1)
 	}
 
 	code := m.Run()

@@ -105,7 +105,10 @@ func ConvertTelemetryConfig(
 // This includes:
 // - Stripping http:// or https:// prefixes from the endpoint (OTLP clients expect host:port format)
 // - Defaulting ServiceName to the provided default name if not specified
-// - Defaulting ServiceVersion to the build version if not specified
+//
+// Note: ServiceVersion is intentionally NOT defaulted here. It is resolved at
+// runtime in telemetry.NewProvider() to always reflect the running binary version,
+// avoiding stale versions persisted in configs. See #2296.
 //
 // This function is used by both the VirtualMCPServer converter (for spec.config.telemetry)
 // and indirectly by ConvertTelemetryConfig (for CRD-style configs).
@@ -125,11 +128,6 @@ func NormalizeTelemetryConfig(config *telemetry.Config, defaultServiceName strin
 	// Default service name if not specified
 	if normalized.ServiceName == "" {
 		normalized.ServiceName = defaultServiceName
-	}
-
-	// Default service version to build version if not specified
-	if normalized.ServiceVersion == "" {
-		normalized.ServiceVersion = telemetry.DefaultConfig().ServiceVersion
 	}
 
 	return &normalized

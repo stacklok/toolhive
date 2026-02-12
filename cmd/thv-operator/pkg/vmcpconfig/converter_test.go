@@ -1346,16 +1346,13 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 func TestConverter_TelemetryDefaults(t *testing.T) {
 	t.Parallel()
 
-	// Get the expected build version for tests
-	buildVersion := telemetry.DefaultConfig().ServiceVersion
-
 	tests := []struct {
 		name              string
 		inputTelemetry    *telemetry.Config
 		expectedTelemetry *telemetry.Config
 	}{
 		{
-			name: "defaults ServiceName to vmcp name and ServiceVersion to build version",
+			name: "defaults ServiceName to vmcp name, ServiceVersion left for runtime",
 			inputTelemetry: &telemetry.Config{
 				Endpoint:                    "localhost:4317",
 				EnablePrometheusMetricsPath: true,
@@ -1366,11 +1363,10 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 				Endpoint:                    "localhost:4317",
 				EnablePrometheusMetricsPath: true,
 				ServiceName:                 "my-vmcp-server",
-				ServiceVersion:              buildVersion,
 			},
 		},
 		{
-			name: "defaults ServiceVersion to build version when ServiceName is specified",
+			name: "ServiceVersion left for runtime when ServiceName is specified",
 			inputTelemetry: &telemetry.Config{
 				Endpoint:                    "localhost:4317",
 				EnablePrometheusMetricsPath: true,
@@ -1381,7 +1377,6 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 				Endpoint:                    "localhost:4317",
 				EnablePrometheusMetricsPath: true,
 				ServiceName:                 "custom-service",
-				ServiceVersion:              buildVersion,
 			},
 		},
 		{

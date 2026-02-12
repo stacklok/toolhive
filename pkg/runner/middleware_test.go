@@ -10,11 +10,33 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
+func createMinimalAuthServerConfig() *authserver.RunConfig {
+	return &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        "http://localhost:8080",
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "test-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://example.com/authorize",
+					TokenEndpoint:         "https://example.com/token",
+					ClientID:              "test-client-id",
+					RedirectURI:           "http://localhost:8080/oauth/callback",
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+}
 
 func TestAddHeaderForwardMiddleware(t *testing.T) {
 	t.Parallel()
@@ -170,12 +192,18 @@ func TestWithMiddlewareFromFlags_ExcludesHeaderForward(t *testing.T) {
 	assert.Equal(t, map[string]string{"X-Key": "val"}, cfg.HeaderForward.AddPlaintextHeaders)
 }
 
-func TestGetSupportedMiddlewareFactories_IncludesHeaderForward(t *testing.T) {
+func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	t.Parallel()
 
 	factories := GetSupportedMiddlewareFactories()
-	_, ok := factories[headerfwd.HeaderForwardMiddlewareName]
-	assert.True(t, ok, "factory map should contain %q", headerfwd.HeaderForwardMiddlewareName)
+	for _, key := range []string{
+		headerfwd.HeaderForwardMiddlewareName,
+		upstreamswap.MiddlewareType,
+		awssts.MiddlewareType,
+	} {
+		_, ok := factories[key]
+		assert.True(t, ok, "factory map should contain %q", key)
+	}
 }
 
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {
@@ -221,27 +249,6 @@ func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {
 
 func TestAddUpstreamSwapMiddleware(t *testing.T) {
 	t.Parallel()
-
-	// createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
-	createMinimalAuthServerConfig := func() *authserver.RunConfig {
-		return &authserver.RunConfig{
-			SchemaVersion: authserver.CurrentSchemaVersion,
-			Issuer:        "http://localhost:8080",
-			Upstreams: []authserver.UpstreamRunConfig{
-				{
-					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOAuth2,
-					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-						AuthorizationEndpoint: "https://example.com/authorize",
-						TokenEndpoint:         "https://example.com/token",
-						ClientID:              "test-client-id",
-						RedirectURI:           "http://localhost:8080/oauth/callback",
-					},
-				},
-			},
-			AllowedAudiences: []string{"https://mcp.example.com"},
-		}
-	}
 
 	tests := []struct {
 		name         string
@@ -322,27 +329,6 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 	t.Parallel()
 
-	// createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
-	createMinimalAuthServerConfig := func() *authserver.RunConfig {
-		return &authserver.RunConfig{
-			SchemaVersion: authserver.CurrentSchemaVersion,
-			Issuer:        "http://localhost:8080",
-			Upstreams: []authserver.UpstreamRunConfig{
-				{
-					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOAuth2,
-					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-						AuthorizationEndpoint: "https://example.com/authorize",
-						TokenEndpoint:         "https://example.com/token",
-						ClientID:              "test-client-id",
-						RedirectURI:           "http://localhost:8080/oauth/callback",
-					},
-				},
-			},
-			AllowedAudiences: []string{"https://mcp.example.com"},
-		}
-	}
-
 	tests := []struct {
 		name               string
 		config             *RunConfig
@@ -402,10 +388,133 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 	}
 }
 
-func TestGetSupportedMiddlewareFactories_IncludesUpstreamSwap(t *testing.T) {
+func TestAddAWSStsMiddleware(t *testing.T) {
 	t.Parallel()
 
-	factories := GetSupportedMiddlewareFactories()
-	_, ok := factories[upstreamswap.MiddlewareType]
-	assert.True(t, ok, "factory map should contain %q", upstreamswap.MiddlewareType)
+	tests := []struct {
+		name          string
+		config        *RunConfig
+		wantAppended  bool
+		wantErrSubstr string
+	}{
+		{
+			name:         "nil AWSStsConfig returns input unchanged",
+			config:       &RunConfig{AWSStsConfig: nil},
+			wantAppended: false,
+		},
+		{
+			name: "valid AWSStsConfig appends middleware with correct type and params",
+			config: &RunConfig{
+				AWSStsConfig: &awssts.Config{
+					Region:          "us-east-1",
+					FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+				},
+				RemoteURL: "https://aws-mcp.us-east-1.api.aws",
+			},
+			wantAppended: true,
+		},
+		{
+			name: "AWSStsConfig without RemoteURL returns error",
+			config: &RunConfig{
+				AWSStsConfig: &awssts.Config{
+					Region:          "us-east-1",
+					FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+				},
+			},
+			wantErrSubstr: "AWS STS middleware requires a remote URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			initial := []types.MiddlewareConfig{{Type: "existing"}}
+			got, err := addAWSStsMiddleware(initial, tt.config)
+
+			if tt.wantErrSubstr != "" {
+				require.ErrorContains(t, err, tt.wantErrSubstr)
+				return
+			}
+			require.NoError(t, err)
+
+			if !tt.wantAppended {
+				assert.Equal(t, initial, got, "middleware slice should be unchanged")
+				return
+			}
+
+			require.Len(t, got, len(initial)+1)
+			added := got[len(got)-1]
+			assert.Equal(t, awssts.MiddlewareType, added.Type)
+
+			// Verify serialized params contain the config and target URL.
+			var params awssts.MiddlewareParams
+			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+			require.NotNil(t, params.AWSStsConfig)
+			assert.Equal(t, tt.config.AWSStsConfig.Region, params.AWSStsConfig.Region)
+			assert.Equal(t, tt.config.RemoteURL, params.TargetURL)
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_AWSSts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		config        *RunConfig
+		wantAWSSts    bool
+		wantErrSubstr string
+	}{
+		{
+			name: "AWSStsConfig with RemoteURL includes awssts middleware",
+			config: &RunConfig{
+				AWSStsConfig: &awssts.Config{
+					Region:          "us-east-1",
+					FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+				},
+				RemoteURL: "https://aws-mcp.us-east-1.api.aws",
+			},
+			wantAWSSts: true,
+		},
+		{
+			name:       "nil AWSStsConfig omits awssts middleware",
+			config:     &RunConfig{AWSStsConfig: nil},
+			wantAWSSts: false,
+		},
+		{
+			name: "AWSStsConfig without RemoteURL returns error",
+			config: &RunConfig{
+				AWSStsConfig: &awssts.Config{
+					Region:          "us-east-1",
+					FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+				},
+			},
+			wantErrSubstr: "AWS STS middleware requires a remote URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+
+			if tt.wantErrSubstr != "" {
+				require.ErrorContains(t, err, tt.wantErrSubstr)
+				return
+			}
+			require.NoError(t, err)
+
+			found := false
+			for _, mw := range tt.config.MiddlewareConfigs {
+				if mw.Type == awssts.MiddlewareType {
+					found = true
+					break
+				}
+			}
+			assert.Equal(t, tt.wantAWSSts, found,
+				"awssts middleware presence mismatch")
+		})
+	}
 }

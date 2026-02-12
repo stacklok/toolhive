@@ -39,6 +39,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
+	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -65,6 +67,7 @@ type ServerBuilder struct {
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
 	skillManager     skills.SkillService
+	skillStoreCloser io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -141,7 +144,9 @@ func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder 
 	return b
 }
 
-// WithSkillManager sets the skill service manager
+// WithSkillManager sets the skill service manager.
+// The caller is responsible for closing any underlying resources
+// when providing an external skill service.
 func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
 	b.skillManager = manager
 	return b
@@ -224,6 +229,15 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to create group manager: %w", err)
 		}
+	}
+
+	if b.skillManager == nil {
+		store, storeErr := sqlite.NewDefaultSkillStore()
+		if storeErr != nil {
+			return fmt.Errorf("failed to create skill store: %w", storeErr)
+		}
+		b.skillStoreCloser = store
+		b.skillManager = skillsvc.New(store)
 	}
 
 	return nil
@@ -444,6 +458,7 @@ type Server struct {
 	address      string
 	isUnixSocket bool
 	addrType     string
+	storeCloser  io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -471,6 +486,7 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		address:      builder.address,
 		isUnixSocket: builder.isUnixSocket,
 		addrType:     addrType,
+		storeCloser:  builder.skillStoreCloser,
 	}, nil
 }
 
@@ -514,6 +530,11 @@ func (s *Server) shutdown() error {
 
 // cleanup performs cleanup operations
 func (s *Server) cleanup() {
+	if s.storeCloser != nil {
+		if err := s.storeCloser.Close(); err != nil {
+			logger.Warnf("failed to close skill store: %v", err)
+		}
+	}
 	if s.isUnixSocket {
 		cleanupUnixSocket(s.address)
 	}

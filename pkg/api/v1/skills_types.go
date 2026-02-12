@@ -8,8 +8,6 @@ import "github.com/stacklok/toolhive/pkg/skills"
 // skillListResponse represents the response for listing skills.
 //
 //	@Description	Response containing a list of installed skills
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type skillListResponse struct {
 	// List of installed skills
 	Skills []skills.InstalledSkill `json:"skills"`
@@ -18,8 +16,6 @@ type skillListResponse struct {
 // installSkillRequest represents the request to install a skill.
 //
 //	@Description	Request to install a skill
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type installSkillRequest struct {
 	// Name or OCI reference of the skill to install
 	Name string `json:"name"`
@@ -32,8 +28,6 @@ type installSkillRequest struct {
 // installSkillResponse represents the response after installing a skill.
 //
 //	@Description	Response after successfully installing a skill
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
 type installSkillResponse struct {
 	// The installed skill
 	Skill skills.InstalledSkill `json:"skill"`

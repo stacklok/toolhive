@@ -30,7 +30,7 @@ type Config struct {
 	// RoleClaim is the JWT claim to use for role mapping (default: "groups").
 	RoleClaim string `json:"role_claim,omitempty" yaml:"role_claim,omitempty"`
 
-	// SessionDuration is the duration in seconds for assumed role credentials.
+	// SessionDuration is the duration in seconds for assumed role credentials (default: 3600).
 	SessionDuration int32 `json:"session_duration,omitempty" yaml:"session_duration,omitempty"`
 
 	// SessionNameClaim is the JWT claim to use for role session name (default: "sub").

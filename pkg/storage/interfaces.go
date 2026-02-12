@@ -24,6 +24,8 @@ type SkillStore interface {
 	Update(ctx context.Context, skill skills.InstalledSkill) error
 	// Delete removes an installed skill by name, scope, and project root.
 	Delete(ctx context.Context, name string, scope skills.Scope, projectRoot string) error
+	// Close releases any resources held by the store.
+	Close() error
 }
 
 // ListFilter configures filtering for List operations.

@@ -39,3 +39,6 @@ func (*NoopSkillStore) Update(_ context.Context, _ skills.InstalledSkill) error 
 func (*NoopSkillStore) Delete(_ context.Context, _ string, _ skills.Scope, _ string) error {
 	return nil
 }
+
+// Close is a no-op that always succeeds.
+func (*NoopSkillStore) Close() error { return nil }

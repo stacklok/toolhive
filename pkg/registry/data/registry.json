@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-02-10T00:28:53Z",
+  "last_updated": "2026-02-12T00:23:04Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1797,17 +1797,20 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "read_file",
-        "read_multiple_files",
-        "write_file",
-        "edit_file",
         "create_directory",
-        "list_directory",
         "directory_tree",
-        "move_file",
-        "search_files",
+        "edit_file",
         "get_file_info",
-        "list_allowed_directories"
+        "list_allowed_directories",
+        "list_directory",
+        "list_directory_with_sizes",
+        "move_file",
+        "read_file",
+        "read_media_file",
+        "read_multiple_files",
+        "read_text_file",
+        "search_files",
+        "write_file"
       ],
       "metadata": {
         "stars": 77164,
@@ -1827,7 +1830,7 @@
         "node",
         "operations"
       ],
-      "image": "docker.io/mcp/filesystem:latest",
+      "image": "docker.io/mcp/filesystem:1.0.2",
       "permissions": {
         "network": {
           "outbound": {}
@@ -2338,10 +2341,16 @@
         "get_datasource_by_uid",
         "get_incident",
         "get_oncall_shift",
+        "get_panel_image",
+        "get_resource_description",
+        "get_resource_permissions",
+        "get_role_assignments",
+        "get_role_details",
         "get_sift_analysis",
         "get_sift_investigation",
         "list_alert_groups",
         "list_alert_rules",
+        "list_all_roles",
         "list_contact_points",
         "list_datasources",
         "list_incidents",
@@ -2358,10 +2367,13 @@
         "list_pyroscope_label_values",
         "list_pyroscope_profile_types",
         "list_sift_investigations",
+        "list_team_roles",
         "list_teams",
+        "list_user_roles",
         "list_users_by_org",
         "patch_annotation",
         "query_loki_logs",
+        "query_loki_patterns",
         "query_loki_stats",
         "query_prometheus",
         "search_dashboards",
@@ -2395,7 +2407,7 @@
         "investigations",
         "oncall"
       ],
-      "image": "docker.io/mcp/grafana:latest",
+      "image": "docker.io/grafana/mcp-grafana:0.9.0",
       "target_port": 8000,
       "permissions": {
         "network": {

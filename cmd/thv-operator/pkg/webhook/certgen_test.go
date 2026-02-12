@@ -237,41 +237,6 @@ func TestEnsureCertificates(t *testing.T) {
 	})
 }
 
-func TestEncodeCABundle(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name     string
-		input    []byte
-		expected []byte
-	}{
-		{
-			name:     "trims whitespace",
-			input:    []byte("  test data  \n"),
-			expected: []byte("test data"),
-		},
-		{
-			name:     "handles empty input",
-			input:    []byte(""),
-			expected: nil, // TrimSpace returns nil for empty input
-		},
-		{
-			name:     "preserves content",
-			input:    []byte("test data"),
-			expected: []byte("test data"),
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := EncodeCABundle(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
-
 func TestGenerateWithInvalidDirectory(t *testing.T) {
 	t.Parallel()
 

@@ -122,6 +122,7 @@ tasks:
   operator-deploy-local:
     desc: |
       Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster.
+      Webhooks are enabled by default (matching CI behavior).
       Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator.
       Registry API image is pulled from ghcr.io/stacklok/thv-registry-api:latest
       Example: task operator-deploy-local ENABLE_EXPERIMENTAL_FEATURES=true
@@ -148,6 +149,7 @@ tasks:
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
         --set operator.vmcpImage={{.VMCP_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
+        --set operator.webhook.enabled=true \
         --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
@@ -233,6 +235,56 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
 
+  wait-for-webhook:
+    desc: |
+      Wait for webhook server to be ready before running tests.
+      Uses retry loop to detect when webhook starts accepting connections (not connection refused).
+      This prevents "connection refused" errors when tests start before webhook is ready.
+    platforms: [linux, darwin]
+    cmds:
+      - |
+        echo "Waiting for webhook server to be ready..."
+        kubectl create namespace webhook-readiness-test --kubeconfig kconfig.yaml || true
+
+        MAX_ATTEMPTS=30
+        ATTEMPT=1
+        while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Testing webhook readiness..."
+
+          set +e
+          kubectl apply --request-timeout=5s -f - --kubeconfig kconfig.yaml 2>&1 | tee /tmp/webhook-test.log <<EOF
+        apiVersion: toolhive.stacklok.dev/v1alpha1
+        kind: VirtualMCPServer
+        metadata:
+          name: test-ready-$ATTEMPT
+          namespace: webhook-readiness-test
+        spec:
+          incomingAuth:
+            type: anonymous
+        EOF
+          EXIT_CODE=$?
+          set -e
+
+          # Check if webhook is responding (not connection refused or timeout)
+          if ! grep -q "connect: connection refused\|timeout" /tmp/webhook-test.log; then
+            echo "✓ Webhook is responding!"
+            break
+          fi
+
+          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+            echo "✗ Webhook failed to become ready after $MAX_ATTEMPTS attempts"
+            cat /tmp/webhook-test.log
+            exit 1
+          fi
+
+          echo "  Webhook not ready yet, retrying in 2 seconds..."
+          sleep 2
+          ATTEMPT=$((ATTEMPT + 1))
+        done
+
+        kubectl delete namespace webhook-readiness-test --kubeconfig kconfig.yaml || true
+        echo "✓ Webhook readiness check completed"
+
   thv-operator-e2e-test:
     desc: |
       Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
@@ -240,14 +292,16 @@ tasks:
         1. task kind-setup-e2e
         2. task operator-install-crds
         3. task operator-deploy-local
-        4. task thv-operator-e2e-test-run (can run multiple times)
-        5. task kind-destroy
+        4. task wait-for-webhook (waits for webhook to be ready)
+        5. task thv-operator-e2e-test-run (can run multiple times)
+        6. task kind-destroy
     platforms: [linux, darwin]
     cmds:
       - defer: task kind-destroy
       - task: kind-setup-e2e
       - task: operator-install-crds
       - task: operator-deploy-local
+      - task: wait-for-webhook
       - task: thv-operator-e2e-test-run
 
   thv-operator-e2e-test-run:

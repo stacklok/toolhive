@@ -24,14 +24,13 @@ func TestGetSetupConfigFromEnv(t *testing.T) {
 		t.Setenv("WEBHOOK_SERVICE_NAME", "")
 		t.Setenv("WEBHOOK_CONFIG_NAME", "")
 		t.Setenv("ENABLE_WEBHOOKS", "")
-		t.Setenv("ENABLE_VMCP", "")
 
 		cfg := GetSetupConfigFromEnv()
 
 		assert.Equal(t, "toolhive-operator-system", cfg.Namespace)
 		assert.Equal(t, "toolhive-operator-webhook-service", cfg.ServiceName)
 		assert.Equal(t, "toolhive-operator-validating-webhook-configuration", cfg.WebhookConfigName)
-		assert.True(t, cfg.Enabled)
+		assert.False(t, cfg.Enabled) // Defaults to false when ENABLE_WEBHOOKS is not set
 	})
 
 	t.Run("uses custom values from env vars", func(t *testing.T) {
@@ -40,7 +39,6 @@ func TestGetSetupConfigFromEnv(t *testing.T) {
 		t.Setenv("WEBHOOK_SERVICE_NAME", "custom-service")
 		t.Setenv("WEBHOOK_CONFIG_NAME", "custom-config")
 		t.Setenv("ENABLE_WEBHOOKS", "true")
-		t.Setenv("ENABLE_VMCP", "true")
 
 		cfg := GetSetupConfigFromEnv()
 
@@ -52,16 +50,6 @@ func TestGetSetupConfigFromEnv(t *testing.T) {
 
 	t.Run("disables webhooks when ENABLE_WEBHOOKS is false", func(t *testing.T) {
 		t.Setenv("ENABLE_WEBHOOKS", "false")
-		t.Setenv("ENABLE_VMCP", "true")
-
-		cfg := GetSetupConfigFromEnv()
-
-		assert.False(t, cfg.Enabled)
-	})
-
-	t.Run("disables webhooks when ENABLE_VMCP is false", func(t *testing.T) {
-		t.Setenv("ENABLE_WEBHOOKS", "true")
-		t.Setenv("ENABLE_VMCP", "false")
 
 		cfg := GetSetupConfigFromEnv()
 

@@ -8,8 +8,6 @@ on:
       - 'cmd/thv-operator/**'
       - 'pkg/**'
       - 'test/e2e/thv-operator/**'
-      - 'test/e2e/chainsaw/operator/**'
-      - 'deploy/charts/operator/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
 permissions:
@@ -126,7 +124,7 @@ jobs:
 
         # Wait for webhook pods to be ready
         echo "Waiting for webhook service to be ready..."
-        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=toolhive-operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
 
         # Verify webhook service exists and has endpoints
         echo "Verifying webhook service..."
@@ -141,31 +139,71 @@ jobs:
         echo "Checking operator logs for webhook initialization..."
         kubectl logs -n toolhive-system deployment/toolhive-operator --tail=20 --kubeconfig kconfig.yaml | grep -i webhook || true
 
-        # Give webhook server additional time to be fully ready
-        echo "Waiting for webhook server to be fully initialized..."
-        sleep 15
-
-        # Smoke test: Try to create an invalid resource to verify webhook is rejecting requests
-        echo "Smoke test: Verifying webhook is functional..."
+        # Wait for webhook server to be fully ready by testing if it responds
+        echo "Waiting for webhook server to be fully ready..."
         kubectl create namespace webhook-test --kubeconfig kconfig.yaml
-        set +e
-        kubectl apply -f - --kubeconfig kconfig.yaml 2>&1 | tee /tmp/webhook-test.log <<EOF
+
+        # Retry loop: attempt to create a resource and wait for webhook to respond (not connection refused)
+        MAX_ATTEMPTS=30
+        ATTEMPT=1
+        while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Testing webhook readiness..."
+
+          set +e
+          kubectl apply -f - --kubeconfig kconfig.yaml 2>&1 | tee /tmp/webhook-test.log <<EOF
         apiVersion: toolhive.stacklok.dev/v1alpha1
         kind: VirtualMCPServer
         metadata:
-          name: test-invalid
+          name: test-invalid-$ATTEMPT
           namespace: webhook-test
         spec:
-          port: 8080
+          incomingAuth:
+            type: anonymous
+        EOF
+          EXIT_CODE=$?
+          set -e
+
+          # Check if we got a webhook response (not connection refused)
+          if ! grep -q "connect: connection refused" /tmp/webhook-test.log; then
+            echo "✓ Webhook is responding!"
+            break
+          fi
+
+          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+            echo "✗ Webhook failed to become ready after $MAX_ATTEMPTS attempts"
+            cat /tmp/webhook-test.log
+            exit 1
+          fi
+
+          echo "Webhook not ready yet (connection refused), waiting 2 seconds..."
+          sleep 2
+          ATTEMPT=$((ATTEMPT + 1))
+        done
+
+        # Verify webhook is actually validating (rejecting invalid resources)
+        # This test passes CRD schema validation but fails webhook validation
+        # by providing required CRD fields (incomingAuth) but omitting groupRef
+        # which is validated by the webhook, not the CRD schema
+        echo "Verifying webhook validation is working..."
+        set +e
+        kubectl apply -f - --kubeconfig kconfig.yaml 2>&1 | tee /tmp/webhook-validation-test.log <<EOF
+        apiVersion: toolhive.stacklok.dev/v1alpha1
+        kind: VirtualMCPServer
+        metadata:
+          name: test-missing-groupref
+          namespace: webhook-test
+        spec:
+          incomingAuth:
+            type: anonymous
+          config: {}
         EOF
         set -e
 
-        if grep -q "denied the request\|groupRef is required" /tmp/webhook-test.log; then
-          echo "SUCCESS: Webhook is functional and rejecting invalid resources"
+        if grep -q "denied the request\|groupRef is required" /tmp/webhook-validation-test.log; then
+          echo "✓ Webhook validation is working correctly"
         else
-          echo "WARNING: Webhook may not be working correctly. Test output:"
-          cat /tmp/webhook-test.log
-          echo "Continuing with tests anyway..."
+          echo "⚠ WARNING: Webhook may not be validating correctly. Test output:"
+          cat /tmp/webhook-validation-test.log
         fi
 
         kubectl delete namespace webhook-test --kubeconfig kconfig.yaml || true

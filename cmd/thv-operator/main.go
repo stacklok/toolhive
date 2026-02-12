@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"            // Import for admission
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
@@ -46,6 +47,7 @@ const (
 	featureServer   = "ENABLE_SERVER"
 	featureRegistry = "ENABLE_REGISTRY"
 	featureVMCP     = "ENABLE_VMCP"
+	featureWebhooks = "ENABLE_WEBHOOKS"
 )
 
 // controllerDependencies maps each controller group to its required dependencies
@@ -76,10 +78,12 @@ func main() {
 	// Set the controller-runtime logger to use our structured logger
 	ctrl.SetLogger(logger.NewLogr())
 
+	// Check if webhooks are enabled before creating webhook server
+	webhookConfig := webhookpkg.GetSetupConfigFromEnv()
+
 	options := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "toolhive-operator-leader-election",
@@ -89,23 +93,41 @@ func main() {
 		},
 	}
 
+	// Only create webhook server if webhooks are enabled
+	if webhookConfig.Enabled {
+		options.WebhookServer = webhook.NewServer(webhook.Options{Port: 9443})
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	// Setup webhook certificates and inject CA bundle before starting manager
-	// This must be done before setting up webhooks with the manager
-	webhookConfig := webhookpkg.GetSetupConfigFromEnv()
-	if err := webhookpkg.Setup(context.Background(), webhookConfig, mgr.GetClient()); err != nil {
-		setupLog.Error(err, "unable to setup webhook certificates and inject CA bundle")
-		os.Exit(1)
-	}
-
 	if err := setupControllersAndWebhooks(mgr); err != nil {
 		setupLog.Error(err, "unable to setup controllers and webhooks")
 		os.Exit(1)
+	}
+
+	// Set up webhook certificates if webhooks are enabled
+	// Pass the manager's client to enable immediate CA bundle injection when
+	// ValidatingWebhookConfiguration already exists (e.g., during Helm upgrade).
+	// The CABundleInjectorRunnable below handles the race where the configuration
+	// is created after the pod starts.
+	if err := webhookpkg.Setup(context.Background(), webhookConfig, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to setup webhook certificates")
+		os.Exit(1)
+	}
+
+	// Add CA bundle injector runnable to retry CA bundle injection after ValidatingWebhookConfiguration is created
+	if webhookConfig.Enabled {
+		if err := mgr.Add(&webhookpkg.CABundleInjectorRunnable{
+			Config: webhookConfig,
+			Mgr:    mgr,
+		}); err != nil {
+			setupLog.Error(err, "unable to add CA bundle injector runnable")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -320,19 +342,53 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}
 
-	// Set up VirtualMCPServer webhook
-	if err := (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPServer: %w", err)
-	}
+	// Check if VMCP webhook handlers should be registered
+	// Requires both ENABLE_WEBHOOKS (webhook infrastructure) and ENABLE_VMCP (VMCP feature)
+	webhookConfig := webhookpkg.GetSetupConfigFromEnv()
+	enableVMCP := isFeatureEnabled(featureVMCP, true)
+	enableWebhooks := webhookConfig.Enabled && enableVMCP
 
-	// Set up VirtualMCPCompositeToolDefinition webhook
-	if err := (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPCompositeToolDefinition: %w", err)
-	}
+	// Only register webhooks if they are enabled
+	// In controller-runtime v0.22.4, we need to manually register webhooks with the webhook server
+	// using admission.WithCustomValidator because the builder pattern doesn't work correctly
+	if enableWebhooks {
+		setupLog.Info("Setting up webhooks for Virtual MCP resources")
 
-	// Set up MCPExternalAuthConfig webhook
-	if err := (&mcpv1alpha1.MCPExternalAuthConfig{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook MCPExternalAuthConfig: %w", err)
+		webhookServer := mgr.GetWebhookServer()
+
+		// Register VirtualMCPServer validation webhook
+		setupLog.Info("Registering VirtualMCPServer webhook")
+		webhookServer.Register("/validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver",
+			&webhook.Admission{Handler: admission.WithCustomValidator(
+				mgr.GetScheme(),
+				&mcpv1alpha1.VirtualMCPServer{},
+				&mcpv1alpha1.VirtualMCPServer{},
+			)})
+		setupLog.Info("Registered VirtualMCPServer webhook")
+
+		// Register VirtualMCPCompositeToolDefinition validation webhook
+		setupLog.Info("Registering VirtualMCPCompositeToolDefinition webhook")
+		webhookServer.Register("/validate-toolhive-stacklok-dev-v1alpha1-virtualmcpcompositetooldefinition",
+			&webhook.Admission{Handler: admission.WithCustomValidator(
+				mgr.GetScheme(),
+				&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+				&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+			)})
+		setupLog.Info("Registered VirtualMCPCompositeToolDefinition webhook")
+
+		// Register MCPExternalAuthConfig validation webhook
+		setupLog.Info("Registering MCPExternalAuthConfig webhook")
+		webhookServer.Register("/validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig",
+			&webhook.Admission{Handler: admission.WithCustomValidator(
+				mgr.GetScheme(),
+				&mcpv1alpha1.MCPExternalAuthConfig{},
+				&mcpv1alpha1.MCPExternalAuthConfig{},
+			)})
+		setupLog.Info("Registered MCPExternalAuthConfig webhook")
+
+		setupLog.Info("All webhooks manually registered with webhook server")
+	} else {
+		setupLog.Info("Webhooks are disabled, skipping webhook registration")
 	}
 
 	return nil

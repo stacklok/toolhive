@@ -5,7 +5,6 @@
 package webhook
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -241,14 +240,4 @@ func (g *CertGenerator) EnsureCertificates() ([]byte, error) {
 
 	certLogger.Info("Webhook certificates do not exist, generating new certificates")
 	return g.Generate()
-}
-
-// EncodeCABundle base64 encodes the CA bundle for use in Kubernetes resources
-func EncodeCABundle(caBundle []byte) []byte {
-	// For Kubernetes ValidatingWebhookConfiguration, the caBundle field expects
-	// base64-encoded PEM certificate data. However, when we read from Go code,
-	// we already have PEM-encoded data. We need to ensure proper formatting.
-
-	// Trim any extra whitespace and ensure consistent line endings
-	return bytes.TrimSpace(caBundle)
 }

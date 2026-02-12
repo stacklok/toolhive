@@ -147,16 +147,12 @@ func GetSetupConfigFromEnv() SetupConfig {
 		webhookConfigName = "toolhive-operator-validating-webhook-configuration"
 	}
 
-	// Check if webhooks are enabled (default to true for backward compatibility)
-	enabled := true
+	// Check if webhooks are enabled (default to false to match Helm chart default)
+	// When webhooks are disabled, the webhook volume is not mounted and the read-only
+	// filesystem prevents certificate generation, so defaulting to true would cause crashes.
+	enabled := false
 	if envVal := os.Getenv("ENABLE_WEBHOOKS"); envVal != "" {
 		enabled = envVal == "true" || envVal == "1"
-	}
-
-	// Also check if VMCP is enabled (webhooks are part of VMCP feature)
-	if envVal := os.Getenv("ENABLE_VMCP"); envVal != "" {
-		vmcpEnabled := envVal == "true" || envVal == "1"
-		enabled = enabled && vmcpEnabled
 	}
 
 	return SetupConfig{

@@ -12,7 +12,7 @@ webhooks:
     service:
       name: {{ include "operator.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
-      path: /validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig
+      path: /validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig
     # CA bundle will be injected by the operator at startup
     caBundle: ""
   failurePolicy: {{ .Values.operator.webhook.failurePolicy }}

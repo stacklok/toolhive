@@ -26,7 +26,7 @@ These tests verify that the admission webhooks work correctly in a real Kubernet
 
 ### 2. MCPExternalAuthConfig Webhook
 
-**Endpoint**: `/validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig`
+**Endpoint**: `/validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig`
 
 **Tests**:
 - ✅ Rejects mismatched auth type and configuration

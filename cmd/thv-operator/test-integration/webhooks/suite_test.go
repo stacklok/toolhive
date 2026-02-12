@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -127,8 +128,41 @@ var _ = BeforeSuite(func() {
 		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
 	}()
 
-	// Wait for webhook server to be ready
-	time.Sleep(1 * time.Second)
+	// Wait for webhook server to be ready by polling with Eventually
+	// Try creating a test resource - if webhook responds (either accepts or rejects), it's ready
+	By("waiting for webhook server to become ready")
+	Eventually(func() error {
+		// Create a test namespace for webhook readiness check
+		testNs := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "webhook-readiness-test",
+			},
+		}
+		_ = k8sClient.Create(ctx, testNs)
+
+		// Try creating a VirtualMCPServer - we don't care if it's accepted or rejected,
+		// we just need the webhook to respond (not timeout/connection refused)
+		testVMCP := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "webhook-readiness-probe",
+				Namespace: "webhook-readiness-test",
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					Type: "anonymous",
+				},
+			},
+		}
+		return k8sClient.Create(ctx, testVMCP)
+	}, 10*time.Second, 100*time.Millisecond).Should(Or(Succeed(), MatchError(ContainSubstring("denied the request"))))
+
+	// Clean up webhook readiness test namespace
+	testNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "webhook-readiness-test",
+		},
+	}
+	_ = k8sClient.Delete(ctx, testNs)
 })
 
 var _ = AfterSuite(func() {

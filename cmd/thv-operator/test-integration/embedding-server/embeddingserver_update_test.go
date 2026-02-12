@@ -467,6 +467,9 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				Eventually(func(g Gomega) {
 					g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(embeddingServer), &appsv1.StatefulSet{})).To(Succeed())
 				}, timeout, interval).Should(Succeed())
+				Eventually(func(g Gomega) {
+					g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(embeddingServer), &corev1.Service{})).To(Succeed())
+				}, timeout, interval).Should(Succeed())
 			})
 
 			AfterAll(func() {

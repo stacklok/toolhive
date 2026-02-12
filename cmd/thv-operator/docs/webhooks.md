@@ -110,7 +110,7 @@ Validates composite tool workflow configurations.
 
 ### MCPExternalAuthConfig Validation
 
-**Path**: `/validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig`
+**Path**: `/validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig`
 
 Validates external OAuth/OIDC authentication configuration.
 

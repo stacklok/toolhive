@@ -665,7 +665,7 @@
           },
           "editorMode": "code",
           "expr": "toolhive_mcp_active_connections{job=\"toolhive-system/mcp-fetch-server\"}",
-          "legendFormat": "{{mcp_method}} - {{status}} ({{transport}})",
+          "legendFormat": "{{server}} ({{transport}})",
           "range": true,
           "refId": "A"
         }

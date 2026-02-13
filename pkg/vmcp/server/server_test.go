@@ -438,6 +438,56 @@ func startTestServer(t *testing.T) string {
 	return fmt.Sprintf("http://%s", srv.Address())
 }
 
+func TestServerStopClosesOptimizerStore(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+
+	srv, err := server.New(
+		context.Background(),
+		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerEnabled: true},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Start(ctx)
+	}()
+
+	select {
+	case <-srv.Ready():
+	case err := <-done:
+		require.NoError(t, err, "server failed to start")
+	case <-time.After(3 * time.Second):
+		require.FailNow(t, "server did not become ready")
+	}
+
+	// Cancel triggers Stop which must run shutdownFuncs (including store.Close)
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		require.FailNow(t, "server start/stop did not complete")
+	}
+}
+
 func TestAcceptHeaderValidation(t *testing.T) {
 	t.Parallel()
 

@@ -14,9 +14,10 @@ package optimizer
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.
@@ -54,20 +55,9 @@ type FindToolOutput struct {
 }
 
 // ToolMatch represents a tool that matched the search criteria.
-type ToolMatch struct {
-	// Name is the unique identifier of the tool.
-	Name string `json:"name"`
-
-	// Description is the human-readable description of the tool.
-	Description string `json:"description"`
-
-	// InputSchema is the JSON schema for the tool's input parameters.
-	// Uses json.RawMessage to preserve the original schema format.
-	InputSchema json.RawMessage `json:"input_schema"`
-
-	// Score indicates how well this tool matches the search criteria (0.0-1.0).
-	Score float64 `json:"score"`
-}
+// It is defined in the internal/types package and aliased here so that
+// external consumers continue to use optimizer.ToolMatch.
+type ToolMatch = types.ToolMatch
 
 // TokenMetrics provides information about token usage optimization.
 type TokenMetrics struct {

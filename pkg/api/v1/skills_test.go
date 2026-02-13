@@ -93,7 +93,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:   "install skill success",
 			method: "POST",
-			path:   "/install",
+			path:   "/",
 			body:   `{"name":"my-skill"}`,
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: "my-skill"}).
@@ -112,7 +112,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:           "install skill empty name",
 			method:         "POST",
-			path:           "/install",
+			path:           "/",
 			body:           `{"name":""}`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
 			expectedStatus: http.StatusBadRequest,
@@ -121,7 +121,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:           "install skill missing name field",
 			method:         "POST",
-			path:           "/install",
+			path:           "/",
 			body:           `{}`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
 			expectedStatus: http.StatusBadRequest,
@@ -130,7 +130,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:           "install skill malformed json",
 			method:         "POST",
-			path:           "/install",
+			path:           "/",
 			body:           `{invalid`,
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
 			expectedStatus: http.StatusBadRequest,
@@ -139,7 +139,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:   "install skill already exists",
 			method: "POST",
-			path:   "/install",
+			path:   "/",
 			body:   `{"name":"my-skill"}`,
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
@@ -151,7 +151,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:   "install skill invalid name from service",
 			method: "POST",
-			path:   "/install",
+			path:   "/",
 			body:   `{"name":"A"}`,
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
@@ -163,9 +163,8 @@ func TestSkillsRouter(t *testing.T) {
 		// uninstallSkill
 		{
 			name:   "uninstall skill success",
-			method: "POST",
-			path:   "/uninstall",
-			body:   `{"name":"my-skill"}`,
+			method: "DELETE",
+			path:   "/my-skill",
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{Name: "my-skill"}).
 					Return(nil)
@@ -173,28 +172,25 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
-			name:           "uninstall skill empty name",
-			method:         "POST",
-			path:           "/uninstall",
-			body:           `{"name":""}`,
+			name:           "uninstall skill invalid name",
+			method:         "DELETE",
+			path:           "/A",
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "name is required",
+			expectedBody:   "invalid skill name",
 		},
 		{
-			name:           "uninstall skill malformed json",
-			method:         "POST",
-			path:           "/uninstall",
-			body:           `not-json`,
+			name:           "uninstall skill invalid scope",
+			method:         "DELETE",
+			path:           "/my-skill?scope=invalid",
 			setupMock:      func(_ *skillsmocks.MockSkillService) {},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "invalid request body",
+			expectedBody:   "invalid scope",
 		},
 		{
 			name:   "uninstall skill not found",
-			method: "POST",
-			path:   "/uninstall",
-			body:   `{"name":"my-skill"}`,
+			method: "DELETE",
+			path:   "/my-skill",
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Uninstall(gomock.Any(), gomock.Any()).
 					Return(storage.ErrNotFound)
@@ -257,7 +253,7 @@ func TestSkillsRouter(t *testing.T) {
 		{
 			name:   "install skill with version and scope",
 			method: "POST",
-			path:   "/install",
+			path:   "/",
 			body:   `{"name":"my-skill","version":"1.2.0","scope":"project"}`,
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
@@ -278,9 +274,8 @@ func TestSkillsRouter(t *testing.T) {
 		// uninstall with scope
 		{
 			name:   "uninstall skill with scope",
-			method: "POST",
-			path:   "/uninstall",
-			body:   `{"name":"my-skill","scope":"project"}`,
+			method: "DELETE",
+			path:   "/my-skill?scope=project",
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
 					Name:  "my-skill",

@@ -4026,7 +4026,7 @@
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4034,7 +4034,7 @@
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "List all installed skills",
@@ -4103,7 +4103,7 @@
                         },
                         "description": "Conflict"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4111,7 +4111,7 @@
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Install a skill",
@@ -4330,7 +4330,7 @@
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4338,7 +4338,7 @@
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Uninstall a skill",
@@ -4402,7 +4402,7 @@
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4410,7 +4410,7 @@
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Get skill details",

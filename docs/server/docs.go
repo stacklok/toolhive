@@ -227,6 +227,9 @@ const docTemplate = `{
                     "signing_key_config": {
                         "$ref": "#/components/schemas/authserver.SigningKeyRunConfig"
                     },
+                    "storage": {
+                        "$ref": "#/components/schemas/storage.RunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -1676,6 +1679,87 @@ const docTemplate = `{
                     },
                     "warnings": {
                         "description": "Warnings is a list of non-blocking validation warnings, if any.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "passwordEnvVar": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "usernameEnvVar": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "aclUserConfig": {
+                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    },
+                    "authType": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "dialTimeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "keyPrefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "readTimeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinelConfig": {
+                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
+                    },
+                    "writeTimeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redisConfig": {
+                        "$ref": "#/components/schemas/storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "masterName": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinelAddrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
                         "items": {
                             "type": "string"
                         },

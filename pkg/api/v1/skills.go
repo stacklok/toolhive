@@ -27,8 +27,8 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/", apierrors.ErrorHandler(routes.listSkills))
-	r.Post("/install", apierrors.ErrorHandler(routes.installSkill))
-	r.Post("/uninstall", apierrors.ErrorHandler(routes.uninstallSkill))
+	r.Post("/", apierrors.ErrorHandler(routes.installSkill))
+	r.Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
 	r.Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
 	r.Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
 	r.Post("/build", apierrors.ErrorHandler(routes.buildSkill))
@@ -43,8 +43,9 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 //	@Description	Get a list of all installed skills
 //	@Tags			skills
 //	@Produce		json
-//	@Success		200	{object}	skillListResponse
-//	@Failure		501	{string}	string	"Not Implemented"
+//	@Param			scope	query		string	false	"Filter by scope (user or project)"	Enums(user, project)
+//	@Success		200		{object}	skillListResponse
+//	@Failure		501		{string}	string	"Not Implemented"
 //	@Router			/api/v1beta/skills [get]
 func (*SkillsRoutes) listSkills(_ http.ResponseWriter, _ *http.Request) error {
 	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
@@ -59,8 +60,11 @@ func (*SkillsRoutes) listSkills(_ http.ResponseWriter, _ *http.Request) error {
 //	@Produce		json
 //	@Param			request	body		installSkillRequest	true	"Install request"
 //	@Success		201		{object}	installSkillResponse
-//	@Failure		501		{string}	string	"Not Implemented"
-//	@Router			/api/v1beta/skills/install [post]
+//	@Header			201		{string}	Location	"URI of the installed skill resource"
+//	@Failure		400		{string}	string		"Bad Request"
+//	@Failure		409		{string}	string		"Conflict"
+//	@Failure		501		{string}	string		"Not Implemented"
+//	@Router			/api/v1beta/skills [post]
 func (*SkillsRoutes) installSkill(_ http.ResponseWriter, _ *http.Request) error {
 	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
 }
@@ -70,11 +74,13 @@ func (*SkillsRoutes) installSkill(_ http.ResponseWriter, _ *http.Request) error 
 //	@Summary		Uninstall a skill
 //	@Description	Remove an installed skill
 //	@Tags			skills
-//	@Accept			json
-//	@Param			request	body	uninstallSkillRequest	true	"Uninstall request"
+//	@Param			name	path		string	true	"Skill name"
+//	@Param			scope	query		string	false	"Scope to uninstall from (user or project)"	Enums(user, project)
 //	@Success		204		{string}	string	"No Content"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
 //	@Failure		501		{string}	string	"Not Implemented"
-//	@Router			/api/v1beta/skills/uninstall [post]
+//	@Router			/api/v1beta/skills/{name} [delete]
 func (*SkillsRoutes) uninstallSkill(_ http.ResponseWriter, _ *http.Request) error {
 	return httperr.WithCode(fmt.Errorf("not implemented"), http.StatusNotImplemented)
 }
@@ -86,7 +92,10 @@ func (*SkillsRoutes) uninstallSkill(_ http.ResponseWriter, _ *http.Request) erro
 //	@Tags			skills
 //	@Produce		json
 //	@Param			name	path		string	true	"Skill name"
+//	@Param			scope	query		string	false	"Filter by scope (user or project)"	Enums(user, project)
 //	@Success		200		{object}	skills.SkillInfo
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
 //	@Failure		501		{string}	string	"Not Implemented"
 //	@Router			/api/v1beta/skills/{name} [get]
 func (*SkillsRoutes) getSkillInfo(_ http.ResponseWriter, _ *http.Request) error {

@@ -22,6 +22,17 @@ const (
 	ScopeProject Scope = "project"
 )
 
+// ValidateScope checks that a scope value is valid. An empty scope is accepted
+// (meaning "unscoped" / "all"). Otherwise only "user" and "project" are allowed.
+func ValidateScope(s Scope) error {
+	switch s {
+	case "", ScopeUser, ScopeProject:
+		return nil
+	default:
+		return fmt.Errorf("invalid scope %q: must be empty, %q, or %q", s, ScopeUser, ScopeProject)
+	}
+}
+
 // InstallStatus represents the current status of a skill installation.
 type InstallStatus string
 

@@ -1604,7 +1604,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "skills.Scope": {
-                "description": "Scope from which to uninstall",
+                "description": "Scope for the installation",
                 "enum": [
                     "user",
                     "project"
@@ -2589,19 +2589,6 @@ const docTemplate = `{
                     "name": {
                         "description": "Name of the tool",
                         "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "v1.uninstallSkillRequest": {
-                "description": "Request to uninstall a skill",
-                "properties": {
-                    "name": {
-                        "description": "Name of the skill to uninstall",
-                        "type": "string"
-                    },
-                    "scope": {
-                        "$ref": "#/components/schemas/skills.Scope"
                     }
                 },
                 "type": "object"
@@ -4021,6 +4008,20 @@ const docTemplate = `{
         "/api/v1beta/skills": {
             "get": {
                 "description": "Get a list of all installed skills",
+                "parameters": [
+                    {
+                        "description": "Filter by scope (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
+                            "type": "string"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "content": {
@@ -4044,6 +4045,83 @@ const docTemplate = `{
                     }
                 },
                 "summary": "List all installed skills",
+                "tags": [
+                    "skills"
+                ]
+            },
+            "post": {
+                "description": "Install a skill from a remote source",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/v1.installSkillRequest",
+                                        "summary": "request",
+                                        "description": "Install request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Install request",
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/v1.installSkillResponse"
+                                }
+                            }
+                        },
+                        "description": "Created",
+                        "headers": {
+                            "Location": {
+                                "description": "URI of the installed skill resource",
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Install a skill",
                 "tags": [
                     "skills"
                 ]
@@ -4100,57 +4178,6 @@ const docTemplate = `{
                 ]
             }
         },
-        "/api/v1beta/skills/install": {
-            "post": {
-                "description": "Install a skill from a remote source",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "oneOf": [
-                                    {
-                                        "type": "object"
-                                    },
-                                    {
-                                        "$ref": "#/components/schemas/v1.installSkillRequest",
-                                        "summary": "request",
-                                        "description": "Install request"
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                    "description": "Install request",
-                    "required": true
-                },
-                "responses": {
-                    "201": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/v1.installSkillResponse"
-                                }
-                            }
-                        },
-                        "description": "Created"
-                    },
-                    "501": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "description": "Not Implemented"
-                    }
-                },
-                "summary": "Install a skill",
-                "tags": [
-                    "skills"
-                ]
-            }
-        },
         "/api/v1beta/skills/push": {
             "post": {
                 "description": "Push a built skill artifact to a remote registry",
@@ -4197,57 +4224,6 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Push a skill",
-                "tags": [
-                    "skills"
-                ]
-            }
-        },
-        "/api/v1beta/skills/uninstall": {
-            "post": {
-                "description": "Remove an installed skill",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "oneOf": [
-                                    {
-                                        "type": "object"
-                                    },
-                                    {
-                                        "$ref": "#/components/schemas/v1.uninstallSkillRequest",
-                                        "summary": "request",
-                                        "description": "Uninstall request"
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                    "description": "Uninstall request",
-                    "required": true
-                },
-                "responses": {
-                    "204": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "description": "No Content"
-                    },
-                    "501": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "description": "Not Implemented"
-                    }
-                },
-                "summary": "Uninstall a skill",
                 "tags": [
                     "skills"
                 ]
@@ -4305,6 +4281,78 @@ const docTemplate = `{
             }
         },
         "/api/v1beta/skills/{name}": {
+            "delete": {
+                "description": "Remove an installed skill",
+                "parameters": [
+                    {
+                        "description": "Skill name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Scope to uninstall from (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Uninstall a skill",
+                "tags": [
+                    "skills"
+                ]
+            },
             "get": {
                 "description": "Get detailed information about a specific skill",
                 "parameters": [
@@ -4314,6 +4362,18 @@ const docTemplate = `{
                         "name": "name",
                         "required": true,
                         "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by scope (user or project)",
+                        "in": "query",
+                        "name": "scope",
+                        "schema": {
+                            "enum": [
+                                "user",
+                                "project"
+                            ],
                             "type": "string"
                         }
                     }
@@ -4328,6 +4388,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
                     },
                     "501": {
                         "content": {

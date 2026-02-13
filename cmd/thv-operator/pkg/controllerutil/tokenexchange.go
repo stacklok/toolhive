@@ -13,6 +13,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -135,6 +136,8 @@ func AddExternalAuthConfigOptions(
 		return nil
 	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
 		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, externalAuthConfigRef, oidcConfig, options)
+	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+		return addAWSStsConfig(externalAuthConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}
@@ -313,4 +316,54 @@ func GenerateBearerTokenEnvVar(
 	})
 
 	return envVars, nil
+}
+
+// addAWSStsConfig adds AWS STS configuration to runner options
+// This enables OIDC token exchange for AWS credentials using AssumeRoleWithWebIdentity
+func addAWSStsConfig(
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	awsStsSpec := externalAuthConfig.Spec.AWSSts
+	if awsStsSpec == nil {
+		return fmt.Errorf("awsSts configuration is nil for type awsSts")
+	}
+
+	// Convert role mappings from CRD to pkg type
+	// Priority nil semantics are preserved: nil in CRD → nil in pkg → lowest priority (math.MaxInt)
+	var roleMappings []awssts.RoleMapping
+	for _, rm := range awsStsSpec.RoleMappings {
+		var priority *int
+		if rm.Priority != nil {
+			p := int(*rm.Priority)
+			priority = &p
+		}
+		roleMappings = append(roleMappings, awssts.RoleMapping{
+			RoleArn:  rm.RoleArn,
+			Claim:    rm.Claim,
+			Matcher:  rm.Matcher,
+			Priority: priority,
+		})
+	}
+
+	// Build AWS STS configuration
+	awsStsConfig := &awssts.Config{
+		Region:           awsStsSpec.Region,
+		Service:          awsStsSpec.Service,
+		FallbackRoleArn:  awsStsSpec.FallbackRoleArn,
+		RoleMappings:     roleMappings,
+		RoleClaim:        awsStsSpec.RoleClaim,
+		SessionNameClaim: awsStsSpec.SessionNameClaim,
+	}
+
+	// Set session duration if specified
+	if awsStsSpec.SessionDuration != nil {
+		awsStsConfig.SessionDuration = *awsStsSpec.SessionDuration
+	}
+
+	// Use WithAWSStsConfig to add configuration
+	// The middleware will be automatically created by PopulateMiddlewareConfigs() in the correct order
+	*options = append(*options, runner.WithAWSStsConfig(awsStsConfig))
+
+	return nil
 }

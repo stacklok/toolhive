@@ -192,7 +192,8 @@ func createAWSStsMiddlewareFunc(
 				return
 			}
 			if err := ValidateSessionName(sessionName); err != nil {
-				logger.Warnf("Invalid session name %q: %v", sessionName, err)
+				logger.Warnf("Invalid session name from claim %q: %v", sessionNameClaim, err)
+				logger.Debugf("Invalid session name value: %q", sessionName)
 				http.Error(w, "Invalid session name", http.StatusUnauthorized)
 				return
 			}

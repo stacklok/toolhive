@@ -10,9 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/recovery"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -517,4 +519,55 @@ func TestPopulateMiddlewareConfigs_AWSSts(t *testing.T) {
 				"awssts middleware presence mismatch")
 		})
 	}
+}
+
+// TestPopulateMiddlewareConfigs_AWSStsOrdering verifies that when AWS STS
+// middleware is present it appears after authz/audit and before header-forward
+// and recovery in the middleware chain. SigV4 signing must happen late in the
+// chain so that earlier middleware (authz, audit) can reject requests before
+// credentials are exchanged, and later middleware (header-forward) does not
+// mutate headers after signing.
+func TestPopulateMiddlewareConfigs_AWSStsOrdering(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{
+		AWSStsConfig: &awssts.Config{
+			Region:          "us-east-1",
+			FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+		},
+		RemoteURL: "https://aws-mcp.us-east-1.api.aws",
+		HeaderForward: &HeaderForwardConfig{
+			AddPlaintextHeaders: map[string]string{"X-Key": "val"},
+		},
+	}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	// Build a type→index map for easy position comparison.
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	awsStsIdx, ok := typeIndex[awssts.MiddlewareType]
+	require.True(t, ok, "awssts middleware should be present")
+
+	// AWS STS must come after auth (innermost auth check).
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware should be present")
+	assert.Greater(t, awsStsIdx, authIdx,
+		"awssts must appear after auth middleware")
+
+	// AWS STS must come before header-forward so signing isn't invalidated.
+	hfIdx, ok := typeIndex[headerfwd.HeaderForwardMiddlewareName]
+	require.True(t, ok, "header-forward middleware should be present")
+	assert.Less(t, awsStsIdx, hfIdx,
+		"awssts must appear before header-forward middleware")
+
+	// AWS STS must come before recovery (outermost wrapper).
+	recoveryIdx, ok := typeIndex[recovery.MiddlewareType]
+	require.True(t, ok, "recovery middleware should be present")
+	assert.Less(t, awsStsIdx, recoveryIdx,
+		"awssts must appear before recovery middleware")
 }

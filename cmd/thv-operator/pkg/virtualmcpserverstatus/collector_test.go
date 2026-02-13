@@ -205,3 +205,62 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeAuthConfigured])
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerReady])
 }
+
+func TestStatusCollector_RemoveConditionsWithPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Create a VirtualMCPServer with existing conditions
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		Status: mcpv1alpha1.VirtualMCPServerStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   "DiscoveredAuthConfig-backend-1",
+					Status: metav1.ConditionTrue,
+					Reason: "ConversionSucceeded",
+				},
+				{
+					Type:   "DiscoveredAuthConfig-backend-2",
+					Status: metav1.ConditionTrue,
+					Reason: "ConversionSucceeded",
+				},
+				{
+					Type:   "DiscoveredAuthConfig-backend-3",
+					Status: metav1.ConditionFalse,
+					Reason: "ConversionFailed",
+				},
+				{
+					Type:   "Ready",
+					Status: metav1.ConditionTrue,
+					Reason: "DeploymentReady",
+				},
+			},
+		},
+	}
+	collector := NewStatusManager(vmcp)
+
+	// Remove all DiscoveredAuthConfig conditions except backend-1
+	collector.RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-backend-1"})
+
+	// Apply updates
+	status := &vmcp.Status
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 2, "Should have 2 conditions remaining: backend-1 and Ready")
+
+	// Verify backend-1 condition remains
+	var foundBackend1, foundReady bool
+	for _, cond := range status.Conditions {
+		if cond.Type == "DiscoveredAuthConfig-backend-1" {
+			foundBackend1 = true
+		}
+		if cond.Type == "Ready" {
+			foundReady = true
+		}
+		// backend-2 and backend-3 should be removed
+		assert.NotEqual(t, "DiscoveredAuthConfig-backend-2", cond.Type)
+		assert.NotEqual(t, "DiscoveredAuthConfig-backend-3", cond.Type)
+	}
+	assert.True(t, foundBackend1, "backend-1 condition should remain")
+	assert.True(t, foundReady, "Ready condition should remain")
+}

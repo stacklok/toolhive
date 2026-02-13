@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
@@ -24,13 +25,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
-// ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date
+// ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date.
 // workloadInfos is the list of workloads in the group, passed in to ensure consistency
 // across multiple calls that need the same workload list.
+// statusManager is used to set auth config conditions for any conversion failures.
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	// Create OIDC resolver and converter for CRD-to-config transformation
 	oidcResolver := oidc.NewResolver(r.Client)
@@ -43,41 +46,9 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
-	// Static mode (inline): Embed full backend details in ConfigMap.
-	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API.
-	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "inline" {
-		// Build auth config with backend details
-		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			return fmt.Errorf("failed to build auth config for static mode: %w", err)
-		}
-		if discoveredAuthConfig != nil {
-			config.OutgoingAuth = discoveredAuthConfig
-		}
-
-		// Discover backends with metadata
-		backends, err := r.discoverBackendsWithMetadata(ctx, vmcp)
-		if err != nil {
-			return fmt.Errorf("failed to discover backends for static mode: %w", err)
-		}
-
-		// Get transport types from workload specs
-		transportMap, err := r.buildTransportMap(ctx, vmcp.Namespace, typedWorkloads)
-		if err != nil {
-			return fmt.Errorf("failed to build transport map for static mode: %w", err)
-		}
-
-		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap)
-
-		// Validate at least one backend exists
-		if len(config.Backends) == 0 {
-			return fmt.Errorf(
-				"static mode requires at least one backend with valid transport (%v), "+
-					"but none were discovered in group %s",
-				vmcpconfig.StaticModeAllowedTransports,
-				config.Group,
-			)
-		}
+	// Process outgoing auth configuration for both inline and discovered modes
+	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
+		return err
 	}
 
 	// Validate the vmcp Config before creating the ConfigMap
@@ -148,7 +119,8 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 			return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 		}
 
-		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+		// Build auth config and collect any errors (but don't fail the operation)
+		authConfig, _, _, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without authentication",
@@ -157,6 +129,8 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 				"namespace", vmcp.Namespace)
 			authConfig = nil // Continue without auth config on error
 		}
+		// Note: authErrors are not set here since this function is called in static mode
+		// where auth errors are already being handled by ensureVmcpConfigConfigMap
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
@@ -214,4 +188,73 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 	}
 
 	return transportMap, nil
+}
+
+// processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
+// It builds auth configs, sets status conditions for backends, and configures static backends for inline mode.
+func (r *VirtualMCPServerReconciler) processOutgoingAuth(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	config *vmcpconfig.Config,
+	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	// Clean up stale conditions if outgoing auth is not configured
+	if config.OutgoingAuth == nil {
+		setDiscoveredAuthConfigConditions(statusManager, nil, nil)
+		return nil
+	}
+
+	isInlineMode := config.OutgoingAuth.Source == OutgoingAuthSourceInline
+	isDiscoveredMode := config.OutgoingAuth.Source == OutgoingAuthSourceDiscovered
+
+	// Clean up stale conditions if not using inline or discovered mode
+	if !isInlineMode && !isDiscoveredMode {
+		setDiscoveredAuthConfigConditions(statusManager, nil, nil)
+		return nil
+	}
+
+	// Build auth config to check for errors (needed for both modes)
+	discoveredAuthConfig, backendsWithAuthConfig, discoveredAuthErrors, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to build auth config: %w", err)
+	}
+
+	// Set conditions for all backends' discovered auth configs (True for success, False for errors)
+	setDiscoveredAuthConfigConditions(statusManager, backendsWithAuthConfig, discoveredAuthErrors)
+
+	// Static mode (inline): Embed full backend details in ConfigMap
+	if isInlineMode {
+		if discoveredAuthConfig != nil {
+			config.OutgoingAuth = discoveredAuthConfig
+		}
+
+		// Discover backends with metadata
+		backends, err := r.discoverBackendsWithMetadata(ctx, vmcp)
+		if err != nil {
+			return fmt.Errorf("failed to discover backends for static mode: %w", err)
+		}
+
+		// Get transport types from workload specs
+		transportMap, err := r.buildTransportMap(ctx, vmcp.Namespace, typedWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to build transport map for static mode: %w", err)
+		}
+
+		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap)
+
+		// Validate at least one backend exists
+		if len(config.Backends) == 0 {
+			return fmt.Errorf(
+				"static mode requires at least one backend with valid transport (%v), "+
+					"but none were discovered in group %s",
+				vmcpconfig.StaticModeAllowedTransports,
+				config.Group,
+			)
+		}
+	}
+	// Dynamic mode (discovered): vMCP discovers backends at runtime via K8s API
+	// Conditions are already set above, no additional ConfigMap config needed
+
+	return nil
 }

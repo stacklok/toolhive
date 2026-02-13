@@ -228,13 +228,15 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		vmcp          *mcpv1alpha1.VirtualMCPServer
-		mcpServers    []mcpv1alpha1.MCPServer
-		authConfigs   []mcpv1alpha1.MCPExternalAuthConfig
-		workloadNames []workloads.TypedWorkload
-		expectError   bool
-		validate      func(*testing.T, *vmcpconfig.OutgoingAuthConfig)
+		name                       string
+		vmcp                       *mcpv1alpha1.VirtualMCPServer
+		mcpServers                 []mcpv1alpha1.MCPServer
+		authConfigs                []mcpv1alpha1.MCPExternalAuthConfig
+		workloadNames              []workloads.TypedWorkload
+		expectError                bool
+		expectDiscoveredAuthErrors bool // Set to true if test expects discovered auth errors (non-fatal)
+		validate                   func(*testing.T, *vmcpconfig.OutgoingAuthConfig)
+		validateErrors             func(*testing.T, []AuthConfigError) // Validate discovered auth errors
 	}{
 		{
 			name: "discovered mode with external auth config",
@@ -609,11 +611,22 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Type: workloads.WorkloadTypeMCPServer,
 				},
 			},
-			expectError: false,
+			expectError:                false,
+			expectDiscoveredAuthErrors: true, // New behavior: discovered errors are returned
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				// Should not have backend-1 in config since ExternalAuthConfig is missing
 				assert.NotContains(t, config.Backends, "backend-1")
+			},
+			validateErrors: func(t *testing.T, errors []AuthConfigError) {
+				t.Helper()
+				require.Len(t, errors, 1, "expected exactly one discovered auth error")
+				authErr := errors[0]
+				assert.Equal(t, "discovered:backend-1", authErr.Context)
+				assert.Equal(t, "backend-1", authErr.BackendName)
+				assert.Error(t, authErr.Error)
+				assert.Contains(t, authErr.Error.Error(), "missing-auth-config")
+				assert.Contains(t, authErr.Error.Error(), "not found")
 			},
 		},
 		{
@@ -665,7 +678,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			config, err := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
+			config, _, discoveredAuthErrors, err := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -674,6 +687,17 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
+
+			// Check discovered auth errors
+			if tt.expectDiscoveredAuthErrors {
+				require.NotEmpty(t, discoveredAuthErrors, "expected discovered auth errors but got none")
+				if tt.validateErrors != nil {
+					tt.validateErrors(t, discoveredAuthErrors)
+				}
+			} else {
+				require.Empty(t, discoveredAuthErrors, "unexpected discovered auth errors")
+			}
+
 			if tt.validate != nil {
 				tt.validate(t, config)
 			}

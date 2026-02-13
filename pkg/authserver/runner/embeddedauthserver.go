@@ -26,11 +26,11 @@ import (
 const (
 	// RedisUsernameEnvVar is the environment variable for the Redis ACL username.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
-	RedisUsernameEnvVar = "TOOLHIVE_REDIS_USERNAME"
+	RedisUsernameEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_USERNAME"
 
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
-	RedisPasswordEnvVar = "TOOLHIVE_REDIS_PASSWORD"
+	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.

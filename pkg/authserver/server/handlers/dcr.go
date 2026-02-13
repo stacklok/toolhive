@@ -95,7 +95,8 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		"client_name", validated.ClientName,
 	)
 
-	// Build response
+	// Build response per RFC 7591 Section 3.2.1.
+	// Include scope so the client knows what scopes it was granted.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),
@@ -104,6 +105,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
+		Scope:                   strings.Join(h.config.ScopesSupported, " "),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

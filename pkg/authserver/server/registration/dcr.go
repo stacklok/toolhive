@@ -90,6 +90,10 @@ type DCRResponse struct {
 
 	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
 	ResponseTypes []string `json:"response_types"`
+
+	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
+	// Per RFC 7591 Section 3.2, this tells the client what scopes it was granted.
+	Scope string `json:"scope,omitempty"`
 }
 
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error

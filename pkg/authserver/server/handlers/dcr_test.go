@@ -118,6 +118,38 @@ func TestRegisterClientHandler(t *testing.T) {
 	}
 }
 
+func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(nil)
+
+	handler := &Handler{
+		storage: stor,
+		config: &server.AuthorizationServerConfig{
+			ScopesSupported: []string{"openid", "profile", "email", "offline_access"},
+		},
+	}
+
+	reqBody, err := json.Marshal(registration.DCRRequest{
+		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.RegisterClientHandler(w, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp registration.DCRResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "openid profile email offline_access", resp.Scope,
+		"DCR response should include granted scopes per RFC 7591 Section 3.2.1")
+}
+
 func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	t.Parallel()
 

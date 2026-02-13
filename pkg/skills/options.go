@@ -37,6 +37,8 @@ type UninstallOptions struct {
 type InfoOptions struct {
 	// Name is the skill name to look up.
 	Name string `json:"name"`
+	// Scope filters the lookup by installation scope.
+	Scope Scope `json:"scope,omitempty"`
 }
 
 // SkillInfo contains detailed information about a skill.

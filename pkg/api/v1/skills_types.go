@@ -39,18 +39,6 @@ type installSkillResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
 }
 
-// uninstallSkillRequest represents the request to uninstall a skill.
-//
-//	@Description	Request to uninstall a skill
-//
-//nolint:unused // stub type for swagger annotations, used when handlers are implemented
-type uninstallSkillRequest struct {
-	// Name of the skill to uninstall
-	Name string `json:"name"`
-	// Scope from which to uninstall
-	Scope skills.Scope `json:"scope,omitempty"`
-}
-
 // validateSkillRequest represents the request to validate a skill.
 //
 //	@Description	Request to validate a skill definition

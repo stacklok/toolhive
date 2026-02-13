@@ -15,6 +15,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -1084,4 +1086,158 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmbeddedAuthServerScopePropagation verifies that the builder propagates
+// EmbeddedAuthServerConfig.ScopesSupported to OIDCConfig.Scopes when no
+// explicit PRM scopes are configured, and that explicit scopes are preserved.
+func TestEmbeddedAuthServerScopePropagation(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	t.Run("propagates AS scopes to empty OIDCConfig.Scopes", func(t *testing.T) {
+		t.Parallel()
+
+		asScopes := []string{"openid", "profile", "email", "offline_access"}
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes (empty -> should be propagated)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				ScopesSupported: asScopes,
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, asScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should be propagated from EmbeddedAuthServerConfig.ScopesSupported")
+	})
+
+	t.Run("does not overwrite explicit OIDCConfig.Scopes", func(t *testing.T) {
+		t.Parallel()
+
+		explicitScopes := []string{"openid", "custom-scope"}
+		asScopes := []string{"openid", "profile", "email", "offline_access"}
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				explicitScopes,               // scopes (explicit -> should NOT be overwritten)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				ScopesSupported: asScopes,
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, explicitScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should NOT be overwritten when explicitly set")
+	})
+
+	t.Run("uses AS default scopes when EmbeddedAuthServerConfig has no ScopesSupported", func(t *testing.T) {
+		t.Parallel()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes (empty -> should get AS defaults)
+			),
+			WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+				// ScopesSupported intentionally empty — simulates the common case
+				// where the user doesn't explicitly configure scopes on the AS.
+			}),
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Equal(t, registration.DefaultScopes, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should get AS default scopes when both are unconfigured")
+	})
+
+	t.Run("no propagation when EmbeddedAuthServerConfig is nil", func(t *testing.T) {
+		t.Parallel()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			nil,
+			nil,
+			mockValidator,
+			WithName("test-server"),
+			WithOIDCConfig(
+				"https://issuer.example.com", // issuer
+				"",                           // audience
+				"",                           // jwksURL
+				"",                           // introspectionURL
+				"",                           // clientID
+				"",                           // clientSecret
+				"",                           // caBundle
+				"",                           // jwksAuthTokenFile
+				"",                           // resourceURL
+				false,                        // jwksAllowPrivateIP
+				false,                        // insecureAllowHTTP
+				nil,                          // scopes
+			),
+			// No WithEmbeddedAuthServerConfig
+		)
+
+		require.NoError(t, err, "NewRunConfigBuilder should not return an error")
+		require.NotNil(t, config, "RunConfig should not be nil")
+		require.NotNil(t, config.OIDCConfig, "OIDCConfig should not be nil")
+		assert.Empty(t, config.OIDCConfig.Scopes,
+			"OIDCConfig.Scopes should remain empty when no embedded AS is configured")
+	})
 }

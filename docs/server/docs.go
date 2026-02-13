@@ -217,7 +217,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes_supported": {
-                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to [\"openid\", \"offline_access\"].",
+                        "description": "ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.\nIf empty, defaults to [\"openid\", \"profile\", \"email\", \"offline_access\"].",
                         "items": {
                             "type": "string"
                         },

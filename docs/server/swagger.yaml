@@ -228,7 +228,7 @@ components:
         scopes_supported:
           description: |-
             ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
-            If empty, defaults to ["openid", "offline_access"].
+            If empty, defaults to ["openid", "profile", "email", "offline_access"].
           items:
             type: string
           type: array

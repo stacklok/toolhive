@@ -36,6 +36,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+    - name: Disable containerd image store
+      # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
+      # Docker 29+ defaults to containerd image store, which causes
+      # `kind load docker-image` to fail for multi-arch images because
+      # `docker save` preserves the OCI index referencing all platforms
+      # even when only the host platform layers were pulled.
+      # --platform on docker pull is not sufficient; the image store
+      # itself must be switched back to the classic overlay2 driver.
+      run: |
+        sudo mkdir -p /etc/docker
+        echo '{"features":{"containerd-snapshotter": false}}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker
+
     - name: Set up Helm
       uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 

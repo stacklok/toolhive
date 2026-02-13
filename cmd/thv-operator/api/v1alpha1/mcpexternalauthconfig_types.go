@@ -4,6 +4,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -38,6 +40,14 @@ type ExternalAuthType string
 // MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
 // MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'tokenExchange' ? has(self.tokenExchange) : !has(self.tokenExchange)",message="tokenExchange configuration must be set if and only if type is 'tokenExchange'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'headerInjection' ? has(self.headerInjection) : !has(self.headerInjection)",message="headerInjection configuration must be set if and only if type is 'headerInjection'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'bearerToken' ? has(self.bearerToken) : !has(self.bearerToken)",message="bearerToken configuration must be set if and only if type is 'bearerToken'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)) : true",message="no configuration must be set when type is 'unauthenticated'"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
 	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts
@@ -589,6 +599,10 @@ type RoleMapping struct {
 
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
+	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
 	// It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
 	// +optional
@@ -629,6 +643,70 @@ type MCPExternalAuthConfigList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MCPExternalAuthConfig `json:"items"`
+}
+
+// Validate performs validation on the MCPExternalAuthConfig spec.
+// This method is called by the controller during reconciliation.
+//
+// Note: Simple field presence checks (type-specific config matching) are handled by
+// CEL validation rules (lines 41-46) and will reject invalid specs at API admission time.
+// This method focuses on complex business logic validation that CEL cannot express.
+func (r *MCPExternalAuthConfig) Validate() error {
+	// Only perform complex validations that CEL cannot handle
+	// Simple type/config matching is already validated by CEL at API admission
+
+	// Only embeddedAuthServer needs complex validation
+	if r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer {
+		return r.validateEmbeddedAuthServer()
+	}
+
+	// No complex validation needed for other types
+	return nil
+}
+
+// validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
+// This performs complex business logic validation that CEL cannot express.
+func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
+	// Validate upstream providers
+	cfg := r.Spec.EmbeddedAuthServer
+	if cfg == nil {
+		return nil
+	}
+
+	// Note: MinItems=1 is enforced by kubebuilder markers,
+	// but we add runtime validation for clarity and future-proofing
+	if len(cfg.UpstreamProviders) == 0 {
+		return fmt.Errorf("at least one upstream provider is required")
+	}
+	// Note: we add runtime validation for 'max items = 1' here since multi-provider support is not yet implemented.
+	if len(cfg.UpstreamProviders) > 1 {
+		return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
+	}
+
+	for i, provider := range cfg.UpstreamProviders {
+		if err := r.validateUpstreamProvider(i, &provider); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateUpstreamProvider validates a single upstream provider configuration
+func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
+	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
+
+	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
+		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	}
+	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
+		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
+	}
+	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
+		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+	}
+
+	return nil
 }
 
 func init() {

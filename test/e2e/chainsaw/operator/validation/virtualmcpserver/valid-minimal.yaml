@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid minimal VirtualMCPServer - should be ACCEPTED
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-valid-minimal
+  namespace: default
+spec:
+  incomingAuth:
+    type: anonymous
+  serviceType: ClusterIP
+  config:
+    group: test-group

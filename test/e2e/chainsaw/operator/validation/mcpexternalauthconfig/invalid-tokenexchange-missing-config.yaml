@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# This should be REJECTED by CEL validation: tokenExchange type without tokenExchange config
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: test-invalid-tokenexchange
+  namespace: default
+spec:
+  type: tokenExchange
+  # Missing tokenExchange config - should fail CEL validation

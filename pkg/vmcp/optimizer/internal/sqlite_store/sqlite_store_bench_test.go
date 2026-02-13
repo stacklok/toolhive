@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO: These benchmarks are a quality/performance practice rather than
+// functional tests of sqlite_store. Consider moving them to a dedicated
+// benchmarking repo or similar in the future.
+
 package sqlitestore
 
 import (

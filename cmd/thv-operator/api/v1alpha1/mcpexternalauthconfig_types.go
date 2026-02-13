@@ -176,6 +176,11 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:MinItems=1
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
+	// Storage configures the storage backend for the embedded auth server.
+	// If not specified, defaults to in-memory storage.
+	// +optional
+	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
 
@@ -372,6 +377,114 @@ type UserInfoFieldMapping struct {
 	// Default: ["email"]
 	// +optional
 	EmailFields []string `json:"emailFields,omitempty"`
+}
+
+// Auth server storage types
+const (
+	// AuthServerStorageTypeMemory is the in-memory storage backend (default)
+	AuthServerStorageTypeMemory AuthServerStorageType = "memory"
+
+	// AuthServerStorageTypeRedis is the Redis storage backend
+	AuthServerStorageTypeRedis AuthServerStorageType = "redis"
+)
+
+// AuthServerStorageType represents the type of storage backend for the embedded auth server
+type AuthServerStorageType string
+
+// AuthServerStorageConfig configures the storage backend for the embedded auth server.
+type AuthServerStorageConfig struct {
+	// Type specifies the storage backend type.
+	// Valid values: "memory" (default), "redis".
+	// +kubebuilder:validation:Enum=memory;redis
+	// +kubebuilder:default=memory
+	Type AuthServerStorageType `json:"type,omitempty"`
+
+	// Redis configures the Redis storage backend.
+	// Required when type is "redis".
+	// +optional
+	Redis *RedisStorageConfig `json:"redis,omitempty"`
+}
+
+// RedisStorageConfig configures Redis connection for auth server storage.
+// Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+type RedisStorageConfig struct {
+	// SentinelConfig holds Redis Sentinel configuration.
+	// +kubebuilder:validation:Required
+	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig"`
+
+	// ACLUserConfig configures Redis ACL user authentication.
+	// +kubebuilder:validation:Required
+	ACLUserConfig *RedisACLUserConfig `json:"aclUserConfig"`
+
+	// DialTimeout is the timeout for establishing connections.
+	// Format: Go duration string (e.g., "5s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="5s"
+	// +optional
+	DialTimeout string `json:"dialTimeout,omitempty"`
+
+	// ReadTimeout is the timeout for socket reads.
+	// Format: Go duration string (e.g., "3s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="3s"
+	// +optional
+	ReadTimeout string `json:"readTimeout,omitempty"`
+
+	// WriteTimeout is the timeout for socket writes.
+	// Format: Go duration string (e.g., "3s", "1m").
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:default="3s"
+	// +optional
+	WriteTimeout string `json:"writeTimeout,omitempty"`
+}
+
+// RedisSentinelConfig configures Redis Sentinel connection.
+type RedisSentinelConfig struct {
+	// MasterName is the name of the Redis master monitored by Sentinel.
+	// +kubebuilder:validation:Required
+	MasterName string `json:"masterName"`
+
+	// SentinelAddrs is a list of Sentinel host:port addresses.
+	// Mutually exclusive with SentinelService.
+	// +optional
+	SentinelAddrs []string `json:"sentinelAddrs,omitempty"`
+
+	// SentinelService enables automatic discovery from a Kubernetes Service.
+	// Mutually exclusive with SentinelAddrs.
+	// +optional
+	SentinelService *SentinelServiceRef `json:"sentinelService,omitempty"`
+
+	// DB is the Redis database number.
+	// +kubebuilder:default=0
+	// +optional
+	DB int32 `json:"db,omitempty"`
+}
+
+// SentinelServiceRef references a Kubernetes Service for Sentinel discovery.
+type SentinelServiceRef struct {
+	// Name of the Sentinel Service.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace of the Sentinel Service (defaults to same namespace).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Port of the Sentinel service.
+	// +kubebuilder:default=26379
+	// +optional
+	Port int32 `json:"port,omitempty"`
+}
+
+// RedisACLUserConfig configures Redis ACL user authentication.
+type RedisACLUserConfig struct {
+	// UsernameSecretRef references a Secret containing the Redis ACL username.
+	// +kubebuilder:validation:Required
+	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef"`
+
+	// PasswordSecretRef references a Secret containing the Redis ACL password.
+	// +kubebuilder:validation:Required
+	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

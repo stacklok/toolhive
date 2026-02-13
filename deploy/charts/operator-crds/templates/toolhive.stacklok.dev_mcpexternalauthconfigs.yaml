@@ -234,6 +234,128 @@ spec:
                       type: object
                     maxItems: 5
                     type: array
+                  storage:
+                    description: |-
+                      Storage configures the storage backend for the embedded auth server.
+                      If not specified, defaults to in-memory storage.
+                    properties:
+                      redis:
+                        description: |-
+                          Redis configures the Redis storage backend.
+                          Required when type is "redis".
+                        properties:
+                          aclUserConfig:
+                            description: ACLUserConfig configures Redis ACL user authentication.
+                            properties:
+                              passwordSecretRef:
+                                description: PasswordSecretRef references a Secret
+                                  containing the Redis ACL password.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              usernameSecretRef:
+                                description: UsernameSecretRef references a Secret
+                                  containing the Redis ACL username.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            required:
+                            - passwordSecretRef
+                            - usernameSecretRef
+                            type: object
+                          dialTimeout:
+                            default: 5s
+                            description: |-
+                              DialTimeout is the timeout for establishing connections.
+                              Format: Go duration string (e.g., "5s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          readTimeout:
+                            default: 3s
+                            description: |-
+                              ReadTimeout is the timeout for socket reads.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          sentinelConfig:
+                            description: SentinelConfig holds Redis Sentinel configuration.
+                            properties:
+                              db:
+                                default: 0
+                                description: DB is the Redis database number.
+                                format: int32
+                                type: integer
+                              masterName:
+                                description: MasterName is the name of the Redis master
+                                  monitored by Sentinel.
+                                type: string
+                              sentinelAddrs:
+                                description: |-
+                                  SentinelAddrs is a list of Sentinel host:port addresses.
+                                  Mutually exclusive with SentinelService.
+                                items:
+                                  type: string
+                                type: array
+                              sentinelService:
+                                description: |-
+                                  SentinelService enables automatic discovery from a Kubernetes Service.
+                                  Mutually exclusive with SentinelAddrs.
+                                properties:
+                                  name:
+                                    description: Name of the Sentinel Service.
+                                    type: string
+                                  namespace:
+                                    description: Namespace of the Sentinel Service
+                                      (defaults to same namespace).
+                                    type: string
+                                  port:
+                                    default: 26379
+                                    description: Port of the Sentinel service.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - name
+                                type: object
+                            required:
+                            - masterName
+                            type: object
+                          writeTimeout:
+                            default: 3s
+                            description: |-
+                              WriteTimeout is the timeout for socket writes.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                        required:
+                        - aclUserConfig
+                        - sentinelConfig
+                        type: object
+                      type:
+                        default: memory
+                        description: |-
+                          Type specifies the storage backend type.
+                          Valid values: "memory" (default), "redis".
+                        enum:
+                        - memory
+                        - redis
+                        type: string
+                    type: object
                   tokenLifespans:
                     description: |-
                       TokenLifespans configures the duration that various tokens are valid.

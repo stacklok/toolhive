@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -165,6 +166,12 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		}
 	}
 
+	if cfg.Storage != nil {
+		if err := validateStorageConfig(cfg.Storage); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -230,5 +237,96 @@ func (r *MCPExternalAuthConfig) validateAWSSts() error {
 		}
 	}
 
+	return nil
+}
+
+// validateStorageConfig validates the auth server storage configuration
+func validateStorageConfig(cfg *AuthServerStorageConfig) error {
+	switch cfg.Type {
+	case AuthServerStorageTypeMemory, "":
+		// Memory storage requires no additional configuration
+		if cfg.Redis != nil {
+			return fmt.Errorf("storage: redis configuration must not be set when type is 'memory'")
+		}
+		return nil
+	case AuthServerStorageTypeRedis:
+		if cfg.Redis == nil {
+			return fmt.Errorf("storage: redis configuration is required when type is 'redis'")
+		}
+		return validateRedisStorageConfig(cfg.Redis)
+	default:
+		return fmt.Errorf("storage: unsupported storage type: %s", cfg.Type)
+	}
+}
+
+// validateRedisStorageConfig validates the Redis storage configuration
+func validateRedisStorageConfig(cfg *RedisStorageConfig) error {
+	if cfg.SentinelConfig == nil {
+		return fmt.Errorf("storage.redis: sentinelConfig is required")
+	}
+
+	if err := validateRedisSentinelConfig(cfg.SentinelConfig); err != nil {
+		return err
+	}
+
+	if cfg.ACLUserConfig == nil {
+		return fmt.Errorf("storage.redis: aclUserConfig is required")
+	}
+
+	if err := validateRedisACLUserConfig(cfg.ACLUserConfig); err != nil {
+		return err
+	}
+
+	// Validate timeout durations
+	if cfg.DialTimeout != "" {
+		if _, err := time.ParseDuration(cfg.DialTimeout); err != nil {
+			return fmt.Errorf("storage.redis: invalid dialTimeout %q: %w", cfg.DialTimeout, err)
+		}
+	}
+	if cfg.ReadTimeout != "" {
+		if _, err := time.ParseDuration(cfg.ReadTimeout); err != nil {
+			return fmt.Errorf("storage.redis: invalid readTimeout %q: %w", cfg.ReadTimeout, err)
+		}
+	}
+	if cfg.WriteTimeout != "" {
+		if _, err := time.ParseDuration(cfg.WriteTimeout); err != nil {
+			return fmt.Errorf("storage.redis: invalid writeTimeout %q: %w", cfg.WriteTimeout, err)
+		}
+	}
+
+	return nil
+}
+
+// validateRedisSentinelConfig validates the Redis Sentinel configuration
+func validateRedisSentinelConfig(cfg *RedisSentinelConfig) error {
+	if cfg.MasterName == "" {
+		return fmt.Errorf("storage.redis.sentinelConfig: masterName is required")
+	}
+
+	hasSentinelAddrs := len(cfg.SentinelAddrs) > 0
+	hasSentinelService := cfg.SentinelService != nil
+
+	if hasSentinelAddrs && hasSentinelService {
+		return fmt.Errorf("storage.redis.sentinelConfig: exactly one of sentinelAddrs or sentinelService must be specified, not both")
+	}
+	if !hasSentinelAddrs && !hasSentinelService {
+		return fmt.Errorf("storage.redis.sentinelConfig: exactly one of sentinelAddrs or sentinelService must be specified")
+	}
+
+	if hasSentinelService && cfg.SentinelService.Name == "" {
+		return fmt.Errorf("storage.redis.sentinelConfig.sentinelService: name is required")
+	}
+
+	return nil
+}
+
+// validateRedisACLUserConfig validates the Redis ACL user configuration
+func validateRedisACLUserConfig(cfg *RedisACLUserConfig) error {
+	if cfg.UsernameSecretRef == nil {
+		return fmt.Errorf("storage.redis.aclUserConfig: usernameSecretRef is required")
+	}
+	if cfg.PasswordSecretRef == nil {
+		return fmt.Errorf("storage.redis.aclUserConfig: passwordSecretRef is required")
+	}
 	return nil
 }

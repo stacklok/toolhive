@@ -1,0 +1,66 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-toolhive-stacklok-com-v1alpha1-mcpexternalauthconfig
+  failurePolicy: Fail
+  name: vmcpexternalauthconfig.kb.io
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - mcpexternalauthconfigs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpcompositetooldefinition
+  failurePolicy: Fail
+  name: vvirtualmcpcompositetooldefinition.kb.io
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - virtualmcpcompositetooldefinitions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver
+  failurePolicy: Fail
+  name: vvirtualmcpserver.kb.io
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - virtualmcpservers
+  sideEffects: None

@@ -743,10 +743,12 @@ spec:
                 type is 'embeddedAuthServer'
               rule: 'self.type == ''embeddedAuthServer'' ? has(self.embeddedAuthServer)
                 : !has(self.embeddedAuthServer)'
+            - message: awsSts configuration must be set if and only if type is 'awsSts'
+              rule: 'self.type == ''awsSts'' ? has(self.awsSts) : !has(self.awsSts)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
-                && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer))
-                : true'
+                && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
+                && !has(self.awsSts)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig

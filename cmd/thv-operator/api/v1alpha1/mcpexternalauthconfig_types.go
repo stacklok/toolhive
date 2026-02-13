@@ -45,7 +45,8 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'headerInjection' ? has(self.headerInjection) : !has(self.headerInjection)",message="headerInjection configuration must be set if and only if type is 'headerInjection'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'bearerToken' ? has(self.bearerToken) : !has(self.bearerToken)",message="bearerToken configuration must be set if and only if type is 'bearerToken'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
@@ -649,19 +650,28 @@ type MCPExternalAuthConfigList struct {
 // This method is called by the controller during reconciliation.
 //
 // Note: Simple field presence checks (type-specific config matching) are handled by
-// CEL validation rules (lines 41-46) and will reject invalid specs at API admission time.
+// CEL validation rules (lines 41-47) and will reject invalid specs at API admission time.
 // This method focuses on complex business logic validation that CEL cannot express.
 func (r *MCPExternalAuthConfig) Validate() error {
 	// Only perform complex validations that CEL cannot handle
 	// Simple type/config matching is already validated by CEL at API admission
 
-	// Only embeddedAuthServer needs complex validation
-	if r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer {
+	// Perform type-specific complex validation
+	switch r.Spec.Type {
+	case ExternalAuthTypeEmbeddedAuthServer:
 		return r.validateEmbeddedAuthServer()
+	case ExternalAuthTypeAWSSts:
+		return r.validateAWSSts()
+	case ExternalAuthTypeTokenExchange,
+		ExternalAuthTypeHeaderInjection,
+		ExternalAuthTypeBearerToken,
+		ExternalAuthTypeUnauthenticated:
+		// No complex validation needed for these types
+		return nil
+	default:
+		// Unknown type - should be caught by enum validation, but handle defensively
+		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
 	}
-
-	// No complex validation needed for other types
-	return nil
 }
 
 // validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
@@ -704,6 +714,59 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	}
 	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+	}
+
+	return nil
+}
+
+// validateAWSSts validates awsSts type configuration.
+// This performs complex business logic validation that CEL cannot express.
+func (r *MCPExternalAuthConfig) validateAWSSts() error {
+	cfg := r.Spec.AWSSts
+	if cfg == nil {
+		return nil
+	}
+
+	// Region is required
+	if cfg.Region == "" {
+		return fmt.Errorf("awsSts.region is required")
+	}
+
+	// At least one of fallbackRoleArn or roleMappings must be configured
+	// Both can be set: fallbackRoleArn is used when no mapping matches
+	hasRoleArn := cfg.FallbackRoleArn != ""
+	hasRoleMappings := len(cfg.RoleMappings) > 0
+
+	if !hasRoleArn && !hasRoleMappings {
+		return fmt.Errorf("awsSts: at least one of fallbackRoleArn or roleMappings must be configured")
+	}
+
+	// Validate role mappings if present
+	for i, mapping := range cfg.RoleMappings {
+		if mapping.RoleArn == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d].roleArn is required", i)
+		}
+		// Exactly one of claim or matcher must be set
+		if mapping.Claim == "" && mapping.Matcher == "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: exactly one of claim or matcher must be set", i)
+		}
+		if mapping.Claim != "" && mapping.Matcher != "" {
+			return fmt.Errorf("awsSts.roleMappings[%d]: claim and matcher are mutually exclusive", i)
+		}
+	}
+
+	// Validate session duration if set
+	// Bounds match AWS STS limits: 900s (15 min) to 43200s (12 hours)
+	if cfg.SessionDuration != nil {
+		duration := *cfg.SessionDuration
+		const (
+			minSessionDuration int32 = 900   // 15 minutes
+			maxSessionDuration int32 = 43200 // 12 hours
+		)
+		if duration < minSessionDuration || duration > maxSessionDuration {
+			return fmt.Errorf("awsSts.sessionDuration must be between %d and %d seconds",
+				minSessionDuration, maxSessionDuration)
+		}
 	}
 
 	return nil

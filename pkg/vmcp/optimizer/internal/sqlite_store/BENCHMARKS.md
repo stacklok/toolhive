@@ -1,5 +1,9 @@
 # SQLite ToolStore Benchmarks
 
+<!-- TODO: These benchmarks are a quality/performance practice rather than
+     functional tests of sqlite_store. Consider moving them to a dedicated
+     benchmarking repo or similar in the future. -->
+
 Benchmarks measure search performance over 1,000 tools with synthetic descriptions.
 
 Run benchmarks with:

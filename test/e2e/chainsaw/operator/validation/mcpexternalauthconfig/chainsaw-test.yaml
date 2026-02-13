@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test CEL validation for MCPExternalAuthConfig CRD
+# This tests that the API server rejects invalid manifests immediately
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpexternalauthconfig-cel-validation
+spec:
+  description: |
+    Test CEL validation rules for MCPExternalAuthConfig.
+    These validations happen at the API server level and reject invalid specs immediately.
+  steps:
+    # Test 1: tokenExchange type without tokenExchange config should be rejected
+    - name: reject-tokenexchange-missing-config
+      try:
+        - apply:
+            file: invalid-tokenexchange-missing-config.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* tokenExchange configuration must be set if and only if type is 'tokenExchange' *"
+
+    # Test 2: unauthenticated type with tokenExchange config should be rejected
+    - name: reject-unauthenticated-with-config
+      try:
+        - apply:
+            file: invalid-unauthenticated-with-config.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* no configuration must be set when type is 'unauthenticated' *"
+
+    # Test 3: Valid unauthenticated config should be accepted
+    - name: accept-valid-unauthenticated
+      try:
+        - apply:
+            file: valid-unauthenticated.yaml
+        - assert:
+            file: valid-unauthenticated.yaml
+
+    # Test 4: Valid tokenExchange config should be accepted
+    - name: accept-valid-tokenexchange
+      try:
+        - apply:
+            file: valid-tokenexchange.yaml
+        - assert:
+            file: valid-tokenexchange.yaml

@@ -1277,6 +1277,9 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: spec.incomingAuth.oidcConfig is required when type is oidc
+                  rule: 'self.type == ''oidc'' ? has(self.oidcConfig) : true'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.

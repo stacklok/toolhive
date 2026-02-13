@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -76,6 +78,32 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		// Requeue to continue processing after finalizer is added
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
+
+	// Validate spec configuration early
+	if err := externalAuthConfig.Validate(); err != nil {
+		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
+		// Update status with validation error
+		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            err.Error(),
+			ObservedGeneration: externalAuthConfig.Generation,
+		})
+		if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
+			logger.Error(updateErr, "Failed to update status after validation error")
+		}
+		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+	}
+
+	// Validation succeeded - set Valid=True condition
+	meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
+		Type:               "Valid",
+		Status:             metav1.ConditionTrue,
+		Reason:             "ValidationSucceeded",
+		Message:            "Spec validation passed",
+		ObservedGeneration: externalAuthConfig.Generation,
+	})
 
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(externalAuthConfig.Spec)

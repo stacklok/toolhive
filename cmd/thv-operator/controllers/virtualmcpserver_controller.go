@@ -47,6 +47,18 @@ const (
 	OutgoingAuthSourceInline = "inline"
 )
 
+// AuthConfigError represents a single auth config conversion failure.
+// It captures context about which auth config failed and why, allowing the controller
+// to continue in degraded mode while exposing the failure via status conditions.
+type AuthConfigError struct {
+	// Context describes where the error occurred: "default", "backend:<name>", or "discovered:<name>"
+	Context string
+	// BackendName is the backend name (empty for default auth config)
+	BackendName string
+	// Error is the underlying error that occurred during conversion
+	Error error
+}
+
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
 //
 // Resource Cleanup Strategy:
@@ -469,7 +481,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// Ensure vmcp Config ConfigMap
-	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames); err != nil {
+	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
 		return err
 	}
@@ -1383,25 +1395,28 @@ func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
 	return mcpRemoteProxyMap, nil
 }
 
-// discovers ExternalAuthConfig from workloads and adds them to the outgoing config
+// discoverExternalAuthConfigs discovers ExternalAuthConfig from workloads and adds them to the outgoing config.
+// Returns a list of non-fatal errors that should be reported via status conditions.
+// The controller should continue in degraded mode even if some auth configs fail.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
-) {
+) []AuthConfigError {
 	ctxLogger := log.FromContext(ctx)
+	var authErrors []AuthConfigError
 
 	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPServers")
-		return
+		return authErrors
 	}
 
 	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
-		return
+		return authErrors
 	}
 
 	for _, workloadInfo := range typedWorkloads {
@@ -1415,20 +1430,30 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
 			ctx, r.Client, vmcp.Namespace, externalAuthConfigName)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend, skipping",
+			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend",
 				"backend", workloadInfo.Name,
 				"externalAuthConfig", externalAuthConfigName,
 				"error", err)
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("discovered:%s", workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigName, err),
+			})
 			continue
 		}
 
 		// Convert MCPExternalAuthConfig to BackendAuthStrategy
 		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
-			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy, skipping",
+			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy",
 				"backend", workloadInfo.Name,
 				"externalAuthConfig", externalAuthConfig.Name,
 				"error", err)
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("discovered:%s", workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       fmt.Errorf("failed to convert MCPExternalAuthConfig: %w", err),
+			})
 			continue
 		}
 
@@ -1440,6 +1465,8 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			outgoing.Backends[workloadInfo.Name] = strategy
 		}
 	}
+
+	return authErrors
 }
 
 // getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
@@ -1470,11 +1497,16 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 
 // buildOutgoingAuthConfig builds an OutgoingAuthConfig from the VirtualMCPServer spec,
 // discovering ExternalAuthConfig from MCPServers when source is "discovered".
+// Returns the config with partial auth (if some discovered configs fail), a list of non-fatal
+// discovered auth errors, and a fatal error if the entire operation should fail reconciliation.
+//
+// Note: Only discovered auth config errors are collected in this PR. Default and backend-specific
+// auth config errors will fail reconciliation as before (to be addressed in future PRs).
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
-) (*vmcpconfig.OutgoingAuthConfig, error) {
+) (*vmcpconfig.OutgoingAuthConfig, []AuthConfigError, error) {
 	// Determine source - default to "discovered" if not specified
 	source := outgoingAuthSource(vmcp)
 
@@ -1487,7 +1519,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Default != nil {
 		defaultStrategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert default auth config: %w", err)
+			return nil, nil, fmt.Errorf("failed to convert default auth config: %w", err)
 		}
 		outgoing.Default = defaultStrategy
 	}
@@ -1496,20 +1528,22 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	// This function is called from ensureVmcpConfigConfigMap only for inline/static mode,
 	// where we need full backend details in the ConfigMap. For discovered/dynamic mode,
 	// this function is not called, keeping the ConfigMap minimal.
-	r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
+	//
+	// Discovered errors are collected but don't fail reconciliation (degraded mode).
+	discoveredErrors := r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 
 	// Apply inline overrides (works for all source modes)
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
 		for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 			strategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, &backendAuth)
 			if err != nil {
-				return nil, fmt.Errorf("failed to convert backend auth config for %s: %w", backendName, err)
+				return nil, nil, fmt.Errorf("failed to convert backend auth config for %s: %w", backendName, err)
 			}
 			outgoing.Backends[backendName] = strategy
 		}
 	}
 
-	return outgoing, nil
+	return outgoing, discoveredErrors, nil
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
@@ -1982,4 +2016,55 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	}
 
 	return false
+}
+
+// setDiscoveredAuthConfigConditions sets status conditions for all backends' discovered auth configs.
+// This ensures conditions reflect the current state by setting:
+// - True (ConversionSucceeded) for backends with valid auth configs
+// - False (ConversionFailed) for backends with auth config errors
+//
+// This allows users to see the current auth config state for each backend via kubectl
+// and ensures stale failure conditions are cleared when auth configs are fixed.
+//
+// Note: This PR only handles discovered auth config errors. Default and backend-specific
+// auth config errors will be addressed in future PRs.
+func setDiscoveredAuthConfigConditions(
+	statusManager virtualmcpserverstatus.StatusManager,
+	typedWorkloads []workloads.TypedWorkload,
+	discoveredAuthErrors []AuthConfigError,
+) {
+	// Build a set of backends with errors for quick lookup
+	backendsWithErrors := make(map[string]error)
+	for _, authError := range discoveredAuthErrors {
+		if strings.HasPrefix(authError.Context, "discovered:") {
+			backendsWithErrors[authError.BackendName] = authError.Error
+		}
+	}
+
+	// Set condition for each backend (True if no error, False if error)
+	for _, workload := range typedWorkloads {
+		conditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", workload.Name)
+
+		if err, hasError := backendsWithErrors[workload.Name]; hasError {
+			// Backend has auth config error - set False condition
+			statusManager.SetAuthConfigCondition(
+				conditionType,
+				"ConversionFailed",
+				fmt.Sprintf("Failed to convert discovered auth config: %v", err),
+				metav1.ConditionFalse,
+			)
+		} else {
+			// Backend has valid auth config - set True condition
+			statusManager.SetAuthConfigCondition(
+				conditionType,
+				"ConversionSucceeded",
+				"Discovered auth config is valid",
+				metav1.ConditionTrue,
+			)
+		}
+	}
+
+	// Note: We don't modify the overall AuthConfigured condition here because
+	// discovered errors are non-fatal. The system can continue operating with
+	// the backends that have valid auth configs.
 }

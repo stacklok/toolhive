@@ -44,6 +44,13 @@ type StatusManager interface {
 	// SetAuthConfiguredCondition sets the AuthConfigured condition
 	SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetAuthConfigCondition sets a specific auth config condition with dynamic type.
+	// Used for setting granular auth config failure conditions like:
+	// - "DefaultAuthConfig" for default auth config
+	// - "BackendAuthConfig-<backend-name>" for backend-specific auth configs
+	// - "DiscoveredAuthConfig-<backend-name>" for discovered auth configs
+	SetAuthConfigCondition(conditionType, reason, message string, status metav1.ConditionStatus)
+
 	// SetDiscoveredBackends sets the discovered backends list
 	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
 

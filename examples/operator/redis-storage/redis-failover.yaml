@@ -1,0 +1,70 @@
+# Spotahome Redis Operator - RedisFailover resource
+# Deploys a Redis master-replica set with Sentinel monitoring.
+#
+# Prerequisites:
+#   1. Install the Spotahome Redis Operator:
+#      helm repo add redis-operator https://spotahome.github.io/redis-operator
+#      helm install redis-operator redis-operator/redis-operator \
+#        --namespace redis-operator --create-namespace
+#   2. Create the target namespace:
+#      kubectl create namespace redis
+#
+# Usage:
+#   kubectl apply -f redis-failover.yaml
+#
+# This creates:
+#   - 3 Redis replicas (1 master + 2 replicas) with persistent storage
+#   - 3 Sentinel instances for automatic failover
+#   - Service "rfs-redis" (redis namespace) — Redis master, port 6379
+#   - Service "rfs-redis-sentinel" (redis namespace) — Sentinel, port 26379
+#
+# The "rfs-redis-sentinel" Service is what mcpexternalauthconfig-redis-storage.yaml
+# references via sentinelService. The operator resolves its EndpointSlices to
+# discover individual Sentinel pod addresses.
+#
+# If you are NOT using the Spotahome operator, see sentinel-service.yaml for
+# how to create this Service manually.
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis
+  namespace: redis
+spec:
+  sentinel:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  redis:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    customConfig:
+      # Enable ACL file for user management.
+      # IMPORTANT: You must provision /data/users.acl on each Redis pod
+      # before authentication will work. See Step 3 ("Configure Redis ACL
+      # Users") in docs/redis-storage.md for the ACL entry format.
+      # Common approaches:
+      #   - Init container that writes the ACL file from a Secret/ConfigMap
+      #   - Spotahome operator's extraVolumes/extraVolumeMounts
+      #   - redis-cli ACL SETUSER command via a Job after deployment
+      - "aclfile /data/users.acl"
+    storage:
+      persistentVolumeClaim:
+        metadata:
+          name: redis-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi

@@ -1,0 +1,48 @@
+# MCPExternalAuthConfig with Redis Sentinel storage for the embedded auth server.
+# This example uses Kubernetes Service discovery to find Sentinel instances.
+#
+# Prerequisites:
+#   1. A running Redis Sentinel deployment with a Sentinel Service:
+#      - Spotahome operator: see redis-failover.yaml (creates "rfs-redis-sentinel" automatically)
+#      - Manual setup: see sentinel-service.yaml
+#   2. Redis ACL user configured (see redis-credentials.yaml)
+#   3. An upstream IDP client configured
+#
+# Usage:
+#   kubectl apply -f redis-credentials.yaml
+#   kubectl apply -f mcpexternalauthconfig-redis-storage.yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: auth-with-redis
+  namespace: default
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: "https://auth.example.com"
+    upstreamProviders:
+      - name: google
+        type: oidc
+        oidcConfig:
+          issuerUrl: https://accounts.google.com
+          clientId: "your-google-client-id"
+          clientSecretRef:
+            name: google-oauth-secret
+            key: client-secret
+
+    storage:
+      type: redis
+      redis:
+        sentinelConfig:
+          masterName: mymaster
+          # Discover Sentinels via Kubernetes Service
+          sentinelService:
+            name: rfs-redis-sentinel
+            namespace: redis
+        aclUserConfig:
+          usernameSecretRef:
+            name: redis-credentials
+            key: username
+          passwordSecretRef:
+            name: redis-credentials
+            key: password

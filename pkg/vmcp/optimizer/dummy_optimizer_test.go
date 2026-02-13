@@ -44,19 +44,22 @@ func TestDummyOptimizer_MockStore(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		tools         []server.ServerTool
-		searchFunc    func(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
-		upsertFunc    func(ctx context.Context, tools []server.ServerTool) error
-		input         FindToolInput
-		expectedNames []string
-		expectErr     bool
-		errContains   string
-		expectCreate  bool // if false, expect NewDummyOptimizer to fail
-		createErr     string
+		name           string
+		tools          []server.ServerTool
+		searchFunc     func(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
+		upsertFunc     func(ctx context.Context, tools []server.ServerTool) error
+		input          FindToolInput
+		expectedNames  []string
+		expectErr      bool
+		errContains    string
+		expectCreate   bool // if false, expect NewDummyOptimizer to fail
+		createErr      string
+		checkMetrics   bool
+		expectBaseline int
+		expectReturned int
 	}{
 		{
-			name: "delegates search to store with allowedTools",
+			name: "delegates search to store with allowedTools and computes metrics",
 			tools: []server.ServerTool{
 				{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
 				{Tool: mcp.Tool{Name: "tool_b", Description: "Tool B"}},
@@ -72,6 +75,7 @@ func TestDummyOptimizer_MockStore(t *testing.T) {
 			input:         FindToolInput{ToolDescription: "query"},
 			expectedNames: []string{"tool_a"},
 			expectCreate:  true,
+			checkMetrics:  true,
 		},
 		{
 			name: "propagates store search errors",
@@ -110,7 +114,7 @@ func TestDummyOptimizer_MockStore(t *testing.T) {
 				searchFunc: tc.searchFunc,
 			}
 
-			opt, err := NewDummyOptimizer(context.Background(), store, tc.tools)
+			opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tc.tools)
 			if !tc.expectCreate {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), tc.createErr)
@@ -131,6 +135,12 @@ func TestDummyOptimizer_MockStore(t *testing.T) {
 				names = append(names, m.Name)
 			}
 			require.ElementsMatch(t, tc.expectedNames, names)
+
+			if tc.checkMetrics {
+				require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
+				require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
+				require.Greater(t, result.TokenMetrics.SavingsPercent, 0.0)
+			}
 		})
 	}
 }
@@ -160,7 +170,7 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(context.Background(), store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -228,6 +238,12 @@ func TestDummyOptimizer_FindTool(t *testing.T) {
 			}
 
 			require.ElementsMatch(t, tc.expectedNames, names)
+
+			// TokenMetrics baseline should always be positive (3 tools in store)
+			require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
+			if len(tc.expectedNames) > 0 {
+				require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
+			}
 		})
 	}
 }
@@ -321,7 +337,7 @@ func TestNewDummyOptimizerFactoryWithStore(t *testing.T) {
 			t.Parallel()
 
 			store := NewInMemoryToolStore()
-			factory := NewDummyOptimizerFactoryWithStore(store)
+			factory := NewDummyOptimizerFactoryWithStore(store, DefaultTokenCounter())
 			ctx := context.Background()
 
 			optA, err := factory(ctx, tc.sessionATools)
@@ -369,7 +385,7 @@ func TestDummyOptimizer_CallTool(t *testing.T) {
 	}
 
 	store := NewInMemoryToolStore()
-	opt, err := NewDummyOptimizer(context.Background(), store, tools)
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
 	require.NoError(t, err)
 
 	tests := []struct {

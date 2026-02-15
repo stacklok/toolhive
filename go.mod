@@ -31,7 +31,7 @@ require (
 	github.com/lestrrat-go/httprc/v3 v3.0.4
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/mark3labs/mcp-go v0.44.0
-	github.com/modelcontextprotocol/registry v1.4.0
+	github.com/modelcontextprotocol/registry v1.4.1
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
 	github.com/olekukonko/tablewriter v1.1.3
 	github.com/onsi/ginkgo/v2 v2.28.1

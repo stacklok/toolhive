@@ -158,7 +158,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
+		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
 		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)

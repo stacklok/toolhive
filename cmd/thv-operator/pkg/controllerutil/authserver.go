@@ -8,12 +8,15 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -40,6 +43,9 @@ const (
 	// UpstreamClientSecretEnvVar is the environment variable name for the upstream client secret
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_UPSTREAM_CLIENT_SECRET"
+
+	// DefaultSentinelPort is the default Redis Sentinel port
+	DefaultSentinelPort = 26379
 )
 
 // GenerateAuthServerConfig generates volumes, volume mounts, and environment variables
@@ -176,40 +182,73 @@ func GenerateAuthServerEnvVars(
 
 	var envVars []corev1.EnvVar
 
-	// Currently only one upstream provider is supported
-	if len(authConfig.UpstreamProviders) == 0 {
-		return nil
-	}
-
-	provider := authConfig.UpstreamProviders[0]
-
-	// Extract client secret reference based on provider type
-	var clientSecretRef *mcpv1alpha1.SecretKeyRef
-
-	switch provider.Type {
-	case mcpv1alpha1.UpstreamProviderTypeOIDC:
-		if provider.OIDCConfig != nil {
-			clientSecretRef = provider.OIDCConfig.ClientSecretRef
-		}
-	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
-		if provider.OAuth2Config != nil {
-			clientSecretRef = provider.OAuth2Config.ClientSecretRef
-		}
-	}
-
 	// Generate env var for upstream client secret if provided
-	if clientSecretRef != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: UpstreamClientSecretEnvVar,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: clientSecretRef.Name,
+	if len(authConfig.UpstreamProviders) > 0 {
+		provider := authConfig.UpstreamProviders[0]
+
+		// Extract client secret reference based on provider type
+		var clientSecretRef *mcpv1alpha1.SecretKeyRef
+
+		switch provider.Type {
+		case mcpv1alpha1.UpstreamProviderTypeOIDC:
+			if provider.OIDCConfig != nil {
+				clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			}
+		case mcpv1alpha1.UpstreamProviderTypeOAuth2:
+			if provider.OAuth2Config != nil {
+				clientSecretRef = provider.OAuth2Config.ClientSecretRef
+			}
+		}
+
+		if clientSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: UpstreamClientSecretEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: clientSecretRef.Name,
+						},
+						Key: clientSecretRef.Key,
 					},
-					Key: clientSecretRef.Key,
 				},
-			},
-		})
+			})
+		}
+	}
+
+	// Generate env vars for Redis ACL credentials if configured
+	if authConfig.Storage != nil &&
+		authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeRedis &&
+		authConfig.Storage.Redis != nil &&
+		authConfig.Storage.Redis.ACLUserConfig != nil {
+		aclConfig := authConfig.Storage.Redis.ACLUserConfig
+
+		if aclConfig.UsernameSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: authrunner.RedisUsernameEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: aclConfig.UsernameSecretRef.Name,
+						},
+						Key: aclConfig.UsernameSecretRef.Key,
+					},
+				},
+			})
+		}
+
+		if aclConfig.PasswordSecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: authrunner.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: aclConfig.PasswordSecretRef.Name,
+						},
+						Key: aclConfig.PasswordSecretRef.Key,
+					},
+				},
+			})
+		}
 	}
 
 	return envVars
@@ -235,6 +274,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
+	mcpServerName string,
 	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
@@ -268,7 +308,10 @@ func AddEmbeddedAuthServerConfigOptions(
 	}
 
 	// Build the embedded auth server config for runner
-	embeddedConfig := buildEmbeddedAuthServerRunnerConfig(authServerConfig, oidcConfig)
+	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(ctx, c, namespace, mcpServerName, authServerConfig, oidcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+	}
 
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
@@ -283,9 +326,13 @@ func AddEmbeddedAuthServerConfigOptions(
 //   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
 //   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
 func buildEmbeddedAuthServerRunnerConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 	oidcConfig *oidc.OIDCConfig,
-) *authserver.RunConfig {
+) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,
 		Issuer:           authConfig.Issuer,
@@ -330,7 +377,137 @@ func buildEmbeddedAuthServerRunnerConfig(
 		config.Upstreams = []authserver.UpstreamRunConfig{*buildUpstreamRunConfig(&provider)}
 	}
 
-	return config
+	// Build storage configuration
+	storageCfg, err := buildStorageRunConfig(ctx, c, namespace, mcpServerName, authConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build storage config: %w", err)
+	}
+	config.Storage = storageCfg
+
+	return config, nil
+}
+
+// buildStorageRunConfig converts CRD AuthServerStorageConfig to storage.RunConfig.
+// Returns nil (memory storage default) if no storage config is specified.
+func buildStorageRunConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
+	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+) (*storage.RunConfig, error) {
+	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeMemory {
+		return nil, nil
+	}
+
+	if authConfig.Storage.Type != mcpv1alpha1.AuthServerStorageTypeRedis {
+		return nil, fmt.Errorf("unsupported storage type: %s", authConfig.Storage.Type)
+	}
+
+	redisConfig := authConfig.Storage.Redis
+	if redisConfig == nil {
+		return nil, fmt.Errorf("redis config is required when storage type is redis")
+	}
+
+	if redisConfig.SentinelConfig == nil {
+		return nil, fmt.Errorf("sentinel config is required for Redis storage")
+	}
+
+	// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
+	sentinelAddrs, err := resolveSentinelAddrs(ctx, c, redisConfig.SentinelConfig, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve sentinel addresses: %w", err)
+	}
+
+	// Build key prefix for multi-tenancy using namespace and MCP server name
+	keyPrefix := fmt.Sprintf("thv:auth:%s:%s:", namespace, mcpServerName)
+
+	return &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    redisConfig.SentinelConfig.MasterName,
+				SentinelAddrs: sentinelAddrs,
+				DB:            int(redisConfig.SentinelConfig.DB),
+			},
+			AuthType: "aclUser",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: authrunner.RedisUsernameEnvVar,
+				PasswordEnvVar: authrunner.RedisPasswordEnvVar,
+			},
+			KeyPrefix:    keyPrefix,
+			DialTimeout:  redisConfig.DialTimeout,
+			ReadTimeout:  redisConfig.ReadTimeout,
+			WriteTimeout: redisConfig.WriteTimeout,
+		},
+	}, nil
+}
+
+// resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service discovery.
+func resolveSentinelAddrs(
+	ctx context.Context,
+	c client.Client,
+	sentinelConfig *mcpv1alpha1.RedisSentinelConfig,
+	defaultNamespace string,
+) ([]string, error) {
+	// If static addresses are provided, use them directly
+	if len(sentinelConfig.SentinelAddrs) > 0 {
+		return sentinelConfig.SentinelAddrs, nil
+	}
+
+	// Otherwise, discover from Kubernetes Service
+	if sentinelConfig.SentinelService == nil {
+		return nil, fmt.Errorf("either sentinelAddrs or sentinelService must be specified")
+	}
+
+	return resolveSentinelServiceAddrs(ctx, c, sentinelConfig.SentinelService, defaultNamespace)
+}
+
+// resolveSentinelServiceAddrs discovers Sentinel addresses from a Kubernetes Service
+// by listing its EndpointSlices.
+func resolveSentinelServiceAddrs(
+	ctx context.Context,
+	c client.Client,
+	sentinelService *mcpv1alpha1.SentinelServiceRef,
+	defaultNamespace string,
+) ([]string, error) {
+	namespace := sentinelService.Namespace
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+	port := sentinelService.Port
+	if port == 0 {
+		port = DefaultSentinelPort
+	}
+
+	// List EndpointSlices that belong to the Service via the standard label
+	var sliceList discoveryv1.EndpointSliceList
+	if err := c.List(ctx, &sliceList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: sentinelService.Name},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list EndpointSlices for service %s/%s: %w",
+			namespace, sentinelService.Name, err)
+	}
+
+	var addrs []string
+	for i := range sliceList.Items {
+		for j := range sliceList.Items[i].Endpoints {
+			ep := &sliceList.Items[i].Endpoints[j]
+			// Only include ready endpoints
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				addrs = append(addrs, fmt.Sprintf("%s:%d", addr, port))
+			}
+		}
+	}
+
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no ready addresses found for Sentinel service %s/%s", namespace, sentinelService.Name)
+	}
+	return addrs, nil
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.

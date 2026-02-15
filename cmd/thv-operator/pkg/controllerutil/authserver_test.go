@@ -9,13 +9,18 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -729,8 +734,14 @@ func TestBuildEmbeddedAuthServerRunnerConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config := buildEmbeddedAuthServerRunnerConfig(tt.authConfig, tt.oidcConfig)
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
+			ctx := context.Background()
+			config, err := buildEmbeddedAuthServerRunnerConfig(ctx, fakeClient, "default", "test-server", tt.authConfig, tt.oidcConfig)
+
+			require.NoError(t, err)
 			require.NotNil(t, config)
 			tt.checkFunc(t, config)
 		})
@@ -819,7 +830,7 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 			var options []runner.RunConfigBuilderOption
 
 			err := AddEmbeddedAuthServerConfigOptions(
-				ctx, fakeClient, "default",
+				ctx, fakeClient, "default", "test-server",
 				&mcpv1alpha1.ExternalAuthConfigRef{Name: "embedded-auth-config"},
 				tt.oidcConfig,
 				&options,
@@ -863,4 +874,534 @@ func TestVolumePathPatterns(t *testing.T) {
 	// Check HMAC paths follow pattern
 	assert.Equal(t, "/etc/toolhive/authserver/hmac/hmac-0", mounts[2].MountPath)
 	assert.Equal(t, "/etc/toolhive/authserver/hmac/hmac-1", mounts[3].MountPath)
+}
+
+func TestGenerateAuthServerEnvVars_RedisCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		authConfig     *mcpv1alpha1.EmbeddedAuthServerConfig
+		wantEnvVarLen  int
+		wantRedisUser  bool
+		wantRedisPass  bool
+		wantUpstreamCS bool
+	}{
+		{
+			name: "Redis storage with ACL credentials generates env vars",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:            "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{},
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel:26379"},
+						},
+						ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-creds",
+								Key:  "username",
+							},
+							PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-creds",
+								Key:  "password",
+							},
+						},
+					},
+				},
+			},
+			wantEnvVarLen: 2,
+			wantRedisUser: true,
+			wantRedisPass: true,
+		},
+		{
+			name: "Redis storage with upstream client secret generates all env vars",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"sentinel:26379"},
+						},
+						ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-creds",
+								Key:  "username",
+							},
+							PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-creds",
+								Key:  "password",
+							},
+						},
+					},
+				},
+			},
+			wantEnvVarLen:  3,
+			wantRedisUser:  true,
+			wantRedisPass:  true,
+			wantUpstreamCS: true,
+		},
+		{
+			name: "memory storage does not generate Redis env vars",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:            "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{},
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeMemory,
+				},
+			},
+			wantEnvVarLen: 0,
+		},
+		{
+			name: "nil storage does not generate Redis env vars",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer:            "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{},
+			},
+			wantEnvVarLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			envVars := GenerateAuthServerEnvVars(tt.authConfig)
+			assert.Len(t, envVars, tt.wantEnvVarLen)
+
+			envMap := make(map[string]corev1.EnvVar)
+			for _, ev := range envVars {
+				envMap[ev.Name] = ev
+			}
+
+			if tt.wantRedisUser {
+				ev, ok := envMap[authrunner.RedisUsernameEnvVar]
+				assert.True(t, ok, "expected Redis username env var")
+				if ok {
+					require.NotNil(t, ev.ValueFrom)
+					require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+					assert.Equal(t, "redis-creds", ev.ValueFrom.SecretKeyRef.Name)
+					assert.Equal(t, "username", ev.ValueFrom.SecretKeyRef.Key)
+				}
+			}
+
+			if tt.wantRedisPass {
+				ev, ok := envMap[authrunner.RedisPasswordEnvVar]
+				assert.True(t, ok, "expected Redis password env var")
+				if ok {
+					require.NotNil(t, ev.ValueFrom)
+					require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+					assert.Equal(t, "redis-creds", ev.ValueFrom.SecretKeyRef.Name)
+					assert.Equal(t, "password", ev.ValueFrom.SecretKeyRef.Key)
+				}
+			}
+
+			if tt.wantUpstreamCS {
+				_, ok := envMap[UpstreamClientSecretEnvVar]
+				assert.True(t, ok, "expected upstream client secret env var")
+			}
+		})
+	}
+}
+
+func TestResolveSentinelAddrs(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+
+	// Helper to create an EndpointSlice for a given service
+	newEndpointSlice := func(name, namespace, serviceName string, ips []string) *discoveryv1.EndpointSlice {
+		var endpoints []discoveryv1.Endpoint
+		for _, ip := range ips {
+			endpoints = append(endpoints, discoveryv1.Endpoint{
+				Addresses:  []string{ip},
+				Conditions: discoveryv1.EndpointConditions{Ready: k8sptr.To(true)},
+			})
+		}
+		return &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels:    map[string]string{discoveryv1.LabelServiceName: serviceName},
+			},
+			Endpoints: endpoints,
+		}
+	}
+
+	tests := []struct {
+		name      string
+		sentinel  *mcpv1alpha1.RedisSentinelConfig
+		objects   []runtime.Object
+		wantAddrs []string
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name: "static addresses returned directly",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379"},
+			},
+			wantAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379"},
+		},
+		{
+			name: "service discovery resolves endpoints",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+				SentinelService: &mcpv1alpha1.SentinelServiceRef{
+					Name: "redis-sentinel",
+					Port: 26379,
+				},
+			},
+			objects: []runtime.Object{
+				newEndpointSlice("redis-sentinel-abc", "default", "redis-sentinel",
+					[]string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}),
+			},
+			wantAddrs: []string{"10.0.0.1:26379", "10.0.0.2:26379", "10.0.0.3:26379"},
+		},
+		{
+			name: "service discovery with default port",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+				SentinelService: &mcpv1alpha1.SentinelServiceRef{
+					Name: "redis-sentinel",
+				},
+			},
+			objects: []runtime.Object{
+				newEndpointSlice("redis-sentinel-abc", "default", "redis-sentinel",
+					[]string{"10.0.0.1"}),
+			},
+			wantAddrs: []string{"10.0.0.1:26379"},
+		},
+		{
+			name: "service discovery with custom namespace",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+				SentinelService: &mcpv1alpha1.SentinelServiceRef{
+					Name:      "redis-sentinel",
+					Namespace: "redis-ns",
+					Port:      26379,
+				},
+			},
+			objects: []runtime.Object{
+				newEndpointSlice("redis-sentinel-abc", "redis-ns", "redis-sentinel",
+					[]string{"10.0.0.1"}),
+			},
+			wantAddrs: []string{"10.0.0.1:26379"},
+		},
+		{
+			name: "no ready endpoints returns error",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+				SentinelService: &mcpv1alpha1.SentinelServiceRef{
+					Name: "redis-sentinel",
+					Port: 26379,
+				},
+			},
+			objects: []runtime.Object{
+				&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "redis-sentinel-abc",
+						Namespace: "default",
+						Labels:    map[string]string{discoveryv1.LabelServiceName: "redis-sentinel"},
+					},
+					Endpoints: []discoveryv1.Endpoint{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "no ready addresses found",
+		},
+		{
+			name: "neither addrs nor service returns error",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+			},
+			wantErr: true,
+			errMsg:  "either sentinelAddrs or sentinelService must be specified",
+		},
+		{
+			name: "no EndpointSlices found returns error",
+			sentinel: &mcpv1alpha1.RedisSentinelConfig{
+				MasterName: "mymaster",
+				SentinelService: &mcpv1alpha1.SentinelServiceRef{
+					Name: "non-existent",
+					Port: 26379,
+				},
+			},
+			wantErr: true,
+			errMsg:  "no ready addresses found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(tt.objects...).
+				Build()
+
+			ctx := context.Background()
+			addrs, err := resolveSentinelAddrs(ctx, fakeClient, tt.sentinel, "default")
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAddrs, addrs)
+		})
+	}
+}
+
+func TestBuildStorageRunConfig(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	tests := []struct {
+		name        string
+		authConfig  *mcpv1alpha1.EmbeddedAuthServerConfig
+		objects     []runtime.Object
+		wantNil     bool
+		wantErr     bool
+		errContains string
+		checkFunc   func(t *testing.T, cfg *storage.RunConfig)
+	}{
+		{
+			name: "nil storage returns nil (memory default)",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+			},
+			wantNil: true,
+		},
+		{
+			name: "memory storage returns nil",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeMemory,
+				},
+			},
+			wantNil: true,
+		},
+		{
+			name: "Redis storage with static addrs builds correctly",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"10.0.0.1:26379"},
+							DB:            2,
+						},
+						ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "u"},
+							PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "p"},
+						},
+						DialTimeout:  "10s",
+						ReadTimeout:  "5s",
+						WriteTimeout: "5s",
+					},
+				},
+			},
+			checkFunc: func(t *testing.T, cfg *storage.RunConfig) {
+				t.Helper()
+				assert.Equal(t, string(storage.TypeRedis), cfg.Type)
+				require.NotNil(t, cfg.RedisConfig)
+				require.NotNil(t, cfg.RedisConfig.SentinelConfig)
+				assert.Equal(t, "mymaster", cfg.RedisConfig.SentinelConfig.MasterName)
+				assert.Equal(t, []string{"10.0.0.1:26379"}, cfg.RedisConfig.SentinelConfig.SentinelAddrs)
+				assert.Equal(t, 2, cfg.RedisConfig.SentinelConfig.DB)
+				assert.Equal(t, "aclUser", cfg.RedisConfig.AuthType)
+				require.NotNil(t, cfg.RedisConfig.ACLUserConfig)
+				assert.Equal(t, authrunner.RedisUsernameEnvVar, cfg.RedisConfig.ACLUserConfig.UsernameEnvVar)
+				assert.Equal(t, authrunner.RedisPasswordEnvVar, cfg.RedisConfig.ACLUserConfig.PasswordEnvVar)
+				assert.Equal(t, "10s", cfg.RedisConfig.DialTimeout)
+				assert.Equal(t, "5s", cfg.RedisConfig.ReadTimeout)
+				assert.Equal(t, "5s", cfg.RedisConfig.WriteTimeout)
+				assert.Equal(t, "thv:auth:default:test-server:", cfg.RedisConfig.KeyPrefix)
+			},
+		},
+		{
+			name: "Redis storage with service discovery",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+							MasterName: "mymaster",
+							SentinelService: &mcpv1alpha1.SentinelServiceRef{
+								Name: "redis-sentinel",
+								Port: 26379,
+							},
+						},
+						ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "u"},
+							PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "p"},
+						},
+					},
+				},
+			},
+			objects: []runtime.Object{
+				&discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "redis-sentinel-abc",
+						Namespace: "default",
+						Labels:    map[string]string{discoveryv1.LabelServiceName: "redis-sentinel"},
+					},
+					Endpoints: []discoveryv1.Endpoint{
+						{
+							Addresses:  []string{"10.0.0.1"},
+							Conditions: discoveryv1.EndpointConditions{Ready: k8sptr.To(true)},
+						},
+					},
+				},
+			},
+			checkFunc: func(t *testing.T, cfg *storage.RunConfig) {
+				t.Helper()
+				assert.Equal(t, []string{"10.0.0.1:26379"}, cfg.RedisConfig.SentinelConfig.SentinelAddrs)
+			},
+		},
+		{
+			name: "Redis storage without redis config returns error",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+				},
+			},
+			wantErr:     true,
+			errContains: "redis config is required",
+		},
+		{
+			name: "Redis storage without sentinel config returns error",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1alpha1.AuthServerStorageConfig{
+					Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1alpha1.RedisStorageConfig{
+						ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "u"},
+							PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "s", Key: "p"},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "sentinel config is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(tt.objects...).
+				Build()
+
+			ctx := context.Background()
+			cfg, err := buildStorageRunConfig(ctx, fakeClient, "default", "test-server", tt.authConfig)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tt.wantNil {
+				assert.Nil(t, cfg)
+				return
+			}
+
+			require.NotNil(t, cfg)
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, cfg)
+			}
+		})
+	}
+}
+
+func TestBuildEmbeddedAuthServerRunnerConfig_WithRedisStorage(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	authConfig := &mcpv1alpha1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+			{Name: "signing-key", Key: "private.pem"},
+		},
+		HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+			{Name: "hmac-secret", Key: "hmac"},
+		},
+		Storage: &mcpv1alpha1.AuthServerStorageConfig{
+			Type: mcpv1alpha1.AuthServerStorageTypeRedis,
+			Redis: &mcpv1alpha1.RedisStorageConfig{
+				SentinelConfig: &mcpv1alpha1.RedisSentinelConfig{
+					MasterName:    "mymaster",
+					SentinelAddrs: []string{"10.0.0.1:26379"},
+				},
+				ACLUserConfig: &mcpv1alpha1.RedisACLUserConfig{
+					UsernameSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "redis-creds", Key: "username"},
+					PasswordSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "redis-creds", Key: "password"},
+				},
+			},
+		},
+	}
+
+	oidcConfig := &oidc.OIDCConfig{
+		ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+		Scopes:      []string{"openid"},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ctx := context.Background()
+	config, err := buildEmbeddedAuthServerRunnerConfig(ctx, fakeClient, "default", "my-mcp-server", authConfig, oidcConfig)
+
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.Storage)
+	assert.Equal(t, string(storage.TypeRedis), config.Storage.Type)
+	require.NotNil(t, config.Storage.RedisConfig)
+	assert.Equal(t, "mymaster", config.Storage.RedisConfig.SentinelConfig.MasterName)
+	assert.Equal(t, authrunner.RedisUsernameEnvVar, config.Storage.RedisConfig.ACLUserConfig.UsernameEnvVar)
 }

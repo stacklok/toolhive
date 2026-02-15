@@ -615,7 +615,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 			ctx := t.Context()
 			var options []runner.RunConfigBuilderOption
 
-			err := ctrlutil.AddExternalAuthConfigOptions(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Spec.ExternalAuthConfigRef, tt.oidcConfig, &options)
+			err := ctrlutil.AddExternalAuthConfigOptions(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Name, tt.mcpServer.Spec.ExternalAuthConfigRef, tt.oidcConfig, &options)
 
 			if tt.expectError {
 				assert.Error(t, err)

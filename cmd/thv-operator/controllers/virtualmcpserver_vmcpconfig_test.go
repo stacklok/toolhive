@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -498,7 +501,10 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
 	require.NoError(t, err, "should successfully list workloads in group")
 
-	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames)
+	// Create a status collector (we don't validate status in this test)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(testVmcp)
+
+	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -511,6 +517,175 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	assert.Equal(t, "test-vmcp-vmcp-config", cm.Name)
 	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
+}
+
+// TestSetDiscoveredAuthConfigConditions tests that discovered auth config conditions
+// reflect the current state for all backends.
+func TestSetDiscoveredAuthConfigConditions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		typedWorkloads         []workloads.TypedWorkload
+		discoveredAuthErrors   []AuthConfigError
+		expectedConditionCount int
+		validate               func(*testing.T, *statusmocks.MockStatusManager)
+	}{
+		{
+			name: "backend with auth error sets False condition",
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			discoveredAuthErrors: []AuthConfigError{
+				{
+					Context:     "discovered:backend-1",
+					BackendName: "backend-1",
+					Error:       fmt.Errorf("failed to get MCPExternalAuthConfig missing-config: not found"),
+				},
+			},
+			expectedConditionCount: 1,
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-1",
+						"ConversionFailed",
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1).
+					Do(func(_, _, message string, _ metav1.ConditionStatus) {
+						assert.Contains(t, message, "Failed to convert discovered auth config")
+						assert.Contains(t, message, "missing-config")
+					})
+			},
+		},
+		{
+			name: "backend without error sets True condition",
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			discoveredAuthErrors:   []AuthConfigError{},
+			expectedConditionCount: 1,
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-1",
+						"ConversionSucceeded",
+						"Discovered auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
+		{
+			name: "mixed: some backends with errors, some without",
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "backend-2", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "backend-3", Type: workloads.WorkloadTypeMCPServer},
+			},
+			discoveredAuthErrors: []AuthConfigError{
+				{
+					Context:     "discovered:backend-1",
+					BackendName: "backend-1",
+					Error:       fmt.Errorf("auth error 1"),
+				},
+			},
+			expectedConditionCount: 3,
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				// backend-1 has error - False condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-1",
+						"ConversionFailed",
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				// backend-2 has no error - True condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-2",
+						"ConversionSucceeded",
+						"Discovered auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+				// backend-3 has no error - True condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-3",
+						"ConversionSucceeded",
+						"Discovered auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
+		{
+			name:                   "no backends means no conditions",
+			typedWorkloads:         []workloads.TypedWorkload{},
+			discoveredAuthErrors:   []AuthConfigError{},
+			expectedConditionCount: 0,
+			validate: func(t *testing.T, _ *statusmocks.MockStatusManager) {
+				t.Helper()
+				// No backends = no conditions set
+			},
+		},
+		{
+			name: "non-discovered errors don't affect conditions",
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "backend-1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			discoveredAuthErrors: []AuthConfigError{
+				{
+					Context:     "default",
+					BackendName: "",
+					Error:       fmt.Errorf("default auth error"),
+				},
+				{
+					Context:     "backend:backend-1",
+					BackendName: "backend-1",
+					Error:       fmt.Errorf("backend-specific error"),
+				},
+			},
+			expectedConditionCount: 1,
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				// Non-discovered errors ignored, backend-1 gets True condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-backend-1",
+						"ConversionSucceeded",
+						"Discovered auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockStatusManager := statusmocks.NewMockStatusManager(ctrl)
+
+			// Set up expectations
+			if tt.validate != nil {
+				tt.validate(t, mockStatusManager)
+			}
+
+			// Call the function being tested
+			setDiscoveredAuthConfigConditions(mockStatusManager, tt.typedWorkloads, tt.discoveredAuthErrors)
+
+			// gomock will verify expectations automatically
+		})
+	}
 }
 
 // TestValidateVmcpConfig tests config validation
@@ -756,7 +931,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.NoError(t, err, "should successfully create ConfigMap with referenced composite tool")
 
 	// Verify ConfigMap was created
@@ -882,7 +1058,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.NoError(t, err, "should successfully merge inline and referenced tools")
 
 	// Verify ConfigMap was created
@@ -965,7 +1142,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test should fail with not found error
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.Error(t, err, "should fail when referenced tool doesn't exist")
 	assert.Contains(t, err.Error(), "not found", "error should mention not found")
 }
@@ -1023,7 +1201,8 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create ConfigMap
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1129,7 +1308,8 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create ConfigMap
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1244,7 +1424,8 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	require.NotEmpty(t, workloadNames, "should have discovered the MCPServer")
 
 	// Create ConfigMap
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created

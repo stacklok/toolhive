@@ -86,6 +86,12 @@ func (s *StatusCollector) SetAuthConfiguredCondition(reason, message string, sta
 	s.SetCondition(mcpv1alpha1.ConditionTypeAuthConfigured, reason, message, status)
 }
 
+// SetAuthConfigCondition sets a specific auth config condition with dynamic type.
+// This allows setting granular conditions for individual auth config failures.
+func (s *StatusCollector) SetAuthConfigCondition(conditionType, reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(conditionType, reason, message, status)
+}
+
 // SetReadyCondition sets the Ready condition.
 func (s *StatusCollector) SetReadyCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerReady, reason, message, status)

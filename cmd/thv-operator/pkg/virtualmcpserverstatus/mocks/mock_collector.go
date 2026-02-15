@@ -42,6 +42,18 @@ func (m *MockStatusManager) EXPECT() *MockStatusManagerMockRecorder {
 	return m.recorder
 }
 
+// SetAuthConfigCondition mocks base method.
+func (m *MockStatusManager) SetAuthConfigCondition(conditionType, reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetAuthConfigCondition", conditionType, reason, message, status)
+}
+
+// SetAuthConfigCondition indicates an expected call of SetAuthConfigCondition.
+func (mr *MockStatusManagerMockRecorder) SetAuthConfigCondition(conditionType, reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAuthConfigCondition", reflect.TypeOf((*MockStatusManager)(nil).SetAuthConfigCondition), conditionType, reason, message, status)
+}
+
 // SetAuthConfiguredCondition mocks base method.
 func (m *MockStatusManager) SetAuthConfiguredCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

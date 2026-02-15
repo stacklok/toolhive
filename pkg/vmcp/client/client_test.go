@@ -15,6 +15,9 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -535,6 +538,125 @@ func TestNewHTTPBackendClient_NilRegistry(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 	})
+}
+
+// TestTracePropagatingRoundTripper tests the trace context propagation RoundTripper.
+func TestTracePropagatingRoundTripper(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		propagator        propagation.TextMapPropagator
+		createSpan        bool
+		baseErr           error
+		expectTraceparent bool
+		expectErr         bool
+	}{
+		{
+			name:              "injects traceparent with active span",
+			propagator:        propagation.TraceContext{},
+			createSpan:        true,
+			expectTraceparent: true,
+		},
+		{
+			name:       "no span context does not inject header",
+			propagator: propagation.TraceContext{},
+			createSpan: false,
+		},
+		{
+			name:              "propagates base error and still injects header",
+			propagator:        propagation.TraceContext{},
+			createSpan:        true,
+			baseErr:           errors.New("connection refused"),
+			expectTraceparent: true,
+			expectErr:         true,
+		},
+		{
+			name:       "no-op propagator does not inject header",
+			propagator: propagation.NewCompositeTextMapPropagator(),
+			createSpan: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			var traceID string
+
+			if tt.createSpan {
+				tp := sdktrace.NewTracerProvider()
+				t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+				var span trace.Span
+				ctx, span = tp.Tracer("test").Start(ctx, "test-span")
+				defer span.End()
+				traceID = span.SpanContext().TraceID().String()
+			}
+
+			base := &mockRoundTripper{
+				response: &http.Response{StatusCode: http.StatusOK},
+				err:      tt.baseErr,
+			}
+			rt := &tracePropagatingRoundTripper{
+				base:       base,
+				propagator: tt.propagator,
+			}
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+			require.NoError(t, err)
+
+			resp, err := rt.RoundTrip(req)
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.baseErr)
+				assert.Nil(t, resp)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+			}
+
+			traceparent := base.capturedReq.Header.Get("Traceparent")
+			if tt.expectTraceparent {
+				require.NotEmpty(t, traceparent, "traceparent header should be set")
+				assert.Contains(t, traceparent, traceID,
+					"traceparent %q should contain trace ID %q", traceparent, traceID)
+			} else {
+				assert.Empty(t, traceparent, "traceparent should not be set")
+			}
+		})
+	}
+}
+
+// TestTracePropagatingRoundTripper_ParentChildSpan verifies that the propagated
+// traceparent contains the child (most recent) span's span ID, not the parent's.
+func TestTracePropagatingRoundTripper_ParentChildSpan(t *testing.T) {
+	t.Parallel()
+
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	ctx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
+	ctx, childSpan := tp.Tracer("test").Start(ctx, "child")
+	defer parentSpan.End()
+	defer childSpan.End()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &tracePropagatingRoundTripper{
+		base:       base,
+		propagator: propagation.TraceContext{},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	traceparent := base.capturedReq.Header.Get("Traceparent")
+	require.NotEmpty(t, traceparent)
+	assert.Contains(t, traceparent, childSpan.SpanContext().SpanID().String(),
+		"traceparent should contain child span ID, not parent")
 }
 
 func TestResolveAuthStrategy(t *testing.T) {

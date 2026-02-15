@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -440,5 +441,61 @@ func TestCreateTemplateData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadRuntimeConfig_MergesMissingOverrideFields(t *testing.T) {
+	t.Parallel()
+
+	base := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	if base == nil {
+		t.Fatal("loadRuntimeConfig returned nil base config")
+		return
+	}
+	if base.BuilderImage == "" {
+		t.Fatal("base runtime config has empty builder image")
+	}
+
+	override := &templates.RuntimeConfig{
+		AdditionalPackages: []string{"curl"},
+	}
+	got := loadRuntimeConfig(templates.TransportTypeGO, override)
+	if got == nil {
+		t.Fatal("loadRuntimeConfig returned nil merged config")
+		return
+	}
+
+	// Missing builder image in override should inherit the base builder image.
+	if got.BuilderImage != base.BuilderImage {
+		t.Fatalf("BuilderImage = %q, want base %q", got.BuilderImage, base.BuilderImage)
+	}
+
+	// Additional packages should be appended to base defaults.
+	expectedPackages := append([]string{}, base.AdditionalPackages...)
+	expectedPackages = append(expectedPackages, "curl")
+	if !reflect.DeepEqual(got.AdditionalPackages, expectedPackages) {
+		t.Fatalf("AdditionalPackages = %v, want %v", got.AdditionalPackages, expectedPackages)
+	}
+
+	// Ensure merged config is detached from input slices.
+	override.AdditionalPackages[0] = "git"
+	if got.AdditionalPackages[len(got.AdditionalPackages)-1] != "curl" {
+		t.Fatalf("AdditionalPackages mutated via override input: got %v", got.AdditionalPackages)
+	}
+}
+
+func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
+	t.Parallel()
+
+	customImage := "golang:1.24-alpine"
+	got := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
+		BuilderImage: customImage,
+	})
+	if got == nil {
+		t.Fatal("loadRuntimeConfig returned nil config")
+		return
+	}
+	if got.BuilderImage != customImage {
+		t.Fatalf("BuilderImage = %q, want %q", got.BuilderImage, customImage)
 	}
 }

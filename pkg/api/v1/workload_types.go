@@ -9,6 +9,7 @@ import (
 
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry/registry"
@@ -39,6 +40,8 @@ type workloadStatusResponse struct {
 type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
+	// RuntimeConfig allows overriding runtime build configuration for protocol schemes.
+	RuntimeConfig *templates.RuntimeConfig `json:"runtime_config,omitempty"`
 	// Host to bind to
 	Host string `json:"host"`
 	// Command arguments to pass to the container
@@ -295,6 +298,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	return &createRequest{
 		updateRequest: updateRequest{
 			Image:             runConfig.Image,
+			RuntimeConfig:     runConfig.RuntimeConfig,
 			Host:              runConfig.Host,
 			CmdArguments:      runConfig.CmdArgs,
 			TargetPort:        runConfig.TargetPort,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -398,6 +399,25 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "Custom fetch description", result.ToolsOverride["fetch"].Description)
 		assert.Equal(t, "read_file", result.ToolsOverride["read"].Name)
 		assert.Empty(t, result.ToolsOverride["read"].Description)
+	})
+
+	t.Run("with runtime config", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			RuntimeConfig: &templates.RuntimeConfig{
+				BuilderImage:       "node:20-alpine",
+				AdditionalPackages: []string{"git"},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.RuntimeConfig)
+		assert.Equal(t, "node:20-alpine", result.RuntimeConfig.BuilderImage)
+		assert.Equal(t, []string{"git"}, result.RuntimeConfig.AdditionalPackages)
 	})
 
 	t.Run("nil runConfig", func(t *testing.T) {

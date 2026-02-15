@@ -4033,7 +4033,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4041,7 +4041,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "List all installed skills",
@@ -4110,7 +4110,7 @@ const docTemplate = `{
                         },
                         "description": "Conflict"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4118,7 +4118,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Install a skill",
@@ -4337,7 +4337,7 @@ const docTemplate = `{
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4345,7 +4345,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Uninstall a skill",
@@ -4409,7 +4409,7 @@ const docTemplate = `{
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4417,7 +4417,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Get skill details",

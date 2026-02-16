@@ -224,10 +224,10 @@ func TestSkillsRouter(t *testing.T) {
 			path:   "/my-skill",
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
-					Return(&skills.SkillInfo{Installed: false}, nil)
+					Return(nil, storage.ErrNotFound)
 			},
-			expectedStatus: http.StatusOK,
-			expectedBody:   `"installed":false`,
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "resource not found",
 		},
 		{
 			name:           "get skill info invalid name",

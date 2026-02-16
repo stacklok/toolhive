@@ -256,13 +256,13 @@ func TestInfo(t *testing.T) {
 			wantInstalled: true,
 		},
 		{
-			name: "not found returns installed=false",
+			name: "not found returns 404",
 			opts: skills.InfoOptions{Name: "unknown"},
 			setupMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Get(gomock.Any(), "unknown", skills.ScopeUser, "").
 					Return(skills.InstalledSkill{}, storage.ErrNotFound)
 			},
-			wantInstalled: false,
+			wantCode: http.StatusNotFound,
 		},
 		{
 			name: "propagates store errors",
@@ -284,6 +284,22 @@ func TestInfo(t *testing.T) {
 			opts:      skills.InfoOptions{Name: ""},
 			setupMock: func(_ *storemocks.MockSkillStore) {},
 			wantCode:  http.StatusBadRequest,
+		},
+		{
+			name: "respects project scope",
+			opts: skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject},
+			setupMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, "").Return(installed, nil)
+			},
+			wantInstalled: true,
+		},
+		{
+			name: "defaults to user scope when empty",
+			opts: skills.InfoOptions{Name: "my-skill", Scope: ""},
+			setupMock: func(s *storemocks.MockSkillStore) {
+				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(installed, nil)
+			},
+			wantInstalled: true,
 		},
 	}
 

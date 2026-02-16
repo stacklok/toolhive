@@ -6,7 +6,6 @@ package skillsvc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -67,19 +66,14 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 }
 
 // Info returns detailed information about a skill.
-// Info always queries user-scoped skills; project-scoped lookup is not yet
-// supported and will be added when InfoOptions gains a Scope field.
 func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.SkillInfo, error) {
 	if err := skills.ValidateSkillName(opts.Name); err != nil {
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	skill, err := s.store.Get(ctx, opts.Name, skills.ScopeUser, "")
+	skill, err := s.store.Get(ctx, opts.Name, defaultScope(opts.Scope), "")
 	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return &skills.SkillInfo{Installed: false}, nil
-		}
-		return nil, fmt.Errorf("failed to get skill info: %w", err)
+		return nil, err
 	}
 
 	return &skills.SkillInfo{

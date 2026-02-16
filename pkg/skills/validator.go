@@ -47,7 +47,7 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 	}
 
 	// Check for symlinks and path traversal in a single walk
-	if err := checkFilesystem(path); err != nil {
+	if err := CheckFilesystem(path); err != nil {
 		errs = append(errs, err.Error())
 	}
 
@@ -141,8 +141,8 @@ func ValidateSkillName(name string) error {
 	return nil
 }
 
-// checkFilesystem walks the directory once, checking for symlinks and path traversal.
-func checkFilesystem(path string) error {
+// CheckFilesystem walks the directory once, checking for symlinks and path traversal.
+func CheckFilesystem(path string) error {
 	return filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip inaccessible paths

@@ -182,3 +182,14 @@ type SkillIndex struct {
 	// Skills is the list of available skills.
 	Skills []SkillIndexEntry `json:"skills"`
 }
+
+//go:generate mockgen -destination=mocks/mock_path_resolver.go -package=mocks -source=types.go PathResolver
+
+// PathResolver resolves filesystem paths for skill installations.
+// It uses string (not client.ClientApp) to avoid importing pkg/client from pkg/skills.
+type PathResolver interface {
+	// GetSkillPath returns the filesystem path where a skill should be installed.
+	GetSkillPath(clientType, skillName string, scope Scope, projectRoot string) (string, error)
+	// ListSkillSupportingClients returns all client identifiers that support skills.
+	ListSkillSupportingClients() []string
+}

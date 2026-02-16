@@ -90,6 +90,8 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 		Name:    req.Name,
 		Version: req.Version,
 		Scope:   req.Scope,
+		Client:  req.Client,
+		Force:   req.Force,
 	})
 	if err != nil {
 		return err

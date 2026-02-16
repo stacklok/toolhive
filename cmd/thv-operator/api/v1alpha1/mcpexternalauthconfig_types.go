@@ -649,14 +649,16 @@ type MCPExternalAuthConfigList struct {
 // Validate performs validation on the MCPExternalAuthConfig spec.
 // This method is called by the controller during reconciliation.
 //
-// Note: Simple field presence checks (type-specific config matching) are handled by
-// CEL validation rules (lines 41-47) and will reject invalid specs at API admission time.
-// This method focuses on complex business logic validation that CEL cannot express.
+// Note: These validations provide defense-in-depth alongside CEL validation rules (lines 44-49).
+// CEL catches issues at API admission time, but this method also validates stored objects
+// to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPExternalAuthConfig) Validate() error {
-	// Only perform complex validations that CEL cannot handle
-	// Simple type/config matching is already validated by CEL at API admission
+	// First, validate type/config consistency (defense-in-depth with CEL)
+	if err := r.validateTypeConfigConsistency(); err != nil {
+		return err
+	}
 
-	// Perform type-specific complex validation
+	// Then perform type-specific complex validation
 	switch r.Spec.Type {
 	case ExternalAuthTypeEmbeddedAuthServer:
 		return r.validateEmbeddedAuthServer()
@@ -672,6 +674,40 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// Unknown type - should be caught by enum validation, but handle defensively
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
 	}
+}
+
+// validateTypeConfigConsistency validates that the correct config is set for the selected type.
+// This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
+	// Check that each type has its corresponding config
+	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
+		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
+	}
+	if (r.Spec.HeaderInjection == nil) == (r.Spec.Type == ExternalAuthTypeHeaderInjection) {
+		return fmt.Errorf("headerInjection configuration must be set if and only if type is 'headerInjection'")
+	}
+	if (r.Spec.BearerToken == nil) == (r.Spec.Type == ExternalAuthTypeBearerToken) {
+		return fmt.Errorf("bearerToken configuration must be set if and only if type is 'bearerToken'")
+	}
+	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
+		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
+	}
+	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
+		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
+	}
+
+	// Check that unauthenticated has no config
+	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
+		if r.Spec.TokenExchange != nil ||
+			r.Spec.HeaderInjection != nil ||
+			r.Spec.BearerToken != nil ||
+			r.Spec.EmbeddedAuthServer != nil ||
+			r.Spec.AWSSts != nil {
+			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+		}
+	}
+
+	return nil
 }
 
 // validateEmbeddedAuthServer validates embeddedAuthServer type configuration.

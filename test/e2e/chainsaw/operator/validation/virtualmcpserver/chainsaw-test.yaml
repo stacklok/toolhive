@@ -16,7 +16,18 @@ spec:
     - name: reject-oidc-without-config
       try:
         - apply:
-            file: invalid-oidc-missing-config.yaml
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-invalid-oidc-missing-config
+                namespace: default
+              spec:
+                incomingAuth:
+                  type: oidc  # Requires oidcConfig but it's missing
+                serviceType: ClusterIP
+                config:
+                  groupRef: test-group
             expect:
               - check:
                   ($error != null): true
@@ -26,6 +37,24 @@ spec:
     - name: accept-valid-minimal
       try:
         - apply:
-            file: valid-minimal.yaml
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-valid-minimal
+                namespace: default
+              spec:
+                incomingAuth:
+                  type: anonymous
+                serviceType: ClusterIP
+                config:
+                  groupRef: test-group
         - assert:
-            file: valid-minimal.yaml
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-valid-minimal
+              spec:
+                incomingAuth:
+                  type: anonymous

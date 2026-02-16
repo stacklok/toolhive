@@ -409,7 +409,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
 			return store.Close()
 		})
-		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store)
+		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
 	}
 
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface

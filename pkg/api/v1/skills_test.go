@@ -110,22 +110,28 @@ func TestSkillsRouter(t *testing.T) {
 			expectedBody:   `"my-skill"`,
 		},
 		{
-			name:           "install skill empty name",
-			method:         "POST",
-			path:           "/",
-			body:           `{"name":""}`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			name:   "install skill empty name",
+			method: "POST",
+			path:   "/",
+			body:   `{"name":""}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
+					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
+			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "name is required",
+			expectedBody:   "invalid skill name",
 		},
 		{
-			name:           "install skill missing name field",
-			method:         "POST",
-			path:           "/",
-			body:           `{}`,
-			setupMock:      func(_ *skillsmocks.MockSkillService) {},
+			name:   "install skill missing name field",
+			method: "POST",
+			path:   "/",
+			body:   `{}`,
+			setupMock: func(svc *skillsmocks.MockSkillService) {
+				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
+					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
+			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "name is required",
+			expectedBody:   "invalid skill name",
 		},
 		{
 			name:           "install skill malformed json",
@@ -206,8 +212,7 @@ func TestSkillsRouter(t *testing.T) {
 			setupMock: func(svc *skillsmocks.MockSkillService) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(&skills.SkillInfo{
-						Metadata:  skills.SkillMetadata{Name: "my-skill"},
-						Installed: true,
+						Metadata: skills.SkillMetadata{Name: "my-skill"},
 						InstalledSkill: &skills.InstalledSkill{
 							Metadata: skills.SkillMetadata{Name: "my-skill"},
 							Scope:    skills.ScopeUser,
@@ -216,7 +221,7 @@ func TestSkillsRouter(t *testing.T) {
 					}, nil)
 			},
 			expectedStatus: http.StatusOK,
-			expectedBody:   `"installed":true`,
+			expectedBody:   `"installed_skill"`,
 		},
 		{
 			name:   "get skill info not found",

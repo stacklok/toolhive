@@ -1427,7 +1427,7 @@ components:
       - InstallStatusPending
       - InstallStatusFailed
     skills.InstalledSkill:
-      description: InstalledSkill is set if the skill is installed.
+      description: InstalledSkill contains the full installation record.
       properties:
         clients:
           description: |-
@@ -1477,9 +1477,6 @@ components:
       - ScopeProject
     skills.SkillInfo:
       properties:
-        installed:
-          description: Installed indicates whether the skill is currently installed.
-          type: boolean
         installed_skill:
           $ref: '#/components/schemas/skills.InstalledSkill'
         metadata:

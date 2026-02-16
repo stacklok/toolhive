@@ -78,7 +78,6 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 
 	return &skills.SkillInfo{
 		Metadata:       skill.Metadata,
-		Installed:      true,
 		InstalledSkill: &skill,
 	}, nil
 }

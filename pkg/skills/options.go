@@ -41,13 +41,11 @@ type InfoOptions struct {
 	Scope Scope `json:"scope,omitempty"`
 }
 
-// SkillInfo contains detailed information about a skill.
+// SkillInfo contains detailed information about an installed skill.
 type SkillInfo struct {
 	// Metadata contains the skill's metadata.
 	Metadata SkillMetadata `json:"metadata"`
-	// Installed indicates whether the skill is currently installed.
-	Installed bool `json:"installed"`
-	// InstalledSkill is set if the skill is installed.
+	// InstalledSkill contains the full installation record.
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
 }
 

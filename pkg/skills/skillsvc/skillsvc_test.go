@@ -240,12 +240,11 @@ func TestInfo(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		opts          skills.InfoOptions
-		setupMock     func(*storemocks.MockSkillStore)
-		wantCode      int
-		wantInstalled bool
-		wantErr       string
+		name      string
+		opts      skills.InfoOptions
+		setupMock func(*storemocks.MockSkillStore)
+		wantCode  int
+		wantErr   string
 	}{
 		{
 			name: "found skill",
@@ -253,7 +252,6 @@ func TestInfo(t *testing.T) {
 			setupMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(installed, nil)
 			},
-			wantInstalled: true,
 		},
 		{
 			name: "not found returns 404",
@@ -291,7 +289,6 @@ func TestInfo(t *testing.T) {
 			setupMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, "").Return(installed, nil)
 			},
-			wantInstalled: true,
 		},
 		{
 			name: "defaults to user scope when empty",
@@ -299,7 +296,6 @@ func TestInfo(t *testing.T) {
 			setupMock: func(s *storemocks.MockSkillStore) {
 				s.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(installed, nil)
 			},
-			wantInstalled: true,
 		},
 	}
 
@@ -322,13 +318,8 @@ func TestInfo(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantInstalled, info.Installed)
-			if tt.wantInstalled {
-				require.NotNil(t, info.InstalledSkill)
-				assert.Equal(t, "my-skill", info.InstalledSkill.Metadata.Name)
-			} else {
-				assert.Nil(t, info.InstalledSkill)
-			}
+			require.NotNil(t, info.InstalledSkill)
+			assert.Equal(t, "my-skill", info.InstalledSkill.Metadata.Name)
 		})
 	}
 }

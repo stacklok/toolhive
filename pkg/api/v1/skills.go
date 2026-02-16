@@ -56,14 +56,11 @@ func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error 
 
 	result, err := s.skillService.List(r.Context(), skills.ListOptions{Scope: scope})
 	if err != nil {
-		return fmt.Errorf("failed to list skills: %w", err)
+		return err
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(skillListResponse{Skills: result}); err != nil {
-		return fmt.Errorf("failed to encode skills list: %w", err)
-	}
-	return nil
+	return json.NewEncoder(w).Encode(skillListResponse{Skills: result})
 }
 
 // installSkill installs a skill from a remote source.
@@ -89,13 +86,6 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 		)
 	}
 
-	if req.Name == "" {
-		return httperr.WithCode(
-			fmt.Errorf("name is required"),
-			http.StatusBadRequest,
-		)
-	}
-
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
 		Name:    req.Name,
 		Version: req.Version,
@@ -108,10 +98,7 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/skills/%s", result.Skill.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(installSkillResponse{Skill: result.Skill}); err != nil {
-		return fmt.Errorf("failed to encode install response: %w", err)
-	}
-	return nil
+	return json.NewEncoder(w).Encode(installSkillResponse{Skill: result.Skill})
 }
 
 // uninstallSkill removes an installed skill.
@@ -176,14 +163,11 @@ func (s *SkillsRoutes) getSkillInfo(w http.ResponseWriter, r *http.Request) erro
 
 	info, err := s.skillService.Info(r.Context(), skills.InfoOptions{Name: name, Scope: scope})
 	if err != nil {
-		return fmt.Errorf("failed to get skill info: %w", err)
+		return err
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(info); err != nil {
-		return fmt.Errorf("failed to encode skill info: %w", err)
-	}
-	return nil
+	return json.NewEncoder(w).Encode(info)
 }
 
 // validateSkill checks whether a skill definition is valid.

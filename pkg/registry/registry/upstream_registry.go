@@ -29,13 +29,16 @@ type UpstreamMeta struct {
 	LastUpdated string `json:"last_updated" yaml:"last_updated"`
 }
 
-// UpstreamData contains the actual registry content (servers and groups)
+// UpstreamData contains the actual registry content (servers, groups, and skills)
 type UpstreamData struct {
 	// Servers contains the server definitions in upstream MCP format
 	Servers []upstreamv0.ServerJSON `json:"servers" yaml:"servers"`
 
 	// Groups contains grouped collections of servers (optional, for future use)
 	Groups []UpstreamGroup `json:"groups,omitempty" yaml:"groups,omitempty"`
+
+	// Skills contains the skill definitions
+	Skills []Skill `json:"skills,omitempty" yaml:"skills,omitempty"`
 }
 
 // UpstreamGroup represents a named collection of related MCP servers

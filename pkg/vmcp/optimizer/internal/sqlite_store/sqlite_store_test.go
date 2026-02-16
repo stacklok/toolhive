@@ -724,5 +724,4 @@ func (f *fakeEmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([
 	return result, nil
 }
 
-func (f *fakeEmbeddingClient) Dimension() int { return f.dim }
-func (*fakeEmbeddingClient) Close() error     { return nil }
+func (*fakeEmbeddingClient) Close() error { return nil }

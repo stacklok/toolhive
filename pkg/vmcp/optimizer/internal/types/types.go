@@ -47,15 +47,13 @@ type ToolMatch struct {
 
 // EmbeddingClient generates vector embeddings from text.
 // Implementations may use local models, remote APIs, or deterministic fakes.
+// The dimensionality of embeddings can be inferred from the returned vectors.
 type EmbeddingClient interface {
 	// Embed returns a vector embedding for the given text.
 	Embed(ctx context.Context, text string) ([]float32, error)
 
 	// EmbedBatch returns vector embeddings for multiple texts.
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
-
-	// Dimension returns the dimensionality of the embeddings produced.
-	Dimension() int
 
 	// Close releases any resources held by the client.
 	Close() error

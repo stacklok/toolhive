@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package optimizer
+package similarity
 
 import (
 	"context"
@@ -62,11 +62,6 @@ func (f *FakeEmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([
 		result[i] = vec
 	}
 	return result, nil
-}
-
-// Dimension returns the dimensionality of the embeddings.
-func (f *FakeEmbeddingClient) Dimension() int {
-	return f.dim
 }
 
 // Close is a no-op for the fake client.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package optimizer
+package similarity
 
 import (
 	"context"
@@ -48,7 +48,6 @@ func TestFakeEmbeddingClient_Dimension(t *testing.T) {
 		t.Run(fmt.Sprintf("dim_%d", dim), func(t *testing.T) {
 			t.Parallel()
 			client := NewFakeEmbeddingClient(dim)
-			require.Equal(t, dim, client.Dimension())
 
 			vec, err := client.Embed(ctx, "test")
 			require.NoError(t, err)

@@ -192,6 +192,12 @@ func (s sqliteToolStore) Close() error {
 // It uses json_each() to pass the allowed tool names as a single JSON array
 // parameter, avoiding manual placeholder construction.
 //
+// The limit parameter caps results per this method. In hybrid mode, FTS5 and
+// semantic search each independently return their top-k results (split by
+// hybridSemanticToolsRatio). A tool with a low BM25 rank won't be missed if
+// it has high cosine similarity, because the semantic query runs separately
+// and will surface it.
+//
 // The ftsExpr is produced by sanitizeFTS5Query and is always passed as a
 // parameterized ? value, never interpolated into SQL.
 func (s sqliteToolStore) searchFTS5(
@@ -236,6 +242,13 @@ func (s sqliteToolStore) searchFTS5(
 // searchSemantic performs embedding-based semantic search.
 // It embeds the query, loads all candidate embeddings from the database,
 // computes cosine distance, and returns the closest matches.
+//
+// This runs as a separate query from searchFTS5 because BM25 rank and cosine
+// similarity are fundamentally different metrics that cannot be meaningfully
+// combined in a single SQL query. BM25 rank is a hidden FTS5 column computed
+// on-the-fly from term frequency, while cosine similarity requires loading
+// embedding blobs and computing distances in Go. Merging happens afterward
+// in mergeResults, which deduplicates and keeps the best score per tool.
 //
 //nolint:unparam // limit kept for API consistency with searchFTS5
 func (s sqliteToolStore) searchSemantic(

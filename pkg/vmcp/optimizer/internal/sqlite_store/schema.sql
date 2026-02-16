@@ -4,7 +4,8 @@
 -- Capabilities table stores tool/resource/prompt metadata
 CREATE TABLE IF NOT EXISTS llm_capabilities (
     name TEXT PRIMARY KEY,
-    description TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT '',
+    embedding BLOB
 );
 
 -- FTS5 virtual table for full-text search with BM25 ranking.

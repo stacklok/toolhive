@@ -1553,7 +1553,7 @@ const docTemplate = `{
                 ]
             },
             "skills.InstalledSkill": {
-                "description": "InstalledSkill is set if the skill is installed.",
+                "description": "InstalledSkill contains the full installation record.",
                 "properties": {
                     "clients": {
                         "description": "Clients is the list of client identifiers the skill is installed for.\nTODO: Refactor client.ClientApp to a shared package so it can be used here instead of []string.",
@@ -1617,10 +1617,6 @@ const docTemplate = `{
             },
             "skills.SkillInfo": {
                 "properties": {
-                    "installed": {
-                        "description": "Installed indicates whether the skill is currently installed.",
-                        "type": "boolean"
-                    },
                     "installed_skill": {
                         "$ref": "#/components/schemas/skills.InstalledSkill"
                     },
@@ -4033,7 +4029,7 @@ const docTemplate = `{
                         },
                         "description": "OK"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4041,7 +4037,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "List all installed skills",
@@ -4110,7 +4106,7 @@ const docTemplate = `{
                         },
                         "description": "Conflict"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4118,7 +4114,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Install a skill",
@@ -4337,7 +4333,7 @@ const docTemplate = `{
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4345,7 +4341,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Uninstall a skill",
@@ -4409,7 +4405,7 @@ const docTemplate = `{
                         },
                         "description": "Not Found"
                     },
-                    "501": {
+                    "500": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4417,7 +4413,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Not Implemented"
+                        "description": "Internal Server Error"
                     }
                 },
                 "summary": "Get skill details",

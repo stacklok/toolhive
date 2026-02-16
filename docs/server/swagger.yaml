@@ -1427,7 +1427,7 @@ components:
       - InstallStatusPending
       - InstallStatusFailed
     skills.InstalledSkill:
-      description: InstalledSkill is set if the skill is installed.
+      description: InstalledSkill contains the full installation record.
       properties:
         clients:
           description: |-
@@ -1477,9 +1477,6 @@ components:
       - ScopeProject
     skills.SkillInfo:
       properties:
-        installed:
-          description: Installed indicates whether the skill is currently installed.
-          type: boolean
         installed_skill:
           $ref: '#/components/schemas/skills.InstalledSkill'
         metadata:
@@ -3171,12 +3168,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/v1.skillListResponse'
           description: OK
-        "501":
+        "500":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Internal Server Error
       summary: List all installed skills
       tags:
       - skills
@@ -3217,12 +3214,12 @@ paths:
               schema:
                 type: string
           description: Conflict
-        "501":
+        "500":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Internal Server Error
       summary: Install a skill
       tags:
       - skills
@@ -3263,12 +3260,12 @@ paths:
               schema:
                 type: string
           description: Not Found
-        "501":
+        "500":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Internal Server Error
       summary: Uninstall a skill
       tags:
       - skills
@@ -3308,12 +3305,12 @@ paths:
               schema:
                 type: string
           description: Not Found
-        "501":
+        "500":
           content:
             application/json:
               schema:
                 type: string
-          description: Not Implemented
+          description: Internal Server Error
       summary: Get skill details
       tags:
       - skills

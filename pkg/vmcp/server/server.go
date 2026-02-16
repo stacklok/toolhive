@@ -526,7 +526,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 func (s *Server) Start(ctx context.Context) error {
 	// Create optimizer store if optimizer is enabled
 	if s.config.OptimizerEnabled {
-		store, err := optimizer.NewSQLiteToolStore()
+		store, err := optimizer.NewSQLiteToolStore(nil)
 		if err != nil {
 			return fmt.Errorf("failed to create optimizer store: %w", err)
 		}

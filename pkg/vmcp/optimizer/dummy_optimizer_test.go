@@ -38,111 +38,80 @@ func (*mockToolStore) Close() error {
 	return nil
 }
 
-// TestDummyOptimizer_MockStore tests the optimizer against a mock ToolStore,
-// verifying search delegation, scoping, and error handling without any database.
-func TestDummyOptimizer_MockStore(t *testing.T) {
+// TestDummyOptimizer_SearchDelegation verifies that FindTool delegates to the
+// store with the correct query and allowedTools, and computes token metrics.
+func TestDummyOptimizer_SearchDelegation(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name           string
-		tools          []server.ServerTool
-		searchFunc     func(ctx context.Context, query string, allowedTools []string) ([]ToolMatch, error)
-		upsertFunc     func(ctx context.Context, tools []server.ServerTool) error
-		input          FindToolInput
-		expectedNames  []string
-		expectErr      bool
-		errContains    string
-		expectCreate   bool // if false, expect NewDummyOptimizer to fail
-		createErr      string
-		checkMetrics   bool
-		expectBaseline int
-		expectReturned int
-	}{
-		{
-			name: "delegates search to store with allowedTools and computes metrics",
-			tools: []server.ServerTool{
-				{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
-				{Tool: mcp.Tool{Name: "tool_b", Description: "Tool B"}},
-			},
-			upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
-			searchFunc: func(_ context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
-				require.Equal(t, "query", query)
-				require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
-				return []ToolMatch{
-					{Name: "tool_a", Description: "Tool A", Score: 0.9},
-				}, nil
-			},
-			input:         FindToolInput{ToolDescription: "query"},
-			expectedNames: []string{"tool_a"},
-			expectCreate:  true,
-			checkMetrics:  true,
-		},
-		{
-			name: "propagates store search errors",
-			tools: []server.ServerTool{
-				{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
-			},
-			upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
-			searchFunc: func(context.Context, string, []string) ([]ToolMatch, error) {
-				return nil, fmt.Errorf("store unavailable")
-			},
-			input:        FindToolInput{ToolDescription: "query"},
-			expectErr:    true,
-			errContains:  "tool search failed",
-			expectCreate: true,
-		},
-		{
-			name: "propagates store upsert errors at creation",
-			tools: []server.ServerTool{
-				{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
-			},
-			upsertFunc: func(context.Context, []server.ServerTool) error {
-				return fmt.Errorf("upsert failed")
-			},
-			input:        FindToolInput{ToolDescription: "query"},
-			expectCreate: false,
-			createErr:    "failed to upsert tools into store",
+	tools := []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+		{Tool: mcp.Tool{Name: "tool_b", Description: "Tool B"}},
+	}
+
+	store := &mockToolStore{
+		upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
+		searchFunc: func(_ context.Context, query string, allowedTools []string) ([]ToolMatch, error) {
+			require.Equal(t, "query", query)
+			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
+			return []ToolMatch{
+				{Name: "tool_a", Description: "Tool A", Score: 0.9},
+			}, nil
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tools)
+	require.NoError(t, err)
 
-			store := &mockToolStore{
-				upsertFunc: tc.upsertFunc,
-				searchFunc: tc.searchFunc,
-			}
+	result, err := opt.FindTool(context.Background(), FindToolInput{ToolDescription: "query"})
+	require.NoError(t, err)
 
-			opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), tc.tools)
-			if !tc.expectCreate {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tc.createErr)
-				return
-			}
-			require.NoError(t, err)
-
-			result, err := opt.FindTool(context.Background(), tc.input)
-			if tc.expectErr {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tc.errContains)
-				return
-			}
-
-			require.NoError(t, err)
-			var names []string
-			for _, m := range result.Tools {
-				names = append(names, m.Name)
-			}
-			require.ElementsMatch(t, tc.expectedNames, names)
-
-			if tc.checkMetrics {
-				require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
-				require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
-				require.Greater(t, result.TokenMetrics.SavingsPercent, 0.0)
-			}
-		})
+	var names []string
+	for _, m := range result.Tools {
+		names = append(names, m.Name)
 	}
+	require.ElementsMatch(t, []string{"tool_a"}, names)
+
+	require.Greater(t, result.TokenMetrics.BaselineTokens, 0)
+	require.Greater(t, result.TokenMetrics.ReturnedTokens, 0)
+	require.Greater(t, result.TokenMetrics.SavingsPercent, 0.0)
+}
+
+// TestDummyOptimizer_SearchError verifies that store search errors are propagated.
+func TestDummyOptimizer_SearchError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockToolStore{
+		upsertFunc: func(_ context.Context, _ []server.ServerTool) error { return nil },
+		searchFunc: func(context.Context, string, []string) ([]ToolMatch, error) {
+			return nil, fmt.Errorf("store unavailable")
+		},
+	}
+
+	opt, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	})
+	require.NoError(t, err)
+
+	_, err = opt.FindTool(context.Background(), FindToolInput{ToolDescription: "query"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool search failed")
+}
+
+// TestDummyOptimizer_UpsertError verifies that store upsert errors during creation are propagated.
+func TestDummyOptimizer_UpsertError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockToolStore{
+		upsertFunc: func(context.Context, []server.ServerTool) error {
+			return fmt.Errorf("upsert failed")
+		},
+	}
+
+	_, err := NewDummyOptimizer(context.Background(), store, DefaultTokenCounter(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to upsert tools into store")
 }
 
 func TestDummyOptimizer_FindTool(t *testing.T) {

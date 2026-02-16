@@ -28,6 +28,9 @@ type DummyOptimizer struct {
 	tools map[string]server.ServerTool
 
 	// tokenCounts holds precomputed per-tool token estimates, indexed by tool name.
+	// Immutable after construction: token counts are computed once in NewDummyOptimizer
+	// and never modified. The tools are fixed per session (one optimizer per session),
+	// and the TokenCounter is set at configuration time, so counts cannot change at runtime.
 	tokenCounts map[string]int
 
 	// baselineTokens is the precomputed sum of all per-tool token counts.

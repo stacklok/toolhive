@@ -58,6 +58,29 @@ type VirtualMCPServerSpec struct {
 	// The telemetry and audit config from here are also supported, but not required.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.
+	// If set, the controller creates an EmbeddingServer CR and auto-populates
+	// the optimizer's embeddingService field with the generated service name.
+	// Mutually exclusive with EmbeddingServerRef.
+	// +optional
+	EmbeddingServer *EmbeddingServerSpec `json:"embeddingServer,omitempty"`
+
+	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+	// Use this instead of EmbeddingServer when multiple VirtualMCPServers should share
+	// a single EmbeddingServer (e.g., when using the same embedding model).
+	// The referenced EmbeddingServer must exist in the same namespace and be ready.
+	// Mutually exclusive with EmbeddingServer.
+	// +optional
+	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+}
+
+// EmbeddingServerRef references an existing EmbeddingServer resource by name.
+// This follows the same pattern as ExternalAuthConfigRef and ToolConfigRef.
+type EmbeddingServerRef struct {
+	// Name is the name of the EmbeddingServer resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
 }
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
@@ -199,6 +222,9 @@ const (
 
 	// ConditionTypeVirtualMCPServerBackendsDiscovered indicates whether backends have been discovered
 	ConditionTypeVirtualMCPServerBackendsDiscovered = "BackendsDiscovered"
+
+	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
+	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -247,6 +273,15 @@ const (
 
 	// ConditionReasonVirtualMCPServerDeploymentNotReady indicates the deployment is not ready
 	ConditionReasonVirtualMCPServerDeploymentNotReady = "DeploymentNotReady"
+
+	// ConditionReasonEmbeddingServerReady indicates the EmbeddingServer is ready
+	ConditionReasonEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionReasonEmbeddingServerNotFound indicates the referenced EmbeddingServer was not found
+	ConditionReasonEmbeddingServerNotFound = "EmbeddingServerNotFound"
+
+	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
+	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
 )
 
 // Backend authentication types
@@ -356,6 +391,41 @@ func (r *VirtualMCPServer) Validate() error {
 		if err := r.validateCompositeTools(); err != nil {
 			return err
 		}
+	}
+
+	// Validate EmbeddingServer / EmbeddingServerRef
+	return r.validateEmbeddingServer()
+}
+
+// validateEmbeddingServer validates EmbeddingServer and EmbeddingServerRef configuration.
+// Rules:
+// - embeddingServer and embeddingServerRef are mutually exclusive
+// - If config.optimizer is set, exactly one of embeddingServer or embeddingServerRef must be set
+// - If embeddingServer or embeddingServerRef is set, config.optimizer must be set
+// - embeddingServerRef.name must be non-empty when ref is provided
+func (r *VirtualMCPServer) validateEmbeddingServer() error {
+	hasInline := r.Spec.EmbeddingServer != nil
+	hasRef := r.Spec.EmbeddingServerRef != nil
+	hasOptimizer := r.Spec.Config.Optimizer != nil
+
+	// Mutually exclusive check
+	if hasInline && hasRef {
+		return fmt.Errorf("spec.embeddingServer and spec.embeddingServerRef are mutually exclusive")
+	}
+
+	// If optimizer is set, exactly one embedding source must be set
+	if hasOptimizer && !hasInline && !hasRef {
+		return fmt.Errorf("spec.config.optimizer requires either spec.embeddingServer or spec.embeddingServerRef to be set")
+	}
+
+	// If embedding source is set, optimizer must be set
+	if (hasInline || hasRef) && !hasOptimizer {
+		return fmt.Errorf("spec.embeddingServer or spec.embeddingServerRef requires spec.config.optimizer to be set")
+	}
+
+	// Validate ref name is non-empty
+	if hasRef && r.Spec.EmbeddingServerRef.Name == "" {
+		return fmt.Errorf("spec.embeddingServerRef.name is required")
 	}
 
 	return nil

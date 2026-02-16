@@ -87,10 +87,9 @@ spec:
 
     # Optimizer: enables find_tool / call_tool meta-tools
     # Currently uses DummyOptimizer (substring matching).
-    # The embeddingService field is required by the schema but unused
-    # by DummyOptimizer — it will be used by the future EmbeddingOptimizer.
-    optimizer:
-      embeddingService: "placeholder"
+    # The embeddingService field is auto-populated by the operator from the
+    # embeddingServer or embeddingServerRef below.
+    optimizer: {}
 
     # Operational settings
     operational:
@@ -106,6 +105,14 @@ spec:
       inline:
         policies:
           - 'permit(principal, action, resource);'
+
+  # Inline EmbeddingServer: the operator auto-deploys an EmbeddingServer CR
+  # and wires its service name into the optimizer config.
+  # Use embeddingServerRef instead to share a single EmbeddingServer across
+  # multiple VirtualMCPServers.
+  embeddingServer:
+    model: sentence-transformers/all-MiniLM-L6-v2
+    image: ghcr.io/huggingface/text-embeddings-inference:latest
 
   # Outgoing authentication (vMCP -> backends)
   # Discovered mode auto-discovers auth from backend MCPServers

@@ -742,10 +742,12 @@ type OutputProperty struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type OptimizerConfig struct {
-	// EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-	// for semantic tool discovery. The service must implement the optimizer embedding API.
-	// +kubebuilder:validation:Required
-	EmbeddingService string `json:"embeddingService" yaml:"embeddingService"`
+	// EmbeddingService is the name of a Kubernetes Service that provides the TEI
+	// embedding service for semantic tool discovery.
+	// Auto-populated by the operator from embeddingServer or embeddingServerRef.
+	// Do not set manually.
+	// +optional
+	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
 }
 
 // Validator validates configuration.

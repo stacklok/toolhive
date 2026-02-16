@@ -50,6 +50,16 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return err
 	}
 
+	// Auto-populate embedding service name for embedding servers (inline or referenced).
+	// When the VirtualMCPServer has an embeddingServer spec (inline), the operator creates
+	// an EmbeddingServer CR and wires its service name into the optimizer config.
+	// When embeddingServerRef is used, the referenced EmbeddingServer's name is used directly.
+	if config.Optimizer != nil {
+		if esName := embeddingServerNameForVMCP(vmcp); esName != "" {
+			config.Optimizer.EmbeddingService = esName
+		}
+	}
+
 	// Validate the vmcp Config before creating the ConfigMap
 	validator := operatorvmcpconfig.NewValidator()
 	if err := validator.Validate(ctx, config); err != nil {

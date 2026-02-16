@@ -127,6 +127,11 @@ func (s *StatusCollector) SetReadyCondition(reason, message string, status metav
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerReady, reason, message, status)
 }
 
+// SetEmbeddingServerReadyCondition sets the EmbeddingServerReady condition.
+func (s *StatusCollector) SetEmbeddingServerReadyCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeEmbeddingServerReady, reason, message, status)
+}
+
 // SetDiscoveredBackends sets the discovered backends list to be updated.
 func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend) {
 	s.discoveredBackends = backends

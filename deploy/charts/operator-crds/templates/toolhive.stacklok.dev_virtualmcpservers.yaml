@@ -721,11 +721,11 @@ spec:
                     properties:
                       embeddingService:
                         description: |-
-                          EmbeddingService is the name of a Kubernetes Service that provides the embedding service
-                          for semantic tool discovery. The service must implement the optimizer embedding API.
+                          EmbeddingService is the name of a Kubernetes Service that provides the TEI
+                          embedding service for semantic tool discovery.
+                          Auto-populated by the operator from embeddingServer or embeddingServerRef.
+                          Do not set manually.
                         type: string
-                    required:
-                    - embeddingService
                     type: object
                   outgoingAuth:
                     description: |-
@@ -982,6 +982,233 @@ spec:
                 - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              embeddingServer:
+                description: |-
+                  EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.
+                  If set, the controller creates an EmbeddingServer CR and auto-populates
+                  the optimizer's embeddingService field with the generated service name.
+                  Mutually exclusive with EmbeddingServerRef.
+                properties:
+                  args:
+                    description: Args are additional arguments to pass to the embedding
+                      inference server
+                    items:
+                      type: string
+                    type: array
+                  env:
+                    description: Env are environment variables to set in the container
+                    items:
+                      description: EnvVar represents an environment variable in a
+                        container
+                      properties:
+                        name:
+                          description: Name of the environment variable
+                          type: string
+                        value:
+                          description: Value of the environment variable
+                          type: string
+                      required:
+                      - name
+                      - value
+                      type: object
+                    type: array
+                  hfTokenSecretRef:
+                    description: |-
+                      HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.
+                      If provided, the secret value will be provided to the embedding server for authentication with huggingface.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  image:
+                    default: ghcr.io/huggingface/text-embeddings-inference:latest
+                    description: Image is the container image for huggingface-embedding-inference
+                    type: string
+                  imagePullPolicy:
+                    default: IfNotPresent
+                    description: ImagePullPolicy defines the pull policy for the container
+                      image
+                    enum:
+                    - Always
+                    - Never
+                    - IfNotPresent
+                    type: string
+                  model:
+                    description: Model is the HuggingFace embedding model to use (e.g.,
+                      "sentence-transformers/all-MiniLM-L6-v2")
+                    type: string
+                  modelCache:
+                    description: |-
+                      ModelCache configures persistent storage for downloaded models
+                      When enabled, models are cached in a PVC and reused across pod restarts
+                    properties:
+                      accessMode:
+                        default: ReadWriteOnce
+                        description: AccessMode is the access mode for the PVC
+                        enum:
+                        - ReadWriteOnce
+                        - ReadWriteMany
+                        - ReadOnlyMany
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether model caching is enabled
+                        type: boolean
+                      size:
+                        default: 10Gi
+                        description: Size is the size of the PVC for model caching
+                          (e.g., "10Gi")
+                        type: string
+                      storageClassName:
+                        description: |-
+                          StorageClassName is the storage class to use for the PVC
+                          If not specified, uses the cluster's default storage class
+                        type: string
+                    type: object
+                  podTemplateSpec:
+                    description: |-
+                      PodTemplateSpec allows customizing the pod (node selection, tolerations, etc.)
+                      This field accepts a PodTemplateSpec object as JSON/YAML.
+                      Note that to modify the specific container the embedding server runs in, you must specify
+                      the 'embedding' container name in the PodTemplateSpec.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  port:
+                    default: 8080
+                    description: Port is the port to expose the embedding service
+                      on
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  replicas:
+                    default: 1
+                    description: Replicas is the number of embedding server replicas
+                      to run
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resourceOverrides:
+                    description: ResourceOverrides allows overriding annotations and
+                      labels for resources created by the operator
+                    properties:
+                      persistentVolumeClaim:
+                        description: PersistentVolumeClaim defines overrides for the
+                          PVC resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
+                        type: object
+                      service:
+                        description: Service defines overrides for the Service resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
+                        type: object
+                      statefulSet:
+                        description: StatefulSet defines overrides for the StatefulSet
+                          resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
+                          podTemplateMetadataOverrides:
+                            description: PodTemplateMetadataOverrides defines metadata
+                              overrides for the pod template
+                            properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: Annotations to add or override on the
+                                  resource
+                                type: object
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                description: Labels to add or override on the resource
+                                type: object
+                            type: object
+                        type: object
+                    type: object
+                  resources:
+                    description: Resources defines compute resources for the embedding
+                      server
+                    properties:
+                      limits:
+                        description: Limits describes the maximum amount of compute
+                          resources allowed
+                        properties:
+                          cpu:
+                            description: CPU is the CPU limit in cores (e.g., "500m"
+                              for 0.5 cores)
+                            type: string
+                          memory:
+                            description: Memory is the memory limit in bytes (e.g.,
+                              "64Mi" for 64 megabytes)
+                            type: string
+                        type: object
+                      requests:
+                        description: Requests describes the minimum amount of compute
+                          resources required
+                        properties:
+                          cpu:
+                            description: CPU is the CPU limit in cores (e.g., "500m"
+                              for 0.5 cores)
+                            type: string
+                          memory:
+                            description: Memory is the memory limit in bytes (e.g.,
+                              "64Mi" for 64 megabytes)
+                            type: string
+                        type: object
+                    type: object
+                required:
+                - image
+                - model
+                type: object
+              embeddingServerRef:
+                description: |-
+                  EmbeddingServerRef references an existing EmbeddingServer resource by name.
+                  Use this instead of EmbeddingServer when multiple VirtualMCPServers should share
+                  a single EmbeddingServer (e.g., when using the same embedding model).
+                  The referenced EmbeddingServer must exist in the same namespace and be ready.
+                  Mutually exclusive with EmbeddingServer.
+                properties:
+                  name:
+                    description: Name is the name of the EmbeddingServer resource
+                    type: string
+                required:
+                - name
+                type: object
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.

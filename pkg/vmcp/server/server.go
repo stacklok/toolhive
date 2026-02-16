@@ -396,22 +396,17 @@ func New(
 	return srv, nil
 }
 
-// Start starts the Virtual MCP Server and begins serving requests.
+// Handler builds and returns the MCP HTTP handler without starting a listener.
+// This enables embedding the vmcp server inside another HTTP server or framework.
 //
-//nolint:gocyclo // Complexity from health monitoring and middleware setup is acceptable
-func (s *Server) Start(ctx context.Context) error {
-	// Create optimizer store if optimizer is enabled
-	if s.config.OptimizerEnabled {
-		store, err := optimizer.NewSQLiteToolStore()
-		if err != nil {
-			return fmt.Errorf("failed to create optimizer store: %w", err)
-		}
-		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
-			return store.Close()
-		})
-		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
-	}
-
+// The returned handler includes all routes (health, metrics, well-known, MCP)
+// and the full middleware chain (recovery, header validation, auth, audit,
+// discovery, backend enrichment, MCP parsing, telemetry).
+//
+// Each call builds a fresh handler. The method is safe to call multiple times.
+// All returned handlers share the same underlying MCPServer and SessionManager,
+// so callers should not serve concurrent traffic through multiple handlers.
+func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface
 	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
 	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.
@@ -480,9 +475,13 @@ func (s *Server) Start(ctx context.Context) error {
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	// The backend registry provides dynamic backend list (supports DynamicRegistry for K8s)
 	// Pass health monitor to enable filtering based on current health status (respects circuit breaker)
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
 	var healthStatusProvider health.StatusProvider
-	if s.healthMonitor != nil {
-		healthStatusProvider = s.healthMonitor
+	if healthMon != nil {
+		healthStatusProvider = healthMon
 	}
 	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backendRegistry, s.sessionManager, healthStatusProvider)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
@@ -490,14 +489,14 @@ func (s *Server) Start(ctx context.Context) error {
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
 		if err := s.config.AuditConfig.Validate(); err != nil {
-			return fmt.Errorf("invalid audit configuration: %w", err)
+			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
 		)
 		if err != nil {
-			return fmt.Errorf("failed to create auditor: %w", err)
+			return nil, fmt.Errorf("failed to create auditor: %w", err)
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
 		logger.Info("Audit middleware enabled for MCP endpoints")
@@ -518,11 +517,36 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.Handle("/", mcpHandler)
 
+	return mux, nil
+}
+
+// Start starts the Virtual MCP Server and begins serving requests.
+//
+//nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
+func (s *Server) Start(ctx context.Context) error {
+	// Create optimizer store if optimizer is enabled
+	if s.config.OptimizerEnabled {
+		store, err := optimizer.NewSQLiteToolStore()
+		if err != nil {
+			return fmt.Errorf("failed to create optimizer store: %w", err)
+		}
+		s.shutdownFuncs = append(s.shutdownFuncs, func(_ context.Context) error {
+			return store.Close()
+		})
+		s.config.OptimizerFactory = optimizer.NewDummyOptimizerFactoryWithStore(store, optimizer.DefaultTokenCounter())
+	}
+
+	// Build the HTTP handler (middleware chain, routes, mux)
+	handler, err := s.Handler(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to build handler: %w", err)
+	}
+
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,

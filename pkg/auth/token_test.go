@@ -1102,7 +1102,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 	testCases := []struct {
 		name         string
 		issuer       string
-		jwksURL      string
 		resourceURL  string
 		scopes       []string
 		method       string
@@ -1114,7 +1113,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request with all parameters",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"read", "write"},
 			method:       "GET",
@@ -1126,7 +1124,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "successful GET request without origin",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       nil, // Test default scopes (should default to ["openid"])
 			method:       "GET",
@@ -1138,7 +1135,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "OPTIONS preflight request",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{"openid", "profile"},
 			method:       "OPTIONS",
@@ -1150,7 +1146,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 		{
 			name:         "missing resource URL returns 404",
 			issuer:       "https://auth.example.com",
-			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
 			resourceURL:  "",
 			scopes:       []string{"openid"},
 			method:       "GET",
@@ -1160,9 +1155,8 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			expectCORS:   true,
 		},
 		{
-			name:         "empty issuer and jwksURL with resource URL",
+			name:         "empty issuer with resource URL",
 			issuer:       "",
-			jwksURL:      "",
 			resourceURL:  "https://api.example.com",
 			scopes:       []string{}, // Test empty scopes (should default to ["openid"])
 			method:       "GET",
@@ -1178,7 +1172,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			t.Parallel()
 
 			// Create the handler
-			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+			handler := NewAuthInfoHandler(tc.issuer, tc.resourceURL, tc.scopes)
 
 			// Create test request
 			req := httptest.NewRequest(tc.method, "/", nil)
@@ -1223,8 +1217,18 @@ func TestNewAuthInfoHandler(t *testing.T) {
 
 			// Check response body if expected
 			if tc.expectBody {
+				// Read raw body to verify jwks_uri is absent from JSON
+				bodyBytes := rec.Body.Bytes()
+				var rawMap map[string]any
+				if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+					t.Fatalf("Failed to decode raw response body: %v", err)
+				}
+				if _, exists := rawMap["jwks_uri"]; exists {
+					t.Errorf("jwks_uri must not appear in the PRM response (RFC 9728 §3.2)")
+				}
+
 				var authInfo RFC9728AuthInfo
-				if err := json.NewDecoder(rec.Body).Decode(&authInfo); err != nil {
+				if err := json.Unmarshal(bodyBytes, &authInfo); err != nil {
 					t.Fatalf("Failed to decode response body: %v", err)
 				}
 
@@ -1241,10 +1245,6 @@ func TestNewAuthInfoHandler(t *testing.T) {
 					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != "" {
 						t.Errorf("Expected authorization servers [''] but got %v", authInfo.AuthorizationServers)
 					}
-				}
-
-				if authInfo.JWKSURI != tc.jwksURL {
-					t.Errorf("Expected JWKS URI %s but got %s", tc.jwksURL, authInfo.JWKSURI)
 				}
 
 				expectedMethods := []string{"header"}

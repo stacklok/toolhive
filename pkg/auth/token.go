@@ -1068,12 +1068,12 @@ type RFC9728AuthInfo struct {
 	Resource               string   `json:"resource"`
 	AuthorizationServers   []string `json:"authorization_servers"`
 	BearerMethodsSupported []string `json:"bearer_methods_supported"`
-	JWKSURI                string   `json:"jwks_uri"`
+	JWKSURI                string   `json:"jwks_uri,omitempty"`
 	ScopesSupported        []string `json:"scopes_supported"`
 }
 
 // NewAuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
-func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) http.Handler {
+func NewAuthInfoHandler(issuer, resourceURL string, scopes []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers for all requests
 		origin := r.Header.Get("Origin")
@@ -1111,7 +1111,6 @@ func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) ht
 			Resource:               resourceURL,
 			AuthorizationServers:   []string{issuer},
 			BearerMethodsSupported: []string{"header"},
-			JWKSURI:                jwksURL,
 			ScopesSupported:        supportedScopes,
 		}
 

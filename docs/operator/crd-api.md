@@ -398,7 +398,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `embeddingService` _string_ | EmbeddingService is the name of a Kubernetes Service that provides the TEI<br />embedding service for semantic tool discovery.<br />Auto-populated by the operator from embeddingServer or embeddingServerRef.<br />Do not set manually. |  | Optional: \{\} <br /> |
+| `embeddingService` _string_ | EmbeddingService is the full base URL of the embedding service endpoint<br />(e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic<br />tool discovery. Auto-populated by the operator from the EmbeddingServer<br />Status.URL (inline or referenced). Do not set manually. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OutgoingAuthConfig
@@ -3066,7 +3066,7 @@ _Appears in:_
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
-| `embeddingServer` _[api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)_ | EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.<br />If set, the controller creates an EmbeddingServer CR and auto-populates<br />the optimizer's embeddingService field with the generated service name.<br />Mutually exclusive with EmbeddingServerRef. |  | Optional: \{\} <br /> |
+| `embeddingServer` _[api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)_ | EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.<br />If set, the controller creates an EmbeddingServer CR and auto-populates<br />the optimizer's embeddingService field with the full service URL.<br />Mutually exclusive with EmbeddingServerRef. |  | Optional: \{\} <br /> |
 | `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />Use this instead of EmbeddingServer when multiple VirtualMCPServers should share<br />a single EmbeddingServer (e.g., when using the same embedding model).<br />The referenced EmbeddingServer must exist in the same namespace and be ready.<br />Mutually exclusive with EmbeddingServer. |  | Optional: \{\} <br /> |
 
 

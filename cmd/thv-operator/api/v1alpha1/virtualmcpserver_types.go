@@ -61,7 +61,7 @@ type VirtualMCPServerSpec struct {
 
 	// EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.
 	// If set, the controller creates an EmbeddingServer CR and auto-populates
-	// the optimizer's embeddingService field with the generated service name.
+	// the optimizer's embeddingService field with the full service URL.
 	// Mutually exclusive with EmbeddingServerRef.
 	// +optional
 	EmbeddingServer *EmbeddingServerSpec `json:"embeddingServer,omitempty"`

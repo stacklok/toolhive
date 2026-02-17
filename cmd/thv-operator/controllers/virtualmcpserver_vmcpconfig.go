@@ -50,13 +50,19 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return err
 	}
 
-	// Auto-populate embedding service name for embedding servers (inline or referenced).
+	// Auto-populate embedding service URL for embedding servers (inline or referenced).
 	// When the VirtualMCPServer has an embeddingServer spec (inline), the operator creates
-	// an EmbeddingServer CR and wires its service name into the optimizer config.
-	// When embeddingServerRef is used, the referenced EmbeddingServer's name is used directly.
+	// an EmbeddingServer CR and wires its service URL into the optimizer config.
+	// When embeddingServerRef is used, the referenced EmbeddingServer's URL is used directly.
+	// The URL is the full base URL (e.g., http://name.namespace.svc.cluster.local:port)
+	// so the optimizer can use it directly as an HTTP client endpoint.
 	if config.Optimizer != nil {
-		if esName := embeddingServerNameForVMCP(vmcp); esName != "" {
-			config.Optimizer.EmbeddingService = esName
+		esURL, err := r.resolveEmbeddingServiceURL(ctx, vmcp)
+		if err != nil {
+			return fmt.Errorf("failed to resolve embedding service URL: %w", err)
+		}
+		if esURL != "" {
+			config.Optimizer.EmbeddingService = esURL
 		}
 	}
 

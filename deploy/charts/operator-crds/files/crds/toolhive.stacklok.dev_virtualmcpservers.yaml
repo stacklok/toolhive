@@ -718,10 +718,10 @@ spec:
                     properties:
                       embeddingService:
                         description: |-
-                          EmbeddingService is the name of a Kubernetes Service that provides the TEI
-                          embedding service for semantic tool discovery.
-                          Auto-populated by the operator from embeddingServer or embeddingServerRef.
-                          Do not set manually.
+                          EmbeddingService is the full base URL of the embedding service endpoint
+                          (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
+                          tool discovery. Auto-populated by the operator from the EmbeddingServer
+                          Status.URL (inline or referenced). Do not set manually.
                         type: string
                     type: object
                   outgoingAuth:
@@ -983,7 +983,7 @@ spec:
                 description: |-
                   EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.
                   If set, the controller creates an EmbeddingServer CR and auto-populates
-                  the optimizer's embeddingService field with the generated service name.
+                  the optimizer's embeddingService field with the full service URL.
                   Mutually exclusive with EmbeddingServerRef.
                 properties:
                   args:

@@ -137,6 +137,27 @@ func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 	return false, "", nil
 }
 
+// resolveEmbeddingServiceURL looks up the EmbeddingServer CR (inline or referenced)
+// and returns its Status.URL, which is the full base URL including scheme, host, and port
+// (e.g., http://name.namespace.svc.cluster.local:8080).
+// Returns empty string if no embedding server is configured.
+func (r *VirtualMCPServerReconciler) resolveEmbeddingServiceURL(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (string, error) {
+	name := embeddingServerNameForVMCP(vmcp)
+	if name == "" {
+		return "", nil
+	}
+
+	es := &mcpv1alpha1.EmbeddingServer{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: vmcp.Namespace}, es); err != nil {
+		return "", fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
+	}
+
+	return es.Status.URL, nil
+}
+
 // embeddingServerNameForVMCP resolves the EmbeddingServer name for a VirtualMCPServer,
 // regardless of whether it uses inline or reference mode.
 // Returns empty string if no embedding server is configured.

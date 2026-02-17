@@ -742,10 +742,10 @@ type OutputProperty struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type OptimizerConfig struct {
-	// EmbeddingService is the name of a Kubernetes Service that provides the TEI
-	// embedding service for semantic tool discovery.
-	// Auto-populated by the operator from embeddingServer or embeddingServerRef.
-	// Do not set manually.
+	// EmbeddingService is the full base URL of the embedding service endpoint
+	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
+	// tool discovery. Auto-populated by the operator from the EmbeddingServer
+	// Status.URL (inline or referenced). Do not set manually.
 	// +optional
 	EmbeddingService string `json:"embeddingService,omitempty" yaml:"embeddingService,omitempty"`
 }

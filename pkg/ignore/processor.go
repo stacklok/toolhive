@@ -8,14 +8,13 @@ package ignore
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/adrg/xdg"
-
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Processor handles loading and processing ignore patterns
@@ -77,27 +76,27 @@ func getArtifactDir(workloadID string) string {
 func (p *Processor) LoadGlobal() error {
 	// Skip loading global patterns if disabled in config
 	if !p.Config.LoadGlobal {
-		logger.Debugf("Global ignore patterns disabled by configuration")
+		slog.Debug("Global ignore patterns disabled by configuration")
 		return nil
 	}
 
 	globalIgnoreFile, err := xdg.ConfigFile("toolhive/thvignore")
 	if err != nil {
-		logger.Debugf("Failed to get XDG config file path: %v", err)
+		slog.Debug("Failed to get XDG config file path", "error", err)
 		return nil // Not a fatal error, continue without global patterns
 	}
 
 	patterns, err := p.loadIgnoreFile(globalIgnoreFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Debugf("Global ignore file not found: %s", globalIgnoreFile)
+			slog.Debug("Global ignore file not found", "path", globalIgnoreFile)
 			return nil // Not a fatal error
 		}
 		return fmt.Errorf("failed to load global ignore file: %w", err)
 	}
 
 	p.GlobalPatterns = patterns
-	logger.Debugf("Loaded %d global ignore patterns from %s", len(patterns), globalIgnoreFile)
+	slog.Debug("Loaded global ignore patterns", "count", len(patterns), "path", globalIgnoreFile)
 	return nil
 }
 
@@ -107,14 +106,14 @@ func (p *Processor) LoadLocal(sourceDir string) error {
 	patterns, err := p.loadIgnoreFile(localIgnoreFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Debugf("Local ignore file not found: %s", localIgnoreFile)
+			slog.Debug("Local ignore file not found", "path", localIgnoreFile)
 			return nil // Not a fatal error
 		}
 		return fmt.Errorf("failed to load local ignore file: %w", err)
 	}
 
 	p.LocalPatterns = append(p.LocalPatterns, patterns...)
-	logger.Debugf("Loaded %d local ignore patterns from %s", len(patterns), localIgnoreFile)
+	slog.Debug("Loaded local ignore patterns", "count", len(patterns), "path", localIgnoreFile)
 	return nil
 }
 
@@ -127,7 +126,7 @@ func (*Processor) loadIgnoreFile(filePath string) ([]string, error) {
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			logger.Warnf("Failed to close ignore file: %v", err)
+			slog.Warn("Failed to close ignore file", "error", err)
 		}
 	}()
 
@@ -197,7 +196,7 @@ func (p *Processor) createOverlayMount(
 	// Calculate relative path from bind mount to matched path
 	relPath, err := filepath.Rel(bindMount, matchPath)
 	if err != nil {
-		logger.Debugf("Failed to calculate relative path for %s: %v", matchPath, err)
+		slog.Debug("Failed to calculate relative path", "matchPath", matchPath, "error", err)
 		return nil
 	}
 
@@ -213,7 +212,7 @@ func (p *Processor) createOverlayMount(
 	// Check if the matched path is a directory or file
 	info, err := os.Stat(matchPath)
 	if err != nil {
-		logger.Debugf("Failed to stat path %s: %v", matchPath, err)
+		slog.Debug("Failed to stat path", "path", matchPath, "error", err)
 		return nil
 	}
 
@@ -221,12 +220,12 @@ func (p *Processor) createOverlayMount(
 		// For directories, create an empty directory and bind mount it
 		emptyDirPath, err := p.createEmptyDirectory()
 		if err != nil {
-			logger.Debugf("Failed to create empty directory for pattern '%s': %v", pattern, err)
+			slog.Debug("Failed to create empty directory for pattern", "pattern", pattern, "error", err)
 			return nil
 		}
 
-		logger.Debugf("Adding bind overlay for directory pattern '%s' at container path: %s (host: %s)",
-			pattern, containerOverlayPath, emptyDirPath)
+		slog.Debug("Adding bind overlay for directory pattern",
+			"pattern", pattern, "containerPath", containerOverlayPath, "hostPath", emptyDirPath)
 		return &OverlayMount{
 			ContainerPath: containerOverlayPath,
 			HostPath:      emptyDirPath,
@@ -237,12 +236,12 @@ func (p *Processor) createOverlayMount(
 	// For files, create empty file and bind mount it
 	emptyFilePath, err := p.createEmptyFile()
 	if err != nil {
-		logger.Debugf("Failed to create empty file for pattern '%s': %v", pattern, err)
+		slog.Debug("Failed to create empty file for pattern", "pattern", pattern, "error", err)
 		return nil
 	}
 
-	logger.Debugf("Adding bind overlay for file pattern '%s' at container path: %s (host: %s)",
-		pattern, containerOverlayPath, emptyFilePath)
+	slog.Debug("Adding bind overlay for file pattern",
+		"pattern", pattern, "containerPath", containerOverlayPath, "hostPath", emptyFilePath)
 	return &OverlayMount{
 		ContainerPath: containerOverlayPath,
 		HostPath:      emptyFilePath,
@@ -253,9 +252,9 @@ func (p *Processor) createOverlayMount(
 // printOverlays prints resolved overlays if requested
 func (p *Processor) printOverlays(overlayMounts []OverlayMount, bindMount, containerPath string) {
 	if p.Config.PrintOverlays && len(overlayMounts) > 0 {
-		logger.Infof("Resolved overlays for mount %s -> %s:", bindMount, containerPath)
+		slog.Info("Resolved overlays for mount", "bindMount", bindMount, "containerPath", containerPath)
 		for _, overlay := range overlayMounts {
-			logger.Infof("  - %s (bind: %s)", overlay.ContainerPath, overlay.HostPath)
+			slog.Info("Overlay mount", "containerPath", overlay.ContainerPath, "hostPath", overlay.HostPath)
 		}
 	}
 }
@@ -283,7 +282,7 @@ func (p *Processor) createEmptyFile() (string, error) {
 
 	// Cache the path for reuse
 	p.sharedEmptyFile = tmpFile.Name()
-	logger.Debugf("Created shared empty file for bind mounting: %s", p.sharedEmptyFile)
+	slog.Debug("Created shared empty file for bind mounting", "path", p.sharedEmptyFile)
 
 	return p.sharedEmptyFile, nil
 }
@@ -306,7 +305,7 @@ func (p *Processor) createEmptyDirectory() (string, error) {
 
 	// Track this artifact for cleanup
 	p.overlayArtifacts = append(p.overlayArtifacts, emptyDir)
-	logger.Debugf("Created empty directory for bind mounting: %s", emptyDir)
+	slog.Debug("Created empty directory for bind mounting", "path", emptyDir)
 
 	return emptyDir, nil
 }
@@ -321,10 +320,10 @@ func (p *Processor) Cleanup() error {
 	// Remove shared empty file
 	if p.sharedEmptyFile != "" {
 		if err := os.Remove(p.sharedEmptyFile); err != nil && !os.IsNotExist(err) {
-			logger.Debugf("Failed to remove shared empty file %s: %v", p.sharedEmptyFile, err)
+			slog.Debug("Failed to remove shared empty file", "path", p.sharedEmptyFile, "error", err)
 			lastErr = fmt.Errorf("failed to remove shared empty file: %w", err)
 		} else {
-			logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
+			slog.Debug("Cleaned up shared empty file", "path", p.sharedEmptyFile)
 		}
 		p.sharedEmptyFile = ""
 	}
@@ -332,10 +331,10 @@ func (p *Processor) Cleanup() error {
 	// Remove all overlay artifacts (empty directories)
 	for _, artifact := range p.overlayArtifacts {
 		if err := os.RemoveAll(artifact); err != nil && !os.IsNotExist(err) {
-			logger.Debugf("Failed to remove overlay artifact %s: %v", artifact, err)
+			slog.Debug("Failed to remove overlay artifact", "path", artifact, "error", err)
 			lastErr = fmt.Errorf("failed to remove overlay artifact: %w", err)
 		} else {
-			logger.Debugf("Cleaned up overlay artifact: %s", artifact)
+			slog.Debug("Cleaned up overlay artifact", "path", artifact)
 		}
 	}
 	p.overlayArtifacts = nil
@@ -344,7 +343,7 @@ func (p *Processor) Cleanup() error {
 	if p.artifactDir != "" {
 		if err := os.Remove(p.artifactDir); err != nil && !os.IsNotExist(err) {
 			// It's okay if the directory is not empty or doesn't exist
-			logger.Debugf("Could not remove artifact directory %s: %v", p.artifactDir, err)
+			slog.Debug("Could not remove artifact directory", "path", p.artifactDir, "error", err)
 		}
 	}
 
@@ -388,7 +387,7 @@ func (*Processor) getMatchingPaths(dir, pattern string) []string {
 	// Handle glob patterns
 	matches, err := filepath.Glob(filepath.Join(dir, pattern))
 	if err != nil {
-		logger.Debugf("Error matching pattern '%s': %v", pattern, err)
+		slog.Debug("Error matching pattern", "pattern", pattern, "error", err)
 		return matchingPaths
 	}
 

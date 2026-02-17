@@ -1217,7 +1217,8 @@ func TestNewAuthInfoHandler(t *testing.T) {
 
 			// Check response body if expected
 			if tc.expectBody {
-				// Read raw body to verify jwks_uri is absent from JSON
+				// Regression test: verify jwks_uri is absent from the JSON response.
+				// See https://github.com/stacklok/toolhive/issues/3852
 				bodyBytes := rec.Body.Bytes()
 				var rawMap map[string]any
 				if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {

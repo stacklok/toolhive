@@ -45,7 +45,7 @@ func (e *NetworkError) Error() string {
 	return fmt.Sprintf("webhook %q: network error: %v", e.WebhookName, e.Err)
 }
 
-// InvalidResponseError indicates that a webhook returned an unparseable or invalid response.
+// InvalidResponseError indicates that a webhook returned an unparsable or invalid response.
 type InvalidResponseError struct {
 	WebhookError
 }

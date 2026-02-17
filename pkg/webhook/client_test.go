@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -473,6 +475,224 @@ func TestClientRequestContentType(t *testing.T) {
 	require.NotNil(t, resp)
 
 	assert.Equal(t, "application/json", capturedContentType)
+}
+
+func TestBuildTransport(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	caFile := filepath.Join(tmpDir, "ca.crt")
+	err := os.WriteFile(caFile, []byte("invalid-ca"), 0600)
+	require.NoError(t, err)
+
+	certFile := filepath.Join(tmpDir, "client.crt")
+	keyFile := filepath.Join(tmpDir, "client.key")
+	err = os.WriteFile(certFile, []byte("invalid-cert"), 0600)
+	require.NoError(t, err)
+	err = os.WriteFile(keyFile, []byte("invalid-key"), 0600)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		tlsCfg      *TLSConfig
+		expectError bool
+	}{
+		{
+			name:        "nil config",
+			tlsCfg:      nil,
+			expectError: false,
+		},
+		{
+			name: "insecure skip verify",
+			tlsCfg: &TLSConfig{
+				InsecureSkipVerify: true,
+			},
+			expectError: false,
+		},
+		{
+			name: "non-existent ca bundle",
+			tlsCfg: &TLSConfig{
+				CABundlePath: "/non/existent/path",
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid ca bundle content",
+			tlsCfg: &TLSConfig{
+				CABundlePath: caFile,
+			},
+			expectError: true,
+		},
+		{
+			name: "non-existent client cert",
+			tlsCfg: &TLSConfig{
+				ClientCertPath: "/non/existent/cert",
+				ClientKeyPath:  keyFile,
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid client cert/key",
+			tlsCfg: &TLSConfig{
+				ClientCertPath: certFile,
+				ClientKeyPath:  keyFile,
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport, err := buildTransport(tt.tlsCfg)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, transport)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, transport)
+				if tt.tlsCfg != nil && tt.tlsCfg.InsecureSkipVerify {
+					assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+				}
+			}
+		})
+	}
+}
+
+func TestClassifyError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-timeout network error", func(t *testing.T) {
+		err := errors.New("connection refused")
+		classified := classifyError("test", err)
+		var netErr *NetworkError
+		assert.True(t, errors.As(classified, &netErr))
+	})
+}
+
+func TestTruncateBody(t *testing.T) {
+	t.Parallel()
+
+	t.Run("short body", func(t *testing.T) {
+		body := []byte("short")
+		assert.Equal(t, "short", truncateBody(body))
+	})
+
+	t.Run("long body", func(t *testing.T) {
+		body := []byte(strings.Repeat("a", 300))
+		truncated := truncateBody(body)
+		assert.Equal(t, 256+3, len(truncated))
+		assert.True(t, strings.HasSuffix(truncated, "..."))
+	})
+}
+
+func TestClientCallErrors(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Name:    "error-test",
+		URL:     "invalid URL \x00", // Will cause http.NewRequest to fail
+		Timeout: 1 * time.Second,
+	}
+	client := newTestClient(cfg, TypeValidating, nil)
+
+	t.Run("request creation failure", func(t *testing.T) {
+		_, err := client.Call(context.Background(), &Request{})
+		assert.Error(t, err)
+		var networkErr *NetworkError
+		assert.True(t, errors.As(err, &networkErr))
+	})
+
+	t.Run("unmarshal failure Call", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("not-json"))
+		}))
+		defer server.Close()
+
+		client.config.URL = server.URL
+		_, err := client.Call(context.Background(), &Request{})
+		assert.Error(t, err)
+		var invalidErr *InvalidResponseError
+		assert.True(t, errors.As(err, &invalidErr))
+	})
+
+	t.Run("unmarshal failure CallMutating", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("not-json"))
+		}))
+		defer server.Close()
+
+		client.config.URL = server.URL
+		_, err := client.CallMutating(context.Background(), &Request{})
+		assert.Error(t, err)
+		var invalidErr *InvalidResponseError
+		assert.True(t, errors.As(err, &invalidErr))
+	})
+
+	t.Run("doHTTPCall failure CallMutating", func(t *testing.T) {
+		client.config.URL = "http://invalid-address.local"
+		_, err := client.CallMutating(context.Background(), &Request{})
+		assert.Error(t, err)
+	})
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(_ []byte) (n int, err error) {
+	return 0, errors.New("forced read error")
+}
+func (e *errorReader) Close() error { return nil }
+
+func TestDoHTTPCallReadError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// This handler won't be reached because we're testing doHTTPCall error path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// We need a server that returns a body that fails on Read
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusOK)
+		// We can't easily force Read to fail from net/http handler,
+		// but we can mock the http client or its transport.
+	}))
+	defer ts.Close()
+
+	cfg := Config{
+		Name:          "read-err",
+		URL:           ts.URL,
+		FailurePolicy: FailurePolicyFail,
+	}
+	client, err := NewClient(cfg, TypeValidating, nil)
+	require.NoError(t, err)
+
+	// Mock the RoundTripper to return a body that fails on Read
+	rt := &mockRoundTripper{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       &errorReader{},
+		},
+	}
+	client.httpClient.Transport = rt
+
+	_, err = client.Call(context.Background(), &Request{})
+	assert.Error(t, err)
+	var networkErr *NetworkError
+	assert.True(t, errors.As(err, &networkErr))
+	assert.Contains(t, err.Error(), "forced read error")
+}
+
+type mockRoundTripper struct {
+	resp *http.Response
+	err  error
+}
+
+func (m *mockRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return m.resp, m.err
 }
 
 // newTestClient creates a webhook Client suitable for testing with httptest servers.

@@ -358,6 +358,63 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.NoError(t, err)
 	})
+
+	t.Run("fresh install rolls back extraction on store.Create failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+		inst.EXPECT().Extract(layerData, targetDir, false).Return(&skills.ExtractResult{SkillDir: targetDir, Files: 1}, nil)
+		store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db write error"))
+		inst.EXPECT().Remove(targetDir).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db write error")
+	})
+
+	t.Run("upgrade rolls back extraction on store.Update failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		targetDir := filepath.Join(t.TempDir(), "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:old",
+			Status:   skills.InstallStatusInstalled,
+			Clients:  []string{"claude-code"},
+		}
+
+		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, targetDir, true).Return(&skills.ExtractResult{SkillDir: targetDir, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update error"))
+		inst.EXPECT().Remove(targetDir).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db update error")
+	})
 }
 
 func TestUninstall(t *testing.T) {
@@ -483,6 +540,34 @@ func TestUninstall(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr1))
 		_, statErr2 := os.Stat(dir2)
 		assert.True(t, os.IsNotExist(statErr2))
+	})
+
+	t.Run("best-effort cleanup continues on remove error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Scope:    skills.ScopeUser,
+			Clients:  []string{"client-a", "client-b"},
+		}
+
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		pr.EXPECT().GetSkillPath("client-a", "my-skill", skills.ScopeUser, "").Return("/some/dir-a", nil)
+		pr.EXPECT().GetSkillPath("client-b", "my-skill", skills.ScopeUser, "").Return("/some/dir-b", nil)
+		// First remove fails, but second should still be attempted
+		inst.EXPECT().Remove("/some/dir-a").Return(fmt.Errorf("permission denied"))
+		inst.EXPECT().Remove("/some/dir-b").Return(nil)
+		store.EXPECT().Delete(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		err := svc.Uninstall(t.Context(), skills.UninstallOptions{Name: "my-skill"})
+		// Store deletion succeeds, but cleanup errors are returned
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "permission denied")
 	})
 }
 

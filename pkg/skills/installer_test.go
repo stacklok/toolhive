@@ -204,4 +204,28 @@ func TestRemove(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "dangerous path")
 	})
+
+	t.Run("refuses to remove symlink", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		realDir := filepath.Join(tmpDir, "real-dir")
+		require.NoError(t, os.MkdirAll(realDir, 0750))
+
+		symlinkPath := filepath.Join(tmpDir, "symlink-skill")
+		require.NoError(t, os.Symlink(realDir, symlinkPath))
+
+		err := Remove(symlinkPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "refusing to remove symlink")
+
+		// Verify the real directory was not removed
+		_, statErr := os.Stat(realDir)
+		assert.NoError(t, statErr, "real directory should still exist")
+	})
+}
+
+func TestNewInstaller(t *testing.T) {
+	t.Parallel()
+	inst := NewInstaller()
+	require.NotNil(t, inst)
 }

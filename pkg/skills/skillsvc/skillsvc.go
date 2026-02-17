@@ -27,10 +27,18 @@ func WithPathResolver(pr skills.PathResolver) Option {
 	}
 }
 
+// WithInstaller sets the installer for filesystem operations.
+func WithInstaller(inst skills.Installer) Option {
+	return func(s *service) {
+		s.installer = inst
+	}
+}
+
 // service is the default implementation of skills.SkillService.
 type service struct {
 	store        storage.SkillStore
 	pathResolver skills.PathResolver
+	installer    skills.Installer
 }
 
 // New creates a new SkillService backed by the given store.
@@ -38,6 +46,9 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	s := &service{store: store}
 	for _, o := range opts {
 		o(s)
+	}
+	if s.installer == nil {
+		s.installer = skills.NewInstaller()
 	}
 	return s
 }
@@ -82,20 +93,27 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return err
 	}
 
-	// Remove files for each client that was installed.
+	// Remove files for each client — best-effort: collect errors but don't
+	// abort on the first failure so we clean up as much as possible.
+	var cleanupErrs []error
 	if s.pathResolver != nil {
 		for _, clientType := range existing.Clients {
 			skillPath, pathErr := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
 			if pathErr != nil {
-				continue // best-effort cleanup
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("resolving path for client %q: %w", clientType, pathErr))
+				continue
 			}
-			if rmErr := skills.Remove(skillPath); rmErr != nil {
-				return fmt.Errorf("removing skill files for client %q: %w", clientType, rmErr)
+			if rmErr := s.installer.Remove(skillPath); rmErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("removing files for client %q: %w", clientType, rmErr))
 			}
 		}
 	}
 
-	return s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot)
+	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
+		return err
+	}
+
+	return errors.Join(cleanupErrs...)
 }
 
 // Info returns detailed information about a skill.
@@ -199,12 +217,14 @@ func (s *service) upgradeSkill(
 	clientType, targetDir string,
 	existing skills.InstalledSkill,
 ) (*skills.InstallResult, error) {
-	if _, err := skills.Extract(opts.LayerData, targetDir, true); err != nil {
+	if _, err := s.installer.Extract(opts.LayerData, targetDir, true); err != nil {
 		return nil, fmt.Errorf("extracting skill upgrade: %w", err)
 	}
 
 	sk := buildInstalledSkill(opts, scope, clientType, existing.Clients)
 	if err := s.store.Update(ctx, sk); err != nil {
+		// Rollback: clean up extracted files since the store record wasn't updated.
+		_ = s.installer.Remove(targetDir)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil
@@ -225,12 +245,14 @@ func (s *service) freshInstall(
 		)
 	}
 
-	if _, err := skills.Extract(opts.LayerData, targetDir, opts.Force); err != nil {
+	if _, err := s.installer.Extract(opts.LayerData, targetDir, opts.Force); err != nil {
 		return nil, fmt.Errorf("extracting skill: %w", err)
 	}
 
 	sk := buildInstalledSkill(opts, scope, clientType, nil)
 	if err := s.store.Create(ctx, sk); err != nil {
+		// Rollback: clean up extracted files since the store record wasn't created.
+		_ = s.installer.Remove(targetDir)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil

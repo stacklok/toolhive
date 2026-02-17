@@ -35,6 +35,23 @@ type ExtractResult struct {
 	Files int
 }
 
+// defaultInstaller is the production implementation of Installer.
+type defaultInstaller struct{}
+
+// NewInstaller returns a production Installer that delegates to the package-level
+// Extract and Remove functions.
+func NewInstaller() Installer {
+	return &defaultInstaller{}
+}
+
+func (*defaultInstaller) Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, error) {
+	return Extract(layerData, targetDir, force)
+}
+
+func (*defaultInstaller) Remove(skillDir string) error {
+	return Remove(skillDir)
+}
+
 // Extract decompresses a tar.gz OCI layer and writes files to targetDir.
 // If targetDir exists and force is false, an error is returned.
 // If force is true, the existing directory is removed before extraction.
@@ -134,22 +151,43 @@ func Remove(skillDir string) error {
 		return fmt.Errorf("resolving absolute path: %w", err)
 	}
 
-	// Guard against removing dangerous paths
-	homeDir, homeErr := os.UserHomeDir()
-	if absPath == "/" {
-		return fmt.Errorf("refusing to remove dangerous path %q", absPath)
+	// Use Lstat (not Stat) to detect symlinks without following them.
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking path %q: %w", absPath, err)
 	}
-	if homeErr == nil && absPath == homeDir {
-		return fmt.Errorf("refusing to remove dangerous path %q", absPath)
+
+	// Refuse to remove if the path itself is a symlink — prevents an attacker
+	// from replacing the skill directory with a symlink to trick us into
+	// deleting an arbitrary location.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove symlink at %q: expected a directory", absPath)
+	}
+
+	// Resolve any symlinks in parent components to get the real path for
+	// the dangerous-path checks below.
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return fmt.Errorf("resolving symlinks in path: %w", err)
+	}
+
+	// Guard against removing dangerous paths (checked against resolved path).
+	// filepath.Dir(p) == p is true at filesystem roots on all platforms
+	// (e.g. "/" on Unix, "C:\" on Windows).
+	homeDir, homeErr := os.UserHomeDir()
+	if filepath.Dir(realPath) == realPath {
+		return fmt.Errorf("refusing to remove dangerous path %q", realPath)
+	}
+	if homeErr == nil && realPath == homeDir {
+		return fmt.Errorf("refusing to remove dangerous path %q", realPath)
 	}
 	// If we couldn't determine the home directory, refuse shallow paths as a safety net.
 	// Count path depth by splitting on separator (e.g., "/var/home/user" → 4 components).
-	if homeErr != nil && pathDepth(absPath) < 4 {
-		return fmt.Errorf("refusing to remove shallow path %q (could not determine home directory)", absPath)
-	}
-
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		return nil
+	if homeErr != nil && pathDepth(realPath) < 4 {
+		return fmt.Errorf("refusing to remove shallow path %q (could not determine home directory)", realPath)
 	}
 
 	return os.RemoveAll(absPath)
@@ -165,7 +203,14 @@ func validatePathNoSymlinks(targetDir string) error {
 	}
 
 	// Walk each component from the root down, checking existing segments.
-	current := "/"
+	// Use filepath.VolumeName to determine the root correctly on all platforms
+	// (e.g. "/" on Unix, "C:\" on Windows).
+	current := func() string {
+		if vol := filepath.VolumeName(absTarget); vol != "" {
+			return vol + string(os.PathSeparator)
+		}
+		return string(os.PathSeparator)
+	}()
 	for _, component := range strings.Split(absTarget, string(os.PathSeparator)) {
 		if component == "" {
 			continue

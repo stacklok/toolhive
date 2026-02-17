@@ -73,7 +73,6 @@ thv run server-name
 **Implementation:**
 - Embedded: `pkg/registry/data/registry.json`
 - Manager: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`
-- Update: `cmd/regup/` (registry updater tool)
 
 ## Registry Format
 

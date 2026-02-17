@@ -157,20 +157,44 @@ func loadRuntimeConfig(
 	transportType templates.TransportType,
 	override *templates.RuntimeConfig,
 ) *templates.RuntimeConfig {
-	// If override is provided, use it
-	if override != nil {
-		return override
+	// Resolve base config from user configuration or defaults.
+	baseConfig := getBaseRuntimeConfig(transportType)
+	if override == nil {
+		return baseConfig
 	}
 
+	// Merge overrides into base config so omitted fields inherit sane defaults.
+	merged := &templates.RuntimeConfig{
+		BuilderImage:       baseConfig.BuilderImage,
+		AdditionalPackages: append([]string{}, baseConfig.AdditionalPackages...),
+	}
+
+	if strings.TrimSpace(override.BuilderImage) != "" {
+		merged.BuilderImage = strings.TrimSpace(override.BuilderImage)
+	}
+	if len(override.AdditionalPackages) > 0 {
+		merged.AdditionalPackages = append(merged.AdditionalPackages, override.AdditionalPackages...)
+	}
+
+	return merged
+}
+
+func getBaseRuntimeConfig(transportType templates.TransportType) *templates.RuntimeConfig {
 	// Try loading from user config
 	provider := config.NewProvider()
 	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
-		return userConfig
+		return &templates.RuntimeConfig{
+			BuilderImage:       userConfig.BuilderImage,
+			AdditionalPackages: append([]string{}, userConfig.AdditionalPackages...),
+		}
 	}
 
 	// Fall back to defaults
 	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
-	return &defaultConfig
+	return &templates.RuntimeConfig{
+		BuilderImage:       defaultConfig.BuilderImage,
+		AdditionalPackages: append([]string{}, defaultConfig.AdditionalPackages...),
+	}
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.

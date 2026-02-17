@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
@@ -14,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -162,6 +164,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageURL string
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
+	runtimeConfigOverride := runtimeConfigFromRequest(req)
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -180,8 +183,8 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
 			retriever.VerifyImageWarn,
-			"",  // TODO Add support for registry groups lookups for API
-			nil, // No runtime override from API (yet)
+			"", // TODO Add support for registry groups lookups for API
+			runtimeConfigOverride,
 		)
 		if err != nil {
 			// Check if the error is due to context timeout
@@ -272,6 +275,11 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil, false),
 	}
 
+	// Runtime overrides only apply to protocol-scheme image builds.
+	if runtimeConfigOverride != nil && req.URL == "" {
+		options = append(options, runner.WithRuntimeConfig(runtimeConfigOverride))
+	}
+
 	// Add header forward configuration if specified
 	if req.HeaderForward != nil {
 		if len(req.HeaderForward.AddPlaintextHeaders) > 0 {
@@ -359,6 +367,29 @@ func createRequestToRemoteAuthConfig(
 	}
 
 	return remoteAuthConfig
+}
+
+func runtimeConfigFromRequest(req *createRequest) *templates.RuntimeConfig {
+	if req == nil || req.RuntimeConfig == nil {
+		return nil
+	}
+
+	runtimeConfig := &templates.RuntimeConfig{}
+	if builderImage := strings.TrimSpace(req.RuntimeConfig.BuilderImage); builderImage != "" {
+		runtimeConfig.BuilderImage = builderImage
+	}
+	if len(req.RuntimeConfig.AdditionalPackages) > 0 {
+		for _, pkg := range req.RuntimeConfig.AdditionalPackages {
+			if trimmedPkg := strings.TrimSpace(pkg); trimmedPkg != "" {
+				runtimeConfig.AdditionalPackages = append(runtimeConfig.AdditionalPackages, trimmedPkg)
+			}
+		}
+	}
+	if runtimeConfig.BuilderImage == "" && len(runtimeConfig.AdditionalPackages) == 0 {
+		return nil
+	}
+
+	return runtimeConfig
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group

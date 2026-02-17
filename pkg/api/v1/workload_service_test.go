@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
@@ -149,4 +150,88 @@ func TestNewWorkloadService(t *testing.T) {
 
 	service := NewWorkloadService(nil, nil, nil, false)
 	require.NotNil(t, service)
+}
+
+func TestRuntimeConfigFromRequest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil request", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, runtimeConfigFromRequest(nil))
+	})
+
+	t.Run("nil runtime config", func(t *testing.T) {
+		t.Parallel()
+		req := &createRequest{}
+		assert.Nil(t, runtimeConfigFromRequest(req))
+	})
+
+	t.Run("empty runtime config returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuilderImage:       "   ",
+					AdditionalPackages: []string{"", "   "},
+				},
+			},
+		}
+
+		assert.Nil(t, runtimeConfigFromRequest(req))
+	})
+
+	t.Run("trims builder image", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuilderImage: "  golang:1.24-alpine  ",
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
+	})
+
+	t.Run("trims and filters additional packages", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					AdditionalPackages: []string{" git ", "", "  ", "curl"},
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, []string{"git", "curl"}, result.AdditionalPackages)
+	})
+
+	t.Run("copies runtime config", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				RuntimeConfig: &templates.RuntimeConfig{
+					BuilderImage:       "golang:1.24-alpine",
+					AdditionalPackages: []string{"git"},
+				},
+			},
+		}
+
+		result := runtimeConfigFromRequest(req)
+		require.NotNil(t, result)
+		assert.Equal(t, "golang:1.24-alpine", result.BuilderImage)
+		assert.Equal(t, []string{"git"}, result.AdditionalPackages)
+
+		// Verify a copy is made for slice fields.
+		req.RuntimeConfig.AdditionalPackages[0] = "curl"
+		assert.Equal(t, []string{"git"}, result.AdditionalPackages)
+	})
 }

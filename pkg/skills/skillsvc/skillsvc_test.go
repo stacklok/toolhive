@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -722,4 +725,68 @@ func TestNewWithZeroOptions(t *testing.T) {
 	// New(store) without options should work
 	svc := New(store)
 	require.NotNil(t, svc)
+}
+
+func TestConcurrentInstallAndUninstall(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	store := storemocks.NewMockSkillStore(ctrl)
+
+	// Per-skill atomic counters verify that at most one goroutine is inside
+	// a critical section for a given skill at any time.
+	var inFlight sync.Map // skill name -> *int32
+
+	assertExclusive := func(name string) {
+		counter, _ := inFlight.LoadOrStore(name, new(int32))
+		cnt := counter.(*int32)
+		cur := atomic.AddInt32(cnt, 1)
+		assert.Equal(t, int32(1), cur, "concurrent access detected for %s", name)
+		// Sleep briefly to widen the window for detecting overlap.
+		time.Sleep(time.Millisecond)
+		atomic.AddInt32(cnt, -1)
+	}
+
+	store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, sk skills.InstalledSkill) error {
+			assertExclusive(sk.Metadata.Name)
+			return nil
+		}).AnyTimes()
+	store.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, name string, _ skills.Scope, _ string) (skills.InstalledSkill, error) {
+			assertExclusive(name)
+			return skills.InstalledSkill{
+				Metadata: skills.SkillMetadata{Name: name},
+				Scope:    skills.ScopeUser,
+			}, nil
+		}).AnyTimes()
+	store.EXPECT().Delete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, name string, _ skills.Scope, _ string) error {
+			assertExclusive(name)
+			return nil
+		}).AnyTimes()
+
+	svc := New(store)
+
+	// Run concurrent install/uninstall pairs across multiple skill names.
+	// Different skills proceed independently; the same skill name is
+	// serialized by the per-skill lock. The atomic counters above detect
+	// any overlap within a skill's critical section.
+	skillNames := []string{"skill-a", "skill-b", "skill-c"}
+	const goroutinesPerSkill = 5
+
+	var wg sync.WaitGroup
+	wg.Add(len(skillNames) * goroutinesPerSkill)
+
+	for _, name := range skillNames {
+		for range goroutinesPerSkill {
+			go func() {
+				defer wg.Done()
+				_, _ = svc.Install(t.Context(), skills.InstallOptions{Name: name})
+				_ = svc.Uninstall(t.Context(), skills.UninstallOptions{Name: name})
+			}()
+		}
+	}
+
+	wg.Wait()
 }

@@ -2,14 +2,14 @@
 *                                   @JAORMX
 
 # CLI (thv)
-cmd/thv/                             @JAORMX @dmjb @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-cmd/help/                            @JAORMX @dmjb @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-docs/cli/                            @JAORMX @dmjb @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
-test/e2e/                            @JAORMX @dmjb @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
+cmd/thv/                             @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
+cmd/help/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
+docs/cli/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
+test/e2e/                            @JAORMX @yrobla @ChrisJBurns @eleftherias @amirejaz @lujunsan @rdimitrov @jhrozek
 
 # HTTP API (ToolHive server)
-pkg/api/                             @dmjb @JAORMX @eleftherias @amirejaz
-docs/server/                         @dmjb @JAORMX @eleftherias @amirejaz
+pkg/api/                             @JAORMX @eleftherias @amirejaz
+docs/server/                         @JAORMX @eleftherias @amirejaz
 
 # Kubernetes (operator + proxyrunner + charts)
 cmd/thv-operator/                    @ChrisJBurns @yrobla @JAORMX @jerm-dro @jhrozek
@@ -27,43 +27,43 @@ pkg/vmcp/                            @JAORMX @yrobla @jhrozek @jerm-dro @amireja
 test/integration/vmcp/               @JAORMX @yrobla @jhrozek @jerm-dro @amirejaz
 
 # Core Runtime & Lifecycle
-pkg/workloads/                       @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/runner/                          @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/runtime/                         @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/state/                           @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/config/                          @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/migration/                       @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/groups/                          @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
-pkg/client/                          @dmjb @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/workloads/                       @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/runner/                          @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/runtime/                         @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/state/                           @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/config/                          @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/migration/                       @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/groups/                          @JAORMX @amirejaz @eleftherias @lujunsan
+pkg/client/                          @JAORMX @amirejaz @eleftherias @lujunsan
 
 # Infrastructure Abstractions
-pkg/container/                        @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
-pkg/transport/                        @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
-pkg/mcp/                              @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
-pkg/networking/                       @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
-pkg/labels/                           @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
-pkg/process/                          @JAORMX @dmjb @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/container/                        @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/transport/                        @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/mcp/                              @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/networking/                       @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/labels/                           @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
+pkg/process/                          @JAORMX @jhrozek @blkt @amirejaz @ChrisJBurns @yrobla
 
 # Registry & Distribution
-pkg/registry/                         @JAORMX @rdimitrov @dmjb
-cmd/regup/                            @JAORMX @rdimitrov @dmjb
-.github/workflows/update-registry.yml  @JAORMX @rdimitrov @dmjb
+pkg/registry/                         @JAORMX @rdimitrov
+cmd/regup/                            @JAORMX @rdimitrov
+.github/workflows/update-registry.yml  @JAORMX @rdimitrov
 
 # Security & Policy
-pkg/auth/                             @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/authz/                            @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/oauth/                            @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/authserver/                       @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/secrets/                          @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/permissions/                      @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/container/verifier/               @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
-pkg/audit/                            @jhrozek @JAORMX @dmjb @ChrisJBurns @yrobla
+pkg/auth/                             @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/authz/                            @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/oauth/                            @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/authserver/                       @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/secrets/                          @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/permissions/                      @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/container/verifier/               @jhrozek @JAORMX @ChrisJBurns @yrobla
+pkg/audit/                            @jhrozek @JAORMX @ChrisJBurns @yrobla
 
 # Observability
-pkg/telemetry/                        @ChrisJBurns @JAORMX @dmjb @yrobla @jerm-dro
-pkg/usagemetrics/                     @ChrisJBurns @JAORMX @dmjb @yrobla @jerm-dro
-pkg/logger/                           @ChrisJBurns @JAORMX @dmjb @yrobla @jerm-dro
-pkg/recovery/                         @ChrisJBurns @JAORMX @dmjb @yrobla @jerm-dro
+pkg/telemetry/                        @ChrisJBurns @JAORMX @yrobla @jerm-dro
+pkg/usagemetrics/                     @ChrisJBurns @JAORMX @yrobla @jerm-dro
+pkg/logger/                           @ChrisJBurns @JAORMX @yrobla @jerm-dro
+pkg/recovery/                         @ChrisJBurns @JAORMX @yrobla @jerm-dro
 
 # Architecture docs
-docs/arch/                            @JAORMX @amirejaz @dmjb @yrobla @rdimitrov @ChrisJBurns @jhrozek
+docs/arch/                            @JAORMX @amirejaz @yrobla @rdimitrov @ChrisJBurns @jhrozek

@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test CEL validation for VirtualMCPServer CRD
+# This tests that the API server rejects invalid manifests immediately
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: virtualmcpserver-cel-validation
+spec:
+  description: |
+    Test CEL validation rules for VirtualMCPServer.
+    These validations happen at the API server level and reject invalid specs immediately.
+  steps:
+    # Test 1: OIDC type without oidcConfig should be rejected by CEL
+    - name: reject-oidc-without-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-invalid-oidc-missing-config
+                namespace: default
+              spec:
+                incomingAuth:
+                  type: oidc  # Requires oidcConfig but it's missing
+                serviceType: ClusterIP
+                config:
+                  groupRef: test-group
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* spec.incomingAuth.oidcConfig is required when type is oidc *"
+
+    # Test 2: Valid minimal configuration should be accepted
+    - name: accept-valid-minimal
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-valid-minimal
+                namespace: default
+              spec:
+                incomingAuth:
+                  type: anonymous
+                serviceType: ClusterIP
+                config:
+                  groupRef: test-group
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: VirtualMCPServer
+              metadata:
+                name: test-valid-minimal
+              spec:
+                incomingAuth:
+                  type: anonymous

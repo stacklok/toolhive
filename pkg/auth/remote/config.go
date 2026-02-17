@@ -6,12 +6,12 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
 
 	httpval "github.com/stacklok/toolhive-core/validation/http"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
@@ -175,14 +175,14 @@ func DefaultResourceIndicator(remoteServerURL string) string {
 	normalized, err := normalizeResourceURI(remoteServerURL)
 	if err != nil {
 		// Normalization failed - log warning and leave resource empty
-		logger.Warnf("Failed to normalize resource indicator from remote server URL %s: %v", remoteServerURL, err)
+		slog.Warn("Failed to normalize resource indicator from remote server URL", "url", remoteServerURL, "error", err)
 		return ""
 	}
 
 	// Validate the normalized result
 	if err := httpval.ValidateResourceURI(normalized); err != nil {
 		// Validation failed - log warning and leave resource empty
-		logger.Warnf("Normalized resource indicator is invalid %s: %v", normalized, err)
+		slog.Warn("Normalized resource indicator is invalid", "resource", normalized, "error", err)
 		return ""
 	}
 

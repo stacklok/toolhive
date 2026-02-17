@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -14,7 +15,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -153,7 +153,7 @@ type injectionFunc func(*http.Request, string) error
 // createReplaceInjector creates an injection function that replaces the Authorization header
 func createReplaceInjector() injectionFunc {
 	return func(r *http.Request, token string) error {
-		logger.Debugf("Token exchange successful, replacing Authorization header")
+		slog.Debug("Token exchange successful, replacing Authorization header")
 		r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 		return nil
 	}
@@ -169,7 +169,7 @@ func createCustomInjector(headerName string) injectionFunc {
 	}
 
 	return func(r *http.Request, token string) error {
-		logger.Debugf("Token exchange successful, adding token to custom header: %s", headerName)
+		slog.Debug("Token exchange successful, adding token to custom header", "header", headerName)
 		r.Header.Set(headerName, fmt.Sprintf("Bearer %s", token))
 		return nil
 	}
@@ -229,7 +229,7 @@ func CreateMiddlewareFromTokenSource(
 			// Extract ID token from Extra field (standard OIDC approach)
 			idToken, ok := token.Extra("id_token").(string)
 			if !ok || idToken == "" {
-				logger.Error("ID token not available in token response")
+				slog.Error("ID token not available in token response")
 				return "", errors.New("required token not available")
 			}
 			return idToken, nil
@@ -237,14 +237,14 @@ func CreateMiddlewareFromTokenSource(
 		case "", tokenTypeAccessToken:
 			// Use access token (default)
 			if token.AccessToken == "" {
-				logger.Error("Access token not available")
+				slog.Error("Access token not available")
 				return "", errors.New("required token not available")
 			}
 			return token.AccessToken, nil
 
 		default:
 			// This should never happen due to early validation, but handle defensively
-			logger.Errorf("Invalid subject token type: %s", config.SubjectTokenType)
+			slog.Error("Invalid subject token type", "type", config.SubjectTokenType)
 			return "", errors.New("invalid token configuration")
 		}
 	}
@@ -281,7 +281,7 @@ func createTokenExchangeMiddleware(
 		// If not provided in config, try to read from environment variable
 		if envSecret := getEnv(EnvClientSecret); envSecret != "" {
 			clientSecret = envSecret
-			logger.Debug("Using client secret from environment variable")
+			slog.Debug("Using client secret from environment variable")
 		}
 	}
 
@@ -301,7 +301,7 @@ func createTokenExchangeMiddleware(
 			// Get identity from the auth middleware
 			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				logger.Debug("No identity found in context, proceeding without token exchange")
+				slog.Debug("No identity found in context, proceeding without token exchange")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -314,13 +314,13 @@ func createTokenExchangeMiddleware(
 			// Determine token source based on whether external provider was given
 			if subjectTokenProvider != nil {
 				// if the subjectTokenProvider is provided, use it, e.g. for passing in id_tokens
-				logger.Debug("Using provided token source for token exchange")
+				slog.Debug("Using provided token source for token exchange")
 				tokenProvider = subjectTokenProvider
 			} else {
 				// otherwise, extract token from incoming request's Authorization header
 				subjectToken, err := auth.ExtractBearerToken(r)
 				if err != nil {
-					logger.Debugf("No valid Bearer token found (%v), proceeding without token exchange", err)
+					slog.Debug("No valid Bearer token found, proceeding without token exchange", "error", err)
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -332,7 +332,8 @@ func createTokenExchangeMiddleware(
 
 			// Log some claim information for debugging
 			if sub, exists := claims["sub"]; exists {
-				logger.Debugf("Performing token exchange for subject: %v", sub)
+				//nolint:gosec // G706: subject claim is from validated JWT
+				slog.Debug("Performing token exchange for subject", "subject", sub)
 			}
 
 			// Create a copy of the base config with the request-specific subject token
@@ -343,17 +344,17 @@ func createTokenExchangeMiddleware(
 			tokenSource := exchangeConfig.TokenSource(r.Context())
 			exchangedToken, err := tokenSource.Token()
 			if err != nil {
-				logger.Warnf("Token exchange failed: %v", err)
+				slog.Warn("Token exchange failed", "error", err)
 				http.Error(w, "Token exchange failed", http.StatusUnauthorized)
 				return
 			}
 
 			// Token exchange succeeded
-			logger.Debug("Token exchange successful")
+			slog.Debug("Token exchange successful")
 
 			// Inject the exchanged token into the request using the pre-selected strategy
 			if err := injectToken(r, exchangedToken.AccessToken); err != nil {
-				logger.Warnf("Failed to inject token: %v", err)
+				slog.Warn("Failed to inject token", "error", err)
 				http.Error(w, "Token injection failed", http.StatusInternalServerError)
 				return
 			}

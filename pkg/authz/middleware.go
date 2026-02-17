@@ -9,13 +9,13 @@ package authz
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -220,7 +220,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 			if err := filteringWriter.FlushAndFilter(); err != nil {
 				// If flushing fails, we've already started writing the response,
 				// so we can't return an error response. Just log it.
-				logger.Warnf("Error flushing filtered response: %v", err)
+				slog.Warn("Error flushing filtered response", "error", err)
 			}
 			return
 		}

@@ -18,6 +18,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 func TestNewClient(t *testing.T) {
@@ -543,6 +545,7 @@ func TestBuildTransport(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			transport, err := buildTransport(tt.tlsCfg)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -551,7 +554,11 @@ func TestBuildTransport(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, transport)
 				if tt.tlsCfg != nil && tt.tlsCfg.InsecureSkipVerify {
-					assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+					vt, ok := transport.(*networking.ValidatingTransport)
+					require.True(t, ok, "expected *networking.ValidatingTransport")
+					tr, ok := vt.Transport.(*http.Transport)
+					require.True(t, ok, "expected *http.Transport")
+					assert.True(t, tr.TLSClientConfig.InsecureSkipVerify)
 				}
 			}
 		})
@@ -562,6 +569,7 @@ func TestClassifyError(t *testing.T) {
 	t.Parallel()
 
 	t.Run("non-timeout network error", func(t *testing.T) {
+		t.Parallel()
 		err := errors.New("connection refused")
 		classified := classifyError("test", err)
 		var netErr *NetworkError
@@ -573,11 +581,13 @@ func TestTruncateBody(t *testing.T) {
 	t.Parallel()
 
 	t.Run("short body", func(t *testing.T) {
+		t.Parallel()
 		body := []byte("short")
 		assert.Equal(t, "short", truncateBody(body))
 	})
 
 	t.Run("long body", func(t *testing.T) {
+		t.Parallel()
 		body := []byte(strings.Repeat("a", 300))
 		truncated := truncateBody(body)
 		assert.Equal(t, 256+3, len(truncated))
@@ -588,14 +598,14 @@ func TestTruncateBody(t *testing.T) {
 func TestClientCallErrors(t *testing.T) {
 	t.Parallel()
 
-	cfg := Config{
+	client := newTestClient(Config{
 		Name:    "error-test",
 		URL:     "invalid URL \x00", // Will cause http.NewRequest to fail
 		Timeout: 1 * time.Second,
-	}
-	client := newTestClient(cfg, TypeValidating, nil)
+	}, TypeValidating, nil)
 
 	t.Run("request creation failure", func(t *testing.T) {
+		t.Parallel()
 		_, err := client.Call(context.Background(), &Request{})
 		assert.Error(t, err)
 		var networkErr *NetworkError
@@ -603,46 +613,63 @@ func TestClientCallErrors(t *testing.T) {
 	})
 
 	t.Run("unmarshal failure Call", func(t *testing.T) {
+		t.Parallel()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("not-json"))
 		}))
 		defer server.Close()
 
-		client.config.URL = server.URL
-		_, err := client.Call(context.Background(), &Request{})
+		testClient := newTestClient(Config{
+			Name:          "unmarshal-fail",
+			URL:           server.URL,
+			FailurePolicy: FailurePolicyFail,
+		}, TypeValidating, nil)
+
+		_, err := testClient.Call(context.Background(), &Request{})
 		assert.Error(t, err)
 		var invalidErr *InvalidResponseError
 		assert.True(t, errors.As(err, &invalidErr))
 	})
 
 	t.Run("unmarshal failure CallMutating", func(t *testing.T) {
+		t.Parallel()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("not-json"))
 		}))
 		defer server.Close()
 
-		client.config.URL = server.URL
-		_, err := client.CallMutating(context.Background(), &Request{})
+		testClient := newTestClient(Config{
+			Name:          "unmarshal-fail-mutating",
+			URL:           server.URL,
+			FailurePolicy: FailurePolicyFail,
+		}, TypeMutating, nil)
+
+		_, err := testClient.CallMutating(context.Background(), &Request{})
 		assert.Error(t, err)
 		var invalidErr *InvalidResponseError
 		assert.True(t, errors.As(err, &invalidErr))
 	})
 
 	t.Run("doHTTPCall failure CallMutating", func(t *testing.T) {
-		client.config.URL = "http://invalid-address.local"
-		_, err := client.CallMutating(context.Background(), &Request{})
+		t.Parallel()
+		testClient := newTestClient(Config{
+			Name:          "http-fail",
+			URL:           "http://invalid-address.local",
+			FailurePolicy: FailurePolicyFail,
+		}, TypeMutating, nil)
+		_, err := testClient.CallMutating(context.Background(), &Request{})
 		assert.Error(t, err)
 	})
 }
 
 type errorReader struct{}
 
-func (e *errorReader) Read(_ []byte) (n int, err error) {
+func (*errorReader) Read(_ []byte) (n int, err error) {
 	return 0, errors.New("forced read error")
 }
-func (e *errorReader) Close() error { return nil }
+func (*errorReader) Close() error { return nil }
 
 func TestDoHTTPCallReadError(t *testing.T) {
 	t.Parallel()

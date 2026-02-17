@@ -17,6 +17,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Client is an HTTP client for calling webhook endpoints.
@@ -113,6 +115,7 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 		httpReq.Header.Set(TimestampHeader, strconv.FormatInt(timestamp, 10))
 	}
 
+	// #nosec G704 -- URL is validated in Config.Validate and we use ValidatingTransport for SSRF protection.
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, classifyError(c.config.Name, err)
@@ -147,8 +150,9 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	return respBody, nil
 }
 
-// buildTransport creates an http.Transport with the specified TLS configuration.
-func buildTransport(tlsCfg *TLSConfig) (*http.Transport, error) {
+// buildTransport creates an http.RoundTripper with the specified TLS configuration,
+// wrapped in a ValidatingTransport for security.
+func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
@@ -193,7 +197,10 @@ func buildTransport(tlsCfg *TLSConfig) (*http.Transport, error) {
 	}
 
 	transport.TLSClientConfig = tlsConfig
-	return transport, nil
+	return &networking.ValidatingTransport{
+		Transport:         transport,
+		InsecureAllowHTTP: false,
+	}, nil
 }
 
 // classifyError examines an HTTP client error and returns an appropriately

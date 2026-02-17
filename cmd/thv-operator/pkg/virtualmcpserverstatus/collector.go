@@ -97,6 +97,11 @@ func (s *StatusCollector) SetAuthConfigCondition(conditionType, reason, message 
 // except for those in the exclude list. This is tracked as a change and will be applied
 // during UpdateStatus.
 func (s *StatusCollector) RemoveConditionsWithPrefix(prefix string, exclude []string) {
+	// Validate prefix to prevent removing all conditions
+	if prefix == "" {
+		return
+	}
+
 	// Build exclude map for quick lookup
 	excludeMap := make(map[string]bool)
 	for _, condType := range exclude {

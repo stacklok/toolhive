@@ -181,6 +181,36 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 	return transportMap, nil
 }
 
+// extractInlineBackendNames extracts the list of inline backend names from the VirtualMCPServer spec.
+func extractInlineBackendNames(vmcp *mcpv1alpha1.VirtualMCPServer) []string {
+	if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
+		return nil
+	}
+	names := make([]string, 0, len(vmcp.Spec.OutgoingAuth.Backends))
+	for backendName := range vmcp.Spec.OutgoingAuth.Backends {
+		names = append(names, backendName)
+	}
+	return names
+}
+
+// determineValidInlineBackends determines which inline backends have valid auth configs.
+func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inlineBackendNames []string) []string {
+	if authConfig == nil || authConfig.Backends == nil {
+		return nil
+	}
+	valid := make([]string, 0)
+	for backendName := range authConfig.Backends {
+		// Only count inline backends (not discovered backends)
+		for _, inlineBackend := range inlineBackendNames {
+			if backendName == inlineBackend {
+				valid = append(valid, backendName)
+				break
+			}
+		}
+	}
+	return valid
+}
+
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
 // It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
 func (r *VirtualMCPServerReconciler) processOutgoingAuth(
@@ -192,7 +222,7 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 ) error {
 	// Clean up stale conditions if outgoing auth is not configured
 	if config.OutgoingAuth == nil {
-		setAuthConfigConditions(statusManager, nil, nil)
+		setAuthConfigConditions(statusManager, nil, nil, false, nil, nil)
 		return nil
 	}
 
@@ -201,7 +231,7 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 
 	// Clean up stale conditions if not using inline or discovered mode
 	if !isInlineMode && !isDiscoveredMode {
-		setAuthConfigConditions(statusManager, nil, nil)
+		setAuthConfigConditions(statusManager, nil, nil, false, nil, nil)
 		return nil
 	}
 
@@ -209,9 +239,21 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 	// All errors are non-fatal - the system continues in degraded mode with partial auth config
 	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 
+	// Extract inline backend names and determine valid auth configs
+	inlineBackendNames := extractInlineBackendNames(vmcp)
+	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
+	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
+
 	// Set conditions for all auth config types (default, backend-specific, discovered)
 	// True for success, False for errors
-	setAuthConfigConditions(statusManager, backendsWithAuthConfig, allAuthErrors)
+	setAuthConfigConditions(
+		statusManager,
+		backendsWithAuthConfig,
+		inlineBackendNames,
+		hasValidDefaultAuth,
+		validInlineBackends,
+		allAuthErrors,
+	)
 
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {

@@ -1,16 +1,5 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 package controllers
 
@@ -527,13 +516,16 @@ func TestSetAuthConfigConditions(t *testing.T) {
 	tests := []struct {
 		name                   string
 		backendsWithAuthConfig []string // Only backends with ExternalAuthConfigRef
+		inlineBackendNames     []string // Inline backends from OutgoingAuth.Backends
+		hasValidDefaultAuth    bool     // Whether default auth is valid
+		validInlineBackends    []string // Inline backends with valid auth
 		allAuthErrors          []AuthConfigError
-		expectedConditionCount int
 		validate               func(*testing.T, *statusmocks.MockStatusManager)
 	}{
 		{
 			name:                   "discovered: backend with auth error sets False condition",
 			backendsWithAuthConfig: []string{"backend-1"},
+			inlineBackendNames:     []string{}, // No inline backends
 			allAuthErrors: []AuthConfigError{
 				{
 					Context:     "discovered:backend-1",
@@ -541,11 +533,16 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Error:       fmt.Errorf("failed to get MCPExternalAuthConfig missing-config: not found"),
 				},
 			},
-			expectedConditionCount: 1,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-backend-1"}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
 					Times(1)
 				mock.EXPECT().
 					SetAuthConfigCondition(
@@ -564,12 +561,18 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "backend with auth config but no error sets True condition",
 			backendsWithAuthConfig: []string{"backend-1"},
+			inlineBackendNames:     []string{}, // No inline backends
 			allAuthErrors:          []AuthConfigError{},
-			expectedConditionCount: 1,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-backend-1"}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
 					Times(1)
 				mock.EXPECT().
 					SetAuthConfigCondition(
@@ -584,6 +587,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "mixed: some backends with errors, some without",
 			backendsWithAuthConfig: []string{"backend-1", "backend-2", "backend-3"},
+			inlineBackendNames:     []string{}, // No inline backends
 			allAuthErrors: []AuthConfigError{
 				{
 					Context:     "discovered:backend-1",
@@ -591,15 +595,20 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Error:       fmt.Errorf("auth error 1"),
 				},
 			},
-			expectedConditionCount: 3,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
 				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{
 						"DiscoveredAuthConfig-backend-1",
 						"DiscoveredAuthConfig-backend-2",
 						"DiscoveredAuthConfig-backend-3",
 					}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
 					Times(1)
 				// backend-1 has error - False condition
 				mock.EXPECT().
@@ -633,12 +642,18 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "no backends with auth configs means no conditions",
 			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{}, // No inline backends
 			allAuthErrors:          []AuthConfigError{},
-			expectedConditionCount: 0,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
 					Times(1)
 				// No backends with auth configs = no conditions set
 			},
@@ -646,6 +661,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "default auth error sets DefaultAuthConfig condition",
 			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{}, // No inline backends
 			allAuthErrors: []AuthConfigError{
 				{
 					Context:     "default",
@@ -653,11 +669,13 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Error:       fmt.Errorf("invalid OIDC config"),
 				},
 			},
-			expectedConditionCount: 1,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
 					Times(1)
 				mock.EXPECT().
 					SetAuthConfigCondition(
@@ -676,6 +694,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "backend-specific auth error sets BackendAuthConfig condition",
 			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{"api-backend"}, // Inline backend exists in spec
 			allAuthErrors: []AuthConfigError{
 				{
 					Context:     "backend:api-backend",
@@ -683,11 +702,16 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Error:       fmt.Errorf("missing secret reference"),
 				},
 			},
-			expectedConditionCount: 1,
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
 					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-api-backend"}).
 					Times(1)
 				mock.EXPECT().
 					SetAuthConfigCondition(
@@ -706,6 +730,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 		{
 			name:                   "all three auth types: default error, backend error, discovered success and error",
 			backendsWithAuthConfig: []string{"discovered-1", "discovered-2"},
+			inlineBackendNames:     []string{"inline-backend"}, // Inline backend exists in spec
 			allAuthErrors: []AuthConfigError{
 				{
 					Context:     "default",
@@ -724,7 +749,6 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				},
 				// discovered-2 has no error (will get True condition)
 			},
-			expectedConditionCount: 4, // default + inline-backend + discovered-1 (False) + discovered-2 (True)
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
 				t.Helper()
 				mock.EXPECT().
@@ -732,6 +756,9 @@ func TestSetAuthConfigConditions(t *testing.T) {
 						"DiscoveredAuthConfig-discovered-1",
 						"DiscoveredAuthConfig-discovered-2",
 					}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-inline-backend"}).
 					Times(1)
 				// Default auth error
 				mock.EXPECT().
@@ -771,6 +798,133 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Times(1)
 			},
 		},
+		{
+			name:                   "stale BackendAuthConfig conditions are removed when backend removed from spec",
+			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{"current-backend"}, // Only current-backend is in spec now
+			allAuthErrors:          []AuthConfigError{},         // No errors
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				// RemoveConditionsWithPrefix will remove any BackendAuthConfig-* conditions
+				// that are NOT in the current list (e.g., BackendAuthConfig-removed-backend)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-current-backend"}).
+					Times(1)
+				// No new conditions are set because there are no errors
+			},
+		},
+		{
+			name:                   "valid default auth sets True condition",
+			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{},
+			hasValidDefaultAuth:    true, // Valid default auth
+			validInlineBackends:    []string{},
+			allAuthErrors:          []AuthConfigError{}, // No errors
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DefaultAuthConfig",
+						"ConversionSucceeded",
+						"Default auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).
+					Times(1)
+			},
+		},
+		{
+			name:                   "valid inline backend auth sets True condition",
+			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{"api-backend"}, // Backend exists in spec
+			hasValidDefaultAuth:    false,
+			validInlineBackends:    []string{"api-backend"}, // Backend has valid auth
+			allAuthErrors:          []AuthConfigError{},     // No errors
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DefaultAuthConfig", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-api-backend"}).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"BackendAuthConfig-api-backend",
+						"ConversionSucceeded",
+						"Backend auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
+		{
+			name:                   "mixed valid and error auth configs: default valid, backend error",
+			backendsWithAuthConfig: []string{},
+			inlineBackendNames:     []string{"backend-1", "backend-2"},
+			hasValidDefaultAuth:    true,                  // Valid default auth
+			validInlineBackends:    []string{"backend-1"}, // backend-1 valid
+			allAuthErrors: []AuthConfigError{
+				{
+					Context:     "backend:backend-2",
+					BackendName: "backend-2",
+					Error:       fmt.Errorf("backend-2 auth failed"),
+				},
+			},
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				// Default auth True condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DefaultAuthConfig",
+						"ConversionSucceeded",
+						"Default auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{
+						"BackendAuthConfig-backend-1",
+						"BackendAuthConfig-backend-2",
+					}).
+					Times(1)
+				// backend-2 error - False condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"BackendAuthConfig-backend-2",
+						"ConversionFailed",
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				// backend-1 valid - True condition
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"BackendAuthConfig-backend-1",
+						"ConversionSucceeded",
+						"Backend auth config is valid",
+						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -786,7 +940,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 			}
 
 			// Call the function being tested
-			setAuthConfigConditions(mockStatusManager, tt.backendsWithAuthConfig, tt.allAuthErrors)
+			setAuthConfigConditions(mockStatusManager, tt.backendsWithAuthConfig, tt.inlineBackendNames, tt.hasValidDefaultAuth, tt.validInlineBackends, tt.allAuthErrors)
 
 			// gomock will verify expectations automatically
 		})

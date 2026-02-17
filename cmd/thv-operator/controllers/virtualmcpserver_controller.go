@@ -47,12 +47,19 @@ const (
 	OutgoingAuthSourceInline = "inline"
 
 	// Auth config error context constants
-	authContextDefault = "default"
+	authContextDefault          = "default"
+	authContextBackendPrefix    = "backend:"
+	authContextDiscoveredPrefix = "discovered:"
 )
 
 // AuthConfigError represents a single auth config conversion failure.
 // It captures context about which auth config failed and why, allowing the controller
 // to continue in degraded mode while exposing the failure via status conditions.
+//
+// Context patterns:
+//   - "default": Default auth config (OutgoingAuth.Default)
+//   - "backend:<name>": Inline backend-specific config (OutgoingAuth.Backends[name])
+//   - "discovered:<name>": Discovered from MCPServer/MCPRemoteProxy ExternalAuthConfigRef
 type AuthConfigError struct {
 	// Context describes where the error occurred: "default", "backend:<name>", or "discovered:<name>"
 	Context string
@@ -1473,7 +1480,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 				"externalAuthConfig", externalAuthConfigName,
 				"error", err)
 			authErrors = append(authErrors, AuthConfigError{
-				Context:     fmt.Sprintf("discovered:%s", workloadInfo.Name),
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
 				BackendName: workloadInfo.Name,
 				Error:       fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigName, err),
 			})
@@ -1488,7 +1495,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 				"externalAuthConfig", externalAuthConfig.Name,
 				"error", err)
 			authErrors = append(authErrors, AuthConfigError{
-				Context:     fmt.Sprintf("discovered:%s", workloadInfo.Name),
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
 				BackendName: workloadInfo.Name,
 				Error:       fmt.Errorf("failed to convert MCPExternalAuthConfig: %w", err),
 			})
@@ -1591,7 +1598,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 			if err != nil {
 				// Collect error but continue (degraded mode)
 				allAuthErrors = append(allAuthErrors, AuthConfigError{
-					Context:     fmt.Sprintf("backend:%s", backendName),
+					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
 					BackendName: backendName,
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
 				})
@@ -2087,12 +2094,15 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 // 3. DiscoveredAuthConfig-<name> - for discovered auth configs via ExternalAuthConfigRef
 //
 // This allows users to see the current auth config state for each component via kubectl
-// and ensures stale failure conditions are cleared when auth configs are fixed.
+// and ensures stale failure conditions are cleared when auth configs are fixed or backends removed.
 //
 // All auth config errors are non-fatal - the system continues operating in degraded mode.
 func setAuthConfigConditions(
 	statusManager virtualmcpserverstatus.StatusManager,
 	backendsWithAuthConfig []string,
+	inlineBackendNames []string,
+	hasValidDefaultAuth bool,
+	validInlineBackends []string,
 	allAuthErrors []AuthConfigError,
 ) {
 	// Build error maps by context for quick lookup
@@ -2103,24 +2113,37 @@ func setAuthConfigConditions(
 	for _, authError := range allAuthErrors {
 		if authError.Context == authContextDefault {
 			defaultAuthError = authError.Error
-		} else if strings.HasPrefix(authError.Context, "backend:") {
+		} else if strings.HasPrefix(authError.Context, authContextBackendPrefix) {
 			backendAuthErrors[authError.BackendName] = authError.Error
-		} else if strings.HasPrefix(authError.Context, "discovered:") {
+		} else if strings.HasPrefix(authError.Context, authContextDiscoveredPrefix) {
 			discoveredAuthErrors[authError.BackendName] = authError.Error
 		}
 	}
 
 	// Handle DefaultAuthConfig condition
 	if defaultAuthError != nil {
+		// Default auth has error - set False condition
 		statusManager.SetAuthConfigCondition(
 			"DefaultAuthConfig",
 			"ConversionFailed",
 			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError),
 			metav1.ConditionFalse,
 		)
+	} else if hasValidDefaultAuth {
+		// Default auth is valid - set True condition
+		statusManager.SetAuthConfigCondition(
+			"DefaultAuthConfig",
+			"ConversionSucceeded",
+			"Default auth config is valid",
+			metav1.ConditionTrue,
+		)
+	} else {
+		// No default auth configured - remove the condition if it exists
+		// This handles cases where:
+		// - Auth is completely disabled
+		// - Default auth was removed from the spec
+		statusManager.RemoveConditionsWithPrefix("DefaultAuthConfig", []string{})
 	}
-	// Note: If there's no default auth error, we don't set a condition.
-	// Stale DefaultAuthConfig conditions can be removed manually if needed.
 
 	// Build list of current DiscoveredAuthConfig conditions to preserve
 	currentDiscoveredConditions := make([]string, len(backendsWithAuthConfig))
@@ -2128,10 +2151,15 @@ func setAuthConfigConditions(
 		currentDiscoveredConditions[i] = fmt.Sprintf("DiscoveredAuthConfig-%s", backendName)
 	}
 
-	// Remove stale conditions
+	// Build list of current BackendAuthConfig conditions to preserve
+	currentBackendConditions := make([]string, len(inlineBackendNames))
+	for i, backendName := range inlineBackendNames {
+		currentBackendConditions[i] = fmt.Sprintf("BackendAuthConfig-%s", backendName)
+	}
+
+	// Remove stale conditions for backends that no longer exist in the spec
 	statusManager.RemoveConditionsWithPrefix("DiscoveredAuthConfig-", currentDiscoveredConditions)
-	// Note: We don't remove BackendAuthConfig-* conditions here since inline backends
-	// are explicitly configured in the spec and persist across reconciliations
+	statusManager.RemoveConditionsWithPrefix("BackendAuthConfig-", currentBackendConditions)
 
 	// Set DiscoveredAuthConfig conditions for backends with ExternalAuthConfigRef
 	for _, backendName := range backendsWithAuthConfig {
@@ -2157,6 +2185,7 @@ func setAuthConfigConditions(
 	}
 
 	// Set BackendAuthConfig conditions for inline backend-specific auth configs
+	// First, set error conditions
 	for backendName, err := range backendAuthErrors {
 		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
 		statusManager.SetAuthConfigCondition(
@@ -2164,6 +2193,20 @@ func setAuthConfigConditions(
 			"ConversionFailed",
 			fmt.Sprintf("Failed to convert backend auth config: %v", err),
 			metav1.ConditionFalse,
+		)
+	}
+	// Then, set success conditions for valid backends
+	for _, backendName := range validInlineBackends {
+		// Skip if this backend has an error (already set above)
+		if _, hasError := backendAuthErrors[backendName]; hasError {
+			continue
+		}
+		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
+		statusManager.SetAuthConfigCondition(
+			conditionType,
+			"ConversionSucceeded",
+			"Backend auth config is valid",
+			metav1.ConditionTrue,
 		)
 	}
 

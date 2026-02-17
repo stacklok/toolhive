@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive-core/env/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -46,7 +45,6 @@ func SetupTestConfig(t *testing.T, configContent *Config) (string, string) {
 
 func TestLoadOrCreateConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("TestLoadOrCreateConfigWithMockConfig", func(t *testing.T) {
 		t.Parallel()
@@ -98,7 +96,6 @@ func TestLoadOrCreateConfig(t *testing.T) {
 
 func TestSave(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("TestSave", func(t *testing.T) {
 		t.Parallel()
@@ -148,7 +145,6 @@ func TestSave(t *testing.T) {
 
 func TestRegistryURLConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("TestSetAndGetRegistryURL", func(t *testing.T) {
 		t.Parallel()
@@ -261,7 +257,6 @@ func TestRegistryURLConfig(t *testing.T) {
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("Environment variable takes precedence", func(t *testing.T) {
 		t.Parallel()

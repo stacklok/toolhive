@@ -6,13 +6,13 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/stacklok/toolhive/pkg/k8s"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // RunConfigMapReader defines the interface for reading RunConfig from ConfigMaps
@@ -65,7 +65,7 @@ func (c *ConfigMapReader) GetRunConfigMap(ctx context.Context, configMapRef stri
 		return "", fmt.Errorf("invalid configmap reference: %w", err)
 	}
 
-	logger.Infof("Loading runconfig.json from ConfigMap '%s/%s'", namespace, name)
+	slog.Info("Loading runconfig.json from ConfigMap", "namespace", namespace, "name", name)
 
 	// Get the ConfigMap
 	configMap, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -79,8 +79,7 @@ func (c *ConfigMapReader) GetRunConfigMap(ctx context.Context, configMapRef stri
 		return "", fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, name)
 	}
 
-	logger.Infof("Successfully loaded %d bytes of runconfig.json from ConfigMap '%s/%s'",
-		len(data), namespace, name)
+	slog.Info("Successfully loaded runconfig.json from ConfigMap", "bytes", len(data), "namespace", namespace, "name", name)
 
 	return data, nil
 }

@@ -316,6 +316,30 @@ func IsKubernetesRuntimeWithEnv(envReader env.Reader) bool {
 	return envReader.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
 
+// Initializer is a function that creates a new runtime instance.
+type Initializer func(ctx context.Context) (Runtime, error)
+
+// Info contains metadata about a runtime, including its initializer
+// and auto-detection logic. This is used by the global runtime registry
+// to manage available runtimes.
+type Info struct {
+	// Name is the runtime name (e.g., "docker", "kubernetes")
+	Name string
+	// Priority determines the order in which runtimes are tried during auto-detection.
+	// Lower values are tried first. Convention:
+	//   100 = Docker (default local runtime)
+	//   200 = Kubernetes (detected via env vars)
+	//   50-99 = External runtimes preferred before Docker
+	//   101-199 = External runtimes between Docker and Kubernetes
+	//   201+ = External fallback runtimes
+	Priority int
+	// Initializer is the function to create the runtime instance
+	Initializer Initializer
+	// AutoDetector is an optional function to detect if this runtime is available.
+	// If nil, the runtime is always considered available.
+	AutoDetector func() bool
+}
+
 // Common errors
 var (
 	// ErrWorkloadNotFound indicates that the specified workload was not found.

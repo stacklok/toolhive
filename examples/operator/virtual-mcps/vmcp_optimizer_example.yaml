@@ -14,6 +14,13 @@
 # 3. A fetch MCPServer backend (URL fetching)
 # 4. A VirtualMCPServer with optimizer enabled and anonymous auth
 #
+# Apple Silicon (ARM64) Note:
+#   The embedding server image (ghcr.io/huggingface/text-embeddings-inference:cpu-latest)
+#   is amd64-only. On ARM64 Macs with Kind, you must pre-load it:
+#     docker pull --platform linux/amd64 ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+#     kind load docker-image ghcr.io/huggingface/text-embeddings-inference:cpu-latest --name toolhive
+#   ARM64 support is tracked in: https://github.com/huggingface/text-embeddings-inference/pull/827
+#
 # Usage:
 #   kubectl apply -f vmcp_optimizer_example.yaml
 
@@ -111,8 +118,8 @@ spec:
   # Use embeddingServerRef instead to share a single EmbeddingServer across
   # multiple VirtualMCPServers.
   embeddingServer:
-    model: sentence-transformers/all-MiniLM-L6-v2
-    image: ghcr.io/huggingface/text-embeddings-inference:latest
+    model: BAAI/bge-small-en-v1.5
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
 
   # Outgoing authentication (vMCP -> backends)
   # Discovered mode auto-discovers auth from backend MCPServers

@@ -4,12 +4,16 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,6 +36,13 @@ func (r *VirtualMCPServerReconciler) ensureEmbeddingServer(
 	// Skip if no inline embedding server spec is configured.
 	// When EmbeddingServerRef is used, the referenced resource is externally managed.
 	if vmcp.Spec.EmbeddingServer == nil {
+		// Clean up any previously-owned inline EmbeddingServer when switching to ref mode.
+		// Without this, the old inline EmbeddingServer persists and consumes resources.
+		if vmcp.Spec.EmbeddingServerRef != nil {
+			if err := r.cleanupOwnedEmbeddingServer(ctx, vmcp); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -70,7 +81,7 @@ func (r *VirtualMCPServerReconciler) ensureEmbeddingServer(
 		}
 
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, "Normal", "EmbeddingServerCreated",
+			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "EmbeddingServerCreated",
 				"EmbeddingServer %s created successfully", embeddingName)
 		}
 		return nil
@@ -79,14 +90,14 @@ func (r *VirtualMCPServerReconciler) ensureEmbeddingServer(
 	}
 
 	// EmbeddingServer exists - check if spec needs updating
-	if embeddingServerSpecChanged(existing, vmcp.Spec.EmbeddingServer) {
+	if embeddingServerSpecNeedsUpdate(existing, vmcp.Spec.EmbeddingServer) {
 		existing.Spec = *vmcp.Spec.EmbeddingServer
 		ctxLogger.Info("Updating EmbeddingServer spec", "name", embeddingName)
 		if err := r.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update EmbeddingServer: %w", err)
 		}
 		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, "Normal", "EmbeddingServerUpdated",
+			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "EmbeddingServerUpdated",
 				"EmbeddingServer %s updated", embeddingName)
 		}
 	}
@@ -109,7 +120,7 @@ func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: vmcp.Namespace}, es)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, "", nil // Not yet created
+			return false, "", nil // Informer cache may not have caught up yet
 		}
 		return false, "", fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
 	}
@@ -139,12 +150,56 @@ func embeddingServerNameForVMCP(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 	return ""
 }
 
-// embeddingServerSpecChanged returns true if the desired spec differs from
-// the existing EmbeddingServer spec. Uses DeepEqual to ensure all fields
-// (Model, Image, Port, HFTokenSecretRef, Args, Env, Resources, Replicas, etc.)
-// are compared so that spec changes are never silently ignored.
-func embeddingServerSpecChanged(existing *mcpv1alpha1.EmbeddingServer, desired *mcpv1alpha1.EmbeddingServerSpec) bool {
-	return !reflect.DeepEqual(existing.Spec, *desired)
+// embeddingServerSpecNeedsUpdate returns true if the desired spec differs from
+// the existing EmbeddingServer spec. Uses field-by-field comparison instead of
+// reflect.DeepEqual to avoid spurious updates caused by Kubernetes defaulting
+// (e.g., imagePullPolicy, port, replicas) and nil-vs-empty differences in
+// runtime.RawExtension fields like PodTemplateSpec.
+//
+// IMPORTANT: When adding new fields to EmbeddingServerSpec, you must add a
+// corresponding comparison here, otherwise changes to the new field will not
+// trigger an update of the inline EmbeddingServer CR.
+func embeddingServerSpecNeedsUpdate(existing *mcpv1alpha1.EmbeddingServer, desired *mcpv1alpha1.EmbeddingServerSpec) bool {
+	e := &existing.Spec
+
+	if e.Model != desired.Model {
+		return true
+	}
+	if e.Image != desired.Image {
+		return true
+	}
+	if e.ImagePullPolicy != desired.ImagePullPolicy {
+		return true
+	}
+	if e.Port != desired.Port {
+		return true
+	}
+	if !stringSlicesEqual(e.Args, desired.Args) {
+		return true
+	}
+	if !envVarSlicesEqual(e.Env, desired.Env) {
+		return true
+	}
+	if e.Resources != desired.Resources {
+		return true
+	}
+	if !secretKeyRefEqual(e.HFTokenSecretRef, desired.HFTokenSecretRef) {
+		return true
+	}
+	if !modelCacheEqual(e.ModelCache, desired.ModelCache) {
+		return true
+	}
+	if !rawExtensionEqual(e.PodTemplateSpec, desired.PodTemplateSpec) {
+		return true
+	}
+	if !embeddingResourceOverridesEqual(e.ResourceOverrides, desired.ResourceOverrides) {
+		return true
+	}
+	if !int32PtrEqual(e.Replicas, desired.Replicas) {
+		return true
+	}
+
+	return false
 }
 
 // embeddingServerName returns the name for an auto-deployed EmbeddingServer.
@@ -155,8 +210,151 @@ func embeddingServerName(vmcpName string) string {
 // labelsForEmbeddingServer returns labels for an auto-deployed EmbeddingServer.
 func labelsForEmbeddingServer(vmcpName string) map[string]string {
 	return map[string]string{
-		"toolhive.stacklok.io/component":          "embedding-server",
-		"toolhive.stacklok.io/virtual-mcp-server": vmcpName,
-		"toolhive.stacklok.io/managed-by":         "toolhive-operator",
+		"toolhive.stacklok.dev/component":          "embedding-server",
+		"toolhive.stacklok.dev/virtual-mcp-server": vmcpName,
+		"toolhive.stacklok.dev/managed-by":         "toolhive-operator",
 	}
+}
+
+// embeddingServerRequeueInterval returns the appropriate requeue interval when
+// waiting for an EmbeddingServer to become ready.
+func (*VirtualMCPServerReconciler) embeddingServerRequeueInterval(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) time.Duration {
+	if vmcp.Spec.EmbeddingServer != nil {
+		return 10 * time.Second // Inline: Owns() handles primary path
+	}
+	return 30 * time.Second // Ref: Watches() may be slower
+}
+
+// cleanupOwnedEmbeddingServer deletes any previously-owned inline EmbeddingServer
+// for this VirtualMCPServer. This handles the transition from inline to ref mode,
+// preventing orphaned EmbeddingServers from consuming resources (e.g., GPU/memory).
+func (r *VirtualMCPServerReconciler) cleanupOwnedEmbeddingServer(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	inlineName := embeddingServerName(vmcp.Name)
+
+	existing := &mcpv1alpha1.EmbeddingServer{}
+	err := r.Get(ctx, types.NamespacedName{Name: inlineName, Namespace: vmcp.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check for owned EmbeddingServer %s: %w", inlineName, err)
+	}
+
+	// Only delete if this VirtualMCPServer owns it (via controller reference)
+	for _, ref := range existing.OwnerReferences {
+		if ref.UID == vmcp.UID {
+			ctxLogger.Info("Cleaning up owned inline EmbeddingServer after switch to ref mode",
+				"name", inlineName)
+			if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete owned EmbeddingServer %s: %w", inlineName, err)
+			}
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "EmbeddingServerCleaned",
+					"Removed inline EmbeddingServer %s after switch to ref mode", inlineName)
+			}
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// --- Comparison helpers for embeddingServerSpecNeedsUpdate ---
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func envVarSlicesEqual(a, b []mcpv1alpha1.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func secretKeyRefEqual(a, b *mcpv1alpha1.SecretKeyRef) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Name == b.Name && a.Key == b.Key
+}
+
+func modelCacheEqual(a, b *mcpv1alpha1.ModelCacheConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Enabled == b.Enabled &&
+		ptrStringEqual(a.StorageClassName, b.StorageClassName) &&
+		a.Size == b.Size &&
+		a.AccessMode == b.AccessMode
+}
+
+func ptrStringEqual(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// rawExtensionEqual compares two RawExtension pointers, treating nil and
+// empty byte slices as equal to avoid spurious updates from Kubernetes defaulting.
+func rawExtensionEqual(a, b *runtime.RawExtension) bool {
+	aRaw := rawExtensionBytes(a)
+	bRaw := rawExtensionBytes(b)
+	return bytes.Equal(aRaw, bRaw)
+}
+
+func rawExtensionBytes(ext *runtime.RawExtension) []byte {
+	if ext == nil {
+		return nil
+	}
+	return ext.Raw
+}
+
+func embeddingResourceOverridesEqual(a, b *mcpv1alpha1.EmbeddingResourceOverrides) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func int32PtrEqual(a, b *int32) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }

@@ -550,6 +550,8 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// Check EmbeddingServer readiness before proceeding to Deployment.
 	// RequeueAfter provides a safety net in case the Owns()/Watches() events
 	// are missed (e.g., EmbeddingServer controller not running).
+	// For inline mode, use a shorter interval (10s) since Owns() handles the primary path.
+	// For ref mode, use a longer interval (30s) since we rely on Watches() which may be slower.
 	if ready, _, err := r.isEmbeddingServerReady(ctx, vmcp); err != nil {
 		return ctrl.Result{}, err
 	} else if !ready {
@@ -560,7 +562,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 			"EmbeddingServer is not yet ready",
 			metav1.ConditionFalse,
 		)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: r.embeddingServerRequeueInterval(vmcp)}, nil
 	}
 
 	// If an embedding server is configured and ready, set the condition
@@ -1712,8 +1714,10 @@ func convertBackendsToStaticBackends(
 	return static
 }
 
-// validateEmbeddingServerRef validates that the referenced EmbeddingServer exists and is ready.
-// This follows the same pattern as validateGroupRef.
+// validateEmbeddingServerRef validates that the referenced EmbeddingServer exists.
+// Readiness gating is handled uniformly by isEmbeddingServerReady (called from
+// ensureAllResources) for both inline and ref modes, ensuring consistent retry
+// behavior (fixed-interval requeue instead of exponential backoff).
 func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1742,36 +1746,17 @@ func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "EmbeddingServerRefNotFound",
+				"Referenced EmbeddingServer %s not found", refName)
+		}
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get referenced EmbeddingServer", "name", refName)
 		return err
 	}
 
-	// Check if EmbeddingServer is ready
-	if es.Status.Phase != mcpv1alpha1.EmbeddingServerPhaseRunning || es.Status.ReadyReplicas == 0 {
-		message := fmt.Sprintf("Referenced EmbeddingServer %s is not ready (phase: %s)",
-			refName, es.Status.Phase)
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
-		statusManager.SetMessage(message)
-		statusManager.SetEmbeddingServerReadyCondition(
-			mcpv1alpha1.ConditionReasonEmbeddingServerNotReady,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		// Requeue to check again later
-		return fmt.Errorf("EmbeddingServer %s is not ready", refName)
-	}
-
-	// EmbeddingServer is valid and ready
-	statusManager.SetEmbeddingServerReadyCondition(
-		mcpv1alpha1.ConditionReasonEmbeddingServerReady,
-		fmt.Sprintf("EmbeddingServer %s is valid and ready", refName),
-		metav1.ConditionTrue,
-	)
-	statusManager.SetObservedGeneration(vmcp.Generation)
-
+	// Existence validated — readiness is checked later by isEmbeddingServerReady
 	return nil
 }
 

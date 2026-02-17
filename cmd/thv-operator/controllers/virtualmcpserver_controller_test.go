@@ -2930,7 +2930,9 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
-// TestVirtualMCPServerValidateEmbeddingServerRef tests the EmbeddingServerRef validation
+// TestVirtualMCPServerValidateEmbeddingServerRef tests the EmbeddingServerRef validation.
+// validateEmbeddingServerRef only validates existence, not readiness — readiness is
+// checked uniformly by isEmbeddingServerReady for both inline and ref modes.
 func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 	t.Parallel()
 
@@ -2979,8 +2981,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			},
-			expectError:    false,
-			expectedReason: mcpv1alpha1.ConditionReasonEmbeddingServerReady,
+			expectError: false,
 		},
 		{
 			name: "referenced EmbeddingServer not found",
@@ -3001,7 +3002,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 			expectedReason: mcpv1alpha1.ConditionReasonEmbeddingServerNotFound,
 		},
 		{
-			name: "referenced EmbeddingServer exists but not ready (pending)",
+			name: "referenced EmbeddingServer exists but not ready (pending) - existence validated",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -3024,12 +3025,10 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					ReadyReplicas: 0,
 				},
 			},
-			expectError:    true,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhasePending,
-			expectedReason: mcpv1alpha1.ConditionReasonEmbeddingServerNotReady,
+			expectError: false,
 		},
 		{
-			name: "referenced EmbeddingServer running but zero ready replicas",
+			name: "referenced EmbeddingServer running but zero ready replicas - existence validated",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -3052,9 +3051,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					ReadyReplicas: 0,
 				},
 			},
-			expectError:    true,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhasePending,
-			expectedReason: mcpv1alpha1.ConditionReasonEmbeddingServerNotReady,
+			expectError: false,
 		},
 	}
 
@@ -3107,19 +3104,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				}
 			} else {
 				assert.NoError(t, err)
-
-				if tt.expectedReason != "" {
-					// Check condition is set to true
-					foundCondition := false
-					for _, cond := range tt.vmcp.Status.Conditions {
-						if cond.Type == mcpv1alpha1.ConditionTypeEmbeddingServerReady {
-							foundCondition = true
-							assert.Equal(t, metav1.ConditionTrue, cond.Status)
-							assert.Equal(t, tt.expectedReason, cond.Reason)
-						}
-					}
-					assert.True(t, foundCondition, "EmbeddingServerReady condition should be set")
-				}
 			}
 		})
 	}

@@ -2706,11 +2706,6 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		(*in).DeepCopyInto(*out)
 	}
 	in.Config.DeepCopyInto(&out.Config)
-	if in.EmbeddingServer != nil {
-		in, out := &in.EmbeddingServer, &out.EmbeddingServer
-		*out = new(EmbeddingServerSpec)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.EmbeddingServerRef != nil {
 		in, out := &in.EmbeddingServerRef, &out.EmbeddingServerRef
 		*out = new(EmbeddingServerRef)

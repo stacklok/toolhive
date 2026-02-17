@@ -1805,11 +1805,10 @@ func TestStaticModeTransportConstants(t *testing.T) {
 	// 4. This test will verify the constants match the expected values
 }
 
-// TestOptimizerEmbeddingServiceURL_InlineAndRef tests that the optimizer's EmbeddingService
+// TestOptimizerEmbeddingServiceURL tests that the optimizer's EmbeddingService
 // field is populated with the full base URL (scheme + host + port) from the EmbeddingServer
-// Status.URL for both inline and reference modes. This ensures the optimizer can use it
-// directly as an HTTP client endpoint.
-func TestOptimizerEmbeddingServiceURL_InlineAndRef(t *testing.T) {
+// Status.URL. This ensures the optimizer can use it directly as an HTTP client endpoint.
+func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1825,28 +1824,6 @@ func TestOptimizerEmbeddingServiceURL_InlineAndRef(t *testing.T) {
 		esPort      int32
 		expectedURL string
 	}{
-		{
-			name: "inline embedding server populates full URL",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-vmcp",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Group:     testGroup,
-						Optimizer: &vmcpconfig.OptimizerConfig{},
-					},
-					EmbeddingServer: &mcpv1alpha1.EmbeddingServerSpec{
-						Image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5",
-						Model: "BAAI/bge-small-en-v1.5",
-					},
-				},
-			},
-			esName:      "my-vmcp-embedding", // embeddingServerName("my-vmcp")
-			esPort:      8080,                // default port
-			expectedURL: "http://my-vmcp-embedding.default.svc.cluster.local:8080",
-		},
 		{
 			name: "referenced embedding server populates full URL",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{

@@ -1878,29 +1878,6 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			expectedRequests: 0,
 			expectedNames:    []string{},
 		},
-		{
-			name: "inline embeddingServer does not trigger ref watch",
-			embeddingServer: &mcpv1alpha1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
-			virtualMCPServers: []mcpv1alpha1.VirtualMCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "vmcp-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config:          vmcpconfig.Config{Group: "test-group"},
-						EmbeddingServer: &mcpv1alpha1.EmbeddingServerSpec{Model: "test-model", Image: "test:latest"},
-					},
-				},
-			},
-			expectedRequests: 0,
-			expectedNames:    []string{},
-		},
 	}
 
 	for _, tt := range tests {

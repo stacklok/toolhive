@@ -59,18 +59,10 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	Config config.Config `json:"config,omitempty"`
 
-	// EmbeddingServer optionally deploys an owned EmbeddingServer when the optimizer is enabled.
-	// If set, the controller creates an EmbeddingServer CR and auto-populates
-	// the optimizer's embeddingService field with the full service URL.
-	// Mutually exclusive with EmbeddingServerRef.
-	// +optional
-	EmbeddingServer *EmbeddingServerSpec `json:"embeddingServer,omitempty"`
-
 	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
-	// Use this instead of EmbeddingServer when multiple VirtualMCPServers should share
-	// a single EmbeddingServer (e.g., when using the same embedding model).
+	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
+	// that provides embedding capabilities.
 	// The referenced EmbeddingServer must exist in the same namespace and be ready.
-	// Mutually exclusive with EmbeddingServer.
 	// +optional
 	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
 }
@@ -397,30 +389,23 @@ func (r *VirtualMCPServer) Validate() error {
 	return r.validateEmbeddingServer()
 }
 
-// validateEmbeddingServer validates EmbeddingServer and EmbeddingServerRef configuration.
+// validateEmbeddingServer validates EmbeddingServerRef configuration.
 // Rules:
-// - embeddingServer and embeddingServerRef are mutually exclusive
-// - If config.optimizer is set, exactly one of embeddingServer or embeddingServerRef must be set
-// - If embeddingServer or embeddingServerRef is set, config.optimizer must be set
+// - If config.optimizer is set, embeddingServerRef must be set
+// - If embeddingServerRef is set, config.optimizer must be set
 // - embeddingServerRef.name must be non-empty when ref is provided
 func (r *VirtualMCPServer) validateEmbeddingServer() error {
-	hasInline := r.Spec.EmbeddingServer != nil
 	hasRef := r.Spec.EmbeddingServerRef != nil
 	hasOptimizer := r.Spec.Config.Optimizer != nil
 
-	// Mutually exclusive check
-	if hasInline && hasRef {
-		return fmt.Errorf("spec.embeddingServer and spec.embeddingServerRef are mutually exclusive")
+	// If optimizer is set, embeddingServerRef must be set
+	if hasOptimizer && !hasRef {
+		return fmt.Errorf("spec.config.optimizer requires spec.embeddingServerRef to be set")
 	}
 
-	// If optimizer is set, exactly one embedding source must be set
-	if hasOptimizer && !hasInline && !hasRef {
-		return fmt.Errorf("spec.config.optimizer requires either spec.embeddingServer or spec.embeddingServerRef to be set")
-	}
-
-	// If embedding source is set, optimizer must be set
-	if (hasInline || hasRef) && !hasOptimizer {
-		return fmt.Errorf("spec.embeddingServer or spec.embeddingServerRef requires spec.config.optimizer to be set")
+	// If embeddingServerRef is set, optimizer must be set
+	if hasRef && !hasOptimizer {
+		return fmt.Errorf("spec.embeddingServerRef requires spec.config.optimizer to be set")
 	}
 
 	// Validate ref name is non-empty

@@ -2932,7 +2932,7 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 
 // TestVirtualMCPServerValidateEmbeddingServerRef tests the EmbeddingServerRef validation.
 // validateEmbeddingServerRef only validates existence, not readiness — readiness is
-// checked uniformly by isEmbeddingServerReady for both inline and ref modes.
+// checked by isEmbeddingServerReady.
 func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 	t.Parallel()
 

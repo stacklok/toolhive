@@ -25,6 +25,7 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 		testNamespace  = "default"
 		mcpGroupName   = "test-optimizer-group"
 		vmcpServerName = "test-vmcp-optimizer"
+		embeddingName  = "test-optimizer-embedding"
 		backendName    = "backend-optimizer-fetch"
 		// vmcpFetchToolName is the name of the fetch tool exposed by the VirtualMCPServer
 		// We intentionally specify an aggregation, so we can rename the tool.
@@ -48,6 +49,19 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 		CreateMCPServerAndWait(ctx, k8sClient, backendName, testNamespace,
 			mcpGroupName, images.GofetchServerImage, timeout, pollingInterval)
 
+		By("Creating EmbeddingServer for optimizer")
+		embeddingServer := &mcpv1alpha1.EmbeddingServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      embeddingName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.EmbeddingServerSpec{
+				Model: "BAAI/bge-small-en-v1.5",
+				Image: images.TextEmbeddingsInferenceImage,
+			},
+		}
+		Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
+
 		By("Creating VirtualMCPServer with optimizer enabled and a composite tool")
 
 		// Define step arguments that reference the input parameter
@@ -68,11 +82,10 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
 				},
-				// Inline EmbeddingServer required by validation when optimizer is set.
+				// Reference to the standalone EmbeddingServer created above.
 				// The controller auto-populates optimizer.embeddingService from EmbeddingServer status.
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServerSpec{
-					Model: "BAAI/bge-small-en-v1.5",
-					Image: images.TextEmbeddingsInferenceImage,
+				EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+					Name: embeddingName,
 				},
 
 				Config: vmcpconfig.Config{
@@ -145,6 +158,15 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 			Namespace: testNamespace,
 		}, vmcpServer); err == nil {
 			_ = k8sClient.Delete(ctx, vmcpServer)
+		}
+
+		By("Cleaning up EmbeddingServer")
+		es := &mcpv1alpha1.EmbeddingServer{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      embeddingName,
+			Namespace: testNamespace,
+		}, es); err == nil {
+			_ = k8sClient.Delete(ctx, es)
 		}
 
 		By("Cleaning up backend MCPServer")

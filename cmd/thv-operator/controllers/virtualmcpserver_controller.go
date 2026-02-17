@@ -104,7 +104,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -128,10 +128,8 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
 	// Run all pre-reconciliation validations.
-	// Returns (true, err) when a validation failed and status was applied — the caller should
-	// return ctrl.Result{}, err immediately.
-	// Returns (true, nil) when PodTemplateSpec is invalid — user must fix the spec.
-	if done, err := r.runValidations(ctx, vmcp, statusManager); done {
+	// Returns an error when validation failed. Returns nil to continue.
+	if err := r.runValidations(ctx, vmcp, statusManager); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -264,18 +262,18 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 }
 
 // runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef). Returns (true, err) when a validation failed
-// and the caller should return immediately. Returns (false, nil) to continue.
+// CompositeToolRefs, EmbeddingServerRef). Returns an error when validation failed.
+// Returns nil to continue.
 func (r *VirtualMCPServerReconciler) runValidations(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) (bool, error) {
+) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate spec configuration early (schema-level validation from types.go)
 	if err := r.validateSpec(ctx, vmcp, statusManager); err != nil {
-		return true, nil // Don't requeue on validation errors - user must fix spec
+		return err
 	}
 
 	// Validate PodTemplateSpec early - before other validations
@@ -283,7 +281,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
 			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
 		}
-		return true, nil
+		return fmt.Errorf("PodTemplateSpec validation failed")
 	}
 
 	// Validate GroupRef
@@ -291,7 +289,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after GroupRef validation error")
 		}
-		return true, err
+		return err
 	}
 
 	// Validate CompositeToolRefs
@@ -299,7 +297,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after CompositeToolRefs validation error")
 		}
-		return true, err
+		return err
 	}
 
 	// Validate EmbeddingServerRef (when using reference mode)
@@ -308,11 +306,11 @@ func (r *VirtualMCPServerReconciler) runValidations(
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 				ctxLogger.Error(applyErr, "Failed to apply status updates after EmbeddingServerRef validation error")
 			}
-			return true, err
+			return err
 		}
 	}
 
-	return false, nil
+	return nil
 }
 
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
@@ -542,16 +540,9 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
-	// Ensure EmbeddingServer (if optimizer auto-deploy is configured)
-	if err := r.ensureEmbeddingServer(ctx, vmcp); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	// Check EmbeddingServer readiness before proceeding to Deployment.
-	// RequeueAfter provides a safety net in case the Owns()/Watches() events
+	// RequeueAfter provides a safety net in case the Watches() events
 	// are missed (e.g., EmbeddingServer controller not running).
-	// For inline mode, use a shorter interval (10s) since Owns() handles the primary path.
-	// For ref mode, use a longer interval (30s) since we rely on Watches() which may be slower.
 	if ready, _, err := r.isEmbeddingServerReady(ctx, vmcp); err != nil {
 		return ctrl.Result{}, err
 	} else if !ready {
@@ -562,7 +553,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 			"EmbeddingServer is not yet ready",
 			metav1.ConditionFalse,
 		)
-		return ctrl.Result{RequeueAfter: r.embeddingServerRequeueInterval(vmcp)}, nil
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// If an embedding server is configured and ready, set the condition
@@ -1715,9 +1706,8 @@ func convertBackendsToStaticBackends(
 }
 
 // validateEmbeddingServerRef validates that the referenced EmbeddingServer exists.
-// Readiness gating is handled uniformly by isEmbeddingServerReady (called from
-// ensureAllResources) for both inline and ref modes, ensuring consistent retry
-// behavior (fixed-interval requeue instead of exponential backoff).
+// Readiness gating is handled by isEmbeddingServerReady (called from ensureAllResources),
+// ensuring consistent retry behavior (fixed-interval requeue instead of exponential backoff).
 func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1761,9 +1751,8 @@ func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 }
 
 // mapEmbeddingServerToVirtualMCPServer maps EmbeddingServer changes to VirtualMCPServer
-// reconciliation requests. This is used for the reference case (EmbeddingServerRef) where
-// the EmbeddingServer is not owned by the VirtualMCPServer.
-// The inline case is handled by Owns() which automatically triggers reconciliation.
+// reconciliation requests. This triggers reconciliation when a referenced EmbeddingServer's
+// status changes (e.g., becomes ready or fails).
 func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 	ctx context.Context,
 	obj client.Object,
@@ -1802,7 +1791,6 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
-		Owns(&mcpv1alpha1.EmbeddingServer{}).
 		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
@@ -1812,10 +1800,8 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.mapCompositeToolDefinitionToVirtualMCPServer),
 		).
-		// Watch referenced EmbeddingServers (for the ref case).
-		// Owned EmbeddingServers (inline case) are already handled by Owns() above.
-		// controller-runtime deduplicates reconcile requests by NamespacedName,
-		// so both watches are safe together.
+		// Watch referenced EmbeddingServers so that readiness/status changes
+		// trigger VirtualMCPServer reconciliation.
 		Watches(
 			&mcpv1alpha1.EmbeddingServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapEmbeddingServerToVirtualMCPServer),

@@ -5,8 +5,10 @@ package optimizer
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -98,17 +100,43 @@ func (s *InMemoryToolStore) Search(_ context.Context, query string, allowedTools
 type SQLiteStoreConfig struct {
 	// EmbeddingDimension enables semantic search with deterministic fake
 	// embeddings of the given dimensionality. Zero disables semantic search.
+	// Mutually exclusive with EmbeddingServiceURL.
 	EmbeddingDimension int
+
+	// EmbeddingServiceURL is the full URL of the TEI embedding endpoint
+	// (e.g. "http://my-embedding.ml.svc.cluster.local:8080").
+	// When set, a real TEI client is created for semantic search.
+	// Mutually exclusive with EmbeddingDimension.
+	EmbeddingServiceURL string
+
+	// EmbeddingServiceTimeout is the HTTP request timeout for embedding calls.
+	// Zero uses the TEI client default (30s).
+	EmbeddingServiceTimeout time.Duration
 }
 
 // NewSQLiteToolStore creates a new ToolStore backed by SQLite for search.
 // The store uses an in-memory SQLite database with shared cache for concurrent access.
-// If cfg is nil or EmbeddingDimension is zero, only FTS5 search is used.
-// Otherwise, semantic search is enabled alongside FTS5 using the configured embedding dimension.
+//
+// Embedding client selection (mutually exclusive, checked in order):
+//   - EmbeddingService set: creates a real TEI HTTP client for semantic search
+//   - EmbeddingDimension > 0: creates a deterministic fake embedding client
+//   - Neither: only FTS5 full-text search is used (no semantic search)
 func NewSQLiteToolStore(cfg *SQLiteStoreConfig) (ToolStore, error) {
 	var embClient types.EmbeddingClient
-	if cfg != nil && cfg.EmbeddingDimension > 0 {
-		embClient = similarity.NewFakeEmbeddingClient(cfg.EmbeddingDimension)
+	if cfg != nil {
+		switch {
+		case cfg.EmbeddingServiceURL != "":
+			var err error
+			embClient, err = similarity.NewTEIClient(similarity.TEIClientConfig{
+				BaseURL: cfg.EmbeddingServiceURL,
+				Timeout: cfg.EmbeddingServiceTimeout,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create TEI embedding client: %w", err)
+			}
+		case cfg.EmbeddingDimension > 0:
+			embClient = similarity.NewFakeEmbeddingClient(cfg.EmbeddingDimension)
+		}
 	}
 	return sqlitestore.NewSQLiteToolStore(embClient)
 }

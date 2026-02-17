@@ -5,17 +5,15 @@ package logger
 
 import (
 	"bytes"
+	"log/slog"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive-core/logging"
 )
 
 // TestUnstructuredLogsCheck tests the unstructuredLogs function
@@ -49,157 +47,137 @@ func TestUnstructuredLogsCheck(t *testing.T) {
 	}
 }
 
-// TestUnstructuredLogger tests the unstructured logger functionality
-func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses global logger state
-	// we only test for the formatted logs here because the unstructured logs
-	// do not contain the key/value pair format that the structured logs do
-	const (
-		levelDebug  = "DEBUG"
-		levelInfo   = "INFO"
-		levelWarn   = "WARN"
-		levelError  = "ERROR"
-		levelDPanic = "DPANIC"
-		levelPanic  = "PANIC"
-	)
+// setSingletonForTest temporarily replaces the singleton logger and restores
+// the original when the test completes.
+func setSingletonForTest(t *testing.T, l *slog.Logger) {
+	t.Helper()
+	prev := singleton.Load()
+	singleton.Store(l)
+	t.Cleanup(func() { singleton.Store(prev) })
+}
 
-	formattedLogTestCases := []struct {
-		level    string
-		message  string
-		key      string
-		value    string
-		expected string
+// TestLogLevels tests that each log function writes to the underlying handler.
+func TestLogLevels(t *testing.T) { //nolint:paralleltest // mutates singleton
+	tests := []struct {
+		name     string
+		logFn    func()
+		contains string
 	}{
-		{levelDebug, "debug message %s and %s", "key", "value", "debug message key and value"},
-		{levelInfo, "info message %s and %s", "key", "value", "info message key and value"},
-		{levelWarn, "warn message %s and %s", "key", "value", "warn message key and value"},
-		{levelError, "error message %s and %s", "key", "value", "error message key and value"},
-		{levelDPanic, "dpanic message %s and %s", "key", "value", "dpanic message key and value"},
-		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value"},
+		{"Debug", func() { Debug("debug msg") }, "debug msg"},
+		{"Debugf", func() { Debugf("debug %s", "formatted") }, "debug formatted"},
+		{"Debugw", func() { Debugw("debug kv", "key", "val") }, "debug kv"},
+		{"Info", func() { Info("info msg") }, "info msg"},
+		{"Infof", func() { Infof("info %s", "formatted") }, "info formatted"},
+		{"Infow", func() { Infow("info kv", "key", "val") }, "info kv"},
+		{"Warn", func() { Warn("warn msg") }, "warn msg"},
+		{"Warnf", func() { Warnf("warn %s", "formatted") }, "warn formatted"},
+		{"Warnw", func() { Warnw("warn kv", "key", "val") }, "warn kv"},
+		{"Error", func() { Error("error msg") }, "error msg"},
+		{"Errorf", func() { Errorf("error %s", "formatted") }, "error formatted"},
+		{"Errorw", func() { Errorw("error kv", "key", "val") }, "error kv"},
+		{"DPanic", func() { DPanic("dpanic msg") }, "dpanic msg"},
+		{"DPanicf", func() { DPanicf("dpanic %s", "formatted") }, "dpanic formatted"},
+		{"DPanicw", func() { DPanicw("dpanic kv", "key", "val") }, "dpanic kv"},
 	}
 
-	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses global logger state
-		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
-			// For unstructured logs, we still need to capture stderr output
-			// but we can use a buffer-based approach that's more coverage-friendly
+	for _, tc := range tests { //nolint:paralleltest // mutates singleton
+		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-
-			viper.SetDefault("debug", true)
-
-			// Create a development config that writes to our buffer instead of stderr
-			config := zap.NewDevelopmentConfig()
-			config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-			config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
-			config.DisableStacktrace = true
-			config.DisableCaller = true
-
-			// Create a core that writes to our buffer
-			core := zapcore.NewCore(
-				zapcore.NewConsoleEncoder(config.EncoderConfig),
-				zapcore.AddSync(&buf),
-				zapcore.DebugLevel,
+			l := logging.New(
+				logging.WithOutput(&buf),
+				logging.WithLevel(slog.LevelDebug),
 			)
+			setSingletonForTest(t, l)
 
-			logger := zap.New(core)
-			zap.ReplaceGlobals(logger)
+			tc.logFn()
 
-			// Handle panic recovery for DPANIC and PANIC levels
-			var panicOccurred bool
-			defer func() {
-				if r := recover(); r != nil {
-					panicOccurred = true
-					if tc.level != "PANIC" {
-						t.Errorf("Unexpected panic for level %s: %v", tc.level, r)
-					}
-				}
-			}()
-
-			// Log the message based on the level
-			switch tc.level {
-			case levelDebug:
-				Debugf(tc.message, tc.key, tc.value)
-			case levelInfo:
-				Infof(tc.message, tc.key, tc.value)
-			case levelWarn:
-				Warnf(tc.message, tc.key, tc.value)
-			case levelError:
-				Errorf(tc.message, tc.key, tc.value)
-			case levelDPanic:
-				DPanicf(tc.message, tc.key, tc.value)
-			case levelPanic:
-				Panicf(tc.message, tc.key, tc.value)
-			}
-
-			// For panic levels, verify panic occurred, otherwise check output
-			if tc.level == "PANIC" {
-				require.True(t, panicOccurred, "Expected panic for level %s", tc.level)
-				// For panic levels, we might not get log entries before the panic
-				return
-			}
-
-			// Note: DPanic only panics in development mode, not in tests by default
-			// So we treat it like a regular error level for verification purposes
-
-			// Get the captured output from buffer
-			output := buf.String()
-			assert.Contains(t, output, tc.level, "Expected log entry '%s' to contain log level '%s'", output, tc.level)
-			assert.Contains(t, output, tc.expected, "Expected log entry '%s' to contain message '%s'", output, tc.expected)
+			assert.Contains(t, buf.String(), tc.contains)
 		})
 	}
 }
 
-// TestInitialize tests the Initialize function
-func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses global logger state
-	// Test structured logs (JSON)
-	t.Run("Structured Logs", func(t *testing.T) { //nolint:paralleltest // Uses global logger state
+// TestPanicFunctions tests that Panic/Panicf/Panicw log and panic.
+func TestPanicFunctions(t *testing.T) { //nolint:paralleltest // mutates singleton
+	tests := []struct {
+		name     string
+		logFn    func()
+		contains string
+	}{
+		{"Panic", func() { Panic("panic msg") }, "panic msg"},
+		{"Panicf", func() { Panicf("panic %s", "formatted") }, "panic formatted"},
+		{"Panicw", func() { Panicw("panic kv", "key", "val") }, "panic kv"},
+	}
 
-		// Create observer to capture logs in memory
-		core, observedLogs := observer.New(zapcore.InfoLevel)
-		logger := zap.New(core)
-		zap.ReplaceGlobals(logger)
+	for _, tc := range tests { //nolint:paralleltest // mutates singleton
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := logging.New(
+				logging.WithOutput(&buf),
+				logging.WithLevel(slog.LevelDebug),
+			)
+			setSingletonForTest(t, l)
 
-		// Log a test message
-		Info("test message")
+			require.Panics(t, func() { tc.logFn() })
+			assert.Contains(t, buf.String(), tc.contains)
+		})
+	}
+}
 
-		// Get captured log entries from observer
-		allEntries := observedLogs.All()
-		require.Len(t, allEntries, 1, "Expected exactly one log entry")
+// TestNewLogr verifies that NewLogr returns a usable logr.Logger.
+func TestNewLogr(t *testing.T) { //nolint:paralleltest // mutates singleton
+	var buf bytes.Buffer
+	l := logging.New(
+		logging.WithOutput(&buf),
+		logging.WithLevel(slog.LevelDebug),
+	)
+	setSingletonForTest(t, l)
 
-		entry := allEntries[0]
-		assert.Equal(t, "info", entry.Level.String(), "Log level mismatch")
-		assert.Equal(t, "test message", entry.Message, "Log message mismatch")
-	})
+	lr := NewLogr()
+	lr.Info("logr test message")
 
-	// Test unstructured logs
-	t.Run("Unstructured Logs", func(t *testing.T) { //nolint:paralleltest // Uses global logger state
+	assert.Contains(t, buf.String(), "logr test message")
+}
 
-		// For unstructured logs, we use a buffer-based approach
-		var buf bytes.Buffer
+// TestGet verifies that Get returns the current singleton logger.
+func TestGet(t *testing.T) { //nolint:paralleltest // mutates singleton
+	var buf bytes.Buffer
+	l := logging.New(logging.WithOutput(&buf))
+	setSingletonForTest(t, l)
 
-		// Create a development config that writes to our buffer
-		config := zap.NewDevelopmentConfig()
-		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-		config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
-		config.DisableStacktrace = true
-		config.DisableCaller = true
+	got := Get()
+	require.NotNil(t, got)
 
-		// Create a core that writes to our buffer
-		core := zapcore.NewCore(
-			zapcore.NewConsoleEncoder(config.EncoderConfig),
-			zapcore.AddSync(&buf),
-			zapcore.InfoLevel,
-		)
+	got.Info("get test")
+	assert.Contains(t, buf.String(), "get test")
+}
 
-		logger := zap.New(core)
-		zap.ReplaceGlobals(logger)
+// TestInitializeWithEnv tests Initialize with different env configurations.
+func TestInitializeWithEnv(t *testing.T) { //nolint:paralleltest // mutates singleton
+	tests := []struct {
+		name            string
+		unstructuredEnv string
+	}{
+		{"Default (unstructured)", ""},
+		{"Explicit unstructured", "true"},
+		{"Structured JSON", "false"},
+	}
 
-		// Log a test message
-		Info("test message")
+	for _, tc := range tests { //nolint:paralleltest // mutates singleton
+		t.Run(tc.name, func(t *testing.T) {
+			prev := singleton.Load()
+			t.Cleanup(func() { singleton.Store(prev) })
 
-		// Get the captured output from buffer
-		output := buf.String()
+			ctrl := gomock.NewController(t)
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return(tc.unstructuredEnv)
 
-		// Verify unstructured format (should contain message but not be JSON)
-		assert.Contains(t, output, "test message", "Expected output to contain 'test message'")
-		assert.Contains(t, output, "INFO", "Expected output to contain 'INFO'")
-	})
+			InitializeWithEnv(mockEnv)
+
+			got := singleton.Load()
+			require.NotNil(t, got)
+
+			// Verify the logger works by writing a message
+			got.Info("test after initialize")
+		})
+	}
 }

@@ -161,8 +161,8 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 	if envVar.Secret {
 		fmt.Printf("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
 		fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
-		byteValue, err = term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println() // Move to the next line after hidden input
+		byteValue, err = term.ReadPassword(int(os.Stdin.Fd())) //nolint:gosec // G115: stdin fd is always small
+		fmt.Println()                                          // Move to the next line after hidden input
 	} else {
 		fmt.Printf("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
 		fmt.Printf("Enter value for %s: ", envVar.Name)

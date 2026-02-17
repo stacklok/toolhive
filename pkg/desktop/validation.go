@@ -196,10 +196,10 @@ func buildConflictMessage(desktopPath, currentPath string, marker *cliSourceMark
 	var sb strings.Builder
 
 	sb.WriteString("The ToolHive Desktop application manages a CLI installation at:\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n", desktopPath))
+	fmt.Fprintf(&sb, "  %s\n\n", desktopPath)
 
 	sb.WriteString("You are running a different CLI binary at:\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n", currentPath))
+	fmt.Fprintf(&sb, "  %s\n\n", currentPath)
 
 	sb.WriteString("To avoid conflicts, please use the desktop-managed CLI or uninstall\n")
 	sb.WriteString("the ToolHive Desktop application.\n\n")
@@ -208,13 +208,13 @@ func buildConflictMessage(desktopPath, currentPath string, marker *cliSourceMark
 	binPath, exeName := getDesktopBinPath()
 
 	sb.WriteString("To use the desktop-managed CLI, ensure your PATH includes:\n")
-	sb.WriteString(fmt.Sprintf("  %s\n\n", binPath))
+	fmt.Fprintf(&sb, "  %s\n\n", binPath)
 
 	sb.WriteString("Or run the desktop CLI directly:\n")
-	sb.WriteString(fmt.Sprintf("  %s [command]\n", filepath.Join(binPath, exeName)))
+	fmt.Fprintf(&sb, "  %s [command]\n", filepath.Join(binPath, exeName))
 
 	if marker.DesktopVersion != "" {
-		sb.WriteString(fmt.Sprintf("\nDesktop version: %s\n", marker.DesktopVersion))
+		fmt.Fprintf(&sb, "\nDesktop version: %s\n", marker.DesktopVersion)
 	}
 
 	return sb.String()

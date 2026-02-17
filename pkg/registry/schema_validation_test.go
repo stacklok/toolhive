@@ -1334,6 +1334,172 @@ func TestConverterFixtures_PublisherProvidedSchemaValidation(t *testing.T) {
 	}
 }
 
+// TestValidateSkillSchema tests the ValidateSkillSchema function
+func TestValidateSkillSchema(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		data          string
+		wantErr       bool
+		errorContains string
+	}{
+		{
+			name: "valid minimal skill",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"description": "Extract text and tables from PDF files",
+				"version": "1.0.0"
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid skill with all fields",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"description": "Extract text and tables from PDF files",
+				"version": "1.0.0",
+				"status": "active",
+				"title": "PDF Processor",
+				"license": "Apache-2.0",
+				"compatibility": "Requires Docker runtime",
+				"allowedTools": ["read-file", "write-file"],
+				"repository": {
+					"url": "https://github.com/stacklok/skills/pdf-processor",
+					"type": "git"
+				},
+				"icons": [
+					{
+						"src": "https://example.com/icon.png",
+						"size": "64x64",
+						"type": "image/png",
+						"label": "PDF icon"
+					}
+				],
+				"packages": [
+					{
+						"registryType": "oci",
+						"identifier": "ghcr.io/stacklok/skills/pdf-processor:1.0.0",
+						"digest": "sha256:abc123",
+						"mediaType": "application/vnd.stacklok.skillet.skill.v1"
+					}
+				],
+				"metadata": {
+					"author": "Stacklok"
+				},
+				"_meta": {
+					"io.github.stacklok": {}
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid skill with git package",
+			data: `{
+				"namespace": "io.github.user",
+				"name": "my-skill",
+				"description": "A custom skill from a git repository",
+				"version": "abc123def",
+				"packages": [
+					{
+						"registryType": "git",
+						"url": "https://github.com/user/my-skill",
+						"ref": "main",
+						"commit": "abc123def456",
+						"subfolder": "skills/my-skill"
+					}
+				]
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "missing required namespace",
+			data: `{
+				"name": "pdf-processor",
+				"description": "Extract text and tables",
+				"version": "1.0.0"
+			}`,
+			wantErr:       true,
+			errorContains: "namespace",
+		},
+		{
+			name: "missing required name",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"description": "Extract text and tables",
+				"version": "1.0.0"
+			}`,
+			wantErr:       true,
+			errorContains: "name",
+		},
+		{
+			name: "missing required description",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"version": "1.0.0"
+			}`,
+			wantErr:       true,
+			errorContains: "description",
+		},
+		{
+			name: "missing required version",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"description": "Extract text and tables"
+			}`,
+			wantErr:       true,
+			errorContains: "version",
+		},
+		{
+			name: "invalid status value",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"description": "Extract text and tables",
+				"version": "1.0.0",
+				"status": "invalid-status"
+			}`,
+			wantErr:       true,
+			errorContains: "status",
+		},
+		{
+			name: "invalid package registryType",
+			data: `{
+				"namespace": "io.github.stacklok",
+				"name": "pdf-processor",
+				"description": "Extract text and tables",
+				"version": "1.0.0",
+				"packages": [
+					{
+						"registryType": "invalid"
+					}
+				]
+			}`,
+			wantErr:       true,
+			errorContains: "registryType",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateSkillSchema([]byte(tt.data))
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestUpstreamRegistrySchemaVersionSync ensures that the schema reference in
 // upstream-registry.schema.json matches the schema version from the Go package
 // (model.CurrentSchemaVersion). This prevents schema drift when upgrading the

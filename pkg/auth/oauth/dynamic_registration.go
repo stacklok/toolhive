@@ -135,7 +135,7 @@ func (s *ScopeList) UnmarshalJSON(data []byte) error {
 type DynamicClientRegistrationResponse struct {
 	// Required fields
 	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Optional fields that may be returned
 	ClientIDIssuedAt        int64  `json:"client_id_issued_at,omitempty"`

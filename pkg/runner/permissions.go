@@ -62,12 +62,14 @@ func CleanupTempPermissionProfile(permissionProfilePath string) error {
 	}
 
 	// Check if the file exists
+	// #nosec G703 -- permissionProfilePath is validated by isTempPermissionProfile above
 	if _, err := os.Stat(permissionProfilePath); os.IsNotExist(err) {
 		logger.Debugf("Temporary permission profile file %s does not exist, skipping cleanup", permissionProfilePath)
 		return nil
 	}
 
 	// Remove the temporary file
+	// #nosec G703 -- permissionProfilePath is validated by isTempPermissionProfile above
 	if err := os.Remove(permissionProfilePath); err != nil {
 		return fmt.Errorf("failed to remove temporary permission profile file %s: %w", permissionProfilePath, err)
 	}

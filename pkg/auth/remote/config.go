@@ -19,7 +19,7 @@ import (
 // Supports OAuth/OIDC-based authentication with automatic discovery.
 type Config struct {
 	ClientID         string        `json:"client_id,omitempty" yaml:"client_id,omitempty"`
-	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"` //nolint:gosec // G117
 	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
 	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
@@ -45,7 +45,7 @@ type Config struct {
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
 
 	// Bearer token configuration (alternative to OAuth)
-	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"`
+	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"` //nolint:gosec // G117
 	BearerTokenFile string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`
 
 	// Cached OAuth token reference for persistence across restarts.
@@ -88,7 +88,7 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 		// Unmarshal using old PascalCase format
 		var oldFormat struct {
 			ClientID         string             `json:"ClientID,omitempty"`
-			ClientSecret     string             `json:"ClientSecret,omitempty"`
+			ClientSecret     string             `json:"ClientSecret,omitempty"` //nolint:gosec // G117
 			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
 			Scopes           []string           `json:"Scopes,omitempty"`
 			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
@@ -101,7 +101,7 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 			Headers          []*registry.Header `json:"Headers,omitempty"`
 			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
 			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
-			BearerToken      string             `json:"BearerToken,omitempty"`
+			BearerToken      string             `json:"BearerToken,omitempty"` //nolint:gosec // G117
 			BearerTokenFile  string             `json:"BearerTokenFile,omitempty"`
 		}
 

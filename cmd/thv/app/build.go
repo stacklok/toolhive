@@ -105,6 +105,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 		// Write to output file if specified
 		if buildFlags.Output != "" {
+			// #nosec G703 -- buildFlags.Output is a user-provided CLI flag for output path
 			if err := os.WriteFile(buildFlags.Output, []byte(dockerfileContent), 0600); err != nil {
 				return fmt.Errorf("failed to write Dockerfile to %s: %w", buildFlags.Output, err)
 			}

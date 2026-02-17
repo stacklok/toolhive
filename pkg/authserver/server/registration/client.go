@@ -92,7 +92,7 @@ type Config struct {
 
 	// Secret is the client secret for confidential clients.
 	// Empty for public clients.
-	Secret string
+	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RedirectURIs is the list of allowed redirect URIs.
 	RedirectURIs []string

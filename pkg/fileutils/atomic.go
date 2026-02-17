@@ -48,12 +48,14 @@ func AtomicWriteFile(targetPath string, data []byte, perm os.FileMode) error {
 	}
 
 	// Set the correct permissions on the temp file
+	// #nosec G703 -- tmpPath is from os.CreateTemp in the same directory as targetPath
 	if err := os.Chmod(tmpPath, perm); err != nil {
 		return fmt.Errorf("failed to set permissions on temp file: %w", err)
 	}
 
 	// Atomically rename temp file to target file
 	// This is atomic on POSIX systems (Linux, macOS, etc.)
+	// #nosec G703 -- tmpPath is from os.CreateTemp, targetPath is caller-controlled
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}

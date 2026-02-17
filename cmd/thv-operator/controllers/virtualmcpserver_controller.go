@@ -103,6 +103,11 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
+	// Validate spec configuration early
+	if err := r.validateSpec(ctx, vmcp, statusManager); err != nil {
+		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+	}
+
 	// Validate PodTemplateSpec early - before other validations
 	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
 		// Invalid PodTemplateSpec - apply status updates and return without error to avoid infinite retries
@@ -188,6 +193,32 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// - Owned resources (Deployment, Service) status changes
 	// - vmcp pods emit events about backend health
 	return ctrl.Result{}, nil
+}
+
+// validateSpec validates the VirtualMCPServer spec and updates status on error.
+// Returns an error if validation fails, which signals the caller to stop reconciliation.
+func (r *VirtualMCPServerReconciler) validateSpec(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if err := vmcp.Validate(); err != nil {
+		ctxLogger.Error(err, "VirtualMCPServer spec validation failed")
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		statusManager.SetCondition("Valid", "ValidationFailed", err.Error(), metav1.ConditionFalse)
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after validation error")
+		}
+		return err
+	}
+
+	// Validation succeeded - set Valid=True condition
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	statusManager.SetCondition("Valid", "ValidationSucceeded", "Spec validation passed", metav1.ConditionTrue)
+
+	return nil
 }
 
 // applyStatusUpdates applies all collected status changes in a single batch update.

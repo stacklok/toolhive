@@ -441,7 +441,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
+		proxy.ServeHTTP(w, r) // #nosec G704 -- target URL is the configured backend MCP server
 	})
 
 	// Create a mux to handle both proxy and health endpoints

@@ -149,7 +149,7 @@ func (s *TokenExchangeStrategy) Validate(strategy *authtypes.BackendAuthStrategy
 type tokenExchangeConfig struct {
 	TokenURL         string
 	ClientID         string
-	ClientSecret     string
+	ClientSecret     string //nolint:gosec // G117: field legitimately holds sensitive data
 	Audience         string
 	Scopes           []string
 	SubjectTokenType string

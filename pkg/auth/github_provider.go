@@ -156,7 +156,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	req.SetBasicAuth(g.clientID, g.clientSecret)
 
 	// Make the request
-	resp, err := g.client.Do(req)
+	resp, err := g.client.Do(req) // #nosec G704 -- URL is the configured GitHub API endpoint
 	if err != nil {
 		return nil, fmt.Errorf("github validation request failed: %w", err)
 	}

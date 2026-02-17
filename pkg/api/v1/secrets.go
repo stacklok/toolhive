@@ -533,7 +533,7 @@ type setupSecretsRequest struct {
 	ProviderType string `json:"provider_type"`
 	// Password for encrypted provider (optional, can be set via environment variable)
 	// TODO Review environment variable for this
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 // setupSecretsResponse represents the response for initializing a secrets provider

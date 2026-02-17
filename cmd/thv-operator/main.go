@@ -311,21 +311,6 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}
 
-	// Set up VirtualMCPServer webhook
-	if err := (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPServer: %w", err)
-	}
-
-	// Set up VirtualMCPCompositeToolDefinition webhook
-	if err := (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook VirtualMCPCompositeToolDefinition: %w", err)
-	}
-
-	// Set up MCPExternalAuthConfig webhook
-	if err := (&mcpv1alpha1.MCPExternalAuthConfig{}).SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create webhook MCPExternalAuthConfig: %w", err)
-	}
-
 	return nil
 }
 

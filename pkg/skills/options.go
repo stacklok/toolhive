@@ -17,6 +17,18 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
+	// Client is the target client (e.g., "claude-code"). Empty means first skill-supporting client.
+	Client string `json:"client,omitempty"`
+	// Force allows overwriting unmanaged skill directories.
+	Force bool `json:"force,omitempty"`
+	// ProjectRoot is the project root path for project-scoped installs.
+	ProjectRoot string `json:"project_root,omitempty"`
+	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
+	LayerData []byte `json:"-"`
+	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
+	Reference string `json:"-"`
+	// Digest is the OCI digest for upgrade detection.
+	Digest string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -31,6 +43,8 @@ type UninstallOptions struct {
 	Name string `json:"name"`
 	// Scope is the scope from which to uninstall.
 	Scope Scope `json:"scope,omitempty"`
+	// ProjectRoot is the project root path for project-scoped skills.
+	ProjectRoot string `json:"project_root,omitempty"`
 }
 
 // InfoOptions configures the behavior of the Info operation.

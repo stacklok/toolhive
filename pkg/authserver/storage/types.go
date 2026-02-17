@@ -57,8 +57,8 @@ type UpstreamTokens struct {
 	ProviderID string
 
 	// Token values from the upstream IDP
-	AccessToken  string
-	RefreshToken string
+	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken      string
 	ExpiresAt    time.Time
 

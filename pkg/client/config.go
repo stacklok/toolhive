@@ -794,7 +794,7 @@ func GetClientListFormatted() string {
 
 	var sb strings.Builder
 	for _, config := range configs {
-		sb.WriteString(fmt.Sprintf("  - %s: %s\n", config.ClientType, config.Description))
+		fmt.Fprintf(&sb, "  - %s: %s\n", config.ClientType, config.Description)
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
 }

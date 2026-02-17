@@ -48,7 +48,7 @@ type CachedToken struct {
 	ExpiresAt time.Time
 
 	// RefreshToken is the refresh token (if available).
-	RefreshToken string
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Scopes are the token scopes.
 	Scopes []string

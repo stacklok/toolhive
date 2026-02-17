@@ -74,7 +74,7 @@ type SentinelConfig struct {
 // ACLUserConfig contains Redis ACL user authentication configuration.
 type ACLUserConfig struct {
 	Username string
-	Password string
+	Password string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 // RedisStorage implements the Storage interface with Redis Sentinel backend.
@@ -200,7 +200,7 @@ func (s *RedisStorage) Close() error {
 // storedClient is a serializable wrapper for OAuth clients.
 type storedClient struct {
 	ID            string   `json:"id"`
-	Secret        []byte   `json:"secret,omitempty"`
+	Secret        []byte   `json:"secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 	RedirectURIs  []string `json:"redirect_uris"`
 	GrantTypes    []string `json:"grant_types"`
 	ResponseTypes []string `json:"response_types"`
@@ -685,8 +685,8 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 // storedUpstreamTokens is a serializable wrapper for UpstreamTokens.
 type storedUpstreamTokens struct {
 	ProviderID      string `json:"provider_id"`
-	AccessToken     string `json:"access_token"`
-	RefreshToken    string `json:"refresh_token"`
+	AccessToken     string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken         string `json:"id_token"`
 	ExpiresAt       int64  `json:"expires_at"`
 	UserID          string `json:"user_id"`

@@ -66,7 +66,7 @@ func (d *DefaultPlatformDetector) DetectPlatform(config *rest.Config) (Platform,
 		// Check if we are running on OpenShift via environment variable override
 		value, ok := os.LookupEnv("OPERATOR_OPENSHIFT")
 		if ok {
-			logger.Infof("OpenShift set by env var 'OPERATOR_OPENSHIFT': " + value)
+			logger.Infof("%s", "OpenShift set by env var 'OPERATOR_OPENSHIFT': "+value)
 			if strings.ToLower(value) == "true" {
 				d.platform = PlatformOpenShift
 			} else {

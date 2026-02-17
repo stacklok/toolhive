@@ -31,7 +31,7 @@ func writeJSONRPC(w http.ResponseWriter, msg jsonrpc2.Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(data)
+	_, err = w.Write(data) //nolint:gosec // G705: data is JSON-RPC from MCP protocol
 	return err
 }
 

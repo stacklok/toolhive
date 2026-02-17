@@ -412,7 +412,7 @@ func generateLargeJSON() string {
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		sb.WriteString(fmt.Sprintf(`{"id":%d,"value":"item-%d"}`, i, i))
+		fmt.Fprintf(&sb, `{"id":%d,"value":"item-%d"}`, i, i)
 	}
 	sb.WriteString(`],`)
 	sb.WriteString(`"metadata":{`)

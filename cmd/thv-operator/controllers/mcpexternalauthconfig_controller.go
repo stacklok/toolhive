@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -77,54 +79,45 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
+	// Validate spec configuration early
+	if err := externalAuthConfig.Validate(); err != nil {
+		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
+		// Update status with validation error
+		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            err.Error(),
+			ObservedGeneration: externalAuthConfig.Generation,
+		})
+		if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
+			logger.Error(updateErr, "Failed to update status after validation error")
+		}
+		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+	}
+
+	// Validation succeeded - set Valid=True condition
+	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
+		Type:               "Valid",
+		Status:             metav1.ConditionTrue,
+		Reason:             "ValidationSucceeded",
+		Message:            "Spec validation passed",
+		ObservedGeneration: externalAuthConfig.Generation,
+	})
+
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(externalAuthConfig.Spec)
 
 	// Check if the hash has changed
-	if externalAuthConfig.Status.ConfigHash != configHash {
-		logger.Info("MCPExternalAuthConfig configuration changed",
-			"oldHash", externalAuthConfig.Status.ConfigHash,
-			"newHash", configHash)
-
-		// Update the status with the new hash
-		externalAuthConfig.Status.ConfigHash = configHash
-		externalAuthConfig.Status.ObservedGeneration = externalAuthConfig.Generation
-
-		// Find all MCPServers that reference this MCPExternalAuthConfig
-		referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
-		if err != nil {
-			logger.Error(err, "Failed to find referencing MCPServers")
-			return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
-		}
-
-		// Update the status with the list of referencing servers
-		serverNames := make([]string, 0, len(referencingServers))
-		for _, server := range referencingServers {
-			serverNames = append(serverNames, server.Name)
-		}
-		externalAuthConfig.Status.ReferencingServers = serverNames
-
-		// Update the MCPExternalAuthConfig status
+	hashChanged := externalAuthConfig.Status.ConfigHash != configHash
+	if hashChanged {
+		return r.handleConfigHashChange(ctx, externalAuthConfig, configHash)
+	} else if conditionChanged {
+		// Hash hasn't changed, but condition did change - need to update status
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-			logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+			logger := log.FromContext(ctx)
+			logger.Error(err, "Failed to update MCPExternalAuthConfig status after condition change")
 			return ctrl.Result{}, err
-		}
-
-		// Trigger reconciliation of all referencing MCPServers
-		for _, server := range referencingServers {
-			logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
-				"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
-
-			// Add an annotation to the MCPServer to trigger reconciliation
-			if server.Annotations == nil {
-				server.Annotations = make(map[string]string)
-			}
-			server.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
-
-			if err := r.Update(ctx, &server); err != nil {
-				logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
-				// Continue with other servers even if one fails
-			}
 		}
 	}
 
@@ -134,6 +127,61 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
+}
+
+// handleConfigHashChange handles the logic when the config hash changes
+func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
+	ctx context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	configHash string,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("MCPExternalAuthConfig configuration changed",
+		"oldHash", externalAuthConfig.Status.ConfigHash,
+		"newHash", configHash)
+
+	// Update the status with the new hash
+	externalAuthConfig.Status.ConfigHash = configHash
+	externalAuthConfig.Status.ObservedGeneration = externalAuthConfig.Generation
+
+	// Find all MCPServers that reference this MCPExternalAuthConfig
+	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing MCPServers")
+		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
+	}
+
+	// Update the status with the list of referencing servers
+	serverNames := make([]string, 0, len(referencingServers))
+	for _, server := range referencingServers {
+		serverNames = append(serverNames, server.Name)
+	}
+	externalAuthConfig.Status.ReferencingServers = serverNames
+
+	// Update the MCPExternalAuthConfig status
+	if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
+		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+		return ctrl.Result{}, err
+	}
+
+	// Trigger reconciliation of all referencing MCPServers
+	for _, server := range referencingServers {
+		logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
+			"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
+
+		// Add an annotation to the MCPServer to trigger reconciliation
+		if server.Annotations == nil {
+			server.Annotations = make(map[string]string)
+		}
+		server.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
+
+		if err := r.Update(ctx, &server); err != nil {
+			logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
+			// Continue with other servers even if one fails
+		}
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // handleDeletion handles the deletion of a MCPExternalAuthConfig

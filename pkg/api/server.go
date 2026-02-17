@@ -237,7 +237,12 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			return fmt.Errorf("failed to create skill store: %w", storeErr)
 		}
 		b.skillStoreCloser = store
-		b.skillManager = skillsvc.New(store)
+		cm, cmErr := client.NewClientManager()
+		if cmErr != nil {
+			_ = store.Close() // clean up opened store on error
+			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
+		}
+		b.skillManager = skillsvc.New(store, skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}))
 	}
 
 	return nil
@@ -559,6 +564,24 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	}
 
 	return listener, addrType, nil
+}
+
+// clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.
+type clientPathAdapter struct {
+	cm *client.ClientManager
+}
+
+func (a *clientPathAdapter) GetSkillPath(clientType, skillName string, scope skills.Scope, projectRoot string) (string, error) {
+	return a.cm.GetSkillPath(client.ClientApp(clientType), skillName, scope, projectRoot)
+}
+
+func (a *clientPathAdapter) ListSkillSupportingClients() []string {
+	clients := a.cm.ListSkillSupportingClients()
+	result := make([]string, len(clients))
+	for i, c := range clients {
+		result[i] = string(c)
+	}
+	return result
 }
 
 // Serve starts the server on the given address and serves the API.

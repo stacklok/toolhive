@@ -24,7 +24,7 @@ type TunnelProvider struct {
 
 // TunnelConfig holds configuration options for the ngrok tunnel provider.
 type TunnelConfig struct {
-	AuthToken      string
+	AuthToken      string //nolint:gosec // G117: field legitimately holds sensitive data
 	URL            string // Optional: specify custom URL
 	TrafficPolicy  string // Optional: specify traffic policy
 	PoolingEnabled bool   // Optional: enable pooling

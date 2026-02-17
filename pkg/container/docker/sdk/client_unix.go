@@ -49,7 +49,7 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
 		logger.Debugf("Using Podman socket from env: %s", customSocketPath)
 		// validate the socket path
-		if _, err := os.Stat(customSocketPath); err != nil {
+		if _, err := os.Stat(customSocketPath); err != nil { //nolint:gosec // G703: socket path from trusted environment variable
 			return "", runtime.TypePodman, fmt.Errorf("invalid Podman socket path: %w", err)
 		}
 		return customSocketPath, runtime.TypePodman, nil
@@ -58,7 +58,7 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	if customSocketPath := os.Getenv(DockerSocketEnv); customSocketPath != "" {
 		logger.Debugf("Using Docker socket from env: %s", customSocketPath)
 		// validate the socket path
-		if _, err := os.Stat(customSocketPath); err != nil {
+		if _, err := os.Stat(customSocketPath); err != nil { //nolint:gosec // G703: socket path from trusted environment variable
 			return "", runtime.TypeDocker, fmt.Errorf("invalid Docker socket path: %w", err)
 		}
 		return customSocketPath, runtime.TypeDocker, nil
@@ -67,7 +67,7 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	if customSocketPath := os.Getenv(ColimaSocketEnv); customSocketPath != "" {
 		logger.Debugf("Using Colima socket from env: %s", customSocketPath)
 		// validate the socket path
-		if _, err := os.Stat(customSocketPath); err != nil {
+		if _, err := os.Stat(customSocketPath); err != nil { //nolint:gosec // G703: socket path from trusted environment variable
 			return "", runtime.TypeDocker, fmt.Errorf("invalid Colima socket path: %w", err)
 		}
 		return customSocketPath, runtime.TypeDocker, nil
@@ -111,7 +111,7 @@ func findPodmanSocket() (string, error) {
 	// Check XDG_RUNTIME_DIR location for Podman
 	if xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntimeDir != "" {
 		xdgSocketPath := filepath.Join(xdgRuntimeDir, PodmanXDGRuntimeSocketPath)
-		_, err := os.Stat(xdgSocketPath)
+		_, err := os.Stat(xdgSocketPath) //nolint:gosec // G703: path from trusted env + constant
 
 		if err == nil {
 			logger.Debugf("Found Podman socket at %s", xdgSocketPath)
@@ -124,7 +124,7 @@ func findPodmanSocket() (string, error) {
 	// Check user-specific location for Podman
 	if home := os.Getenv("HOME"); home != "" {
 		userSocketPath := filepath.Join(home, ".local/share/containers/podman/machine/podman.sock")
-		_, err := os.Stat(userSocketPath)
+		_, err := os.Stat(userSocketPath) //nolint:gosec // G703: path from trusted env + constant
 
 		if err == nil {
 			logger.Debugf("Found Podman socket at %s", userSocketPath)
@@ -138,7 +138,7 @@ func findPodmanSocket() (string, error) {
 	// The socket path follows the pattern: $TMPDIR/podman/<machine-name>-api.sock
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
 		podmanTmpDir := filepath.Join(tmpDir, "podman")
-		if _, err := os.Stat(podmanTmpDir); err == nil {
+		if _, err := os.Stat(podmanTmpDir); err == nil { //nolint:gosec // G703: path from trusted env
 			// Look for any -api.sock files (there may be multiple machines)
 			matches, err := filepath.Glob(filepath.Join(podmanTmpDir, "*-api.sock"))
 			if err == nil && len(matches) > 0 {
@@ -171,7 +171,7 @@ func findDockerSocket() (string, error) {
 	// Try Docker Desktop socket path on macOS
 	if home := os.Getenv("HOME"); home != "" {
 		dockerDesktopPath := filepath.Join(home, DockerDesktopMacSocketPath)
-		_, err := os.Stat(dockerDesktopPath)
+		_, err := os.Stat(dockerDesktopPath) // #nosec G703 -- path is built from HOME + constant socket path
 
 		if err == nil {
 			logger.Debugf("Found Docker Desktop socket at %s", dockerDesktopPath)
@@ -184,7 +184,7 @@ func findDockerSocket() (string, error) {
 	// Try Rancher Desktop socket path on macOS
 	if home := os.Getenv("HOME"); home != "" {
 		rancherDesktopPath := filepath.Join(home, RancherDesktopMacSocketPath)
-		_, err := os.Stat(rancherDesktopPath)
+		_, err := os.Stat(rancherDesktopPath) // #nosec G703 -- path is built from HOME + constant socket path
 
 		if err == nil {
 			logger.Debugf("Found Rancher Desktop socket at %s", rancherDesktopPath)
@@ -197,7 +197,7 @@ func findDockerSocket() (string, error) {
 	// Try OrbStack socket path on macOS
 	if home := os.Getenv("HOME"); home != "" {
 		orbStackPath := filepath.Join(home, OrbStackMacSocketPath)
-		_, err := os.Stat(orbStackPath)
+		_, err := os.Stat(orbStackPath) // #nosec G703 -- path is built from HOME + constant socket path
 
 		if err == nil {
 			logger.Debugf("Found OrbStack socket at %s", orbStackPath)
@@ -224,7 +224,7 @@ func findColimaSocket() (string, error) {
 	// Check user-specific location for Colima
 	if home := os.Getenv("HOME"); home != "" {
 		userSocketPath := filepath.Join(home, ColimaDesktopMacSocketPath)
-		_, err := os.Stat(userSocketPath)
+		_, err := os.Stat(userSocketPath) // #nosec G703 -- path is built from HOME + constant socket path
 
 		if err == nil {
 			logger.Debugf("Found Colima socket at %s", userSocketPath)

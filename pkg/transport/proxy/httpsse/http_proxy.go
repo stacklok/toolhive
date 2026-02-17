@@ -332,7 +332,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	endpointMsg := ssecommon.NewSSEMessage("endpoint", endpointURL)
 
 	// Send the initial event
-	if _, err := fmt.Fprint(w, endpointMsg.ToSSEString()); err != nil {
+	if _, err := fmt.Fprint(w, endpointMsg.ToSSEString()); err != nil { //nolint:gosec // G705: SSE data from internal MCP protocol
 		logger.Debugf("Failed to write endpoint message: %v", err)
 		return
 	}

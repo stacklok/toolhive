@@ -22,7 +22,7 @@ type toolsOverrideJSON struct {
 
 // LoadToolsOverride loads the tools override JSON file from the given path.
 func LoadToolsOverride(path string) (*map[string]runner.ToolOverride, error) {
-	jsonFile, err := os.Open(filepath.Clean(path))
+	jsonFile, err := os.Open(filepath.Clean(path)) // #nosec G703 -- path is a user-provided CLI flag for tools override
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tools override file: %w", err)
 	}

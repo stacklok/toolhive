@@ -260,7 +260,7 @@ func wrapBackendWithProxy(
 	proxy := httputil.NewSingleHostReverseProxy(backendURL)
 	proxy.FlushInterval = -1
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
+		proxy.ServeHTTP(w, r) //nolint:gosec // G704: reverse proxy to test backend
 	})
 
 	// Apply middleware chain in reverse order (last middleware is applied first)

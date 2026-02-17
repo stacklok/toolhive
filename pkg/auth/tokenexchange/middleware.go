@@ -62,7 +62,7 @@ type Config struct {
 	ClientID string `json:"client_id"`
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string `json:"client_secret"`
+	ClientSecret string `json:"client_secret"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Audience is the target audience for the exchanged token
 	Audience string `json:"audience"`

@@ -78,6 +78,7 @@ type TokenExchangeConfig struct {
 	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 
 	// ClientSecret is the OAuth client secret (use ClientSecretEnv for security).
+	//nolint:gosec // G117: field legitimately holds sensitive data
 	ClientSecret string `json:"clientSecret,omitempty" yaml:"clientSecret,omitempty"`
 
 	// ClientSecretEnv is the environment variable name containing the client secret.

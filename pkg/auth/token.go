@@ -123,7 +123,7 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	req.Header.Set("User-Agent", oauth.UserAgent)
 
 	// Make the request
-	resp, err := g.client.Do(req)
+	resp, err := g.client.Do(req) // #nosec G704 -- URL is the configured OIDC introspection endpoint
 	if err != nil {
 		return nil, fmt.Errorf("google tokeninfo request failed: %w", err)
 	}
@@ -304,7 +304,7 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	}
 
 	// Make the request
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) // #nosec G704 -- URL is the configured OIDC introspection endpoint
 	if err != nil {
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
@@ -393,7 +393,7 @@ type TokenValidatorConfig struct {
 	ClientID string
 
 	// ClientSecret is the optional OIDC client secret for introspection
-	ClientSecret string
+	ClientSecret string // #nosec G117 -- not a hardcoded credential, populated at runtime from config
 
 	// CACertPath is the path to the CA certificate bundle for HTTPS requests
 	CACertPath string
@@ -447,7 +447,7 @@ func discoverOIDCConfiguration(
 	req.Header.Set("User-Agent", oauth.UserAgent)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is the configured OIDC issuer discovery endpoint
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
 	}

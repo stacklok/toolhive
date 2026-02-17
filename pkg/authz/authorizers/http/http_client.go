@@ -135,7 +135,7 @@ func (c *Client) Authorize(ctx context.Context, porc PORC, probe bool) (bool, er
 	req.Header.Set("Accept", "application/json")
 
 	// Send request
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL is from server configuration, not user input
 	if err != nil {
 		return false, fmt.Errorf("HTTP request failed: %w", err)
 	}

@@ -320,10 +320,10 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 	// Convert to base64url format
 	nBytes := n.Bytes()
 	eBytes := make([]byte, 4)
-	eBytes[0] = byte(e >> 24)
-	eBytes[1] = byte(e >> 16)
-	eBytes[2] = byte(e >> 8)
-	eBytes[3] = byte(e)
+	eBytes[0] = byte(e >> 24) //nolint:gosec // G115: RSA exponent fits in 4 bytes
+	eBytes[1] = byte(e >> 16) //nolint:gosec // G115: RSA exponent fits in 4 bytes
+	eBytes[2] = byte(e >> 8)  //nolint:gosec // G115: RSA exponent fits in 4 bytes
+	eBytes[3] = byte(e)       //nolint:gosec // G115: RSA exponent fits in 4 bytes
 
 	// Trim leading zeros from exponent
 	eStart := 0

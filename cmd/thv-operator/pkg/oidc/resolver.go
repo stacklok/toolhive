@@ -34,7 +34,7 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	JWKSURL            string
 	IntrospectionURL   string
 	ClientID           string
-	ClientSecret       string
+	ClientSecret       string // #nosec G117 -- not a hardcoded credential, populated at runtime from config
 	ThvCABundlePath    string
 	JWKSAuthTokenPath  string
 	ResourceURL        string

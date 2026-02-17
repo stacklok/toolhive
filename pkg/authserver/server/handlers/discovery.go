@@ -87,7 +87,7 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultJWKSCacheMaxAge))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write(data)
+	_, _ = w.Write(data) //nolint:gosec // G705: data is JSON-marshaled from internal metadata, not user input
 }
 
 // buildOAuthMetadata constructs the base OAuth 2.0 Authorization Server Metadata (RFC 8414).
@@ -135,7 +135,7 @@ func (h *Handler) OAuthDiscoveryHandler(w http.ResponseWriter, _ *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", DefaultDiscoveryCacheMaxAge))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write(data)
+	_, _ = w.Write(data) //nolint:gosec // G705: data is JSON-marshaled from internal metadata, not user input
 }
 
 // OIDCDiscoveryHandler handles GET /.well-known/openid-configuration requests.

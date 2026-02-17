@@ -159,12 +159,12 @@ func (r exchangeRequest) String() string {
 
 // response is used to decode the remote server response during an OAuth 2.0 token exchange.
 type response struct {
-	AccessToken     string `json:"access_token"`
+	AccessToken     string `json:"access_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int    `json:"expires_in"`
 	Scope           string `json:"scope"`
-	RefreshToken    string `json:"refresh_token"`
+	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 // String implements fmt.Stringer for response, redacting sensitive tokens.
@@ -186,7 +186,7 @@ func (r response) String() string {
 // clientAuthentication represents OAuth client credentials for token exchange.
 type clientAuthentication struct {
 	ClientID     string
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117
 }
 
 // String implements fmt.Stringer for clientAuthentication, redacting the client secret.
@@ -209,7 +209,7 @@ type ExchangeConfig struct {
 	ClientID string
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117
 
 	// Audience is the target audience for the exchanged token (optional per RFC 8693)
 	Audience string
@@ -470,7 +470,7 @@ func createTokenExchangeRequest(
 
 // executeTokenExchangeRequest sends the HTTP request and returns the response body.
 func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte, error) {
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is the configured token exchange endpoint
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}

@@ -32,7 +32,7 @@ type Config struct {
 	ClientID string
 
 	// ClientSecret is the OAuth client secret (optional for PKCE flow)
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RedirectURL is the redirect URL for the OAuth flow
 	RedirectURL string
@@ -79,8 +79,8 @@ type Flow struct {
 
 // TokenResult contains the result of the OAuth flow
 type TokenResult struct {
-	AccessToken  string
-	RefreshToken string
+	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	TokenType    string
 	Expiry       time.Time
 	Claims       jwt.MapClaims

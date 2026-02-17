@@ -816,7 +816,7 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 				req.Header.Set("MCP-Protocol-Version", "2024-11-05")
 			}
 
-			resp, err := httpClient.Do(req)
+			resp, err := httpClient.Do(req) // #nosec G704 -- endpoint is the local MCP server readiness URL
 			if err == nil {
 				//nolint:errcheck // Ignoring close error on response body in error path
 				defer resp.Body.Close()

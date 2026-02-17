@@ -118,7 +118,7 @@ func (m *setupModel) View() string {
 			for i := range m.SelectedGroups {
 				selectedGroupNames = append(selectedGroupNames, m.Groups[i].Name)
 			}
-			b.WriteString(fmt.Sprintf("Selected groups: %s\n\n", strings.Join(selectedGroupNames, ", ")))
+			fmt.Fprintf(&b, "Selected groups: %s\n\n", strings.Join(selectedGroupNames, ", "))
 		}
 		b.WriteString("Select clients to register:\n\n")
 		for i, cli := range m.Clients {

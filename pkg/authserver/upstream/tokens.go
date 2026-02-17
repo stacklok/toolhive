@@ -27,10 +27,10 @@ const tokenExpirationBuffer = 30 * time.Second
 // (see storage.IDPTokens for the storage representation).
 type Tokens struct {
 	// AccessToken is the access token from the upstream IDP.
-	AccessToken string
+	AccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// RefreshToken is the refresh token from the upstream IDP (if provided).
-	RefreshToken string
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// IDToken is the ID token from the upstream IDP (for OIDC).
 	IDToken string

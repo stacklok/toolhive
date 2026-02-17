@@ -160,7 +160,7 @@ func detectAuthWithRequest(
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- targetURI is the MCP server endpoint URL from internal config
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
@@ -213,7 +213,7 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- uri is built from the MCP server endpoint for auth discovery
 	if err != nil {
 		logger.Debugf("Failed to check %s: %v", uri, err)
 		return false
@@ -489,7 +489,7 @@ func DeriveIssuerFromRealm(realm string) string {
 // OAuthFlowConfig contains configuration for performing OAuth flows
 type OAuthFlowConfig struct {
 	ClientID             string
-	ClientSecret         string
+	ClientSecret         string //nolint:gosec // G117: field legitimately holds sensitive data
 	AuthorizeURL         string // Manual OAuth endpoint (optional)
 	TokenURL             string // Manual OAuth endpoint (optional)
 	RegistrationEndpoint string // Manual registration endpoint (optional)
@@ -507,13 +507,13 @@ type OAuthFlowResult struct {
 	Config      *oauth.Config
 
 	// Token details for persistence across restarts
-	AccessToken  string
-	RefreshToken string
+	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	Expiry       time.Time
 
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
-	ClientSecret string
+	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -758,7 +758,7 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is the OIDC well-known metadata endpoint
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}

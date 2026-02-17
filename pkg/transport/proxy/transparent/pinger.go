@@ -59,7 +59,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	logger.Debugf("Checking SSE server health at %s", p.targetURL)
 
 	// Send the request
-	resp, err := p.client.Do(req)
+	resp, err := p.client.Do(req) // #nosec G704 -- targetURL is the local MCP server health endpoint
 	if err != nil {
 		return time.Since(start), fmt.Errorf("failed to connect to SSE server: %w", err)
 	}

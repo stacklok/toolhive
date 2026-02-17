@@ -533,7 +533,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	if _, err = w.Write([]byte(logs)); err != nil {
+	if _, err = w.Write([]byte(logs)); err != nil { //nolint:gosec // G705: logs from internal container runtime
 		return fmt.Errorf("failed to write logs response: %w", err)
 	}
 	return nil
@@ -568,6 +568,7 @@ func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
+	// #nosec G705 -- logs is read from internal proxy log storage, not user input
 	if _, err = w.Write([]byte(logs)); err != nil {
 		return fmt.Errorf("failed to write proxy logs response: %w", err)
 	}

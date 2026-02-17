@@ -374,7 +374,7 @@ func getGitHubRepoInfo(owner, repo, serverName string, currentPulls int) (stars 
 	}
 
 	// Send request
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL is from hardcoded GitHub API endpoint
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to send request: %w", err)
 	}

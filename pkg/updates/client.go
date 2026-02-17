@@ -115,7 +115,7 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 	client := &http.Client{
 		Timeout: defaultTimeout,
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is constructed from hardcoded update API base URL
 	if err != nil {
 		return "", fmt.Errorf("failed to send request to update API: %w", err)
 	}

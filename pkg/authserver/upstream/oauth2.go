@@ -100,6 +100,7 @@ type CommonOAuthConfig struct {
 	// ClientSecret is the OAuth client secret registered with the upstream IDP.
 	// Optional for public clients (RFC 6749 Section 2.1) which authenticate using
 	// PKCE instead of a client secret. Required for confidential clients.
+	//nolint:gosec // G117: field legitimately holds sensitive data
 	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -508,7 +509,7 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 		req.Header.Set(k, v)
 	}
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := p.httpClient.Do(req) //nolint:gosec // G704: URL is from OIDC discovery, not user input
 	if err != nil {
 		return nil, fmt.Errorf("userinfo request failed: %w", err)
 	}

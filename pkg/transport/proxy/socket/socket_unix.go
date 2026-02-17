@@ -21,6 +21,7 @@ func ListenConfig() net.ListenConfig {
 		Control: func(_, _ string, c syscall.RawConn) error {
 			var opErr error
 			if err := c.Control(func(fd uintptr) {
+				//nolint:gosec // G115: fd is a valid file descriptor
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 			}); err != nil {
 				return err

@@ -164,7 +164,7 @@ type oidcOptions struct {
 	// OAuth2 client ID
 	ClientID string `json:"client_id"`
 	// OAuth2 client secret
-	ClientSecret string `json:"client_secret"`
+	ClientSecret string `json:"client_secret"` //nolint:gosec // G117
 	// OAuth scopes to advertise in well-known endpoint (RFC 9728)
 	Scopes []string `json:"scopes,omitempty"`
 }

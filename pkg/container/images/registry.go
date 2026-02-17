@@ -147,6 +147,7 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 		return fmt.Errorf("failed to create temporary tar file: %w", err)
 	}
 	defer func() {
+		// #nosec G703 -- tarFile.Name() is from os.CreateTemp, not user input
 		if err := os.Remove(tarFile.Name()); err != nil {
 			// Non-fatal: temp file cleanup failure
 			logger.Debugf("Failed to remove temporary file %s: %v", tarFile.Name(), err)

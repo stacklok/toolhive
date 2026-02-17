@@ -85,7 +85,7 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	req.Header.Set(anonymousIDHeader, anonymousID) // User anonymous ID (or default for operator)
 	req.Header.Set(userAgentHeader, generateUserAgent())
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G704 -- URL is the hardcoded usage metrics endpoint
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}

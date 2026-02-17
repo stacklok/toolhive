@@ -342,7 +342,7 @@ func StoreSecretsPassword(password []byte) error {
 
 func readPasswordStdin() ([]byte, error) {
 	printPasswordPrompt()
-	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	password, err := term.ReadPassword(int(os.Stdin.Fd())) //nolint:gosec // G115: stdin fd is always small
 	// Start new line after receiving password to ensure errors are printed correctly.
 	fmt.Println()
 	if err != nil {

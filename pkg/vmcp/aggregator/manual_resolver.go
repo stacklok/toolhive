@@ -154,7 +154,7 @@ func (*ManualConflictResolver) formatConflictError(conflicts map[string][]string
 	sb.WriteString("unresolved tool name conflicts detected:\n")
 
 	for toolName, backendIDs := range conflicts {
-		sb.WriteString(fmt.Sprintf("  - %s: [%s]\n", toolName, strings.Join(backendIDs, ", ")))
+		fmt.Fprintf(&sb, "  - %s: [%s]\n", toolName, strings.Join(backendIDs, ", "))
 	}
 
 	sb.WriteString("\nUse 'overrides' in aggregation config to resolve these conflicts when using conflict_resolution: manual")

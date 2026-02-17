@@ -66,28 +66,28 @@ func bundleFromAttestation(imageRef string, keychain authn.Keychain) ([]sigstore
 		}
 		refImg, err := remote.Image(ref.Context().Digest(refDesc.Digest.String()), opts...)
 		if err != nil {
-			logger.Debugf("error getting referrer image: %w", err)
+			logger.Debugf("error getting referrer image: %v", err)
 			continue
 		}
 		layers, err := refImg.Layers()
 		if err != nil {
-			logger.Debugf("error getting referrer image: %w", err)
+			logger.Debugf("error getting referrer image: %v", err)
 			continue
 		}
 		layer0, err := layers[0].Uncompressed()
 		if err != nil {
-			logger.Debugf("error getting referrer image: %w", err)
+			logger.Debugf("error getting referrer image: %v", err)
 			continue
 		}
 		bundleBytes, err := io.ReadAll(layer0)
 		if err != nil {
-			logger.Debugf("error getting referrer image: %w", err)
+			logger.Debugf("error getting referrer image: %v", err)
 			continue
 		}
 		b := &bundle.Bundle{}
 		err = b.UnmarshalJSON(bundleBytes)
 		if err != nil {
-			logger.Debugf("error unmarshalling bundle: %w", err)
+			logger.Debugf("error unmarshalling bundle: %v", err)
 			continue
 		}
 

@@ -6,8 +6,10 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,9 +18,8 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -248,8 +249,8 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 	tempHome := t.TempDir()
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
-		// Initialize in-memory test logger
-		observerLogs := initializeTest(t)
+		// Initialize in-memory test logger that captures output to a buffer
+		logBuf := initializeTest(t)
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -309,13 +310,7 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 		// We expect 1 config (VSCode) since cursor with invalid JSON should be skipped
 		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
 
-		// Read all log entries
-		var sb strings.Builder
-		for _, entry := range observerLogs.All() {
-			sb.WriteString(entry.Message)
-		}
-
-		logOutput := sb.String()
+		logOutput := logBuf.String()
 
 		// Verify that the error was logged
 		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")
@@ -324,31 +319,32 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 	})
 }
 
-func initializeTest(t *testing.T) *observer.ObservedLogs {
+// initializeTest sets up a buffer-backed slog logger as the global singleton
+// so that test assertions can inspect log output. It returns the buffer.
+func initializeTest(t *testing.T) *bytes.Buffer {
 	t.Helper()
 
-	// Set log level based on current debug flag
-	var level zap.AtomicLevel
+	var buf bytes.Buffer
+
+	level := slog.LevelInfo
 	if viper.GetBool("debug") {
-		level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	} else {
-		level = zap.NewAtomicLevelAt(zap.InfoLevel)
+		level = slog.LevelDebug
 	}
 
-	core, observedLogs := observer.New(level)
-	testLogger := zap.New(core)
+	testLogger := logging.New(
+		logging.WithOutput(&buf),
+		logging.WithLevel(level),
+		logging.WithFormat(logging.FormatText),
+	)
 
-	// Save original logger for restoring
-	originalLogger := zap.L()
+	prev := logger.Get()
+	logger.Set(testLogger)
 
-	zap.ReplaceGlobals(testLogger)
-
-	// Restore original logger
 	t.Cleanup(func() {
-		zap.ReplaceGlobals(originalLogger)
+		logger.Set(prev)
 	})
 
-	return observedLogs
+	return &buf
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {

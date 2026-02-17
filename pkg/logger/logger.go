@@ -1,136 +1,174 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package logger provides a logging capability for toolhive for running locally as a CLI and in Kubernetes
+// Package logger provides a logging capability for toolhive for running locally as a CLI and in Kubernetes.
+//
+// This is a thin shim over toolhive-core/logging that maintains backward
+// compatibility with existing call sites. New code should inject *slog.Logger
+// directly; use [Get] to obtain the underlying logger for injection.
 package logger
 
 import (
+	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
-	"time"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
 	"github.com/spf13/viper"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive-core/logging"
 )
+
+// singleton is the package-level logger created by Initialize.
+// Accessed atomically to be safe for concurrent use across goroutines.
+var singleton atomic.Pointer[slog.Logger]
+
+func init() {
+	// Set a default logger so callers that skip Initialize() don't panic.
+	singleton.Store(logging.New())
+}
+
+// get returns the current singleton logger.
+func get() *slog.Logger {
+	return singleton.Load()
+}
+
+// Get returns the underlying *slog.Logger for injection into structs.
+func Get() *slog.Logger {
+	return get()
+}
+
+// Set replaces the singleton logger. This is intended for tests that need to
+// capture log output; production code should use [Initialize] instead.
+func Set(l *slog.Logger) {
+	singleton.Store(l)
+}
 
 // Debug logs a message at debug level using the singleton logger.
 func Debug(msg string) {
-	zap.S().Debug(msg)
+	get().Debug(msg)
 }
 
 // Debugf logs a message at debug level using the singleton logger.
 func Debugf(msg string, args ...any) {
-	zap.S().Debugf(msg, args...)
+	get().Debug(fmt.Sprintf(msg, args...))
 }
 
 // Debugw logs a message at debug level using the singleton logger with additional key-value pairs.
 func Debugw(msg string, keysAndValues ...any) {
-	zap.S().Debugw(msg, keysAndValues...)
+	get().Debug(msg, keysAndValues...)
 }
 
 // Info logs a message at info level using the singleton logger.
 func Info(msg string) {
-	zap.S().Info(msg)
+	get().Info(msg)
 }
 
 // Infof logs a message at info level using the singleton logger.
 func Infof(msg string, args ...any) {
-	zap.S().Infof(msg, args...)
+	get().Info(fmt.Sprintf(msg, args...))
 }
 
 // Infow logs a message at info level using the singleton logger with additional key-value pairs.
 func Infow(msg string, keysAndValues ...any) {
-	zap.S().Infow(msg, keysAndValues...)
+	get().Info(msg, keysAndValues...)
 }
 
 // Warn logs a message at warning level using the singleton logger.
 func Warn(msg string) {
-	zap.S().Warn(msg)
+	get().Warn(msg)
 }
 
 // Warnf logs a message at warning level using the singleton logger.
 func Warnf(msg string, args ...any) {
-	zap.S().Warnf(msg, args...)
+	get().Warn(fmt.Sprintf(msg, args...))
 }
 
 // Warnw logs a message at warning level using the singleton logger with additional key-value pairs.
 func Warnw(msg string, keysAndValues ...any) {
-	zap.S().Warnw(msg, keysAndValues...)
+	get().Warn(msg, keysAndValues...)
 }
 
 // Error logs a message at error level using the singleton logger.
 func Error(msg string) {
-	zap.S().Error(msg)
+	get().Error(msg)
 }
 
 // Errorf logs a message at error level using the singleton logger.
 func Errorf(msg string, args ...any) {
-	zap.S().Errorf(msg, args...)
+	get().Error(fmt.Sprintf(msg, args...))
 }
 
 // Errorw logs a message at error level using the singleton logger with additional key-value pairs.
 func Errorw(msg string, keysAndValues ...any) {
-	zap.S().Errorw(msg, keysAndValues...)
+	get().Error(msg, keysAndValues...)
 }
 
 // Panic logs a message at error level using the singleton logger and panics the program.
 func Panic(msg string) {
-	zap.S().Panic(msg)
+	get().Error(msg)
+	panic(msg)
 }
 
 // Panicf logs a message at error level using the singleton logger and panics the program.
 func Panicf(msg string, args ...any) {
-	zap.S().Panicf(msg, args...)
+	formatted := fmt.Sprintf(msg, args...)
+	get().Error(formatted)
+	panic(formatted)
 }
 
 // Panicw logs a message at error level using the singleton logger with additional key-value pairs and panics the program.
 func Panicw(msg string, keysAndValues ...any) {
-	zap.S().Panicw(msg, keysAndValues...)
+	get().Error(msg, keysAndValues...)
+	panic(msg)
 }
 
-// DPanic logs a message at error level using the singleton logger and panics the program.
+// DPanic logs a message at error level using the singleton logger.
+// Unlike zap's DPanic, this always logs at error level and never panics,
+// since slog has no equivalent of development-only panic behavior.
 func DPanic(msg string) {
-	zap.S().DPanic(msg)
+	get().Error(msg)
 }
 
-// DPanicf logs a message at error level using the singleton logger and panics the program.
+// DPanicf logs a message at error level using the singleton logger.
 func DPanicf(msg string, args ...any) {
-	zap.S().DPanicf(msg, args...)
+	get().Error(fmt.Sprintf(msg, args...))
 }
 
-// DPanicw logs a message at error level using the singleton logger with additional key-value pairs and panics the program.
+// DPanicw logs a message at error level using the singleton logger with additional key-value pairs.
 func DPanicw(msg string, keysAndValues ...any) {
-	zap.S().DPanicw(msg, keysAndValues...)
+	get().Error(msg, keysAndValues...)
 }
 
 // Fatal logs a message at error level using the singleton logger and exits the program.
 func Fatal(msg string) {
-	zap.S().Fatal(msg)
+	get().Error(msg)
+	os.Exit(1)
 }
 
 // Fatalf logs a message at error level using the singleton logger and exits the program.
 func Fatalf(msg string, args ...any) {
-	zap.S().Fatalf(msg, args...)
+	get().Error(fmt.Sprintf(msg, args...))
+	os.Exit(1)
 }
 
 // Fatalw logs a message at error level using the singleton logger with additional key-value pairs and exits the program.
 func Fatalw(msg string, keysAndValues ...any) {
-	zap.S().Fatalw(msg, keysAndValues...)
+	get().Error(msg, keysAndValues...)
+	os.Exit(1)
 }
 
-// NewLogr returns a logr.Logger which uses zap logger
+// NewLogr returns a logr.Logger backed by the slog singleton.
 func NewLogr() logr.Logger {
-	return zapr.NewLogger(zap.L())
+	return logr.FromSlogHandler(get().Handler())
 }
 
 // Initialize creates and configures the appropriate logger.
-// If the UNSTRUCTURED_LOGS is set to true, it will output plain log message
-// with only time and LogLevelType (INFO, DEBUG, ERROR, WARN)).
-// Otherwise it will create a standard structured slog logger
+// If the UNSTRUCTURED_LOGS env var is set to true, it will output plain text.
+// Otherwise it will create a standard structured JSON logger.
 func Initialize() {
 	InitializeWithEnv(&env.OSReader{})
 }
@@ -138,27 +176,17 @@ func Initialize() {
 // InitializeWithEnv creates and configures the appropriate logger with a custom environment reader.
 // This allows for dependency injection of environment variable access for testing.
 func InitializeWithEnv(envReader env.Reader) {
-	var config zap.Config
+	var opts []logging.Option
+
 	if unstructuredLogsWithEnv(envReader) {
-		config = zap.NewDevelopmentConfig()
-		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-		config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.Kitchen)
-		config.OutputPaths = []string{"stderr"}
-		config.DisableStacktrace = true
-		config.DisableCaller = true
-	} else {
-		config = zap.NewProductionConfig()
-		config.OutputPaths = []string{"stdout"}
+		opts = append(opts, logging.WithFormat(logging.FormatText))
 	}
 
-	// Set log level based on current debug flag
 	if viper.GetBool("debug") {
-		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	} else {
-		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+		opts = append(opts, logging.WithLevel(slog.LevelDebug))
 	}
 
-	zap.ReplaceGlobals(zap.Must(config.Build()))
+	singleton.Store(logging.New(opts...))
 }
 
 func unstructuredLogsWithEnv(envReader env.Reader) bool {

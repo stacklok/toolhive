@@ -34,7 +34,7 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 		// backendFetchToolName is the name of the fetch tool exposed by the backend MCPServer
 		backendFetchToolName = "fetch"
 		compositeToolName    = "double_fetch"
-		timeout              = 3 * time.Minute
+		timeout              = 5 * time.Minute
 		pollingInterval      = 1 * time.Second
 		vmcpNodePort         int32
 	)
@@ -68,13 +68,16 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
 				},
+				// Inline EmbeddingServer required by validation when optimizer is set.
+				// The controller auto-populates optimizer.embeddingService from EmbeddingServer status.
+				EmbeddingServer: &mcpv1alpha1.EmbeddingServerSpec{
+					Model: "BAAI/bge-small-en-v1.5",
+					Image: images.TextEmbeddingsInferenceImage,
+				},
 
 				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{
-						// EmbeddingService is required but not used by DummyOptimizer
-						EmbeddingService: "dummy-embedding-service",
-					},
+					Group:     mcpGroupName,
+					Optimizer: &vmcpconfig.OptimizerConfig{},
 					// Define a composite tool that calls fetch twice
 					CompositeTools: []vmcpconfig.CompositeToolConfig{
 						{

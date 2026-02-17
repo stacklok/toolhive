@@ -100,6 +100,7 @@ jobs:
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
         docker pull python:3.9-slim &
         docker pull curlimages/curl:8.17.0 &
+        docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
         wait
 
         # Load all images into kind
@@ -108,6 +109,7 @@ jobs:
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
         kind load docker-image --name toolhive python:3.9-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
+        kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

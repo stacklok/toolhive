@@ -10,7 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
@@ -120,17 +119,9 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 		}
 
 		// Build auth config and collect any errors (but don't fail the operation)
-		authConfig, _, _, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without authentication",
-				"error", err,
-				"virtualmcpserver", vmcp.Name,
-				"namespace", vmcp.Namespace)
-			authConfig = nil // Continue without auth config on error
-		}
-		// Note: authErrors are not set here since this function is called in static mode
-		// where auth errors are already being handled by ensureVmcpConfigConfigMap
+		// Note: Auth errors are collected and reported via status conditions by processOutgoingAuth.
+		// In static mode, we still attempt to build the auth config for ConfigMap embedding.
+		authConfig, _, _ = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
@@ -191,7 +182,7 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 }
 
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
-// It builds auth configs, sets status conditions for backends, and configures static backends for inline mode.
+// It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
 func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -201,7 +192,7 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 ) error {
 	// Clean up stale conditions if outgoing auth is not configured
 	if config.OutgoingAuth == nil {
-		setDiscoveredAuthConfigConditions(statusManager, nil, nil)
+		setAuthConfigConditions(statusManager, nil, nil)
 		return nil
 	}
 
@@ -210,23 +201,22 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 
 	// Clean up stale conditions if not using inline or discovered mode
 	if !isInlineMode && !isDiscoveredMode {
-		setDiscoveredAuthConfigConditions(statusManager, nil, nil)
+		setAuthConfigConditions(statusManager, nil, nil)
 		return nil
 	}
 
-	// Build auth config to check for errors (needed for both modes)
-	discoveredAuthConfig, backendsWithAuthConfig, discoveredAuthErrors, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
-	if err != nil {
-		return fmt.Errorf("failed to build auth config: %w", err)
-	}
+	// Build auth config and collect all errors (default, backend-specific, discovered)
+	// All errors are non-fatal - the system continues in degraded mode with partial auth config
+	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 
-	// Set conditions for all backends' discovered auth configs (True for success, False for errors)
-	setDiscoveredAuthConfigConditions(statusManager, backendsWithAuthConfig, discoveredAuthErrors)
+	// Set conditions for all auth config types (default, backend-specific, discovered)
+	// True for success, False for errors
+	setAuthConfigConditions(statusManager, backendsWithAuthConfig, allAuthErrors)
 
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {
-		if discoveredAuthConfig != nil {
-			config.OutgoingAuth = discoveredAuthConfig
+		if authConfig != nil {
+			config.OutgoingAuth = authConfig
 		}
 
 		// Discover backends with metadata

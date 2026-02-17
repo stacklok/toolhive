@@ -65,7 +65,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					},
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				assert.Equal(t, "token_exchange", strategy.Type)
@@ -94,7 +93,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					},
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				assert.Equal(t, "token_exchange", strategy.Type)
@@ -124,7 +122,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					},
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				assert.NotNil(t, strategy.TokenExchange)
@@ -143,7 +140,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					// TokenExchange is nil
 				},
 			},
-			expectError: true,
 		},
 		{
 			name: "header injection",
@@ -163,7 +159,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					},
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				assert.Equal(t, "header_injection", strategy.Type)
@@ -186,7 +181,6 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 					Type: "unsupported_type",
 				},
 			},
-			expectError: true,
 		},
 	}
 
@@ -228,15 +222,14 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                       string
-		vmcp                       *mcpv1alpha1.VirtualMCPServer
-		mcpServers                 []mcpv1alpha1.MCPServer
-		authConfigs                []mcpv1alpha1.MCPExternalAuthConfig
-		workloadNames              []workloads.TypedWorkload
-		expectError                bool
-		expectDiscoveredAuthErrors bool // Set to true if test expects discovered auth errors (non-fatal)
-		validate                   func(*testing.T, *vmcpconfig.OutgoingAuthConfig)
-		validateErrors             func(*testing.T, []AuthConfigError) // Validate discovered auth errors
+		name             string
+		vmcp             *mcpv1alpha1.VirtualMCPServer
+		mcpServers       []mcpv1alpha1.MCPServer
+		authConfigs      []mcpv1alpha1.MCPExternalAuthConfig
+		workloadNames    []workloads.TypedWorkload
+		expectAuthErrors bool // Set to true if test expects auth config errors (non-fatal)
+		validate         func(*testing.T, *vmcpconfig.OutgoingAuthConfig)
+		validateErrors   func(*testing.T, []AuthConfigError) // Validate all auth errors (default, backend-specific, discovered)
 	}{
 		{
 			name: "discovered mode with external auth config",
@@ -299,7 +292,6 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Type: workloads.WorkloadTypeMCPServer,
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
@@ -407,7 +399,6 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Type: workloads.WorkloadTypeMCPServer,
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
@@ -477,7 +468,6 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Type: workloads.WorkloadTypeMCPServer,
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "inline", config.Source)
@@ -522,7 +512,6 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			workloadNames: []workloads.TypedWorkload{},
-			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.NotNil(t, config.Default)
@@ -568,7 +557,6 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			workloadNames: []workloads.TypedWorkload{},
-			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Contains(t, config.Backends, "backend-1")
@@ -611,8 +599,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Type: workloads.WorkloadTypeMCPServer,
 				},
 			},
-			expectError:                false,
-			expectDiscoveredAuthErrors: true, // New behavior: discovered errors are returned
+			expectAuthErrors: true, // New behavior: discovered errors are returned
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				// Should not have backend-1 in config since ExternalAuthConfig is missing
@@ -642,10 +629,85 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			workloadNames: []workloads.TypedWorkload{},
-			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "discovered", config.Source)
+			},
+		},
+		{
+			name: "default auth config error is collected but doesn't fail reconciliation",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered",
+						Default: &mcpv1alpha1.BackendAuthConfig{
+							Type: "external_auth_config_ref",
+							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+								Name: "missing-default-auth", // Auth config doesn't exist
+							},
+						},
+					},
+				},
+			},
+			workloadNames:    []workloads.TypedWorkload{},
+			expectAuthErrors: true, // Should collect default auth error
+			validateErrors: func(t *testing.T, errors []AuthConfigError) {
+				t.Helper()
+				require.Len(t, errors, 1, "expected exactly one auth error")
+				authErr := errors[0]
+				assert.Equal(t, "default", authErr.Context)
+				assert.Empty(t, authErr.BackendName)
+				assert.Error(t, authErr.Error)
+				assert.Contains(t, authErr.Error.Error(), "failed to convert default auth config")
+			},
+			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
+				t.Helper()
+				// Default auth should not be set due to error
+				assert.Nil(t, config.Default)
+			},
+		},
+		{
+			name: "backend-specific auth config error is collected but doesn't fail reconciliation",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					Config: vmcpconfig.Config{Group: "test-group"},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered",
+						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+							"api-backend": {
+								Type: "external_auth_config_ref",
+								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+									Name: "missing-backend-auth",
+								},
+							},
+						},
+					},
+				},
+			},
+			workloadNames:    []workloads.TypedWorkload{},
+			expectAuthErrors: true, // Should collect backend-specific auth error
+			validateErrors: func(t *testing.T, errors []AuthConfigError) {
+				t.Helper()
+				require.Len(t, errors, 1, "expected exactly one auth error")
+				authErr := errors[0]
+				assert.Equal(t, "backend:api-backend", authErr.Context)
+				assert.Equal(t, "api-backend", authErr.BackendName)
+				assert.Error(t, authErr.Error)
+				assert.Contains(t, authErr.Error.Error(), "failed to convert backend auth config")
+			},
+			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
+				t.Helper()
+				// Backend-specific auth should not be set due to error
+				assert.NotContains(t, config.Backends, "api-backend")
 			},
 		},
 	}
@@ -678,24 +740,18 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			config, _, discoveredAuthErrors, err := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
+			config, _, allAuthErrors := r.buildOutgoingAuthConfig(ctx, tt.vmcp, tt.workloadNames)
 
-			if tt.expectError {
-				require.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
 			require.NotNil(t, config)
 
-			// Check discovered auth errors
-			if tt.expectDiscoveredAuthErrors {
-				require.NotEmpty(t, discoveredAuthErrors, "expected discovered auth errors but got none")
+			// Check auth config errors (default, backend-specific, discovered)
+			if tt.expectAuthErrors {
+				require.NotEmpty(t, allAuthErrors, "expected auth config errors but got none")
 				if tt.validateErrors != nil {
-					tt.validateErrors(t, discoveredAuthErrors)
+					tt.validateErrors(t, allAuthErrors)
 				}
 			} else {
-				require.Empty(t, discoveredAuthErrors, "unexpected discovered auth errors")
+				require.Empty(t, allAuthErrors, "unexpected auth config errors")
 			}
 
 			if tt.validate != nil {
@@ -740,7 +796,6 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 					},
 				},
 			},
-			expectError: false,
 			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				assert.Equal(t, "token_exchange", strategy.Type)
@@ -758,7 +813,6 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 					Name: "missing-config",
 				},
 			},
-			expectError: true,
 		},
 	}
 

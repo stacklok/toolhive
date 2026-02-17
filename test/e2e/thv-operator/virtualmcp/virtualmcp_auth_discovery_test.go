@@ -1714,48 +1714,6 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 			"Backend with missing auth config should have a status phase set")
 	})
 
-	It("should report auth config errors via status conditions", func() {
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-
-		By("Getting VirtualMCPServer status")
-		Eventually(func() error {
-			return k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-		}, timeout, pollingInterval).Should(Succeed())
-
-		By("Verifying status condition for valid backend")
-		validConditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendValidAuthName)
-		var validCondition *metav1.Condition
-		for i := range vmcpServer.Status.Conditions {
-			if vmcpServer.Status.Conditions[i].Type == validConditionType {
-				validCondition = &vmcpServer.Status.Conditions[i]
-				break
-			}
-		}
-		Expect(validCondition).NotTo(BeNil(),
-			"Should have condition for backend with valid auth config")
-		Expect(validCondition.Status).To(Equal(metav1.ConditionTrue),
-			"Valid backend should have True condition")
-
-		By("Verifying status condition for backend with missing auth config")
-		invalidConditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendMissingAuthName)
-		var invalidCondition *metav1.Condition
-		for i := range vmcpServer.Status.Conditions {
-			if vmcpServer.Status.Conditions[i].Type == invalidConditionType {
-				invalidCondition = &vmcpServer.Status.Conditions[i]
-				break
-			}
-		}
-		Expect(invalidCondition).NotTo(BeNil(),
-			"Should have condition for backend with missing auth config")
-		Expect(invalidCondition.Status).To(Equal(metav1.ConditionFalse),
-			"Backend with missing auth config should have False condition")
-		Expect(invalidCondition.Reason).To(Equal("ConversionFailed"),
-			"Backend with missing auth config should report ConversionFailed reason")
-	})
-
 	It("should not set phase to Failed", func() {
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 

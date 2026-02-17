@@ -46,7 +46,6 @@ pkg/process/                          @JAORMX @jhrozek @blkt @amirejaz @ChrisJBu
 
 # Registry & Distribution
 pkg/registry/                         @JAORMX @rdimitrov
-cmd/regup/                            @JAORMX @rdimitrov
 .github/workflows/update-registry.yml  @JAORMX @rdimitrov
 
 # Security & Policy

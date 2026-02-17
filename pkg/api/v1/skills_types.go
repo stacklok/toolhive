@@ -23,6 +23,10 @@ type installSkillRequest struct {
 	Version string `json:"version,omitempty"`
 	// Scope for the installation
 	Scope skills.Scope `json:"scope,omitempty"`
+	// Client is the target client (e.g., "claude-code")
+	Client string `json:"client,omitempty"`
+	// Force allows overwriting unmanaged skill directories
+	Force bool `json:"force,omitempty"`
 }
 
 // installSkillResponse represents the response after installing a skill.

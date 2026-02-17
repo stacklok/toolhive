@@ -2284,6 +2284,14 @@ const docTemplate = `{
             "v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
+                    "client": {
+                        "description": "Client is the target client (e.g., \"claude-code\")",
+                        "type": "string"
+                    },
+                    "force": {
+                        "description": "Force allows overwriting unmanaged skill directories",
+                        "type": "boolean"
+                    },
                     "name": {
                         "description": "Name or OCI reference of the skill to install",
                         "type": "string"

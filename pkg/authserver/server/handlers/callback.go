@@ -195,10 +195,20 @@ func (h *Handler) writeAuthorizationResponse(
 	}
 	authorizeRequest.RedirectURI = redirectURI
 
-	// Set requested scopes
+	// Grant only scopes that the client is registered for.
+	// This prevents elevation if a tampered authorize request smuggled extra scopes
+	// into the pending authorization.
+	clientScopes := fositeClient.GetScopes()
 	for _, scope := range pending.Scopes {
-		authorizeRequest.RequestedScope = append(authorizeRequest.RequestedScope, scope)
-		authorizeRequest.GrantedScope = append(authorizeRequest.GrantedScope, scope)
+		if fosite.ExactScopeStrategy(clientScopes, scope) {
+			authorizeRequest.RequestedScope = append(authorizeRequest.RequestedScope, scope)
+			authorizeRequest.GrantedScope = append(authorizeRequest.GrantedScope, scope)
+		} else {
+			logger.Warnw("filtered unregistered scope from authorization",
+				"scope", scope,
+				"client_id", pending.ClientID,
+			)
+		}
 	}
 
 	// Generate the authorization response using fosite

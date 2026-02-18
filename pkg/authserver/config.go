@@ -59,7 +59,7 @@ type RunConfig struct {
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
-	// If empty, defaults to ["openid", "profile", "email", "offline_access"].
+	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
 	ScopesSupported []string `json:"scopes_supported,omitempty" yaml:"scopes_supported,omitempty"`
 
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
@@ -295,7 +295,7 @@ type Config struct {
 	Upstreams []UpstreamConfig
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
-	// If nil or empty, defaults to ["openid", "profile", "email", "offline_access"].
+	// If nil or empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string

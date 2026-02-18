@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
@@ -27,12 +27,12 @@ func CheckAndPerformTelemetryConfigMigration() {
 		// Check if migration was already performed
 		appConfig := config.NewDefaultProvider().GetConfig()
 		if appConfig.TelemetryConfigMigration {
-			logger.Debugf("Telemetry config migration already completed, skipping")
+			slog.Debug("Telemetry config migration already completed, skipping")
 			return
 		}
 
 		if err := performTelemetryConfigMigration(); err != nil {
-			logger.Errorf("Failed to perform telemetry config migration: %v", err)
+			slog.Error("Failed to perform telemetry config migration", "error", err)
 			return
 		}
 
@@ -40,7 +40,7 @@ func CheckAndPerformTelemetryConfigMigration() {
 		if err := config.UpdateConfig(func(c *config.Config) {
 			c.TelemetryConfigMigration = true
 		}); err != nil {
-			logger.Errorf("Failed to update config after telemetry config migration: %v", err)
+			slog.Error("Failed to update config after telemetry config migration", "error", err)
 		}
 	})
 }
@@ -65,7 +65,7 @@ func performTelemetryConfigMigration() error {
 	for _, name := range configNames {
 		migrated, err := migrateTelemetryConfigForWorkload(ctx, store, name)
 		if err != nil {
-			logger.Warnf("Failed to migrate telemetry config for workload %s: %v", name, err)
+			slog.Warn("Failed to migrate telemetry config for workload", "workload", name, "error", err)
 			continue
 		}
 		if migrated {
@@ -74,7 +74,7 @@ func performTelemetryConfigMigration() error {
 	}
 
 	if migratedCount > 0 {
-		logger.Debugf("Successfully migrated telemetry config for %d workload(s)", migratedCount)
+		slog.Debug("Successfully migrated telemetry config", "count", migratedCount)
 	}
 
 	return nil
@@ -248,7 +248,7 @@ func migrateTelemetryConfigForWorkload(ctx context.Context, store state.Store, n
 	}
 	defer func() {
 		if closeErr := reader.Close(); closeErr != nil {
-			logger.Warnf("Failed to close reader for %s: %v", name, closeErr)
+			slog.Warn("Failed to close reader", "name", name, "error", closeErr)
 		}
 	}()
 
@@ -275,7 +275,7 @@ func migrateTelemetryConfigForWorkload(ctx context.Context, store state.Store, n
 	}
 	defer func() {
 		if closeErr := writer.Close(); closeErr != nil {
-			logger.Warnf("Failed to close writer for %s: %v", name, closeErr)
+			slog.Warn("Failed to close writer", "name", name, "error", closeErr)
 		}
 	}()
 
@@ -283,6 +283,6 @@ func migrateTelemetryConfigForWorkload(ctx context.Context, store state.Store, n
 		return false, fmt.Errorf("failed to write migrated config for %s: %w", name, err)
 	}
 
-	logger.Debugf("Migrated telemetry config samplingRate from float to string for workload %s", name)
+	slog.Debug("Migrated telemetry config samplingRate from float to string", "workload", name)
 	return true, nil
 }

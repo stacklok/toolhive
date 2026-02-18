@@ -7,6 +7,7 @@ package authserver
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -15,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -324,7 +324,7 @@ func (c *Config) GetUpstream() *UpstreamConfig {
 
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
-	logger.Debugw("validating authserver config", "issuer", c.Issuer)
+	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
 	if err := validateIssuerURL(c.Issuer); err != nil {
 		return fmt.Errorf("issuer: %w", err)
@@ -350,9 +350,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
 	}
 
-	logger.Debugw("authserver config validation passed",
+	slog.Debug("authserver config validation passed",
 		"issuer", c.Issuer,
-		"upstreamCount", len(c.Upstreams),
+		"upstream_count", len(c.Upstreams),
 	)
 	return nil
 }
@@ -415,19 +415,19 @@ func (c *Config) validateUpstreams() error {
 
 // applyDefaults applies default values to the config where not set.
 func (c *Config) applyDefaults() error {
-	logger.Debug("applying default values to authserver config")
+	slog.Debug("applying default values to authserver config")
 
 	if c.AccessTokenLifespan == 0 {
 		c.AccessTokenLifespan = time.Hour
-		logger.Debugw("applied default access token lifespan", "duration", c.AccessTokenLifespan)
+		slog.Debug("applied default access token lifespan", "duration", c.AccessTokenLifespan)
 	}
 	if c.RefreshTokenLifespan == 0 {
 		c.RefreshTokenLifespan = 24 * time.Hour * 7 // 7 days
-		logger.Debugw("applied default refresh token lifespan", "duration", c.RefreshTokenLifespan)
+		slog.Debug("applied default refresh token lifespan", "duration", c.RefreshTokenLifespan)
 	}
 	if c.AuthCodeLifespan == 0 {
 		c.AuthCodeLifespan = 10 * time.Minute
-		logger.Debugw("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
+		slog.Debug("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
 	}
 	if c.HMACSecrets == nil {
 		secret := make([]byte, servercrypto.MinSecretLength)
@@ -435,17 +435,17 @@ func (c *Config) applyDefaults() error {
 			return fmt.Errorf("failed to generate HMAC secret: %w", err)
 		}
 		c.HMACSecrets = &servercrypto.HMACSecrets{Current: secret}
-		logger.Warnw("no HMAC secrets configured, generating ephemeral secret",
+		slog.Warn("no HMAC secrets configured, generating ephemeral secret",
 			"warning", "auth codes and refresh tokens will be invalid after restart")
 	}
 	if c.KeyProvider == nil {
 		c.KeyProvider = keys.NewGeneratingProvider(keys.DefaultAlgorithm)
-		logger.Warnw("no key provider configured, using ephemeral signing key",
+		slog.Warn("no key provider configured, using ephemeral signing key",
 			"warning", "JWTs will be invalid after restart")
 	}
 	if len(c.ScopesSupported) == 0 {
 		c.ScopesSupported = registration.DefaultScopes
-		logger.Debugw("applied default scopes_supported", "scopes", c.ScopesSupported)
+		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
 	}
 	return nil
 }

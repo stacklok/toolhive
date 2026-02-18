@@ -7,11 +7,11 @@ package statuses
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/stacklok/toolhive-core/env"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -124,7 +124,7 @@ func (*runtimeStatusManager) SetWorkloadStatus(
 	contextMsg string,
 ) error {
 	// TODO: This will need to handle concurrent updates.
-	logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+	slog.Debug("Workload status set", "workload", workloadName, "status", status, "context", contextMsg)
 	return nil
 }
 
@@ -136,18 +136,18 @@ func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) e
 
 func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName string, pid int) error {
 	// Noop for runtime status manager
-	logger.Debugf("workload %s PID set to %d (noop for runtime status manager)", workloadName, pid)
+	slog.Debug("Workload PID set (noop for runtime status manager)", "workload", workloadName, "pid", pid)
 	return nil
 }
 
 func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
 	// Noop for runtime status manager
-	logger.Debugf("workload %s PID reset (noop for runtime status manager)", workloadName)
+	slog.Debug("Workload PID reset (noop for runtime status manager)", "workload", workloadName)
 	return nil
 }
 
 func (*runtimeStatusManager) GetWorkloadPID(_ context.Context, workloadName string) (int, error) {
 	// Noop for runtime status manager - always return 0
-	logger.Debugf("workload %s PID requested (noop for runtime status manager, returning 0)", workloadName)
+	slog.Debug("Workload PID requested (noop for runtime status manager, returning 0)", "workload", workloadName)
 	return 0, nil
 }

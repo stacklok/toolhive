@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // maxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
@@ -77,7 +77,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		Audience:      h.config.AllowedAudiences,
 	})
 	if err != nil {
-		logger.Errorw("failed to create client", "error", err)
+		slog.Error("failed to create client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
 			Error:            "server_error",
 			ErrorDescription: "failed to create client",
@@ -87,7 +87,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
-		logger.Errorw("failed to register client", "error", err)
+		slog.Error("failed to register client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
 			Error:            "server_error",
 			ErrorDescription: "failed to register client",
@@ -95,7 +95,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	logger.Debugw("registered new DCR client",
+	slog.Debug("registered new DCR client",
 		"client_id", clientID,
 		"client_name", validated.ClientName,
 	)
@@ -120,7 +120,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorw("failed to encode DCR response", "error", err)
+		slog.Error("failed to encode DCR response", "error", err)
 	}
 }
 
@@ -130,6 +130,6 @@ func writeDCRError(w http.ResponseWriter, statusCode int, dcrErr *registration.D
 	w.WriteHeader(statusCode)
 	// Encoding errors are not recoverable (headers already written), log for diagnostics
 	if err := json.NewEncoder(w).Encode(dcrErr); err != nil {
-		logger.Debugw("failed to encode DCR error response", "error", err)
+		slog.Debug("failed to encode DCR error response", "error", err)
 	}
 }

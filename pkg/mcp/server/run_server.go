@@ -6,11 +6,11 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/logger"
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -197,7 +197,9 @@ func prepareSecrets(secretMappings []SecretMapping) []string {
 func (h *Handler) saveAndRunServer(ctx context.Context, runConfig *runner.RunConfig, name string) error {
 	// Save the run configuration state before starting
 	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Warnf("Failed to save run configuration for %s: %v", name, err)
+		//nolint:gosec // G706: server name from function parameter
+		slog.Warn("failed to save run configuration",
+			"name", name, "error", err)
 		// Continue anyway, as this is not critical for running
 	}
 

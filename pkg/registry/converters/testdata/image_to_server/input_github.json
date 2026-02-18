@@ -51,9 +51,25 @@
     "update_pull_request",
     "update_pull_request_branch"
   ],
+  "title": "GitHub MCP Server",
+  "overview": "# GitHub MCP Server\n\nProvides comprehensive integration with GitHub APIs.",
+  "tool_definitions": [
+    {
+      "name": "create_issue",
+      "description": "Create a new issue in a GitHub repository",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {"type": "string"},
+          "repo": {"type": "string"},
+          "title": {"type": "string"}
+        },
+        "required": ["owner", "repo", "title"]
+      }
+    }
+  ],
   "metadata": {
     "stars": 23700,
-    "pulls": 5000,
     "last_updated": "2025-10-18T02:26:51Z"
   },
   "repository_url": "https://github.com/github/github-mcp-server",

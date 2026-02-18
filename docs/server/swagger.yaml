@@ -806,6 +806,12 @@ components:
             Name is the identifier for the MCP server, used when referencing the server in commands
             If not provided, it will be auto-generated from the registry key
           type: string
+        overview:
+          description: |-
+            Overview is a longer Markdown-formatted description for web display.
+            Unlike the Description field (limited to 500 chars), this supports
+            full Markdown and is intended for rich rendering on catalog pages.
+          type: string
         permissions:
           $ref: '#/components/schemas/permissions.Profile'
         provenance:
@@ -837,6 +843,11 @@ components:
         tier:
           description: Tier represents the tier classification level of the server,
             e.g., "Official" or "Community"
+          type: string
+        title:
+          description: |-
+            Title is an optional human-readable display name for the server.
+            If not provided, the Name field is used for display purposes.
           type: string
         tools:
           description: Tools is a list of tool names provided by this MCP server
@@ -892,9 +903,6 @@ components:
           description: LastUpdated is the timestamp when the server was last updated,
             in RFC3339 format
           type: string
-        pulls:
-          description: Pulls indicates how many times the server image has been downloaded
-          type: integer
         stars:
           description: Stars represents the popularity rating or number of stars for
             the server
@@ -1037,6 +1045,12 @@ components:
           type: string
         oauth_config:
           $ref: '#/components/schemas/registry.OAuthConfig'
+        overview:
+          description: |-
+            Overview is a longer Markdown-formatted description for web display.
+            Unlike the Description field (limited to 500 chars), this supports
+            full Markdown and is intended for rich rendering on catalog pages.
+          type: string
         repository_url:
           description: RepositoryURL is the URL to the source code repository for
             the server
@@ -1055,6 +1069,11 @@ components:
         tier:
           description: Tier represents the tier classification level of the server,
             e.g., "Official" or "Community"
+          type: string
+        title:
+          description: |-
+            Title is an optional human-readable display name for the server.
+            If not provided, the Name field is used for display purposes.
           type: string
         tools:
           description: Tools is a list of tool names provided by this MCP server

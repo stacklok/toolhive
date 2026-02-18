@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/lockfile"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -97,7 +97,7 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
-			logger.Warnf("Failed to close reader: %v", err)
+			slog.Warn("Failed to close reader", "error", err)
 		}
 	}()
 
@@ -135,7 +135,7 @@ func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, work
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
-			logger.Warnf("Failed to close reader: %v", err)
+			slog.Warn("Failed to close reader", "error", err)
 		}
 	}()
 
@@ -226,9 +226,9 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 				statusFile.ProcessID = migratedPID
 				statusFile.UpdatedAt = time.Now()
 				if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
-					logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+					slog.Warn("Failed to write migrated PID", "workload", workloadName, "error", err)
 				} else {
-					logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+					slog.Debug("Successfully migrated PID to status file", "pid", migratedPID, "workload", workloadName)
 				}
 			}
 		}
@@ -247,12 +247,12 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		remote, err := f.isRemoteWorkload(ctx, workloadName)
 		if err != nil {
 			// error is expected
-			logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
+			slog.Debug("Failed to check if workload is remote", "workload", workloadName, "error", err)
 		}
 		if remote {
 			// Populate remote workload data from run config
 			if err := f.populateRemoteWorkloadData(ctx, &result); err != nil {
-				logger.Warnf("failed to populate remote workload data for %s: %v", workloadName, err)
+				slog.Warn("Failed to populate remote workload data", "workload", workloadName, "error", err)
 				// Mark as remote even if we couldn't load full data
 				result.Remote = true
 				result.Package = "remote (data failed to load)"
@@ -375,17 +375,17 @@ func (f *fileStatusManager) setWorkloadStatusInternal(
 
 		// Log with appropriate message based on whether PID was set
 		if pidPtr != nil {
-			logger.Debugf("workload %s set to status %s with PID %d (context: %s)", workloadName, status, *pidPtr, contextMsg)
+			slog.Debug("Workload status set with PID", "workload", workloadName, "status", status, "pid", *pidPtr, "context", contextMsg)
 		} else {
-			logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+			slog.Debug("Workload status set", "workload", workloadName, "status", status, "context", contextMsg)
 		}
 		return nil
 	})
 	if err != nil {
 		if pidPtr != nil {
-			logger.Errorf("error updating workload %s status and PID: %v", workloadName, err)
+			slog.Error("Error updating workload status and PID", "workload", workloadName, "error", err)
 		} else {
-			logger.Errorf("error updating workload %s status: %v", workloadName, err)
+			slog.Error("Error updating workload status", "workload", workloadName, "error", err)
 		}
 	}
 	return err
@@ -410,7 +410,7 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 		}
 
 		// Remove lock file (best effort) - done by withFileLock after this function returns
-		logger.Debugf("workload %s status deleted", workloadName)
+		slog.Debug("Workload status deleted", "workload", workloadName)
 		return nil
 	})
 }
@@ -422,7 +422,7 @@ func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName str
 		// Check if file exists
 		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
 			// File doesn't exist, nothing to do
-			logger.Debugf("workload %s does not exist, skipping PID update", workloadName)
+			slog.Debug("Workload does not exist, skipping PID update", "workload", workloadName)
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
@@ -442,11 +442,11 @@ func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName str
 			return fmt.Errorf("failed to write updated PID for workload %s: %w", workloadName, err)
 		}
 
-		logger.Debugf("workload %s PID set to %d", workloadName, pid)
+		slog.Debug("Workload PID set", "workload", workloadName, "pid", pid)
 		return nil
 	})
 	if err != nil {
-		logger.Errorf("error updating workload %s PID: %v", workloadName, err)
+		slog.Error("Error updating workload PID", "workload", workloadName, "error", err)
 	}
 	return err
 }
@@ -458,7 +458,7 @@ func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName s
 	err := removePIDFile(workloadName)
 	if err != nil {
 		// This is an expected error in most cases.
-		logger.Debugf("no PID for workload %s was removed", workloadName)
+		slog.Debug("No PID for workload was removed", "workload", workloadName)
 	}
 
 	return f.SetWorkloadPID(ctx, workloadName, 0)
@@ -490,7 +490,7 @@ func (f *fileStatusManager) GetWorkloadPID(ctx context.Context, workloadName str
 		return 0, err
 	}
 
-	logger.Debugf("workload %s PID retrieved: %d", workloadName, pid)
+	slog.Debug("Workload PID retrieved", "workload", workloadName, "pid", pid)
 	return pid, nil
 }
 
@@ -508,7 +508,7 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 	}
 
 	if baseName == "" {
-		logger.Debugf("no base name available for workload %s, skipping PID migration", workloadName)
+		slog.Debug("No base name available for workload, skipping PID migration", "workload", workloadName)
 		return 0, false
 	}
 
@@ -516,14 +516,14 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 	// The readPIDFile function handles checking both old and new locations
 	pid, err := readPIDFile(baseName)
 	if err != nil {
-		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		slog.Debug("Failed to read PID file for workload", "workload", workloadName, "baseName", baseName, "error", err)
 		return 0, false
 	}
-	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
+	slog.Debug("Found PID in PID file for workload, will update status file", "pid", pid, "workload", workloadName)
 
 	// Delete the PID file after successful migration
 	if err := removePIDFile(baseName); err != nil {
-		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		slog.Warn("Failed to remove PID file for workload", "workload", workloadName, "baseName", baseName, "error", err)
 		// Don't return false here - the migration succeeded, cleanup just failed
 	}
 
@@ -652,26 +652,26 @@ func (f *fileStatusManager) readStatusFile(statusFilePath string) (*workloadStat
 	}
 
 	// JSON is invalid - attempt recovery
-	logger.Warnf("status file %s contains invalid JSON, attempting recovery", statusFilePath)
+	slog.Warn("Status file contains invalid JSON, attempting recovery", "path", statusFilePath)
 
 	recoveredFile, recoveryErr := f.attemptJSONRecovery(statusFilePath, data)
 	if recoveryErr != nil {
 		// Recovery failed - back up the corrupted file
 		backupPath := statusFilePath + ".corrupted"
 		if backupErr := os.WriteFile(backupPath, data, 0o600); backupErr == nil {
-			logger.Warnf("backed up corrupted status file to %s", backupPath)
+			slog.Warn("Backed up corrupted status file", "path", backupPath)
 		}
 		return nil, fmt.Errorf("failed to parse status file (original error: %v, recovery failed: %v)", parseErr, recoveryErr)
 	}
 
-	logger.Infof("successfully recovered corrupted status file %s", statusFilePath)
+	slog.Info("Successfully recovered corrupted status file", "path", statusFilePath)
 
 	// Auto-repair: write the recovered file back atomically
 	if repairErr := f.writeStatusFile(statusFilePath, *recoveredFile); repairErr != nil {
-		logger.Warnf("recovered status file but failed to auto-repair: %v", repairErr)
+		slog.Warn("Recovered status file but failed to auto-repair", "error", repairErr)
 		// Don't fail - we successfully recovered the data
 	} else {
-		logger.Debugf("auto-repaired status file %s", statusFilePath)
+		slog.Debug("Auto-repaired status file", "path", statusFilePath)
 	}
 
 	return recoveredFile, nil
@@ -695,7 +695,7 @@ func (*fileStatusManager) attemptJSONRecovery(statusFilePath string, data []byte
 
 		if err := json.Unmarshal([]byte(reconstructed), &statusFile); err == nil {
 			if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
-				logger.Debugf("recovered %s by removing %d extra closing brace(s)", statusFilePath, closeBraces-openBraces)
+				slog.Debug("Recovered by removing extra closing braces", "path", statusFilePath, "count", closeBraces-openBraces)
 				return &statusFile, nil
 			}
 		}
@@ -707,7 +707,7 @@ func (*fileStatusManager) attemptJSONRecovery(statusFilePath string, data []byte
 
 		if err := json.Unmarshal([]byte(augmented), &statusFile); err == nil {
 			if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
-				logger.Debugf("recovered %s by adding %d missing closing brace(s)", statusFilePath, openBraces-closeBraces)
+				slog.Debug("Recovered by adding missing closing braces", "path", statusFilePath, "count", openBraces-closeBraces)
 				return &statusFile, nil
 			}
 		}
@@ -725,7 +725,7 @@ func (*fileStatusManager) attemptJSONRecovery(statusFilePath string, data []byte
 
 	if err := json.Unmarshal([]byte(cleaned), &statusFile); err == nil {
 		if statusFile.Status != "" && !statusFile.CreatedAt.IsZero() {
-			logger.Debugf("recovered %s by cleaning whitespace/control characters", statusFilePath)
+			slog.Debug("Recovered by cleaning whitespace/control characters", "path", statusFilePath)
 			return &statusFile, nil
 		}
 	}
@@ -788,7 +788,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 		err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 			// Check if file exists first
 			if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
-				logger.Debugf("status file for workload %s no longer exists, skipping", workloadName)
+				slog.Debug("Status file for workload no longer exists, skipping", "workload", workloadName)
 				return nil // Not an error, file was removed
 			} else if err != nil {
 				return fmt.Errorf("failed to check status file: %w", err)
@@ -802,7 +802,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 					return fmt.Errorf("permission denied reading status file: %w", err)
 				}
 				// For JSON parsing errors or corrupted files, log details
-				logger.Errorf("failed to read or parse status file %s for workload %s: %v", statusFilePath, workloadName, err)
+				slog.Error("Failed to read or parse status file", "path", statusFilePath, "workload", workloadName, "error", err)
 				return fmt.Errorf("corrupted or invalid status file: %w", err)
 			}
 
@@ -818,7 +818,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 			remote, err := f.isRemoteWorkload(ctx, workloadName)
 			if err != nil {
 				// This error is expected
-				logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
+				slog.Debug("Failed to check if workload is remote", "workload", workloadName, "error", err)
 			}
 			if remote {
 				workload.Remote = true
@@ -835,9 +835,9 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 					statusFile.UpdatedAt = time.Now()
 					pid = migratedPID
 					if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
-						logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+						slog.Warn("Failed to write migrated PID", "workload", workloadName, "error", err)
 					} else {
-						logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+						slog.Debug("Successfully migrated PID to status file", "pid", migratedPID, "workload", workloadName)
 					}
 				}
 			}
@@ -851,7 +851,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID,
 		if err != nil {
 			// Log the specific error but continue processing other workloads
 			// This maintains the existing behavior but with better diagnostics
-			logger.Warnf("failed to process status file for workload %s: %v", workloadName, err)
+			slog.Warn("Failed to process status file for workload", "workload", workloadName, "error", err)
 			continue
 		}
 	}
@@ -896,7 +896,7 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 ) (core.Workload, error) {
 	contextMsg := fmt.Sprintf("workload status mismatch: file indicates running, but runtime shows %s", containerInfo.State)
 	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
-		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+		slog.Warn("Failed to update workload status to unhealthy", "workload", workloadName, "error", err)
 	}
 
 	// Convert to workload and return unhealthy status
@@ -950,7 +950,7 @@ func (f *fileStatusManager) isProxyUnhealthy(
 
 	proxyRunning, err := process.FindProcess(pid)
 	if err != nil {
-		logger.Warnf("unable to find process %d: %v", pid, err)
+		slog.Warn("Unable to find process", "pid", pid, "error", err)
 	} else if proxyRunning {
 		return core.Workload{}, false // Proxy is healthy
 	}
@@ -959,13 +959,13 @@ func (f *fileStatusManager) isProxyUnhealthy(
 	contextMsg := fmt.Sprintf("proxy process not running: workload shows running but proxy process for %s is not active",
 		baseName)
 	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
-		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+		slog.Warn("Failed to update workload status to unhealthy", "workload", workloadName, "error", err)
 	}
 
 	// Convert to workload and return unhealthy status
 	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
 	if err != nil {
-		logger.Warnf("failed to convert container info for unhealthy workload %s: %v", workloadName, err)
+		slog.Warn("Failed to convert container info for unhealthy workload", "workload", workloadName, "error", err)
 		return core.Workload{}, false // Return false to avoid double error handling
 	}
 
@@ -1045,7 +1045,7 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 	for _, container := range runtimeContainers {
 		workload, err := types.WorkloadFromContainerInfo(&container)
 		if err != nil {
-			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
+			slog.Warn("Failed to convert container info for workload", "workload", container.Name, "error", err)
 			continue
 		}
 		// Use base name for consistency with file workloads
@@ -1068,7 +1068,7 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			// Validate running workloads similar to GetWorkload
 			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer, pid)
 			if err != nil {
-				logger.Warnf("failed to validate workload %s in list: %v", name, err)
+				slog.Warn("Failed to validate workload in list", "workload", name, "error", err)
 				// Fall back to basic merge without validation
 				if runtimeWorkload, exists := workloadMap[name]; exists {
 					runtimeWorkload.Status = fileWorkload.Status
@@ -1086,7 +1086,7 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			// File-only workload (runtime not available)
 			updatedWorkload, err := f.handleRuntimeMissing(ctx, name, fileWorkload)
 			if err != nil {
-				logger.Warnf("failed to handle missing runtime for workload %s: %v", name, err)
+				slog.Warn("Failed to handle missing runtime for workload", "workload", name, "error", err)
 				workloadMap[name] = fileWorkload
 			} else {
 				workloadMap[name] = updatedWorkload

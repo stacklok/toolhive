@@ -52,6 +52,10 @@
           },
           "uniqueItems": true
         },
+        "overview": {
+          "type": "string",
+          "description": "Longer Markdown-formatted description for web display. Unlike the upstream description (limited to 100 chars), this supports full Markdown and is intended for rich rendering on catalog pages."
+        },
         "tool_definitions": {
           "type": "array",
           "description": "Full MCP Tool definitions describing the tools available from this server, including name, description, inputSchema, and annotations",
@@ -117,11 +121,6 @@
         "stars": {
           "type": "number",
           "description": "Number of repository stars",
-          "minimum": 0
-        },
-        "pulls": {
-          "type": "number",
-          "description": "Number of container image pulls or usage count",
           "minimum": 0
         },
         "last_updated": {

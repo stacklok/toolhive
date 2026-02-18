@@ -312,10 +312,10 @@ func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it u
 
 		logOutput := logBuf.String()
 
-		// Verify that the error was logged
-		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")
+		// Verify that the error was logged (slog uses structured key-value pairs)
+		assert.Contains(t, logOutput, "Unable to process client config", "Should log warning about client config")
+		assert.Contains(t, logOutput, "client=cursor", "Should log cursor as the client attribute")
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
-		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
 }
 
@@ -349,7 +349,6 @@ func initializeTest(t *testing.T) *bytes.Buffer {
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	// Helper function to create isolated test setup for each subtest
 	setupSubtest := func(t *testing.T) (string, []clientAppConfig, config.Provider) {
@@ -585,7 +584,6 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 
 func TestCreateClientConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	testConfig := &config.Config{
 		Secrets: config.Secrets{
@@ -819,7 +817,6 @@ func TestCreateClientConfig(t *testing.T) {
 
 func TestCreateTOMLClientConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	testConfig := &config.Config{
 		Secrets: config.Secrets{
@@ -932,7 +929,6 @@ func TestCreateTOMLClientConfig(t *testing.T) {
 
 func TestUpsertWithDynamicUrlFieldMapping(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	// Test that Gemini CLI uses different URL fields based on transport type
 	t.Run("GeminiCli_SSE_UsesUrlField", func(t *testing.T) {

@@ -634,7 +634,6 @@ func TestValidatePublisherProvidedExtensions(t *testing.T) {
 						"tags": ["api", "test"],
 						"metadata": {
 							"stars": 100,
-							"pulls": 5000,
 							"last_updated": "2025-01-15T10:30:00Z"
 						},
 						"permissions": {
@@ -707,7 +706,6 @@ func TestValidatePublisherProvidedExtensions(t *testing.T) {
 						"tags": ["remote", "api"],
 						"metadata": {
 							"stars": 50,
-							"pulls": 1000,
 							"last_updated": "2025-01-15T10:30:00Z"
 						},
 						"oauth_config": {
@@ -903,7 +901,6 @@ func TestValidatePublisherProvidedExtensions_ConverterOutput(t *testing.T) {
 				"tags": ["api", "github", "repository"],
 				"metadata": {
 					"stars": 23700,
-					"pulls": 5000,
 					"last_updated": "2025-10-18T02:26:51Z"
 				},
 				"permissions": {
@@ -949,7 +946,6 @@ func TestValidatePublisherProvidedExtensions_RemoteConverterOutput(t *testing.T)
 				"tags": ["remote", "sse", "api"],
 				"metadata": {
 					"stars": 150,
-					"pulls": 500,
 					"last_updated": "2025-10-20T10:00:00Z"
 				},
 				"oauth_config": {

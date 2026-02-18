@@ -4,10 +4,10 @@
 package migration
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // middlewareTelemetryMigrationOnce ensures the middleware telemetry migration only runs once
@@ -22,12 +22,12 @@ func CheckAndPerformMiddlewareTelemetryMigration() {
 		// Check if migration was already performed
 		appConfig := config.NewDefaultProvider().GetConfig()
 		if appConfig.MiddlewareTelemetryMigration {
-			logger.Debugf("Telemetry config migration already completed, skipping")
+			slog.Debug("Telemetry config migration already completed, skipping")
 			return
 		}
 
 		if err := performTelemetryConfigMigration(); err != nil {
-			logger.Errorf("Failed to perform middleware telemetry migration: %v", err)
+			slog.Error("Failed to perform middleware telemetry migration", "error", err)
 			return
 		}
 
@@ -35,7 +35,7 @@ func CheckAndPerformMiddlewareTelemetryMigration() {
 		if err := config.UpdateConfig(func(c *config.Config) {
 			c.MiddlewareTelemetryMigration = true
 		}); err != nil {
-			logger.Errorf("Failed to update config after middleware telemetry migration: %v", err)
+			slog.Error("Failed to update config after middleware telemetry migration", "error", err)
 		}
 	})
 }

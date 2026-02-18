@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // createTestClientIntegrations creates fake client integrations for testing
@@ -193,8 +192,6 @@ func TestGetClientStatus_Sorting(t *testing.T) {
 
 func TestGetClientStatus_WithGroups(t *testing.T) {
 	t.Parallel()
-	// Initialize logger to prevent panic
-	logger.Initialize()
 
 	// Set up a temporary home directory for testing (for dependency injection only)
 	tempHome := t.TempDir()

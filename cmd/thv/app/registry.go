@@ -158,7 +158,7 @@ func printJSONServer(server types.ServerMetadata) error {
 func printTextServers(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS"); err != nil {
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS"); err != nil {
 		logger.Warnf("Failed to write output: %v", err)
 		return
 	}
@@ -166,10 +166,8 @@ func printTextServers(servers []types.ServerMetadata) {
 	// Print server information
 	for _, server := range servers {
 		stars := 0
-		pulls := 0
 		if metadata := server.GetMetadata(); metadata != nil {
 			stars = metadata.Stars
-			pulls = metadata.Pulls
 		}
 
 		desc := server.GetDescription()
@@ -177,13 +175,12 @@ func printTextServers(servers []types.ServerMetadata) {
 			desc = "**DEPRECATED** " + desc
 		}
 
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
 			server.GetName(),
 			getServerType(server),
 			truncateString(desc, 50),
 			server.GetTier(),
 			stars,
-			pulls,
 		); err != nil {
 			logger.Debugf("Failed to write server information: %v", err)
 		}
@@ -315,10 +312,10 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 
 	// Print metadata
 	if metadata := server.GetMetadata(); metadata != nil {
-		fmt.Printf("Popularity: %d stars, %d pulls\n", metadata.Stars, metadata.Pulls)
+		fmt.Printf("Popularity: %d stars\n", metadata.Stars)
 		fmt.Printf("Last Updated: %s\n", metadata.LastUpdated)
 	} else {
-		fmt.Printf("Popularity: 0 stars, 0 pulls\n")
+		fmt.Printf("Popularity: 0 stars\n")
 		fmt.Printf("Last Updated: N/A\n")
 	}
 

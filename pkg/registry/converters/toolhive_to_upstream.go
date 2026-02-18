@@ -43,7 +43,7 @@ func ImageMetadataToServerJSON(name string, imageMetadata *registry.ImageMetadat
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
 		Name:        canonicalName,
-		Title:       imageMetadata.Name,
+		Title:       imageMetadata.Title,
 		Description: imageMetadata.Description,
 		Version:     "1.0.0", // TODO: Extract from image tag or metadata
 	}
@@ -87,7 +87,7 @@ func RemoteServerMetadataToServerJSON(name string, remoteMetadata *registry.Remo
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
 		Name:        canonicalName,
-		Title:       remoteMetadata.Name,
+		Title:       remoteMetadata.Title,
 		Description: remoteMetadata.Description,
 		Version:     "1.0.0", // TODO: Version management
 	}
@@ -191,17 +191,19 @@ func createRemotesFromRemoteMetadata(remoteMetadata *registry.RemoteServerMetada
 // using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]interface{} {
 	ext := registry.ServerExtensions{
-		Status:         imageMetadata.Status,
-		Tier:           imageMetadata.Tier,
-		Tools:          imageMetadata.Tools,
-		Tags:           imageMetadata.Tags,
-		Metadata:       imageMetadata.Metadata,
-		CustomMetadata: imageMetadata.CustomMetadata,
-		Permissions:    imageMetadata.Permissions,
-		Args:           imageMetadata.Args,
-		Provenance:     imageMetadata.Provenance,
-		DockerTags:     imageMetadata.DockerTags,
-		ProxyPort:      imageMetadata.ProxyPort,
+		Status:          imageMetadata.Status,
+		Tier:            imageMetadata.Tier,
+		Tools:           imageMetadata.Tools,
+		Tags:            imageMetadata.Tags,
+		Overview:        imageMetadata.Overview,
+		ToolDefinitions: imageMetadata.ToolDefinitions,
+		Metadata:        imageMetadata.Metadata,
+		CustomMetadata:  imageMetadata.CustomMetadata,
+		Permissions:     imageMetadata.Permissions,
+		Args:            imageMetadata.Args,
+		Provenance:      imageMetadata.Provenance,
+		DockerTags:      imageMetadata.DockerTags,
+		ProxyPort:       imageMetadata.ProxyPort,
 	}
 
 	// Default status to "active" if empty
@@ -222,14 +224,16 @@ func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]int
 // using the ServerExtensions type to ensure field names stay in sync with the type definition.
 func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[string]interface{} {
 	ext := registry.ServerExtensions{
-		Status:         remoteMetadata.Status,
-		Tier:           remoteMetadata.Tier,
-		Tools:          remoteMetadata.Tools,
-		Tags:           remoteMetadata.Tags,
-		Metadata:       remoteMetadata.Metadata,
-		CustomMetadata: remoteMetadata.CustomMetadata,
-		OAuthConfig:    remoteMetadata.OAuthConfig,
-		EnvVars:        remoteMetadata.EnvVars,
+		Status:          remoteMetadata.Status,
+		Tier:            remoteMetadata.Tier,
+		Tools:           remoteMetadata.Tools,
+		Tags:            remoteMetadata.Tags,
+		Overview:        remoteMetadata.Overview,
+		ToolDefinitions: remoteMetadata.ToolDefinitions,
+		Metadata:        remoteMetadata.Metadata,
+		CustomMetadata:  remoteMetadata.CustomMetadata,
+		OAuthConfig:     remoteMetadata.OAuthConfig,
+		EnvVars:         remoteMetadata.EnvVars,
 	}
 
 	// Default status to "active" if empty

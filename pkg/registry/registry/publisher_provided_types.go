@@ -31,6 +31,10 @@ type ServerExtensions struct {
 	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Tags are categorization labels for search and filtering
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	// Overview is a longer Markdown-formatted description for web display.
+	// Unlike the upstream description (limited to 100 chars), this supports
+	// full Markdown and is intended for rich rendering on catalog pages.
+	Overview string `json:"overview,omitempty" yaml:"overview,omitempty"`
 	// Metadata contains popularity metrics and optional Kubernetes-specific metadata.
 	// The Kubernetes metadata is only populated when:
 	// - The server is served from ToolHive Registry Server

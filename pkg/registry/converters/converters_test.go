@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/modelcontextprotocol/registry/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,7 @@ func createTestServerJSON() *upstream.ServerJSON {
 	return &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
 		Name:        "io.github.stacklok/test-server",
+		Title:       "Test Server",
 		Description: "Test MCP server",
 		Version:     "1.0.0",
 		Repository: &model.Repository{
@@ -41,13 +43,19 @@ func createTestServerJSON() *upstream.ServerJSON {
 			PublisherProvided: map[string]interface{}{
 				"io.github.stacklok": map[string]interface{}{
 					"ghcr.io/test/server:latest": map[string]interface{}{
-						"status": "active",
-						"tier":   "Official",
-						"tools":  []interface{}{"tool1", "tool2"},
-						"tags":   []interface{}{"test", "example"},
+						"status":   "active",
+						"tier":     "Official",
+						"tools":    []interface{}{"tool1", "tool2"},
+						"tags":     []interface{}{"test", "example"},
+						"overview": "# Test Server\n\nA test MCP server.",
+						"tool_definitions": []interface{}{
+							map[string]interface{}{
+								"name":        "tool1",
+								"description": "First tool",
+							},
+						},
 						"metadata": map[string]interface{}{
 							"stars":        float64(100),
-							"pulls":        float64(1000),
 							"last_updated": "2025-01-01",
 						},
 					},
@@ -61,6 +69,7 @@ func createTestServerJSON() *upstream.ServerJSON {
 func createTestImageMetadata() *types.ImageMetadata {
 	return &types.ImageMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
+			Title:         "Test Server",
 			Description:   "Test MCP server",
 			Transport:     model.TransportTypeStdio,
 			RepositoryURL: "https://github.com/test/repo",
@@ -68,9 +77,12 @@ func createTestImageMetadata() *types.ImageMetadata {
 			Tier:          "Official",
 			Tools:         []string{"tool1", "tool2"},
 			Tags:          []string{"test", "example"},
+			Overview:      "# Test Server\n\nA test MCP server.",
+			ToolDefinitions: []mcp.Tool{
+				{Name: "tool1", Description: "First tool"},
+			},
 			Metadata: &types.Metadata{
 				Stars:       100,
-				Pulls:       1000,
 				LastUpdated: "2025-01-01",
 			},
 		},
@@ -82,6 +94,7 @@ func createTestImageMetadata() *types.ImageMetadata {
 func createTestRemoteServerMetadata() *types.RemoteServerMetadata {
 	return &types.RemoteServerMetadata{
 		BaseServerMetadata: types.BaseServerMetadata{
+			Title:         "Test Remote",
 			Description:   "Test remote server",
 			Transport:     "sse",
 			RepositoryURL: "https://github.com/test/remote",
@@ -89,6 +102,10 @@ func createTestRemoteServerMetadata() *types.RemoteServerMetadata {
 			Tier:          "Official",
 			Tools:         []string{"tool1"},
 			Tags:          []string{"remote"},
+			Overview:      "# Test Remote\n\nA test remote server.",
+			ToolDefinitions: []mcp.Tool{
+				{Name: "tool1", Description: "Remote tool"},
+			},
 		},
 		URL: "https://api.example.com/mcp",
 	}
@@ -106,6 +123,7 @@ func TestServerJSONToImageMetadata_Success(t *testing.T) {
 	require.NotNil(t, imageMetadata)
 
 	assert.Equal(t, "ghcr.io/test/server:latest", imageMetadata.Image)
+	assert.Equal(t, "Test Server", imageMetadata.Title)
 	assert.Equal(t, "Test MCP server", imageMetadata.Description)
 	assert.Equal(t, model.TransportTypeStdio, imageMetadata.Transport)
 	assert.Equal(t, "https://github.com/test/repo", imageMetadata.RepositoryURL)
@@ -113,9 +131,11 @@ func TestServerJSONToImageMetadata_Success(t *testing.T) {
 	assert.Equal(t, "Official", imageMetadata.Tier)
 	assert.Equal(t, []string{"tool1", "tool2"}, imageMetadata.Tools)
 	assert.Equal(t, []string{"test", "example"}, imageMetadata.Tags)
+	assert.Equal(t, "# Test Server\n\nA test MCP server.", imageMetadata.Overview)
+	require.Len(t, imageMetadata.ToolDefinitions, 1)
+	assert.Equal(t, "tool1", imageMetadata.ToolDefinitions[0].Name)
 	assert.NotNil(t, imageMetadata.Metadata)
 	assert.Equal(t, 100, imageMetadata.Metadata.Stars)
-	assert.Equal(t, 1000, imageMetadata.Metadata.Pulls)
 	assert.Equal(t, "2025-01-01", imageMetadata.Metadata.LastUpdated)
 }
 
@@ -298,6 +318,7 @@ func TestImageMetadataToServerJSON_Success(t *testing.T) {
 
 	assert.Equal(t, model.CurrentSchemaURL, serverJSON.Schema)
 	assert.Equal(t, "io.github.stacklok/test-server", serverJSON.Name)
+	assert.Equal(t, "Test Server", serverJSON.Title)
 	assert.Equal(t, "Test MCP server", serverJSON.Description)
 	assert.Equal(t, "1.0.0", serverJSON.Version)
 	assert.Equal(t, "https://github.com/test/repo", serverJSON.Repository.URL)
@@ -502,6 +523,7 @@ func TestServerJSONToRemoteServerMetadata_Success(t *testing.T) {
 
 	serverJSON := &upstream.ServerJSON{
 		Name:        "io.github.stacklok/test-remote",
+		Title:       "Test Remote",
 		Description: "Test remote server",
 		Repository: &model.Repository{
 			URL: "https://github.com/test/remote",
@@ -516,9 +538,16 @@ func TestServerJSONToRemoteServerMetadata_Success(t *testing.T) {
 			PublisherProvided: map[string]interface{}{
 				"io.github.stacklok": map[string]interface{}{
 					"https://api.example.com/mcp": map[string]interface{}{
-						"status": "active",
-						"tier":   "Official",
-						"tools":  []interface{}{"tool1"},
+						"status":   "active",
+						"tier":     "Official",
+						"tools":    []interface{}{"tool1"},
+						"overview": "# Test Remote\n\nA test remote server.",
+						"tool_definitions": []interface{}{
+							map[string]interface{}{
+								"name":        "tool1",
+								"description": "Remote tool",
+							},
+						},
 					},
 				},
 			},
@@ -531,12 +560,16 @@ func TestServerJSONToRemoteServerMetadata_Success(t *testing.T) {
 	require.NotNil(t, remoteMetadata)
 
 	assert.Equal(t, "https://api.example.com/mcp", remoteMetadata.URL)
+	assert.Equal(t, "Test Remote", remoteMetadata.Title)
 	assert.Equal(t, "Test remote server", remoteMetadata.Description)
 	assert.Equal(t, "sse", remoteMetadata.Transport)
 	assert.Equal(t, "https://github.com/test/remote", remoteMetadata.RepositoryURL)
 	assert.Equal(t, "active", remoteMetadata.Status)
 	assert.Equal(t, "Official", remoteMetadata.Tier)
 	assert.Equal(t, []string{"tool1"}, remoteMetadata.Tools)
+	assert.Equal(t, "# Test Remote\n\nA test remote server.", remoteMetadata.Overview)
+	require.Len(t, remoteMetadata.ToolDefinitions, 1)
+	assert.Equal(t, "tool1", remoteMetadata.ToolDefinitions[0].Name)
 }
 
 func TestServerJSONToRemoteServerMetadata_NilInput(t *testing.T) {
@@ -638,6 +671,7 @@ func TestRemoteServerMetadataToServerJSON_Success(t *testing.T) {
 
 	assert.Equal(t, model.CurrentSchemaURL, serverJSON.Schema)
 	assert.Equal(t, "io.github.stacklok/test-remote", serverJSON.Name)
+	assert.Equal(t, "Test Remote", serverJSON.Title)
 	assert.Equal(t, "Test remote server", serverJSON.Description)
 	assert.Equal(t, "https://github.com/test/remote", serverJSON.Repository.URL)
 	assert.Len(t, serverJSON.Remotes, 1)
@@ -802,6 +836,7 @@ func TestRoundTrip_ImageMetadata(t *testing.T) {
 
 	// Verify data preserved
 	assert.Equal(t, original.Image, result.Image)
+	assert.Equal(t, original.Title, result.Title)
 	assert.Equal(t, original.Description, result.Description)
 	assert.Equal(t, original.Transport, result.Transport)
 	assert.Equal(t, original.RepositoryURL, result.RepositoryURL)
@@ -809,11 +844,12 @@ func TestRoundTrip_ImageMetadata(t *testing.T) {
 	assert.Equal(t, original.Tier, result.Tier)
 	assert.Equal(t, original.Tools, result.Tools)
 	assert.Equal(t, original.Tags, result.Tags)
+	assert.Equal(t, original.Overview, result.Overview)
+	assert.Len(t, result.ToolDefinitions, len(original.ToolDefinitions))
 
 	if original.Metadata != nil {
 		require.NotNil(t, result.Metadata)
 		assert.Equal(t, original.Metadata.Stars, result.Metadata.Stars)
-		assert.Equal(t, original.Metadata.Pulls, result.Metadata.Pulls)
 		assert.Equal(t, original.Metadata.LastUpdated, result.Metadata.LastUpdated)
 	}
 }
@@ -834,6 +870,7 @@ func TestRoundTrip_RemoteServerMetadata(t *testing.T) {
 
 	// Verify data preserved
 	assert.Equal(t, original.URL, result.URL)
+	assert.Equal(t, original.Title, result.Title)
 	assert.Equal(t, original.Description, result.Description)
 	assert.Equal(t, original.Transport, result.Transport)
 	assert.Equal(t, original.RepositoryURL, result.RepositoryURL)
@@ -841,6 +878,8 @@ func TestRoundTrip_RemoteServerMetadata(t *testing.T) {
 	assert.Equal(t, original.Tier, result.Tier)
 	assert.Equal(t, original.Tools, result.Tools)
 	assert.Equal(t, original.Tags, result.Tags)
+	assert.Equal(t, original.Overview, result.Overview)
+	assert.Len(t, result.ToolDefinitions, len(original.ToolDefinitions))
 }
 
 func TestRoundTrip_ImageMetadataWithAllFields(t *testing.T) {
@@ -858,7 +897,6 @@ func TestRoundTrip_ImageMetadataWithAllFields(t *testing.T) {
 			Tags:          []string{"tag1", "tag2"},
 			Metadata: &types.Metadata{
 				Stars:       500,
-				Pulls:       10000,
 				LastUpdated: "2025-10-23",
 			},
 		},
@@ -911,7 +949,6 @@ func TestRoundTrip_ImageMetadataWithAllFields(t *testing.T) {
 
 	require.NotNil(t, result.Metadata)
 	assert.Equal(t, original.Metadata.Stars, result.Metadata.Stars)
-	assert.Equal(t, original.Metadata.Pulls, result.Metadata.Pulls)
 	assert.Equal(t, original.Metadata.LastUpdated, result.Metadata.LastUpdated)
 }
 
@@ -979,7 +1016,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 						},
 						"metadata": map[string]interface{}{
 							"stars":        float64(23700),
-							"pulls":        float64(5000),
 							"last_updated": "2025-10-18T02:26:51Z",
 						},
 					},
@@ -1019,7 +1055,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 	// Verify metadata
 	require.NotNil(t, imageMetadata.Metadata)
 	assert.Equal(t, 23700, imageMetadata.Metadata.Stars)
-	assert.Equal(t, 5000, imageMetadata.Metadata.Pulls)
 	assert.Equal(t, "2025-10-18T02:26:51Z", imageMetadata.Metadata.LastUpdated)
 
 	// Test round-trip: Convert back to ServerJSON
@@ -1064,7 +1099,6 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 	metadata, ok := imageData["metadata"].(map[string]interface{})
 	require.True(t, ok, "Metadata should be present")
 	assert.Equal(t, float64(23700), metadata["stars"])
-	assert.Equal(t, float64(5000), metadata["pulls"])
 	assert.Equal(t, "2025-10-18T02:26:51Z", metadata["last_updated"])
 }
 
@@ -1129,7 +1163,6 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
   ],
   "metadata": {
     "stars": 23700,
-    "pulls": 5000,
     "last_updated": "2025-10-18T02:26:51Z"
   },
   "repository_url": "https://github.com/github/github-mcp-server",
@@ -1294,7 +1327,6 @@ func TestRealWorld_GitHubServer_ExactData(t *testing.T) {
 	// Verify metadata preserved
 	require.NotNil(t, roundTripImageMetadata.Metadata)
 	assert.Equal(t, 23700, roundTripImageMetadata.Metadata.Stars)
-	assert.Equal(t, 5000, roundTripImageMetadata.Metadata.Pulls)
 
 	// Verify permissions and provenance are preserved through the round-trip
 	assert.NotNil(t, roundTripImageMetadata.Permissions)
